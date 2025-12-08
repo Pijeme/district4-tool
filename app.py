@@ -353,21 +353,17 @@ def bulletin():
 
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
-    # Determine selected month/year (default: current)
     today = date.today()
     year = request.args.get("year", type=int) or today.year
     month = request.args.get("month", type=int) or today.month
 
-    # Fetch or create monthly report and Sunday reports
     monthly_report = get_or_create_monthly_report(year, month)
     ensure_sunday_reports(monthly_report["id"], year, month)
     sunday_rows = get_sunday_reports(monthly_report["id"])
-
-    # Ensure church progress row exists
     cp_row = ensure_church_progress(monthly_report["id"])
     cp_complete = bool(cp_row["is_complete"])
 
-    # Build a list of Sundays with display-friendly values
+    # Build Sundays
     sunday_list = []
     for row in sunday_rows:
         d = datetime.fromisoformat(row["date"]).date()
@@ -383,10 +379,30 @@ def pastor_tool():
             }
         )
 
-    # List of years for dropdown (current year +/- 3 years)
+    # JSON reply for monthly total
+    if request.args.get("json") == "1":
+        cursor = get_db().cursor()
+        cursor.execute(
+            """
+            SELECT
+                SUM(tithes_church + offering + mission + tithes_personal) AS total_amount
+            FROM sunday_reports
+            WHERE monthly_report_id = ?
+            AND is_complete = 1
+            """,
+            (monthly_report["id"],)
+        )
+        row = cursor.fetchone()
+        return {
+            "totals": {
+                "total_amount": row["total_amount"] or 0
+            }
+        }
+
+    # Year dropdown
     year_options = list(range(today.year - 1, today.year + 4))
 
-    # Month options (1–12)
+    # Month dropdown
     month_names = [
         ("January", 1),
         ("February", 2),
@@ -402,13 +418,13 @@ def pastor_tool():
         ("December", 12),
     ]
 
-    # Determine if submit/resubmit is enabled:
-    # all Sundays complete AND church progress complete
+    # Sunday + Church Progress requirement
     sundays_ok = all_sundays_complete(monthly_report["id"])
     can_submit = sundays_ok and cp_complete
+
     status_key = get_month_status(monthly_report)
 
-    # For dropdown checkmarks: which months are submitted in this year
+    # Submitted checkmarks per month
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -417,6 +433,7 @@ def pastor_tool():
     )
     submitted_map = {(row["year"], row["month"]): bool(row["submitted"]) for row in cur.fetchall()}
 
+    # POST = submit month
     if request.method == "POST":
         if can_submit:
             set_month_submitted(year, month)
