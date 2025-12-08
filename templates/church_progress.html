@@ -6,6 +6,9 @@
   <h2>Church Progress</h2>
   <p class="muted">Month: {{ date_label }}</p>
 
+  <a href="{{ url_for('pastor_tool', year=year, month=month) }}"
+     class="btn-secondary back-btn">← Back to Pastor's Tool</a>
+
   {% if error %}
     <div class="alert alert-error">
       {{ error }}
@@ -16,35 +19,35 @@
     <h3># Bible Studies</h3>
     <div class="field-group">
       <label for="bible_new">New</label>
-      <input type="number" step="1" id="bible_new" name="bible_new" value="{{ values.bible_new }}">
+      <input type="number" id="bible_new" name="bible_new" value="{{ values.bible_new }}">
     </div>
     <div class="field-group">
       <label for="bible_existing">Existing</label>
-      <input type="number" step="1" id="bible_existing" name="bible_existing" value="{{ values.bible_existing }}">
+      <input type="number" id="bible_existing" name="bible_existing" value="{{ values.bible_existing }}">
     </div>
 
     <h3>Conversions & Baptism</h3>
     <div class="field-group">
       <label for="received_christ"># Received Christ</label>
-      <input type="number" step="1" id="received_christ" name="received_christ" value="{{ values.received_christ }}">
+      <input type="number" id="received_christ" name="received_christ" value="{{ values.received_christ }}">
     </div>
     <div class="field-group">
       <label for="baptized_water"># Baptized - Water</label>
-      <input type="number" step="1" id="baptized_water" name="baptized_water" value="{{ values.baptized_water }}">
+      <input type="number" id="baptized_water" name="baptized_water" value="{{ values.baptized_water }}">
     </div>
     <div class="field-group">
       <label for="baptized_holy_spirit"># Baptized - Holy Spirit</label>
-      <input type="number" step="1" id="baptized_holy_spirit" name="baptized_holy_spirit" value="{{ values.baptized_holy_spirit }}">
+      <input type="number" id="baptized_holy_spirit" name="baptized_holy_spirit" value="{{ values.baptized_holy_spirit }}">
     </div>
 
     <h3>Healings & Dedication</h3>
     <div class="field-group">
       <label for="healed"># Healed</label>
-      <input type="number" step="1" id="healed" name="healed" value="{{ values.healed }}">
+      <input type="number" id="healed" name="healed" value="{{ values.healed }}">
     </div>
     <div class="field-group">
       <label for="child_dedication"># Child Dedication</label>
-      <input type="number" step="1" id="child_dedication" name="child_dedication" value="{{ values.child_dedication }}">
+      <input type="number" id="child_dedication" name="child_dedication" value="{{ values.child_dedication }}">
     </div>
 
     <p class="muted small">
