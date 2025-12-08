@@ -273,10 +273,6 @@ def splash():
     return render_template("splash.html")
 
 
-@app.route("/dashboard")
-def dashboard():
-    return render_template("dashboard.html")
-
 
 @app.route("/bulletin")
 def bulletin():
