@@ -14,9 +14,9 @@
       Create Account
     </a>
 
-    <a href="{{ url_for('ao_tool', year=year) }}" class="btn-secondary">
+    <button type="button" class="btn-secondary">
       Report Approval
-    </a>
+    </button>
 
     <button type="button" class="btn-secondary">
       Prayer Request Approval
@@ -33,49 +33,6 @@
     <button type="button" class="btn-secondary">
       Announcements
     </button>
-  </div>
-
-  <h3 style="margin-top:1.25rem;">Monthly Reports ({{ year }})</h3>
-
-  <form method="get" class="month-picker">
-    <div class="field-group">
-      <label for="year">Year</label>
-      <select id="year" name="year">
-        {% for y in year_options %}
-          <option value="{{ y }}" {% if y == year %}selected{% endif %}>
-            {{ y }}
-          </option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit" class="btn-secondary">Go</button>
-  </form>
-
-  <div class="sunday-list">
-    {% for m in months %}
-      {% if m.has_report %}
-        <a href="{{ url_for('ao_month_detail', year=m.year, month=m.month) }}"
-           class="sunday-card {% if m.status_key == 'approved' %}complete{% else %}incomplete{% endif %}">
-          <span>{{ m.name }} {{ m.year }}</span>
-          <span class="status-pill">
-            {% if m.status_key == 'approved' %}
-              Approved
-            {% elif m.status_key == 'pending' %}
-              Pending
-            {% elif m.status_key == 'not_submitted' %}
-              Not Submitted
-            {% else %}
-              Status Unknown
-            {% endif %}
-          </span>
-        </a>
-      {% else %}
-        <div class="sunday-card incomplete">
-          <span>{{ m.name }} {{ m.year }}</span>
-          <span class="status-pill">No data</span>
-        </div>
-      {% endif %}
-    {% endfor %}
   </div>
 </section>
 {% endblock %}
