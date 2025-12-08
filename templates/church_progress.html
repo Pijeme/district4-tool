@@ -50,15 +50,6 @@
       <input type="number" id="child_dedication" name="child_dedication" value="{{ values.child_dedication }}">
     </div>
 
-    <h3>Total Monthly Amount</h3>
-    <div class="field-group">
-      <label for="monthly_total">Total Amount for This Month</label>
-      <div class="peso-box">
-        <span class="peso-symbol">₱</span>
-        <input type="text" id="monthly_total" class="readonly-input peso-input" readonly>
-      </div>
-    </div>
-
     <p class="muted small">
       All Church Progress fields are required for the month. Values must be whole numbers.
     </p>
@@ -66,22 +57,4 @@
     <button type="submit" class="btn-primary">Save Progress</button>
   </form>
 </section>
-
-<script>
-  (function () {
-    function calculateMonthlyTotal() {
-      fetch("{{ url_for('pastor_tool', year=year, month=month) }}?json=1")
-        .then(r => r.json())
-        .then(data => {
-          if (!data.totals) return;
-          var total = data.totals.total_amount || 0;
-          var box = document.getElementById("monthly_total");
-          if (box) box.value = total.toFixed(2);
-        })
-        .catch(() => {});
-    }
-
-    calculateMonthlyTotal();
-  })();
-</script>
 {% endblock %}
