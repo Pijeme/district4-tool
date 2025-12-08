@@ -58,6 +58,19 @@
     </a>
   </div>
 
+  <!-- Total Monthly Amount (all Sundays' finances) -->
+  <div class="field-group">
+    <label for="monthly_total">Total Amount for This Month</label>
+    <div class="peso-box">
+      <span class="peso-symbol">₱</span>
+      <input type="text"
+             id="monthly_total"
+             class="readonly-input peso-input"
+             readonly
+             value="{{ '%.2f'|format(monthly_total) }}">
+    </div>
+  </div>
+
   <form method="post" class="submit-row">
     <button type="submit"
             class="btn-primary {% if not can_submit %}btn-disabled{% endif %}"
