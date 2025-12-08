@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Sunday Details - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Sunday Report</h2>
+  <p class="muted">{{ date_str }}</p>
+
+  <form method="post" class="form-vertical">
+    <div class="field-group">
+      <label for="notes">Notes / Data (temporary field)</label>
+      <textarea id="notes" name="notes" rows="6"
+                placeholder="Enter data for this Sunday (e.g., attendance, offering, notes)">{{ sunday['notes'] or '' }}</textarea>
+    </div>
+
+    <p class="muted small">
+      For this prototype, this single field is used to determine completeness.
+      If it has content, the Sunday is marked complete (green) in the Pastor's Tool.
+    </p>
+
+    <button type="submit" class="btn-primary">Save</button>
+  </form>
+</section>
+{% endblock %}

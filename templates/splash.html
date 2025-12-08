@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>District 4 Tool</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="splash-body">
+  <div class="splash-container">
+    <img src="{{ url_for('static', filename='img/logo.png') }}" alt="District 4 Logo" class="splash-logo">
+    <h1 class="splash-title">District 4 Tool</h1>
+  </div>
+
+  <script>
+    setTimeout(function () {
+      window.location.href = "{{ url_for('dashboard') }}";
+    }, 5000);
+  </script>
+</body>
+</html>

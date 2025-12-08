@@ -1,0 +1,389 @@
+/* Reset/basic */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f3f4f6;
+  color: #111827;
+}
+
+/* Splash page */
+.splash-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #111827 0, #020617 55%, #020617 100%);
+  color: #f9fafb;
+}
+
+.splash-container {
+  text-align: center;
+}
+
+.splash-logo {
+  max-width: 220px;
+  width: 60vw;
+  height: auto;
+  margin-bottom: 1rem;
+}
+
+.splash-title {
+  font-size: 1.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Header */
+.app-header {
+  background: #0b1120;
+  color: #f9fafb;
+  padding: 0.6rem 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.menu-toggle {
+  background: transparent;
+  border: none;
+  color: #e5e7eb;
+  font-size: 1.5rem;
+  margin-right: 0.75rem;
+  cursor: pointer;
+}
+
+.logo-wrap {
+  width: 42px;
+  height: 42px;
+  margin-right: 0.5rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-img {
+  width: 100%;
+  height: auto;
+}
+
+.header-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.app-subtitle {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+/* Drawer */
+.side-drawer {
+  position: fixed;
+  top: 0;
+  left: -260px;
+  width: 260px;
+  height: 100vh;
+  background: #020617;
+  color: #e5e7eb;
+  box-shadow: 4px 0 12px rgba(15, 23, 42, 0.7);
+  padding-top: 0.5rem;
+  transition: left 0.25s ease;
+  z-index: 30;
+}
+
+.side-drawer.open {
+  left: 0;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem 0.75rem;
+  border-bottom: 1px solid #1f2937;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.drawer-close {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+
+.side-drawer ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0;
+}
+
+.side-drawer li {
+  margin: 0;
+}
+
+.side-drawer a {
+  display: block;
+  padding: 0.7rem 1.1rem;
+  color: #e5e7eb;
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.side-drawer a:hover {
+  background: #111827;
+}
+
+/* Backdrop */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+  z-index: 25;
+}
+
+.backdrop.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Main content */
+.app-main {
+  padding: 1rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+/* Buttons */
+.btn-primary,
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem 1.3rem;
+  border-radius: 999px;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: #1d4ed8;
+  color: #f9fafb;
+}
+
+.btn-primary:hover {
+  background: #1e40af;
+}
+
+.btn-secondary {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.btn-secondary:hover {
+  background: #d1d5db;
+}
+
+.btn-disabled,
+.btn-disabled:hover {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* Forms */
+.form-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field-group label {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+input,
+select,
+textarea {
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid #d1d5db;
+  font: inherit;
+  outline: none;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2);
+}
+
+/* Pastor Tool */
+.month-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  align-items: flex-end;
+}
+
+.sunday-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+
+.sunday-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 0.9rem;
+  border-radius: 0.6rem;
+  text-decoration: none;
+  font-size: 0.95rem;
+  border: 1px solid transparent;
+}
+
+.sunday-card.incomplete {
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: #7f1d1d;
+}
+
+.sunday-card.complete {
+  background: #dcfce7;
+  border-color: #bbf7d0;
+  color: #065f46;
+}
+
+.status-pill {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+/* Submit and status */
+.submit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.status-box {
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.6rem;
+  font-size: 0.9rem;
+  min-width: 160px;
+}
+
+.status-neutral {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.status-pending {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+/* Verse card */
+.verse-card {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-radius: 0.75rem;
+  padding: 1rem 1.1rem;
+}
+
+.verse-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: #9ca3af;
+  margin-bottom: 0.5rem;
+}
+
+.verse-text {
+  font-size: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.verse-ref {
+  font-size: 0.9rem;
+  color: #facc15;
+}
+
+.verse-date {
+  font-size: 0.8rem;
+}
+
+/* Utilities */
+.muted {
+  color: #6b7280;
+}
+
+.small {
+  font-size: 0.8rem;
+}
+
+/* Responsive */
+@media (min-width: 768px) {
+  .app-main {
+    padding: 1.5rem;
+  }
+
+  .splash-title {
+    font-size: 2rem;
+  }
+}

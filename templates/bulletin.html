@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Bulletin Board - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Bulletin Board</h2>
+
+  <div class="verse-card">
+    <div class="verse-header">
+      <span>Verse of the Day</span>
+      <span class="verse-date">{{ today_str }}</span>
+    </div>
+    <p class="verse-text">{{ verse_text }}</p>
+    <p class="verse-ref">{{ verse_reference }}</p>
+  </div>
+
+  <p class="muted small">
+    (Verse text provided via bible-api.com, KJV translation.)
+  </p>
+</section>
+{% endblock %}

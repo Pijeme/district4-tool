@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{% block title %}District 4 Tool{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <button class="menu-toggle" id="menuToggle" aria-label="Open menu">
+        &#9776;
+      </button>
+      <div class="logo-wrap">
+        <img src="{{ url_for('static', filename='img/logo.png') }}" alt="District 4 Logo" class="logo-img">
+      </div>
+      <div class="header-text">
+        <div class="app-title">District 4 Tool</div>
+        <div class="app-subtitle">International One Way Outreach Foundation, Inc.</div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="side-drawer" id="sideDrawer">
+    <div class="drawer-header">
+      <span>Menu</span>
+      <button class="drawer-close" id="drawerClose" aria-label="Close menu">&times;</button>
+    </div>
+    <ul>
+      <li><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+      <li><a href="{{ url_for('bulletin') }}">Bulletin Board</a></li>
+      <li><a href="{{ url_for('pastor_tool') }}">Pastor's Tool</a></li>
+      <li><a href="{{ url_for('ao_tool') }}">AO Tool (Pending)</a></li>
+      <li><a href="{{ url_for('prayer_request') }}">Prayer Request (Pending)</a></li>
+      <li><a href="{{ url_for('event_registration') }}">Event Registration (Pending)</a></li>
+      <li><a href="{{ url_for('schedules') }}">Schedules (Pending)</a></li>
+    </ul>
+  </nav>
+  <div class="backdrop" id="backdrop"></div>
+
+  <main class="app-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    (function () {
+      const menuToggle = document.getElementById('menuToggle');
+      const sideDrawer = document.getElementById('sideDrawer');
+      const drawerClose = document.getElementById('drawerClose');
+      const backdrop = document.getElementById('backdrop');
+
+      function openDrawer() {
+        sideDrawer.classList.add('open');
+        backdrop.classList.add('visible');
+      }
+
+      function closeDrawer() {
+        sideDrawer.classList.remove('open');
+        backdrop.classList.remove('visible');
+      }
+
+      if (menuToggle) {
+        menuToggle.addEventListener('click', openDrawer);
+      }
+      if (drawerClose) {
+        drawerClose.addEventListener('click', closeDrawer);
+      }
+      if (backdrop) {
+        backdrop.addEventListener('click', closeDrawer);
+      }
+    })();
+  </script>
+</body>
+</html>
