@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Area Overseer Login - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Area Overseer Login</h2>
+  <p class="muted small">
+    This page is restricted to the Area Overseer.
+  </p>
+
+  {% if error %}
+    <div class="alert alert-error">
+      {{ error }}
+    </div>
+  {% endif %}
+
+  <form method="post" class="form-vertical">
+    <input type="hidden" name="next" value="{{ next_url }}">
+
+    <div class="field-group">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username">
+    </div>
+
+    <div class="field-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password">
+    </div>
+
+    <button type="submit" class="btn-primary">Log In</button>
+  </form>
+
+  <p class="muted small" style="margin-top: 0.75rem;">
+    Username: <strong>Pijeme</strong><br>
+    Password: <strong>Area 7</strong><br>
+    (Case-sensitive)
+  </p>
+</section>
+{% endblock %}
