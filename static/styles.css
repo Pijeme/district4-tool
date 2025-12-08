@@ -426,4 +426,19 @@ textarea:focus {
   .splash-title {
     font-size: 2rem;
   }
+  .peso-box {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.peso-symbol {
+  font-weight: bold;
+  font-size: 1.05rem;
+}
+
+.peso-input {
+  flex: 1;
+}
+
 }
