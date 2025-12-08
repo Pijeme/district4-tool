@@ -1,9 +1,38 @@
 {% extends "base.html" %}
-{% block title %}AO Tool - District 4 Tool{% endblock %}
+{% block title %}Area Overseer's Tool - District 4 Tool{% endblock %}
 
 {% block content %}
 <section class="card">
-  <h2>AO Tool</h2>
-  <p>This page will handle approval of monthly reports. (Pending implementation.)</p>
+  <h2>Area Overseer's Tool</h2>
+  <p class="muted small">
+    Use this page to manage district accounts, approve reports and prayer requests,
+    and coordinate events, schedules, and announcements.
+  </p>
+
+  <div class="form-vertical">
+    <button type="button" class="btn-secondary">
+      Create Account
+    </button>
+
+    <button type="button" class="btn-secondary">
+      Report Approval
+    </button>
+
+    <button type="button" class="btn-secondary">
+      Prayer Request Approval
+    </button>
+
+    <button type="button" class="btn-secondary">
+      Create Event
+    </button>
+
+    <button type="button" class="btn-secondary">
+      Schedules
+    </button>
+
+    <button type="button" class="btn-secondary">
+      Announcements
+    </button>
+  </div>
 </section>
 {% endblock %}
