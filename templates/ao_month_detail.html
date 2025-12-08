@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}AO Review - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>AO Review</h2>
+  <p class="muted">{{ month_label }}</p>
+
+  <a href="{{ url_for('ao_tool', year=year) }}"
+     class="btn-secondary back-btn">← Back to Area Overseer's Tool</a>
+
+  <div class="status-box
+      {% if status_key == 'not_submitted' %}status-neutral
+      {% elif status_key == 'pending' %}status-pending
+      {% elif status_key == 'approved' %}status-approved
+      {% endif %}">
+    <strong>Status:</strong>
+    {% if status_key == 'not_submitted' %}
+      Not submitted
+    {% elif status_key == 'pending' %}
+      Pending AO approval
+    {% elif status_key == 'approved' %}
+      Approved
+    {% else %}
+      Unknown
+    {% endif %}
+  </div>
+
+  <p class="small muted">
+    Submitted at: {{ submitted_at or '—' }}<br>
+    Approved at: {{ approved_at or '—' }}
+  </p>
+
+  <h3>Sundays (Attendance & Finances)</h3>
+  {% if sundays %}
+    <div class="ao-table-wrapper">
+      <table class="ao-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Adult</th>
+            <th>Youth</th>
+            <th>Children</th>
+            <th>Tithes (Church)</th>
+            <th>Offering</th>
+            <th>Mission</th>
+            <th>Tithes (Personal)</th>
+            <th>Total Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in sundays %}
+            <tr class="{% if s.is_complete %}ao-complete{% else %}ao-incomplete{% endif %}">
+              <td>{{ s.date_str }}</td>
+              <td>{{ s.attendance_adult or 0 }}</td>
+              <td>{{ s.attendance_youth or 0 }}</td>
+              <td>{{ s.attendance_children or 0 }}</td>
+              <td>{{ '%.2f'|format(s.tithes_church or 0) }}</td>
+              <td>{{ '%.2f'|format(s.offering or 0) }}</td>
+              <td>{{ '%.2f'|format(s.mission or 0) }}</td>
+              <td>{{ '%.2f'|format(s.tithes_personal or 0) }}</td>
+              <td>₱ {{ '%.2f'|format(s.total_amount or 0) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p>No Sunday data found for this month.</p>
+  {% endif %}
+
+  <h3>Church Progress</h3>
+  <div class="ao-progress-grid">
+    <div><strong>Bible Studies (New):</strong> {{ church_progress.bible_new or 0 }}</div>
+    <div><strong>Bible Studies (Existing):</strong> {{ church_progress.bible_existing or 0 }}</div>
+    <div><strong>Received Christ:</strong> {{ church_progress.received_christ or 0 }}</div>
+    <div><strong>Baptized - Water:</strong> {{ church_progress.baptized_water or 0 }}</div>
+    <div><strong>Baptized - Holy Spirit:</strong> {{ church_progress.baptized_holy_spirit or 0 }}</div>
+    <div><strong>Healed:</strong> {{ church_progress.healed or 0 }}</div>
+    <div><strong>Child Dedication:</strong> {{ church_progress.child_dedication or 0 }}</div>
+  </div>
+
+  <form method="post" class="submit-row" style="margin-top: 1.25rem;">
+    <button type="submit"
+            name="action"
+            value="approve"
+            class="btn-primary"
+            {% if not can_approve %}disabled class="btn-disabled"{% endif %}>
+      Approve
+    </button>
+    <button type="submit"
+            name="action"
+            value="pending"
+            class="btn-secondary">
+      Mark Pending
+    </button>
+  </form>
+
+  <p class="muted small">
+    Approving will mark this month's report as <strong>Approved</strong> in the Pastor's Tool.
+    Marking pending will move it back to <strong>Pending AO approval</strong>.
+  </p>
+</section>
+{% endblock %}
