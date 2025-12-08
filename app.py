@@ -12,6 +12,7 @@ from flask import (
     redirect,
     url_for,
     abort,
+    session,
 )
 
 DATABASE = "app_v2.db"
@@ -94,6 +95,22 @@ def init_db():
             date TEXT UNIQUE NOT NULL,
             reference TEXT NOT NULL,
             text TEXT NOT NULL
+        )
+        """
+    )
+
+    # Pastor accounts
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pastors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            age INTEGER,
+            sex TEXT,
+            church_address TEXT,
+            contact_number TEXT,
+            username TEXT UNIQUE,
+            password TEXT
         )
         """
     )
@@ -198,6 +215,37 @@ def set_month_submitted(year: int, month: int):
         WHERE year = ? AND month = ?
         """,
         (now_str, year, month),
+    )
+    db.commit()
+
+
+def set_month_approved(year: int, month: int):
+    db = get_db()
+    cursor = db.cursor()
+    now_str = datetime.utcnow().isoformat()
+    cursor.execute(
+        """
+        UPDATE monthly_reports
+        SET approved = 1,
+            approved_at = ?
+        WHERE year = ? AND month = ?
+        """,
+        (now_str, year, month),
+    )
+    db.commit()
+
+
+def set_month_pending(year: int, month: int):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        UPDATE monthly_reports
+        SET approved = 0,
+            approved_at = NULL
+        WHERE year = ? AND month = ?
+        """,
+        (year, month),
     )
     db.commit()
 
@@ -317,7 +365,58 @@ def get_verse_of_the_day():
     return reference, verse_text
 
 
+def ao_logged_in():
+    return session.get("ao_logged_in") is True
+
+
+def generate_pastor_credentials(full_name: str, age: int):
+    """
+    Generate a simple username & password:
+    - username: first name in lowercase, with a number suffix if needed
+    - password: FirstName + age (e.g., Juan42)
+    """
+    db = get_db()
+    cursor = db.cursor()
+
+    name = (full_name or "").strip()
+    parts = name.split()
+    if not parts:
+        base = "pastor"
+        first_name_clean = "Pastor"
+    else:
+        first = parts[0]
+        # Keep letters only for username base
+        base = "".join(ch for ch in first if ch.isalpha()).lower() or "pastor"
+        first_name_clean = first.title()
+
+    # Ensure username unique
+    username = base
+    suffix = 1
+    while True:
+        cursor.execute(
+            "SELECT 1 FROM pastors WHERE username = ?",
+            (username,),
+        )
+        if cursor.fetchone() is None:
+            break
+        suffix += 1
+        username = f"{base}{suffix}"
+
+    # Simple, easy-to-remember password
+    try:
+        age_int = int(age)
+    except (TypeError, ValueError):
+        age_int = 0
+    if age_int > 0:
+        password = f"{first_name_clean}{age_int}"
+    else:
+        password = f"{first_name_clean}123"
+
+    return username, password
+
+
 app = Flask(__name__)
+app.secret_key = "change-this-secret-key-123"
 
 
 @app.before_request
@@ -335,7 +434,7 @@ def close_connection(exception):
 
 @app.route("/")
 def splash():
-    # 5-second splash, then go to bulletin
+    # Splash screen → then redirect via JS in template to /bulletin
     return render_template("splash.html")
 
 
@@ -459,7 +558,6 @@ def pastor_tool():
     )
 
 
-
 @app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"])
 def sunday_detail(year, month, day):
     try:
@@ -483,11 +581,11 @@ def sunday_detail(year, month, day):
     if not sunday:
         abort(404)
 
-    error = None
-    values = {}
+    error = None    # to show form error
+    values = {}     # to keep what user typed
 
     if request.method == "POST":
-        # NOTE: attendance_total REMOVED from required fields
+        # Required fields (attendance_total removed)
         fields = [
             "attendance_adult",
             "attendance_youth",
@@ -648,9 +746,285 @@ def church_progress_view(year, month):
     )
 
 
+@app.route("/ao-login", methods=["GET", "POST"])
+def ao_login():
+    error = None
+    next_url = request.args.get("next") or url_for("ao_tool")
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        # Case-sensitive check
+        if username == "Pijeme" and password == "Area 7":
+            session["ao_logged_in"] = True
+            session["ao_username"] = username
+            session.permanent = True  # keep session longer on this device
+            # respect hidden next parameter if present
+            form_next = request.form.get("next")
+            if form_next:
+                next_url_final = form_next
+            else:
+                next_url_final = next_url
+            return redirect(next_url_final)
+        else:
+            error = "Invalid username or password."
+
+    return render_template("ao_login.html", error=error, next_url=next_url)
+
+
 @app.route("/ao-tool")
 def ao_tool():
-    return render_template("ao_tool.html")
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    today = date.today()
+    year = request.args.get("year", type=int) or today.year
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Get all monthly reports for selected year
+    cursor.execute(
+        "SELECT * FROM monthly_reports WHERE year = ? ORDER BY month",
+        (year,),
+    )
+    rows = cursor.fetchall()
+    row_map = {row["month"]: row for row in rows}
+
+    # Year dropdown options
+    year_options = list(range(today.year - 1, today.year + 4))
+
+    # Month names
+    month_names = [
+        ("January", 1),
+        ("February", 2),
+        ("March", 3),
+        ("April", 4),
+        ("May", 5),
+        ("June", 6),
+        ("July", 7),
+        ("August", 8),
+        ("September", 9),
+        ("October", 10),
+        ("November", 11),
+        ("December", 12),
+    ]
+
+    months = []
+    for name, value in month_names:
+        row = row_map.get(value)
+        if row:
+            status_key = get_month_status(row)
+            months.append(
+                {
+                    "name": name,
+                    "month": value,
+                    "year": row["year"],
+                    "has_report": True,
+                    "status_key": status_key,
+                }
+            )
+        else:
+            months.append(
+                {
+                    "name": name,
+                    "month": value,
+                    "year": year,
+                    "has_report": False,
+                    "status_key": "no_data",
+                }
+            )
+
+    return render_template(
+        "ao_tool.html",
+        year=year,
+        year_options=year_options,
+        months=months,
+    )
+
+
+@app.route("/ao-tool/<int:year>/<int:month>", methods=["GET", "POST"])
+def ao_month_detail(year, month):
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Load monthly report (do NOT auto-create here)
+    cursor.execute(
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
+        (year, month),
+    )
+    monthly_report = cursor.fetchone()
+    if not monthly_report:
+        abort(404)
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip().lower()
+        if action == "approve":
+            set_month_approved(year, month)
+        elif action == "pending":
+            set_month_pending(year, month)
+        return redirect(url_for("ao_month_detail", year=year, month=month))
+
+    # Reload after possible change
+    cursor.execute(
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
+        (year, month),
+    )
+    monthly_report = cursor.fetchone()
+    status_key = get_month_status(monthly_report)
+
+    # Sundays (ensure they exist)
+    ensure_sunday_reports(monthly_report["id"], year, month)
+    cursor.execute(
+        """
+        SELECT * FROM sunday_reports
+        WHERE monthly_report_id = ?
+        ORDER BY date
+        """,
+        (monthly_report["id"],),
+    )
+    sunday_rows = cursor.fetchall()
+
+    sundays = []
+    for row in sunday_rows:
+        d = datetime.fromisoformat(row["date"]).date()
+        tithes_church = row["tithes_church"] or 0
+        offering = row["offering"] or 0
+        mission = row["mission"] or 0
+        tithes_personal = row["tithes_personal"] or 0
+        total_amount = tithes_church + offering + mission + tithes_personal
+
+        sundays.append(
+            {
+                "date_str": d.strftime("%B %d, %Y"),
+                "attendance_adult": row["attendance_adult"],
+                "attendance_youth": row["attendance_youth"],
+                "attendance_children": row["attendance_children"],
+                "tithes_church": row["tithes_church"],
+                "offering": row["offering"],
+                "mission": row["mission"],
+                "tithes_personal": row["tithes_personal"],
+                "total_amount": total_amount,
+                "is_complete": bool(row["is_complete"]),
+            }
+        )
+
+    # Church progress (ensure exists)
+    cp_row = ensure_church_progress(monthly_report["id"])
+    church_progress = {
+        "bible_new": cp_row["bible_new"],
+        "bible_existing": cp_row["bible_existing"],
+        "received_christ": cp_row["received_christ"],
+        "baptized_water": cp_row["baptized_water"],
+        "baptized_holy_spirit": cp_row["baptized_holy_spirit"],
+        "healed": cp_row["healed"],
+        "child_dedication": cp_row["child_dedication"],
+    }
+
+    month_label = date(year, month, 1).strftime("%B %Y")
+    submitted_at = monthly_report["submitted_at"]
+    approved_at = monthly_report["approved_at"]
+
+    can_approve = status_key != "not_submitted"
+
+    return render_template(
+        "ao_month_detail.html",
+        year=year,
+        month=month,
+        month_label=month_label,
+        status_key=status_key,
+        submitted_at=submitted_at,
+        approved_at=approved_at,
+        sundays=sundays,
+        church_progress=church_progress,
+        can_approve=can_approve,
+    )
+
+
+@app.route("/ao-tool/create-account", methods=["GET", "POST"])
+def ao_create_account():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    error = None
+    success = None
+    generated_username = None
+    generated_password = None
+
+    values = {
+        "full_name": "",
+        "age": "",
+        "sex": "",
+        "church_address": "",
+        "contact_number": "",
+    }
+
+    if request.method == "POST":
+        full_name = (request.form.get("full_name") or "").strip()
+        age_raw = (request.form.get("age") or "").strip()
+        sex = (request.form.get("sex") or "").strip()
+        church_address = (request.form.get("church_address") or "").strip()
+        contact_number = (request.form.get("contact_number") or "").strip()
+
+        values.update(
+            {
+                "full_name": full_name,
+                "age": age_raw,
+                "sex": sex,
+                "church_address": church_address,
+                "contact_number": contact_number,
+            }
+        )
+
+        if not full_name or not age_raw or not sex or not church_address or not contact_number:
+            error = "All fields are required."
+        else:
+            try:
+                age_int = int(age_raw)
+            except ValueError:
+                error = "Age must be a number."
+            else:
+                db = get_db()
+                cursor = db.cursor()
+
+                username, password = generate_pastor_credentials(full_name, age_int)
+
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO pastors
+                        (full_name, age, sex, church_address, contact_number, username, password)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            full_name,
+                            age_int,
+                            sex,
+                            church_address,
+                            contact_number,
+                            username,
+                            password,
+                        ),
+                    )
+                    db.commit()
+                    success = "Account created successfully."
+                    generated_username = username
+                    generated_password = password
+                except sqlite3.IntegrityError:
+                    error = "Unable to create account (username conflict). Please try again."
+
+    return render_template(
+        "ao_create_account.html",
+        error=error,
+        success=success,
+        values=values,
+        generated_username=generated_username,
+        generated_password=generated_password,
+    )
 
 
 @app.route("/prayer-request")
