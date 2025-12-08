@@ -6,6 +6,9 @@
   <h2>Sunday Report</h2>
   <p class="muted">{{ date_str }}</p>
 
+  <a href="{{ url_for('pastor_tool', year=year, month=month) }}"
+     class="btn-secondary back-btn">← Back to Pastor's Tool</a>
+
   {% if error %}
     <div class="alert alert-error">
       {{ error }}
@@ -16,23 +19,18 @@
     <h3>Attendance</h3>
     <div class="field-group">
       <label for="attendance_adult">Adult</label>
-      <input type="number" step="1" id="attendance_adult" name="attendance_adult"
+      <input type="number" id="attendance_adult" name="attendance_adult"
              value="{{ values.attendance_adult }}">
     </div>
     <div class="field-group">
       <label for="attendance_youth">Youth</label>
-      <input type="number" step="1" id="attendance_youth" name="attendance_youth"
+      <input type="number" id="attendance_youth" name="attendance_youth"
              value="{{ values.attendance_youth }}">
     </div>
     <div class="field-group">
       <label for="attendance_children">Children</label>
-      <input type="number" step="1" id="attendance_children" name="attendance_children"
+      <input type="number" id="attendance_children" name="attendance_children"
              value="{{ values.attendance_children }}">
-    </div>
-    <div class="field-group">
-      <label for="attendance_total">Total</label>
-      <input type="number" step="1" id="attendance_total" name="attendance_total"
-             value="{{ values.attendance_total }}">
     </div>
 
     <h3>Financial Report</h3>
@@ -57,6 +55,12 @@
              value="{{ values.tithes_personal }}">
     </div>
 
+    <!-- Total money to send (read-only) -->
+    <div class="field-group">
+      <label for="total_amount">Total money to send</label>
+      <input type="text" id="total_amount" class="readonly-input" readonly>
+    </div>
+
     <p class="muted small">
       All fields are required. If any value is missing or not a number, this Sunday will not be marked complete.
     </p>
@@ -64,4 +68,36 @@
     <button type="submit" class="btn-primary">Save</button>
   </form>
 </section>
+
+<script>
+  (function () {
+    function val(id) {
+      var el = document.getElementById(id);
+      if (!el) return 0;
+      var v = parseFloat(el.value);
+      return isNaN(v) ? 0 : v;
+    }
+
+    function calcTotal() {
+      var total = val('tithes_church') + val('offering') + val('mission') + val('tithes_personal');
+      var out = document.getElementById('total_amount');
+      if (!out) return;
+      if (total > 0) {
+        out.value = total.toFixed(2);
+      } else {
+        out.value = '';
+      }
+    }
+
+    ['tithes_church', 'offering', 'mission', 'tithes_personal'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', calcTotal);
+      }
+    });
+
+    // initial calculation on page load
+    calcTotal();
+  })();
+</script>
 {% endblock %}
