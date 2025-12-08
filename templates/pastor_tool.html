@@ -45,6 +45,17 @@
     {% endif %}
   </div>
 
+  <div class="progress-row">
+    <a href="{{ url_for('church_progress_view', year=year, month=month) }}"
+       class="btn-secondary">
+      Church Progress
+    </a>
+    <span class="badge
+      {% if cp_complete %}badge-success{% else %}badge-warning{% endif %}">
+      {% if cp_complete %}Church Progress Complete{% else %}Church Progress Incomplete{% endif %}
+    </span>
+  </div>
+
   <form method="post" class="submit-row">
     <button type="submit"
             class="btn-primary {% if not can_submit %}btn-disabled{% endif %}"
@@ -68,8 +79,8 @@
   </form>
 
   <p class="muted small">
-    Submit/Resubmit is enabled only when all Sundays for the selected month are marked complete (green).
-    When data is edited and resubmitted in the future AO Tool, status will move from Approved back to Pending.
+    Submit/Resubmit is enabled only when all Sunday reports for the month are complete (green)
+    <strong>and</strong> the Church Progress form is complete.
   </p>
 </section>
 {% endblock %}
