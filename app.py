@@ -14,7 +14,7 @@ from flask import (
     abort,
 )
 
-DATABASE = "app.db"
+DATABASE = "app_v2.db"
 
 
 def get_db():
@@ -45,7 +45,7 @@ def init_db():
         """
     )
 
-    # Sunday reports: one row per Sunday in a month
+    # Sunday reports: weekly attendance + financials
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sunday_reports (
@@ -53,9 +53,35 @@ def init_db():
             monthly_report_id INTEGER NOT NULL,
             date TEXT NOT NULL,
             is_complete INTEGER DEFAULT 0,
-            notes TEXT,
+            attendance_adult REAL,
+            attendance_youth REAL,
+            attendance_children REAL,
+            attendance_total REAL,
+            tithes_church REAL,
+            offering REAL,
+            mission REAL,
+            tithes_personal REAL,
             FOREIGN KEY (monthly_report_id) REFERENCES monthly_reports(id),
             UNIQUE(monthly_report_id, date)
+        )
+        """
+    )
+
+    # Church progress: monthly totals for spiritual metrics
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS church_progress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            monthly_report_id INTEGER NOT NULL UNIQUE,
+            bible_new INTEGER,
+            bible_existing INTEGER,
+            received_christ INTEGER,
+            baptized_water INTEGER,
+            baptized_holy_spirit INTEGER,
+            healed INTEGER,
+            child_dedication INTEGER,
+            is_complete INTEGER DEFAULT 0,
+            FOREIGN KEY (monthly_report_id) REFERENCES monthly_reports(id)
         )
         """
     )
@@ -195,6 +221,46 @@ def all_sundays_complete(monthly_report_id: int) -> bool:
     return complete == row["total"]
 
 
+def ensure_church_progress(monthly_report_id: int):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT * FROM church_progress WHERE monthly_report_id = ?",
+        (monthly_report_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row
+
+    cursor.execute(
+        """
+        INSERT INTO church_progress (monthly_report_id, is_complete)
+        VALUES (?, 0)
+        """,
+        (monthly_report_id,),
+    )
+    db.commit()
+
+    cursor.execute(
+        "SELECT * FROM church_progress WHERE monthly_report_id = ?",
+        (monthly_report_id,),
+    )
+    return cursor.fetchone()
+
+
+def church_progress_complete(monthly_report_id: int) -> bool:
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT is_complete FROM church_progress WHERE monthly_report_id = ?",
+        (monthly_report_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False
+    return bool(row["is_complete"])
+
+
 # Bible verse of the day logic
 VERSE_REFERENCES = [
     "John 3:16",
@@ -269,9 +335,8 @@ def close_connection(exception):
 
 @app.route("/")
 def splash():
-    # 5-second splash, then go to dashboard
+    # 5-second splash, then go to bulletin
     return render_template("splash.html")
-
 
 
 @app.route("/bulletin")
@@ -297,6 +362,10 @@ def pastor_tool():
     monthly_report = get_or_create_monthly_report(year, month)
     ensure_sunday_reports(monthly_report["id"], year, month)
     sunday_rows = get_sunday_reports(monthly_report["id"])
+
+    # Ensure church progress row exists
+    cp_row = ensure_church_progress(monthly_report["id"])
+    cp_complete = bool(cp_row["is_complete"])
 
     # Build a list of Sundays with display-friendly values
     sunday_list = []
@@ -333,8 +402,10 @@ def pastor_tool():
         ("December", 12),
     ]
 
-    # Determine if submit/resubmit is enabled
-    can_submit = all_sundays_complete(monthly_report["id"])
+    # Determine if submit/resubmit is enabled:
+    # all Sundays complete AND church progress complete
+    sundays_ok = all_sundays_complete(monthly_report["id"])
+    can_submit = sundays_ok and cp_complete
     status_key = get_month_status(monthly_report)
 
     # For dropdown checkmarks: which months are submitted in this year
@@ -348,7 +419,6 @@ def pastor_tool():
 
     if request.method == "POST":
         if can_submit:
-            # Submit or resubmit: resets approved to 0 and sets submitted to 1
             set_month_submitted(year, month)
         return redirect(url_for("pastor_tool", year=year, month=month))
 
@@ -363,6 +433,8 @@ def pastor_tool():
         can_submit=can_submit,
         status_key=status_key,
         submitted_map=submitted_map,
+        cp_complete=cp_complete,
+        sundays_ok=sundays_ok,
     )
 
 
@@ -373,13 +445,11 @@ def sunday_detail(year, month, day):
     except ValueError:
         abort(404)
 
-    # Ensure month & sunday exist
     monthly_report = get_or_create_monthly_report(year, month)
     ensure_sunday_reports(monthly_report["id"], year, month)
 
     db = get_db()
     cursor = db.cursor()
-
     cursor.execute(
         """
         SELECT * FROM sunday_reports
@@ -391,29 +461,170 @@ def sunday_detail(year, month, day):
     if not sunday:
         abort(404)
 
+    error = None
+    values = {}
+
     if request.method == "POST":
-        notes = request.form.get("notes", "").strip()
-        is_complete = 1 if notes else 0
-        cursor.execute(
-            """
-            UPDATE sunday_reports
-            SET notes = ?, is_complete = ?
-            WHERE id = ?
-            """,
-            (notes, is_complete, sunday["id"]),
-        )
-        db.commit()
-        # After save, go back to pastor tool for that month
-        return redirect(url_for("pastor_tool", year=year, month=month))
+        fields = [
+            "attendance_adult",
+            "attendance_youth",
+            "attendance_children",
+            "attendance_total",
+            "tithes_church",
+            "offering",
+            "mission",
+            "tithes_personal",
+        ]
+
+        numeric_values = {}
+        for field in fields:
+            raw = (request.form.get(field) or "").strip()
+            values[field] = raw
+            if raw == "":
+                error = "All fields are required."
+                break
+            try:
+                numeric_values[field] = float(raw)
+            except ValueError:
+                error = "Please enter numbers only in all fields."
+                break
+
+        if not error:
+            cursor.execute(
+                """
+                UPDATE sunday_reports
+                SET attendance_adult = ?,
+                    attendance_youth = ?,
+                    attendance_children = ?,
+                    attendance_total = ?,
+                    tithes_church = ?,
+                    offering = ?,
+                    mission = ?,
+                    tithes_personal = ?,
+                    is_complete = 1
+                WHERE id = ?
+                """,
+                (
+                    numeric_values["attendance_adult"],
+                    numeric_values["attendance_youth"],
+                    numeric_values["attendance_children"],
+                    numeric_values["attendance_total"],
+                    numeric_values["tithes_church"],
+                    numeric_values["offering"],
+                    numeric_values["mission"],
+                    numeric_values["tithes_personal"],
+                    sunday["id"],
+                ),
+            )
+            db.commit()
+            return redirect(url_for("pastor_tool", year=year, month=month))
+
+    # For GET or if error, use existing DB values as defaults
+    if not values:
+        values = {
+            "attendance_adult": sunday["attendance_adult"] or "",
+            "attendance_youth": sunday["attendance_youth"] or "",
+            "attendance_children": sunday["attendance_children"] or "",
+            "attendance_total": sunday["attendance_total"] or "",
+            "tithes_church": sunday["tithes_church"] or "",
+            "offering": sunday["offering"] or "",
+            "mission": sunday["mission"] or "",
+            "tithes_personal": sunday["tithes_personal"] or "",
+        }
 
     date_str = d.strftime("%B %d, %Y")
     return render_template(
         "sunday_detail.html",
-        sunday=sunday,
         year=year,
         month=month,
         day=day,
         date_str=date_str,
+        values=values,
+        error=error,
+    )
+
+
+@app.route("/pastor-tool/<int:year>/<int:month>/progress", methods=["GET", "POST"])
+def church_progress_view(year, month):
+    monthly_report = get_or_create_monthly_report(year, month)
+    cp_row = ensure_church_progress(monthly_report["id"])
+
+    db = get_db()
+    cursor = db.cursor()
+
+    error = None
+    values = {}
+
+    if request.method == "POST":
+        fields = [
+            "bible_new",
+            "bible_existing",
+            "received_christ",
+            "baptized_water",
+            "baptized_holy_spirit",
+            "healed",
+            "child_dedication",
+        ]
+        numeric_values = {}
+        for field in fields:
+            raw = (request.form.get(field) or "").strip()
+            values[field] = raw
+            if raw == "":
+                error = "All fields are required for Church Progress."
+                break
+            try:
+                numeric_values[field] = int(raw)
+            except ValueError:
+                error = "Please enter whole numbers only in all Church Progress fields."
+                break
+
+        if not error:
+            cursor.execute(
+                """
+                UPDATE church_progress
+                SET bible_new = ?,
+                    bible_existing = ?,
+                    received_christ = ?,
+                    baptized_water = ?,
+                    baptized_holy_spirit = ?,
+                    healed = ?,
+                    child_dedication = ?,
+                    is_complete = 1
+                WHERE id = ?
+                """,
+                (
+                    numeric_values["bible_new"],
+                    numeric_values["bible_existing"],
+                    numeric_values["received_christ"],
+                    numeric_values["baptized_water"],
+                    numeric_values["baptized_holy_spirit"],
+                    numeric_values["healed"],
+                    numeric_values["child_dedication"],
+                    cp_row["id"],
+                ),
+            )
+            db.commit()
+            return redirect(url_for("pastor_tool", year=year, month=month))
+
+    if not values:
+        values = {
+            "bible_new": cp_row["bible_new"] or "",
+            "bible_existing": cp_row["bible_existing"] or "",
+            "received_christ": cp_row["received_christ"] or "",
+            "baptized_water": cp_row["baptized_water"] or "",
+            "baptized_holy_spirit": cp_row["baptized_holy_spirit"] or "",
+            "healed": cp_row["healed"] or "",
+            "child_dedication": cp_row["child_dedication"] or "",
+        }
+
+    date_label = date(year, month, 1).strftime("%B %Y")
+    return render_template(
+        "church_progress.html",
+        year=year,
+        month=month,
+        date_label=date_label,
+        values=values,
+        error=error,
     )
 
 
