@@ -6,16 +6,59 @@
   <h2>Sunday Report</h2>
   <p class="muted">{{ date_str }}</p>
 
+  {% if error %}
+    <div class="alert alert-error">
+      {{ error }}
+    </div>
+  {% endif %}
+
   <form method="post" class="form-vertical">
+    <h3>Attendance</h3>
     <div class="field-group">
-      <label for="notes">Notes / Data (temporary field)</label>
-      <textarea id="notes" name="notes" rows="6"
-                placeholder="Enter data for this Sunday (e.g., attendance, offering, notes)">{{ sunday['notes'] or '' }}</textarea>
+      <label for="attendance_adult">Adult</label>
+      <input type="number" step="1" id="attendance_adult" name="attendance_adult"
+             value="{{ values.attendance_adult }}">
+    </div>
+    <div class="field-group">
+      <label for="attendance_youth">Youth</label>
+      <input type="number" step="1" id="attendance_youth" name="attendance_youth"
+             value="{{ values.attendance_youth }}">
+    </div>
+    <div class="field-group">
+      <label for="attendance_children">Children</label>
+      <input type="number" step="1" id="attendance_children" name="attendance_children"
+             value="{{ values.attendance_children }}">
+    </div>
+    <div class="field-group">
+      <label for="attendance_total">Total</label>
+      <input type="number" step="1" id="attendance_total" name="attendance_total"
+             value="{{ values.attendance_total }}">
+    </div>
+
+    <h3>Financial Report</h3>
+    <div class="field-group">
+      <label for="tithes_church">Tithes (Church)</label>
+      <input type="number" step="0.01" id="tithes_church" name="tithes_church"
+             value="{{ values.tithes_church }}">
+    </div>
+    <div class="field-group">
+      <label for="offering">Offering</label>
+      <input type="number" step="0.01" id="offering" name="offering"
+             value="{{ values.offering }}">
+    </div>
+    <div class="field-group">
+      <label for="mission">Mission</label>
+      <input type="number" step="0.01" id="mission" name="mission"
+             value="{{ values.mission }}">
+    </div>
+    <div class="field-group">
+      <label for="tithes_personal">Tithes (Personal)</label>
+      <input type="number" step="0.01" id="tithes_personal" name="tithes_personal"
+             value="{{ values.tithes_personal }}">
     </div>
 
     <p class="muted small">
-      For this prototype, this single field is used to determine completeness.
-      If it has content, the Sunday is marked complete (green) in the Pastor's Tool.
+      All fields are required. If any value is missing or not a number, this Sunday will not be marked complete.
     </p>
 
     <button type="submit" class="btn-primary">Save</button>
