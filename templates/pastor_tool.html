@@ -10,7 +10,9 @@
       <label for="month">Month</label>
       <select id="month" name="month">
         {% for name, value in month_names %}
-          <option value="{{ value }}" {% if value == month %}selected{% endif %}>{{ name }}</option>
+          <option value="{{ value }}" {% if value == month %}selected{% endif %}>
+            {{ name }}{% if submitted_map.get((year, value)) %} ✓{% endif %}
+          </option>
         {% endfor %}
       </select>
     </div>
@@ -20,7 +22,7 @@
       <select id="year" name="year">
         {% for y in year_options %}
           <option value="{{ y }}" {% if y == year %}selected{% endif %}>
-            {{ y }}{% if submitted_map.get((y, month)) %} ✓{% endif %}
+            {{ y }}
           </option>
         {% endfor %}
       </select>
@@ -45,15 +47,15 @@
     {% endif %}
   </div>
 
+  <!-- Church Progress as a colored card like Sundays -->
   <div class="progress-row">
     <a href="{{ url_for('church_progress_view', year=year, month=month) }}"
-       class="btn-secondary">
-      Church Progress
+       class="sunday-card progress-card {% if cp_complete %}complete{% else %}incomplete{% endif %}">
+      <span>Church Progress</span>
+      <span class="status-pill">
+        {% if cp_complete %}Complete{% else %}Missing Data{% endif %}
+      </span>
     </a>
-    <span class="badge
-      {% if cp_complete %}badge-success{% else %}badge-warning{% endif %}">
-      {% if cp_complete %}Church Progress Complete{% else %}Church Progress Incomplete{% endif %}
-    </span>
   </div>
 
   <form method="post" class="submit-row">
