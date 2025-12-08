@@ -465,11 +465,11 @@ def sunday_detail(year, month, day):
     values = {}
 
     if request.method == "POST":
+        # NOTE: attendance_total REMOVED from required fields
         fields = [
             "attendance_adult",
             "attendance_youth",
             "attendance_children",
-            "attendance_total",
             "tithes_church",
             "offering",
             "mission",
@@ -496,7 +496,7 @@ def sunday_detail(year, month, day):
                 SET attendance_adult = ?,
                     attendance_youth = ?,
                     attendance_children = ?,
-                    attendance_total = ?,
+                    attendance_total = NULL,
                     tithes_church = ?,
                     offering = ?,
                     mission = ?,
@@ -508,7 +508,6 @@ def sunday_detail(year, month, day):
                     numeric_values["attendance_adult"],
                     numeric_values["attendance_youth"],
                     numeric_values["attendance_children"],
-                    numeric_values["attendance_total"],
                     numeric_values["tithes_church"],
                     numeric_values["offering"],
                     numeric_values["mission"],
@@ -525,7 +524,6 @@ def sunday_detail(year, month, day):
             "attendance_adult": sunday["attendance_adult"] or "",
             "attendance_youth": sunday["attendance_youth"] or "",
             "attendance_children": sunday["attendance_children"] or "",
-            "attendance_total": sunday["attendance_total"] or "",
             "tithes_church": sunday["tithes_church"] or "",
             "offering": sunday["offering"] or "",
             "mission": sunday["mission"] or "",
