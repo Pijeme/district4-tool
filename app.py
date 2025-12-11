@@ -1,9 +1,12 @@
+import os
 import sqlite3
 from datetime import datetime, date
 import calendar
 import urllib.parse
 
 import requests
+import gspread
+from google.oauth2.service_account import Credentials
 from flask import (
     Flask,
     g,
@@ -309,6 +312,48 @@ def church_progress_complete(monthly_report_id: int) -> bool:
     return bool(row["is_complete"])
 
 
+# ------------------------
+# Google Sheets integration
+# ------------------------
+
+GOOGLE_SHEETS_CREDENTIALS_FILE = "service_account.json"
+
+GOOGLE_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets"
+]
+
+
+def get_gs_client():
+    """
+    Returns an authorized gspread client using the service account JSON file.
+    """
+    creds = Credentials.from_service_account_file(
+        GOOGLE_SHEETS_CREDENTIALS_FILE,
+        scopes=GOOGLE_SHEETS_SCOPES,
+    )
+    return gspread.authorize(creds)
+
+
+def append_test_row():
+    """
+    Simple example: append a test row to a sheet to verify it works.
+    Update the sheet name/tab as needed.
+    """
+    client = get_gs_client()
+
+    # Change this to your actual sheet name
+    sh = client.open("District4 Data")
+
+    # Use or create a sheet tab named "Test"
+    try:
+        worksheet = sh.worksheet("Test")
+    except gspread.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title="Test", rows=100, cols=10)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    worksheet.append_row([timestamp, "Hello from District4 Tool!"])
+
+
 # Bible verse of the day logic
 VERSE_REFERENCES = [
     "John 3:16",
@@ -534,7 +579,10 @@ def pastor_tool():
         "SELECT year, month, submitted FROM monthly_reports WHERE year = ?",
         (year,),
     )
-    submitted_map = {(row["year"], row["month"]): bool(row["submitted"]) for row in cursor.fetchall()}
+    submitted_map = {
+        (row["year"], row["month"]): bool(row["submitted"])
+        for row in cursor.fetchall()
+    }
 
     if request.method == "POST":
         if can_submit:
