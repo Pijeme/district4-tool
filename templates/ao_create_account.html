@@ -8,15 +8,11 @@
     <div class="alert alert-error">{{ error }}</div>
   {% endif %}
   {% if success %}
-    <div class="alert alert-success">
-      {{ success }}<br>
-      <strong>Username:</strong> {{ generated_username }}<br>
-      <strong>Password:</strong> {{ generated_password }}
-    </div>
+    <div class="alert alert-success">{{ success }}</div>
   {% endif %}
 
   <form method="post">
-    <div class="form-row">
+    <div class="form-group">
       <label for="full_name">Full Name</label>
       <input
         type="text"
@@ -27,39 +23,29 @@
       >
     </div>
 
-    <div class="form-row">
+    <div class="form-group">
       <label for="age">Age</label>
       <input
         type="number"
         id="age"
         name="age"
-        min="1"
         value="{{ values.age }}"
         required
       >
     </div>
 
-    <div class="form-row">
-      <label for="birthday">Birthday</label>
+    <div class="form-group">
+      <label for="sex">Sex</label>
       <input
-        type="date"
-        id="birthday"
-        name="birthday"
-        value="{{ values.birthday }}"
+        type="text"
+        id="sex"
+        name="sex"
+        value="{{ values.sex }}"
         required
       >
     </div>
 
-    <div class="form-row">
-      <label for="sex">Sex</label>
-      <select id="sex" name="sex" required>
-        <option value="" disabled {% if not values.sex %}selected{% endif %}>Select...</option>
-        <option value="Male" {% if values.sex == "Male" %}selected{% endif %}>Male</option>
-        <option value="Female" {% if values.sex == "Female" %}selected{% endif %}>Female</option>
-      </select>
-    </div>
-
-    <div class="form-row">
+    <div class="form-group">
       <label for="church_address">Church Address</label>
       <input
         type="text"
@@ -70,7 +56,7 @@
       >
     </div>
 
-    <div class="form-row">
+    <div class="form-group">
       <label for="contact_number">Contact #</label>
       <input
         type="text"
@@ -81,10 +67,103 @@
       >
     </div>
 
+    <div class="form-group">
+      <label for="birthday">Birth Day</label>
+      <input
+        type="date"
+        id="birthday"
+        name="birthday"
+        value="{{ values.birthday }}"
+        required
+      >
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-primary">Create Account</button>
-      <a href="{{ url_for('ao_tool') }}" class="btn-secondary">Back to AO Tool</a>
+      <a href="{{ url_for('ao_tool') }}" class="btn-secondary">Cancel</a>
     </div>
   </form>
 </div>
+
+{% if generated_username and generated_password %}
+  <!-- Modal overlay shown automatically after successful account creation -->
+  <div id="account-modal-overlay" class="modal-overlay">
+    <div class="modal-content">
+      <h2>Account Created</h2>
+      <p>Please copy and share these credentials with the pastor.</p>
+
+      <div class="creds-box">
+        <p><strong>Username:</strong> <span id="modal-username">{{ generated_username }}</span></p>
+        <p><strong>Password:</strong> <span id="modal-password">{{ generated_password }}</span></p>
+      </div>
+
+      <button type="button" class="btn-primary" onclick="copyAndExit()">
+        Copy Credentials &amp; Return to AO Tool
+      </button>
+    </div>
+  </div>
+
+  <style>
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: #fff;
+      padding: 1.5rem 2rem;
+      border-radius: 8px;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+    .creds-box {
+      background: #f5f5f5;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin: 1rem 0;
+      text-align: left;
+      font-family: monospace;
+      font-size: 0.95rem;
+    }
+    .btn-primary {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+
+  <script>
+    function copyAndExit() {
+      var username = document.getElementById("modal-username").innerText.trim();
+      var password = document.getElementById("modal-password").innerText.trim();
+      var text = "Username: " + username + "\\nPassword: " + password;
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+          window.location.href = "{{ url_for('ao_tool') }}";
+        }).catch(function() {
+          window.location.href = "{{ url_for('ao_tool') }}";
+        });
+      } else {
+        // Fallback: old browsers
+        var temp = document.createElement("textarea");
+        temp.value = text;
+        document.body.appendChild(temp);
+        temp.select();
+        try {
+          document.execCommand("copy");
+        } catch (e) {}
+        document.body.removeChild(temp);
+        window.location.href = "{{ url_for('ao_tool') }}";
+      }
+    }
+  </script>
+{% endif %}
 {% endblock %}
