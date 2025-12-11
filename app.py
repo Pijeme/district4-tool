@@ -102,7 +102,7 @@ def init_db():
         """
     )
 
-    # Pastor accounts
+    # Pastor accounts (with birthday)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS pastors (
@@ -112,11 +112,18 @@ def init_db():
             sex TEXT,
             church_address TEXT,
             contact_number TEXT,
+            birthday TEXT,
             username TEXT UNIQUE,
             password TEXT
         )
         """
     )
+
+    # Make sure "birthday" exists for older DBs
+    cursor.execute("PRAGMA table_info(pastors)")
+    cols = [row[1] for row in cursor.fetchall()]
+    if "birthday" not in cols:
+        cursor.execute("ALTER TABLE pastors ADD COLUMN birthday TEXT")
 
     db.commit()
 
@@ -319,7 +326,7 @@ def church_progress_complete(monthly_report_id: int) -> bool:
 GOOGLE_SHEETS_CREDENTIALS_FILE = "service_account.json"
 
 GOOGLE_SHEETS_SCOPES = [
-"https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
@@ -630,11 +637,10 @@ def sunday_detail(year, month, day):
     if not sunday:
         abort(404)
 
-    error = None    # to show form error
-    values = {}     # to keep what user typed
+    error = None
+    values = {}
 
     if request.method == "POST":
-        # Required fields (attendance_total removed)
         fields = [
             "attendance_adult",
             "attendance_youth",
@@ -687,7 +693,6 @@ def sunday_detail(year, month, day):
             db.commit()
             return redirect(url_for("pastor_tool", year=year, month=month))
 
-    # For GET or if error, use existing DB values as defaults
     if not values:
         values = {
             "attendance_adult": sunday["attendance_adult"] or "",
@@ -804,12 +809,10 @@ def ao_login():
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
 
-        # Case-sensitive check
         if username == "Pijeme" and password == "Area 7":
             session["ao_logged_in"] = True
             session["ao_username"] = username
-            session.permanent = True  # keep session longer on this device
-            # respect hidden next parameter if present
+            session.permanent = True
             form_next = request.form.get("next")
             if form_next:
                 next_url_final = form_next
@@ -833,7 +836,6 @@ def ao_tool():
     db = get_db()
     cursor = db.cursor()
 
-    # Get all monthly reports for selected year
     cursor.execute(
         "SELECT * FROM monthly_reports WHERE year = ? ORDER BY month",
         (year,),
@@ -841,10 +843,8 @@ def ao_tool():
     rows = cursor.fetchall()
     row_map = {row["month"]: row for row in rows}
 
-    # Year dropdown options
     year_options = list(range(today.year - 1, today.year + 4))
 
-    # Month names
     month_names = [
         ("January", 1),
         ("February", 2),
@@ -901,7 +901,6 @@ def ao_month_detail(year, month):
     db = get_db()
     cursor = db.cursor()
 
-    # Load monthly report (do NOT auto-create here)
     cursor.execute(
         "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
         (year, month),
@@ -918,7 +917,6 @@ def ao_month_detail(year, month):
             set_month_pending(year, month)
         return redirect(url_for("ao_month_detail", year=year, month=month))
 
-    # Reload after possible change
     cursor.execute(
         "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
         (year, month),
@@ -926,7 +924,6 @@ def ao_month_detail(year, month):
     monthly_report = cursor.fetchone()
     status_key = get_month_status(monthly_report)
 
-    # Sundays (ensure they exist)
     ensure_sunday_reports(monthly_report["id"], year, month)
     cursor.execute(
         """
@@ -962,7 +959,6 @@ def ao_month_detail(year, month):
             }
         )
 
-    # Church progress (ensure exists)
     cp_row = ensure_church_progress(monthly_report["id"])
     church_progress = {
         "bible_new": cp_row["bible_new"],
@@ -1010,6 +1006,7 @@ def ao_create_account():
         "sex": "",
         "church_address": "",
         "contact_number": "",
+        "birthday": "",
     }
 
     if request.method == "POST":
@@ -1018,6 +1015,7 @@ def ao_create_account():
         sex = (request.form.get("sex") or "").strip()
         church_address = (request.form.get("church_address") or "").strip()
         contact_number = (request.form.get("contact_number") or "").strip()
+        birthday_raw = (request.form.get("birthday") or "").strip()
 
         values.update(
             {
@@ -1026,10 +1024,18 @@ def ao_create_account():
                 "sex": sex,
                 "church_address": church_address,
                 "contact_number": contact_number,
+                "birthday": birthday_raw,
             }
         )
 
-        if not full_name or not age_raw or not sex or not church_address or not contact_number:
+        if (
+            not full_name
+            or not age_raw
+            or not sex
+            or not church_address
+            or not contact_number
+            or not birthday_raw
+        ):
             error = "All fields are required."
         else:
             try:
@@ -1046,8 +1052,8 @@ def ao_create_account():
                     cursor.execute(
                         """
                         INSERT INTO pastors
-                        (full_name, age, sex, church_address, contact_number, username, password)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (full_name, age, sex, church_address, contact_number, birthday, username, password)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             full_name,
@@ -1055,6 +1061,7 @@ def ao_create_account():
                             sex,
                             church_address,
                             contact_number,
+                            birthday_raw,
                             username,
                             password,
                         ),
