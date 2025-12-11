@@ -340,6 +340,32 @@ def get_gs_client():
         scopes=GOOGLE_SHEETS_SCOPES,
     )
     return gspread.authorize(creds)
+def refresh_pastor_from_sheets():
+    """
+    Refresh pastor_name and pastor_church_address in session
+    based on pastor_username from the Accounts sheet.
+    """
+    username = session.get("pastor_username")
+    if not username:
+        return False
+
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws = sh.worksheet("Accounts")
+        records = ws.get_all_records()
+    except Exception as e:
+        print("Error refreshing pastor data from Sheets:", e)
+        return False
+
+    for rec in records:
+        sheet_username = str(rec.get("UserName", "")).strip()
+        if sheet_username == username:
+            session["pastor_name"] = rec.get("Name", "")
+            session["pastor_church_address"] = rec.get("Church Address", "")
+            return True
+
+    return False
 
 
 def append_account_to_sheet(pastor_data: dict):
