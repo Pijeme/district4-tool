@@ -1284,18 +1284,10 @@ def ao_tool():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
 
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? ORDER BY month",
-        (year,),
-    )
-    rows = cursor.fetchall()
-    row_map = {row["month"]: row for row in rows}
-
+    # Year choices for dropdown
     year_options = list(range(today.year - 1, today.year + 4))
 
+    # Month names
     month_names = [
         ("January", 1),
         ("February", 2),
@@ -1312,29 +1304,58 @@ def ao_tool():
     ]
 
     months = []
+    prev_avg_attendance = None  # for % change vs previous month
+
     for name, value in month_names:
-        row = row_map.get(value)
-        if row:
-            status_key = get_month_status(row)
-            months.append(
-                {
-                    "name": name,
-                    "month": value,
-                    "year": row["year"],
-                    "has_report": True,
-                    "status_key": status_key,
-                }
-            )
+        stats = get_report_stats_for_month(year, value)
+        has_data = stats["rows"] > 0
+        total_amount = stats["totals"]["amount_to_send"]
+        sheet_status = stats["sheet_status"] or ""
+
+        # Decide status_key for colors
+        if not has_data:
+            status_key = "not_submitted"
         else:
-            months.append(
-                {
-                    "name": name,
-                    "month": value,
-                    "year": year,
-                    "has_report": False,
-                    "status_key": "no_data",
-                }
-            )
+            ss_lower = sheet_status.lower()
+            if "approved" in ss_lower:
+                status_key = "approved"
+            elif "pending" in ss_lower:
+                status_key = "pending"
+            else:
+                status_key = "pending"
+
+        # Simple average attendance = adult + youth + children
+        avg_att = (
+            stats["avg"]["adult"]
+            + stats["avg"]["youth"]
+            + stats["avg"]["children"]
+        )
+
+        # Compute % change vs previous month (if we have data)
+        if prev_avg_attendance is None or prev_avg_attendance == 0 or not has_data:
+            attendance_change = None
+        else:
+            attendance_change = (
+                (avg_att - prev_avg_attendance) / prev_avg_attendance
+            ) * 100.0
+
+        # Only update "previous" if this month actually has data
+        if has_data:
+            prev_avg_attendance = avg_att
+
+        months.append(
+            {
+                "name": name,
+                "month": value,
+                "year": year,
+                "has_data": has_data,
+                "status_key": status_key,
+                "total_amount": total_amount,
+                "church": stats["church"],
+                "sheet_status": sheet_status,
+                "attendance_change": attendance_change,
+            }
+        )
 
     return render_template(
         "ao_tool.html",
