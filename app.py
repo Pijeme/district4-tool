@@ -340,6 +340,8 @@ def get_gs_client():
         scopes=GOOGLE_SHEETS_SCOPES,
     )
     return gspread.authorize(creds)
+
+
 def refresh_pastor_from_sheets():
     """
     Refresh pastor_name and pastor_church_address in session
@@ -588,11 +590,17 @@ def get_report_stats_for_month(year: int, month: int):
         sum_fields["youth"] += parse_float(rec.get("youth", 0))
         sum_fields["children"] += parse_float(rec.get("children", 0))
         sum_fields["received_jesus"] += parse_float(rec.get("received jesus", 0))
-        sum_fields["existing_bible_study"] += parse_float(rec.get("existing bible study", 0))
+        sum_fields["existing_bible_study"] += parse_float(
+            rec.get("existing bible study", 0)
+        )
         sum_fields["new_bible_study"] += parse_float(rec.get("new bible study", 0))
         sum_fields["water_baptized"] += parse_float(rec.get("water baptized", 0))
-        sum_fields["holy_spirit_baptized"] += parse_float(rec.get("holy spirit baptized", 0))
-        sum_fields["childrens_dedication"] += parse_float(rec.get("childrens dedication", 0))
+        sum_fields["holy_spirit_baptized"] += parse_float(
+            rec.get("holy spirit baptized", 0)
+        )
+        sum_fields["childrens_dedication"] += parse_float(
+            rec.get("childrens dedication", 0)
+        )
         sum_fields["healed"] += parse_float(rec.get("healed", 0))
 
         totals["tithes"] += parse_float(rec.get("tithes", 0))
@@ -612,9 +620,6 @@ def get_report_stats_for_month(year: int, month: int):
     if count > 0:
         for k in stats["avg"].keys():
             stats["avg"][k] = sum_fields[k] / count
-    else:
-        # No rows for this month; leave zeros
-        pass
 
     stats["totals"] = totals
 
@@ -661,7 +666,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     if not sunday_rows:
         return
 
-       # Ensure pastor info is fresh from Sheets
+    # Ensure pastor info is fresh from Sheets
     refresh_pastor_from_sheets()
     pastor_name = session.get("pastor_name", "")
     church_address = session.get("pastor_church_address", "")
@@ -896,7 +901,9 @@ def pastor_login():
                         session["pastor_logged_in"] = True
                         session["pastor_username"] = username
                         session["pastor_name"] = matched.get("Name", "")
-                        session["pastor_church_address"] = matched.get("Church Address", "")
+                        session["pastor_church_address"] = matched.get(
+                            "Church Address", ""
+                        )
                         session.permanent = True
                         form_next = request.form.get("next")
                         if form_next:
@@ -918,10 +925,10 @@ def pastor_login():
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
     if not pastor_logged_in():
-            # Refresh pastor info from Google Sheets each time
-    refresh_pastor_from_sheets()
-
         return redirect(url_for("pastor_login", next=request.path))
+
+    # Refresh pastor info from Google Sheets each time
+    refresh_pastor_from_sheets()
 
     # Determine selected month/year (default: current)
     today = date.today()
@@ -1043,7 +1050,9 @@ def pastor_tool():
 def sunday_detail(year, month, day):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
-            refresh_pastor_from_sheets()
+
+    # Refresh pastor info from Google Sheets (optional here)
+    refresh_pastor_from_sheets()
 
     try:
         d = date(year, month, day)
@@ -1151,8 +1160,9 @@ def sunday_detail(year, month, day):
 def church_progress_view(year, month):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
-    refresh_pastor_from_sheets()
 
+    # Refresh pastor info from Google Sheets (optional)
+    refresh_pastor_from_sheets()
 
     monthly_report = get_or_create_monthly_report(year, month)
     cp_row = ensure_church_progress(monthly_report["id"])
