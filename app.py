@@ -396,7 +396,8 @@ def append_report_to_sheet(report_data: dict):
       childrens dedication,
       healed,
       activity_date,
-      amount to send
+      amount to send,
+      status
     """
     client = get_gs_client()
     sh = client.open("District4 Data")
@@ -405,7 +406,7 @@ def append_report_to_sheet(report_data: dict):
     try:
         worksheet = sh.worksheet("Report")
     except gspread.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="Report", rows=1000, cols=20)
+        worksheet = sh.add_worksheet(title="Report", rows=1000, cols=25)
 
     row = [
         report_data.get("church", ""),
@@ -427,9 +428,132 @@ def append_report_to_sheet(report_data: dict):
         report_data.get("healed", ""),
         report_data.get("activity_date", ""),
         report_data.get("amount_to_send", ""),
+        report_data.get("status", ""),
     ]
 
     worksheet.append_row(row)
+
+
+def update_sheet_status_for_month(year: int, month: int, status_label: str):
+    """
+    Update the 'status' column in 'Report' for all rows whose activity_date is in the given year+month.
+    """
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws = sh.worksheet("Report")
+    except Exception as e:
+        print("Error accessing Report sheet for status update:", e)
+        return
+
+    try:
+        values = ws.get_all_values()
+    except Exception as e:
+        print("Error reading Report sheet:", e)
+        return
+
+    if not values:
+        return
+
+    # Header is row 1; data starts from row_index = 2
+    target_prefix = f"{year:04d}-{month:02d}-"
+    for i in range(1, len(values)):
+        row = values[i]
+        if len(row) < 19:
+            continue
+        activity_date = row[17]  # 18th column (0-based index 17)
+        if activity_date.startswith(target_prefix):
+            sheet_row = i + 1  # 1-based row index in sheet
+            try:
+                ws.update_cell(sheet_row, 21, status_label)  # 21st column for status
+            except Exception as e:
+                print(f"Error updating status for row {sheet_row}:", e)
+
+
+def export_month_to_sheet(year: int, month: int, status_label: str):
+    """
+    Export all Sundays for the given month as rows in the Report sheet.
+    Each Sunday row will include the same Church Progress values (for that month).
+    """
+    db = get_db()
+    cursor = db.cursor()
+
+    cursor.execute(
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
+        (year, month),
+    )
+    monthly_report = cursor.fetchone()
+    if not monthly_report:
+        return
+
+    monthly_report_id = monthly_report["id"]
+    cp_row = ensure_church_progress(monthly_report_id)
+
+    # Fetch all Sundays for this month
+    cursor.execute(
+        """
+        SELECT * FROM sunday_reports
+        WHERE monthly_report_id = ?
+        ORDER BY date
+        """,
+        (monthly_report_id,),
+    )
+    sunday_rows = cursor.fetchall()
+
+    if not sunday_rows:
+        return
+
+    # Pull pastor info from session
+    pastor_name = session.get("pastor_name", "")
+    church_address = session.get("pastor_church_address", "")
+
+    # Church Progress values (will be copied into every Sunday row)
+    bible_new = cp_row["bible_new"] or 0
+    bible_existing = cp_row["bible_existing"] or 0
+    received_christ = cp_row["received_christ"] or 0
+    baptized_water = cp_row["baptized_water"] or 0
+    baptized_holy_spirit = cp_row["baptized_holy_spirit"] or 0
+    healed = cp_row["healed"] or 0
+    child_dedication = cp_row["child_dedication"] or 0
+
+    for row in sunday_rows:
+        d = datetime.fromisoformat(row["date"]).date()
+        activity_date = d.isoformat()
+
+        tithes_church = row["tithes_church"] or 0
+        offering = row["offering"] or 0
+        mission = row["mission"] or 0
+        tithes_personal = row["tithes_personal"] or 0
+
+        amount_to_send = tithes_church + offering + mission + tithes_personal
+
+        report_data = {
+            "church": church_address,  # can change later if you add a separate church name
+            "pastor": pastor_name,
+            "address": church_address,
+            "adult": row["attendance_adult"] or 0,
+            "youth": row["attendance_youth"] or 0,
+            "children": row["attendance_children"] or 0,
+            "tithes": tithes_church,
+            "offering": offering,
+            "personal_tithes": tithes_personal,
+            "mission_offering": mission,
+            "received_jesus": received_christ,
+            "existing_bible_study": bible_existing,
+            "new_bible_study": bible_new,
+            "water_baptized": baptized_water,
+            "holy_spirit_baptized": baptized_holy_spirit,
+            "childrens_dedication": child_dedication,
+            "healed": healed,
+            "activity_date": activity_date,
+            "amount_to_send": amount_to_send,
+            "status": status_label,
+        }
+
+        try:
+            append_report_to_sheet(report_data)
+        except Exception as e:
+            print("Error sending monthly Sunday row to Google Sheets:", e)
 
 
 # Bible verse of the day logic
@@ -726,7 +850,13 @@ def pastor_tool():
 
     if request.method == "POST":
         if can_submit:
+            # Mark as submitted in DB
             set_month_submitted(year, month)
+            # Export all Sundays + Church Progress to Google Sheets with "Pending AO approval"
+            try:
+                export_month_to_sheet(year, month, "Pending AO approval")
+            except Exception as e:
+                print("Error exporting month to sheet on submit:", e)
         return redirect(url_for("pastor_tool", year=year, month=month))
 
     return render_template(
@@ -800,7 +930,7 @@ def sunday_detail(year, month, day):
                 break
 
         if not error:
-            # Update DB
+            # Update DB only (no Sheets yet)
             cursor.execute(
                 """
                 UPDATE sunday_reports
@@ -827,38 +957,6 @@ def sunday_detail(year, month, day):
                 ),
             )
             db.commit()
-
-            # Send raw Sunday data to Google Sheets (Report tab)
-            pastor_name = session.get("pastor_name", "")
-            church_address = session.get("pastor_church_address", "")
-            activity_date = d.isoformat()
-
-            report_data = {
-                "church": church_address,  # you can change later if you add a separate church name
-                "pastor": pastor_name,
-                "address": church_address,
-                "adult": numeric_values["attendance_adult"],
-                "youth": numeric_values["attendance_youth"],
-                "children": numeric_values["attendance_children"],
-                "tithes": numeric_values["tithes_church"],
-                "offering": numeric_values["offering"],
-                "personal_tithes": numeric_values["tithes_personal"],
-                "mission_offering": numeric_values["mission"],
-                "received_jesus": "",
-                "existing_bible_study": "",
-                "new_bible_study": "",
-                "water_baptized": "",
-                "holy_spirit_baptized": "",
-                "childrens_dedication": "",
-                "healed": "",
-                "activity_date": activity_date,
-                "amount_to_send": "",
-            }
-
-            try:
-                append_report_to_sheet(report_data)
-            except Exception as e:
-                print("Error sending Sunday report to Google Sheets:", e)
 
             return redirect(url_for("pastor_tool", year=year, month=month))
 
@@ -923,7 +1021,7 @@ def church_progress_view(year, month):
                 break
 
         if not error:
-            # Update DB
+            # Update DB only (no Sheets yet)
             cursor.execute(
                 """
                 UPDATE church_progress
@@ -949,38 +1047,6 @@ def church_progress_view(year, month):
                 ),
             )
             db.commit()
-
-            # Send raw Church Progress data to Google Sheets (Report tab)
-            pastor_name = session.get("pastor_name", "")
-            church_address = session.get("pastor_church_address", "")
-            activity_date = date(year, month, 1).isoformat()
-
-            report_data = {
-                "church": church_address,
-                "pastor": pastor_name,
-                "address": church_address,
-                "adult": "",
-                "youth": "",
-                "children": "",
-                "tithes": "",
-                "offering": "",
-                "personal_tithes": "",
-                "mission_offering": "",
-                "received_jesus": numeric_values["received_christ"],
-                "existing_bible_study": numeric_values["bible_existing"],
-                "new_bible_study": numeric_values["bible_new"],
-                "water_baptized": numeric_values["baptized_water"],
-                "holy_spirit_baptized": numeric_values["baptized_holy_spirit"],
-                "childrens_dedication": numeric_values["child_dedication"],
-                "healed": numeric_values["healed"],
-                "activity_date": activity_date,
-                "amount_to_send": "",
-            }
-
-            try:
-                append_report_to_sheet(report_data)
-            except Exception as e:
-                print("Error sending Church Progress report to Google Sheets:", e)
 
             return redirect(url_for("pastor_tool", year=year, month=month))
 
@@ -1122,8 +1188,16 @@ def ao_month_detail(year, month):
         action = (request.form.get("action") or "").strip().lower()
         if action == "approve":
             set_month_approved(year, month)
+            try:
+                update_sheet_status_for_month(year, month, "Approved")
+            except Exception as e:
+                print("Error updating status to Approved:", e)
         elif action == "pending":
             set_month_pending(year, month)
+            try:
+                update_sheet_status_for_month(year, month, "Pending AO approval")
+            except Exception as e:
+                print("Error updating status to Pending:", e)
         return redirect(url_for("ao_month_detail", year=year, month=month))
 
     cursor.execute(
