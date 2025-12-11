@@ -661,7 +661,8 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     if not sunday_rows:
         return
 
-    # Pull pastor info from session
+       # Ensure pastor info is fresh from Sheets
+    refresh_pastor_from_sheets()
     pastor_name = session.get("pastor_name", "")
     church_address = session.get("pastor_church_address", "")
 
@@ -917,6 +918,9 @@ def pastor_login():
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
     if not pastor_logged_in():
+            # Refresh pastor info from Google Sheets each time
+    refresh_pastor_from_sheets()
+
         return redirect(url_for("pastor_login", next=request.path))
 
     # Determine selected month/year (default: current)
@@ -1031,6 +1035,7 @@ def pastor_tool():
         cp_complete=cp_complete,
         sundays_ok=sundays_ok,
         monthly_total=monthly_total,
+        pastor_name=session.get("pastor_name", ""),
     )
 
 
@@ -1038,6 +1043,7 @@ def pastor_tool():
 def sunday_detail(year, month, day):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+            refresh_pastor_from_sheets()
 
     try:
         d = date(year, month, day)
@@ -1145,6 +1151,8 @@ def sunday_detail(year, month, day):
 def church_progress_view(year, month):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+    refresh_pastor_from_sheets()
+
 
     monthly_report = get_or_create_monthly_report(year, month)
     cp_row = ensure_church_progress(monthly_report["id"])
