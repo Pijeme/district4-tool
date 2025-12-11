@@ -1042,5 +1042,14 @@ def schedules():
     return render_template("schedules.html")
 
 
+@app.route("/test-sheets")
+def test_sheets():
+    try:
+        append_test_row()
+        return "✅ Google Sheets test row added. Check your sheet!"
+    except Exception as e:
+        return f"❌ Error connecting to Google Sheets: {e}", 500
+
+
 if __name__ == "__main__":
     app.run(debug=True)
