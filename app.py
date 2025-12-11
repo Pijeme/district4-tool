@@ -319,7 +319,8 @@ def church_progress_complete(monthly_report_id: int) -> bool:
 GOOGLE_SHEETS_CREDENTIALS_FILE = "service_account.json"
 
 GOOGLE_SHEETS_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets"
+"https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 
