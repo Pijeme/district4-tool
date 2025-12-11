@@ -373,6 +373,65 @@ def append_account_to_sheet(pastor_data: dict):
     worksheet.append_row(row)
 
 
+def append_report_to_sheet(report_data: dict):
+    """
+    Append a raw report row to the 'Report' tab in 'District4 Data' sheet.
+
+    Columns (in order):
+      church,
+      pastor,
+      address,
+      adult,
+      youth,
+      children,
+      tithes,
+      offering,
+      personal tithes,
+      mission offering,
+      received jesus,
+      existing bible study,
+      new bible study,
+      water baptized,
+      holy spirit baptized,
+      childrens dedication,
+      healed,
+      activity_date,
+      amount to send
+    """
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+
+    # Use or create the 'Report' worksheet/tab
+    try:
+        worksheet = sh.worksheet("Report")
+    except gspread.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title="Report", rows=1000, cols=20)
+
+    row = [
+        report_data.get("church", ""),
+        report_data.get("pastor", ""),
+        report_data.get("address", ""),
+        report_data.get("adult", ""),
+        report_data.get("youth", ""),
+        report_data.get("children", ""),
+        report_data.get("tithes", ""),
+        report_data.get("offering", ""),
+        report_data.get("personal_tithes", ""),
+        report_data.get("mission_offering", ""),
+        report_data.get("received_jesus", ""),
+        report_data.get("existing_bible_study", ""),
+        report_data.get("new_bible_study", ""),
+        report_data.get("water_baptized", ""),
+        report_data.get("holy_spirit_baptized", ""),
+        report_data.get("childrens_dedication", ""),
+        report_data.get("healed", ""),
+        report_data.get("activity_date", ""),
+        report_data.get("amount_to_send", ""),
+    ]
+
+    worksheet.append_row(row)
+
+
 # Bible verse of the day logic
 VERSE_REFERENCES = [
     "John 3:16",
@@ -431,6 +490,10 @@ def get_verse_of_the_day():
 
 def ao_logged_in():
     return session.get("ao_logged_in") is True
+
+
+def pastor_logged_in():
+    return session.get("pastor_logged_in") is True
 
 
 def generate_pastor_credentials(full_name: str, age: int):
@@ -514,8 +577,66 @@ def bulletin():
     )
 
 
+# ------------------------
+# Pastor login (using Google Sheets Accounts tab)
+# ------------------------
+@app.route("/pastor-login", methods=["GET", "POST"])
+def pastor_login():
+    error = None
+    next_url = request.args.get("next") or url_for("pastor_tool")
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        if not username or not password:
+            error = "Username and password are required."
+        else:
+            try:
+                client = get_gs_client()
+                sh = client.open("District4 Data")
+                try:
+                    ws = sh.worksheet("Accounts")
+                except gspread.WorksheetNotFound:
+                    error = "Accounts sheet not found in District4 Data."
+                else:
+                    records = ws.get_all_records()  # list of dicts using header row
+                    matched = None
+                    for rec in records:
+                        sheet_username = str(rec.get("UserName", "")).strip()
+                        sheet_password = str(rec.get("Password", "")).strip()
+                        if username == sheet_username and password == sheet_password:
+                            matched = rec
+                            break
+
+                    if matched:
+                        session["pastor_logged_in"] = True
+                        session["pastor_username"] = username
+                        session["pastor_name"] = matched.get("Name", "")
+                        session["pastor_church_address"] = matched.get("Church Address", "")
+                        session.permanent = True
+                        form_next = request.form.get("next")
+                        if form_next:
+                            next_url_final = form_next
+                        else:
+                            next_url_final = next_url
+                        return redirect(next_url_final)
+                    else:
+                        error = "Invalid username or password."
+            except Exception as e:
+                error = f"Error accessing Google Sheets: {e}"
+
+    return render_template("pastor_login.html", error=error, next_url=next_url)
+
+
+# ------------------------
+# Pastor Tool (requires login)
+# ------------------------
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
+    if not pastor_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
     # Determine selected month/year (default: current)
     today = date.today()
     year = request.args.get("year", type=int) or today.year
@@ -549,7 +670,7 @@ def pastor_tool():
     db = get_db()
     cursor = db.cursor()
 
-    # Compute monthly total: sum of all money for all Sundays in this month
+    # Compute monthly total (for display only)
     cursor.execute(
         """
         SELECT
@@ -627,6 +748,9 @@ def pastor_tool():
 
 @app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"])
 def sunday_detail(year, month, day):
+    if not pastor_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
     try:
         d = date(year, month, day)
     except ValueError:
@@ -676,6 +800,7 @@ def sunday_detail(year, month, day):
                 break
 
         if not error:
+            # Update DB
             cursor.execute(
                 """
                 UPDATE sunday_reports
@@ -702,6 +827,39 @@ def sunday_detail(year, month, day):
                 ),
             )
             db.commit()
+
+            # Send raw Sunday data to Google Sheets (Report tab)
+            pastor_name = session.get("pastor_name", "")
+            church_address = session.get("pastor_church_address", "")
+            activity_date = d.isoformat()
+
+            report_data = {
+                "church": church_address,  # you can change later if you add a separate church name
+                "pastor": pastor_name,
+                "address": church_address,
+                "adult": numeric_values["attendance_adult"],
+                "youth": numeric_values["attendance_youth"],
+                "children": numeric_values["attendance_children"],
+                "tithes": numeric_values["tithes_church"],
+                "offering": numeric_values["offering"],
+                "personal_tithes": numeric_values["tithes_personal"],
+                "mission_offering": numeric_values["mission"],
+                "received_jesus": "",
+                "existing_bible_study": "",
+                "new_bible_study": "",
+                "water_baptized": "",
+                "holy_spirit_baptized": "",
+                "childrens_dedication": "",
+                "healed": "",
+                "activity_date": activity_date,
+                "amount_to_send": "",
+            }
+
+            try:
+                append_report_to_sheet(report_data)
+            except Exception as e:
+                print("Error sending Sunday report to Google Sheets:", e)
+
             return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
@@ -729,6 +887,9 @@ def sunday_detail(year, month, day):
 
 @app.route("/pastor-tool/<int:year>/<int:month>/progress", methods=["GET", "POST"])
 def church_progress_view(year, month):
+    if not pastor_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
     monthly_report = get_or_create_monthly_report(year, month)
     cp_row = ensure_church_progress(monthly_report["id"])
 
@@ -762,6 +923,7 @@ def church_progress_view(year, month):
                 break
 
         if not error:
+            # Update DB
             cursor.execute(
                 """
                 UPDATE church_progress
@@ -787,6 +949,39 @@ def church_progress_view(year, month):
                 ),
             )
             db.commit()
+
+            # Send raw Church Progress data to Google Sheets (Report tab)
+            pastor_name = session.get("pastor_name", "")
+            church_address = session.get("pastor_church_address", "")
+            activity_date = date(year, month, 1).isoformat()
+
+            report_data = {
+                "church": church_address,
+                "pastor": pastor_name,
+                "address": church_address,
+                "adult": "",
+                "youth": "",
+                "children": "",
+                "tithes": "",
+                "offering": "",
+                "personal_tithes": "",
+                "mission_offering": "",
+                "received_jesus": numeric_values["received_christ"],
+                "existing_bible_study": numeric_values["bible_existing"],
+                "new_bible_study": numeric_values["bible_new"],
+                "water_baptized": numeric_values["baptized_water"],
+                "holy_spirit_baptized": numeric_values["baptized_holy_spirit"],
+                "childrens_dedication": numeric_values["child_dedication"],
+                "healed": numeric_values["healed"],
+                "activity_date": activity_date,
+                "amount_to_send": "",
+            }
+
+            try:
+                append_report_to_sheet(report_data)
+            except Exception as e:
+                print("Error sending Church Progress report to Google Sheets:", e)
+
             return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
@@ -811,6 +1006,9 @@ def church_progress_view(year, month):
     )
 
 
+# ------------------------
+# AO login & tools
+# ------------------------
 @app.route("/ao-login", methods=["GET", "POST"])
 def ao_login():
     error = None
@@ -1057,50 +1255,61 @@ def ao_create_account():
                 db = get_db()
                 cursor = db.cursor()
 
-                username, password = generate_pastor_credentials(full_name, age_int)
+                # Prevent duplicate registration (same name + church address)
+                cursor.execute(
+                    """
+                    SELECT id FROM pastors
+                    WHERE full_name = ? AND church_address = ?
+                    """,
+                    (full_name, church_address),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    error = "Account already exists for this pastor and church."
+                else:
+                    username, password = generate_pastor_credentials(full_name, age_int)
 
-                try:
-                    cursor.execute(
-                        """
-                        INSERT INTO pastors
-                        (full_name, age, sex, church_address, contact_number, birthday, username, password)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            full_name,
-                            age_int,
-                            sex,
-                            church_address,
-                            contact_number,
-                            birthday_raw,
-                            username,
-                            password,
-                        ),
-                    )
-                    db.commit()
-                    success = "Account created successfully."
-                    generated_username = username
-                    generated_password = password
-
-                    # Send to Google Sheets (Accounts tab)
-                    pastor_data = {
-                        "full_name": full_name,
-                        "age": age_int,
-                        "sex": sex,
-                        "church_address": church_address,
-                        "contact_number": contact_number,
-                        "birthday": birthday_raw,
-                        "username": username,
-                        "password": password,
-                    }
                     try:
-                        append_account_to_sheet(pastor_data)
-                    except Exception as e:
-                        # Do not break the website if Sheets fails
-                        print("Error sending account to Google Sheets:", e)
+                        cursor.execute(
+                            """
+                            INSERT INTO pastors
+                            (full_name, age, sex, church_address, contact_number, birthday, username, password)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                full_name,
+                                age_int,
+                                sex,
+                                church_address,
+                                contact_number,
+                                birthday_raw,
+                                username,
+                                password,
+                            ),
+                        )
+                        db.commit()
+                        success = "Account created successfully."
+                        generated_username = username
+                        generated_password = password
 
-                except sqlite3.IntegrityError:
-                    error = "Unable to create account (username conflict). Please try again."
+                        # Send to Google Sheets (Accounts tab)
+                        pastor_data = {
+                            "full_name": full_name,
+                            "age": age_int,
+                            "sex": sex,
+                            "church_address": church_address,
+                            "contact_number": contact_number,
+                            "birthday": birthday_raw,
+                            "username": username,
+                            "password": password,
+                        }
+                        try:
+                            append_account_to_sheet(pastor_data)
+                        except Exception as e:
+                            print("Error sending account to Google Sheets:", e)
+
+                    except sqlite3.IntegrityError:
+                        error = "Unable to create account (username conflict). Please try again."
 
     return render_template(
         "ao_create_account.html",
