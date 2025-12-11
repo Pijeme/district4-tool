@@ -342,24 +342,35 @@ def get_gs_client():
     return gspread.authorize(creds)
 
 
-def append_test_row():
+def append_account_to_sheet(pastor_data: dict):
     """
-    Simple example: append a test row to a sheet to verify it works.
-    Update the sheet name/tab as needed.
+    Append a pastor account row to the 'Accounts' tab in 'District4 Data' sheet.
+    Expects keys:
+      full_name, age, sex, church_address, contact_number, birthday, username, password
     """
     client = get_gs_client()
 
-    # Change this to your actual sheet name
+    # Your spreadsheet name
     sh = client.open("District4 Data")
 
-    # Use or create a sheet tab named "Test"
+    # Use or create the 'Accounts' worksheet/tab
     try:
-        worksheet = sh.worksheet("Test")
+        worksheet = sh.worksheet("Accounts")
     except gspread.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="Test", rows=100, cols=10)
+        worksheet = sh.add_worksheet(title="Accounts", rows=100, cols=10)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    worksheet.append_row([timestamp, "Hello from District4 Tool!"])
+    row = [
+        pastor_data.get("full_name", ""),
+        pastor_data.get("age", ""),
+        pastor_data.get("sex", ""),
+        pastor_data.get("church_address", ""),
+        pastor_data.get("contact_number", ""),
+        pastor_data.get("birthday", ""),
+        pastor_data.get("username", ""),
+        pastor_data.get("password", ""),
+    ]
+
+    worksheet.append_row(row)
 
 
 # Bible verse of the day logic
@@ -1070,6 +1081,24 @@ def ao_create_account():
                     success = "Account created successfully."
                     generated_username = username
                     generated_password = password
+
+                    # Send to Google Sheets (Accounts tab)
+                    pastor_data = {
+                        "full_name": full_name,
+                        "age": age_int,
+                        "sex": sex,
+                        "church_address": church_address,
+                        "contact_number": contact_number,
+                        "birthday": birthday_raw,
+                        "username": username,
+                        "password": password,
+                    }
+                    try:
+                        append_account_to_sheet(pastor_data)
+                    except Exception as e:
+                        # Do not break the website if Sheets fails
+                        print("Error sending account to Google Sheets:", e)
+
                 except sqlite3.IntegrityError:
                     error = "Unable to create account (username conflict). Please try again."
 
@@ -1096,15 +1125,6 @@ def event_registration():
 @app.route("/schedules")
 def schedules():
     return render_template("schedules.html")
-
-
-@app.route("/test-sheets")
-def test_sheets():
-    try:
-        append_test_row()
-        return "✅ Google Sheets test row added. Check your sheet!"
-    except Exception as e:
-        return f"❌ Error connecting to Google Sheets: {e}", 500
 
 
 if __name__ == "__main__":
