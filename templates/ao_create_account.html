@@ -1,60 +1,90 @@
 {% extends "base.html" %}
-{% block title %}Create Pastor Account - Area Overseer's Tool{% endblock %}
 
 {% block content %}
-<section class="card">
-  <h2>Create Pastor Account</h2>
-  <p class="muted small">
-    Fill out the details below. A simple username and password will be generated automatically.
-  </p>
-
-  <a href="{{ url_for('ao_tool') }}" class="btn-secondary back-btn">← Back to Area Overseer's Tool</a>
+<div class="card">
+  <h1>Create Pastor Account</h1>
 
   {% if error %}
-    <div class="alert alert-error">
-      {{ error }}
-    </div>
+    <div class="alert alert-error">{{ error }}</div>
   {% endif %}
-
   {% if success %}
-    <div class="alert" style="background:#ecfdf5; color:#166534; border:1px solid #bbf7d0;">
+    <div class="alert alert-success">
       {{ success }}<br>
       <strong>Username:</strong> {{ generated_username }}<br>
       <strong>Password:</strong> {{ generated_password }}
     </div>
   {% endif %}
 
-  <form method="post" class="form-vertical">
-    <div class="field-group">
-      <label for="full_name">Pastor's Full Name</label>
-      <input type="text" id="full_name" name="full_name" value="{{ values.full_name }}">
+  <form method="post">
+    <div class="form-row">
+      <label for="full_name">Full Name</label>
+      <input
+        type="text"
+        id="full_name"
+        name="full_name"
+        value="{{ values.full_name }}"
+        required
+      >
     </div>
 
-    <div class="field-group">
+    <div class="form-row">
       <label for="age">Age</label>
-      <input type="number" id="age" name="age" value="{{ values.age }}">
+      <input
+        type="number"
+        id="age"
+        name="age"
+        min="1"
+        value="{{ values.age }}"
+        required
+      >
     </div>
 
-    <div class="field-group">
+    <div class="form-row">
+      <label for="birthday">Birthday</label>
+      <input
+        type="date"
+        id="birthday"
+        name="birthday"
+        value="{{ values.birthday }}"
+        required
+      >
+    </div>
+
+    <div class="form-row">
       <label for="sex">Sex</label>
-      <input type="text" id="sex" name="sex" value="{{ values.sex }}">
+      <select id="sex" name="sex" required>
+        <option value="" disabled {% if not values.sex %}selected{% endif %}>Select...</option>
+        <option value="Male" {% if values.sex == "Male" %}selected{% endif %}>Male</option>
+        <option value="Female" {% if values.sex == "Female" %}selected{% endif %}>Female</option>
+      </select>
     </div>
 
-    <div class="field-group">
+    <div class="form-row">
       <label for="church_address">Church Address</label>
-      <textarea id="church_address" name="church_address" rows="2">{{ values.church_address }}</textarea>
+      <input
+        type="text"
+        id="church_address"
+        name="church_address"
+        value="{{ values.church_address }}"
+        required
+      >
     </div>
 
-    <div class="field-group">
-      <label for="contact_number">Contact Number</label>
-      <input type="text" id="contact_number" name="contact_number" value="{{ values.contact_number }}">
+    <div class="form-row">
+      <label for="contact_number">Contact #</label>
+      <input
+        type="text"
+        id="contact_number"
+        name="contact_number"
+        value="{{ values.contact_number }}"
+        required
+      >
     </div>
 
-    <button type="submit" class="btn-primary">Create Account</button>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Create Account</button>
+      <a href="{{ url_for('ao_tool') }}" class="btn-secondary">Back to AO Tool</a>
+    </div>
   </form>
-
-  <p class="muted small" style="margin-top:0.75rem;">
-    The generated username is simple (usually the pastor's first name) and the password is based on name + age, to make it easy to remember.
-  </p>
-</section>
+</div>
 {% endblock %}
