@@ -1,105 +1,121 @@
 {% extends "base.html" %}
-{% block title %}Church Status{% endblock %}
+{% block title %}Church Status - District 4 Tool{% endblock %}
 
 {% block content %}
 <section class="card">
   <h2>Church Status</h2>
-  <p class="muted small"><i>AO View – Monthly Church Summary</i></p>
+  <p class="muted small">
+    Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
+  </p>
 
-  <!-- FILTERS -->
-  <form method="GET" action="{{ url_for('ao_church_status') }}" class="form-inline" style="gap:10px; flex-wrap:wrap;">
-    <label><b>Church:</b></label>
-    <select name="church">
-      {% for c in churches %}
-        <option value="{{ c }}" {% if c == selected_church %}selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-    </select>
-
-    <label><b>Year:</b></label>
-    <select name="year">
+  <form method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
+    <label class="small"><b>Year:</b></label>
+    <select name="year" onchange="this.form.submit()">
       {% for y in year_options %}
         <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
       {% endfor %}
     </select>
-
-    <label><b>Month:</b></label>
-    <select name="month">
-      {% for name, val in month_names %}
-        <option value="{{ val }}" {% if val == month %}selected{% endif %}>{{ name }}</option>
-      {% endfor %}
-    </select>
-
-    <button class="btn-secondary" type="submit">View</button>
   </form>
 
-  <hr>
+  <div class="form-vertical">
+    {% for m in months %}
+      <button type="button"
+              class="btn-secondary"
+              onclick="toggleMonth('{{ m.month }}')"
+              style="
+                width:100%;
+                border: 2px solid #111;
+                {% if m.all_reported %}
+                  background:#e9ffe9;
+                {% else %}
+                  background:#ffe9e9;
+                {% endif %}
+              ">
+        <span style="display:flex; justify-content:space-between; align-items:center;">
+          <span><b>{{ m.name }}</b></span>
+          <span style="font-size:18px;">▾</span>
+        </span>
+      </button>
 
-  {% if stats.rows == 0 %}
-    <p class="muted">No data submitted for this church in this month.</p>
-  {% else %}
+      <div id="month-{{ m.month }}" style="display:none; margin: 10px 0 16px 0;">
+        {% for c in m.churches %}
+          <div class="card" style="margin: 10px 0; border:2px solid #111;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+              <div>
+                <div><b>{{ c.church }}</b></div>
+                <div class="muted small">
+                  {% if c.rows > 0 %}
+                    Rows: {{ c.rows }}
+                    {% if c.attendance_change is not none %}
+                      • Attendance change: <b>{{ "%.1f"|format(c.attendance_change) }}%</b>
+                    {% endif %}
+                  {% else %}
+                    No report submitted for this month.
+                  {% endif %}
+                </div>
+              </div>
 
-  <!-- STATUS -->
-  <p>
-    <b>Status:</b>
-    {% if stats.sheet_status == "Approved" %}
-      <span class="tag green">Approved</span>
-    {% else %}
-      <span class="tag yellow">Pending AO approval</span>
-    {% endif %}
-  </p>
+              {% if c.rows == 0 %}
+                <span style="padding:6px 10px; border-radius:999px; border:1px solid #a11; background:#ffd7d7; font-weight:800; font-size:12px;">
+                  Not submitted
+                </span>
+              {% else %}
+                {% if c.status_key == "approved" %}
+                  <span style="padding:6px 10px; border-radius:999px; border:1px solid #1a7f1a; background:#d7ffd7; font-weight:800; font-size:12px;">
+                    Approved
+                  </span>
+                {% else %}
+                  <span style="padding:6px 10px; border-radius:999px; border:1px solid #9a7b00; background:#fff4cc; font-weight:800; font-size:12px;">
+                    Pending
+                  </span>
+                {% endif %}
+              {% endif %}
+            </div>
 
-  {% if attendance_change is not none %}
-    <p class="small">
-      Attendance change vs last month:
-      <b>{{ "%.1f"|format(attendance_change) }}%</b>
-    </p>
-  {% endif %}
+            {% if c.rows > 0 %}
+              <div class="small" style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:8px 14px;">
+                <div><b>Total Amount to Send:</b> {{ "%.2f"|format(c.totals.amount_to_send) }}</div>
+                <div><b>Total Tithes:</b> {{ "%.2f"|format(c.totals.tithes) }}</div>
 
-  <!-- FINANCIALS -->
-  <h3>Financial Summary</h3>
-  <ul>
-    <li>Total Tithes: {{ "%.2f"|format(stats.totals.tithes) }}</li>
-    <li>Total Offering: {{ "%.2f"|format(stats.totals.offering) }}</li>
-    <li>Total Personal Tithes: {{ "%.2f"|format(stats.totals.personal_tithes) }}</li>
-    <li>Total Mission Offering: {{ "%.2f"|format(stats.totals.mission_offering) }}</li>
-    <li><b>Total Amount to Send:</b> {{ "%.2f"|format(stats.totals.amount_to_send) }}</li>
-  </ul>
+                <div><b>Total Offering:</b> {{ "%.2f"|format(c.totals.offering) }}</div>
+                <div><b>Total Personal Tithes:</b> {{ "%.2f"|format(c.totals.personal_tithes) }}</div>
 
-  <!-- AVERAGES -->
-  <h3>Average Attendance</h3>
-  <ul>
-    <li>Adult: {{ "%.1f"|format(stats.avg.adult) }}</li>
-    <li>Youth: {{ "%.1f"|format(stats.avg.youth) }}</li>
-    <li>Children: {{ "%.1f"|format(stats.avg.children) }}</li>
-  </ul>
+                <div><b>Total Mission Offering:</b> {{ "%.2f"|format(c.totals.mission_offering) }}</div>
+                <div><b>Avg Attendance:</b> A {{ "%.1f"|format(c.avg.adult) }} / Y {{ "%.1f"|format(c.avg.youth) }} / C {{ "%.1f"|format(c.avg.children) }}</div>
 
-  <h3>Average Church Progress</h3>
-  <ul>
-    <li>Received Jesus: {{ "%.1f"|format(stats.avg.received_jesus) }}</li>
-    <li>Existing Bible Study: {{ "%.1f"|format(stats.avg.existing_bible_study) }}</li>
-    <li>New Bible Study: {{ "%.1f"|format(stats.avg.new_bible_study) }}</li>
-    <li>Water Baptized: {{ "%.1f"|format(stats.avg.water_baptized) }}</li>
-    <li>Holy Spirit Baptized: {{ "%.1f"|format(stats.avg.holy_spirit_baptized) }}</li>
-    <li>Children’s Dedication: {{ "%.1f"|format(stats.avg.childrens_dedication) }}</li>
-    <li>Healed: {{ "%.1f"|format(stats.avg.healed) }}</li>
-  </ul>
+                <div><b>Avg Received Jesus:</b> {{ "%.1f"|format(c.avg.received_jesus) }}</div>
+                <div><b>Avg Bible Study:</b> Existing {{ "%.1f"|format(c.avg.existing_bible_study) }} / New {{ "%.1f"|format(c.avg.new_bible_study) }}</div>
 
-  <!-- APPROVAL -->
-  <form method="POST" action="{{ url_for('ao_church_status') }}">
-    <input type="hidden" name="church" value="{{ selected_church }}">
-    <input type="hidden" name="year" value="{{ year }}">
-    <input type="hidden" name="month" value="{{ month }}">
-    <input type="hidden" name="action" value="approve">
+                <div><b>Avg Baptism:</b> Water {{ "%.1f"|format(c.avg.water_baptized) }} / Holy Spirit {{ "%.1f"|format(c.avg.holy_spirit_baptized) }}</div>
+                <div><b>Avg Others:</b> Dedication {{ "%.1f"|format(c.avg.childrens_dedication) }} / Healed {{ "%.1f"|format(c.avg.healed) }}</div>
+              </div>
 
-    <button class="btn-primary" type="submit"
-      {% if stats.sheet_status == "Approved" %}disabled{% endif %}>
-      {% if stats.sheet_status == "Approved" %}Approved{% else %}Approve{% endif %}
-    </button>
-  </form>
+              <form method="POST" action="{{ url_for('ao_church_status_approve') }}" style="margin-top:10px;">
+                <input type="hidden" name="year" value="{{ m.year }}">
+                <input type="hidden" name="month" value="{{ m.month }}">
+                <input type="hidden" name="church" value="{{ c.church }}">
 
-  {% endif %}
+                <button class="btn-primary" type="submit" {% if c.status_key == "approved" %}disabled{% endif %}>
+                  {% if c.status_key == "approved" %}Approved{% else %}Approve{% endif %}
+                </button>
+              </form>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  </div>
 
-  <br>
-  <a href="{{ url_for('ao_tool') }}">← Back to AO Tool</a>
+  <div style="margin-top:14px;">
+    <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back to AO Tool</a>
+  </div>
 </section>
+
+<script>
+  function toggleMonth(m) {
+    const el = document.getElementById("month-" + m);
+    if (!el) return;
+    el.style.display = (el.style.display === "block") ? "none" : "block";
+  }
+</script>
 {% endblock %}
