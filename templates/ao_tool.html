@@ -4,7 +4,11 @@
 {% block content %}
 <section class="card">
   <h2>Area Overseer's Tool</h2>
-
+<p class="muted small" style="margin-top:6px;">
+  <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;">
+    Cache last sync: {{ last_sync_ph }}
+  </span>
+</p>
   <p class="muted small" style="margin: 6px 0 0;">
     Cache last sync: <b>{{ last_sync_display or "Never" }}</b>
   </p>
