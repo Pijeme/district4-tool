@@ -4,6 +4,8 @@ from datetime import datetime, date
 import calendar
 import urllib.parse
 
+from zoneinfo import ZoneInfo
+
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -19,6 +21,7 @@ from flask import (
 )
 
 DATABASE = "app_v2.db"
+PH_TZ = ZoneInfo("Asia/Manila")
 
 # ========================
 # DB helpers
@@ -188,8 +191,12 @@ def init_db():
         """
     )
 
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_report_ym_church ON sheet_report_cache(year, month, church)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_report_ym_church ON sheet_report_cache(year, month, church)"
+    )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_report_ym ON sheet_report_cache(year, month)")
 
     db.commit()
@@ -297,37 +304,6 @@ def set_month_submitted(year: int, month: int):
     db.commit()
 
 
-def set_month_approved(year: int, month: int):
-    db = get_db()
-    cursor = db.cursor()
-    now_str = datetime.utcnow().isoformat()
-    cursor.execute(
-        """
-        UPDATE monthly_reports
-        SET approved = 1,
-            approved_at = ?
-        WHERE year = ? AND month = ?
-        """,
-        (now_str, year, month),
-    )
-    db.commit()
-
-
-def set_month_pending(year: int, month: int):
-    db = get_db()
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        UPDATE monthly_reports
-        SET approved = 0,
-            approved_at = NULL
-        WHERE year = ? AND month = ?
-        """,
-        (year, month),
-    )
-    db.commit()
-
-
 def all_sundays_complete(monthly_report_id: int) -> bool:
     db = get_db()
     cursor = db.cursor()
@@ -423,7 +399,7 @@ def _find_col(headers, wanted):
 SYNC_INTERVAL_SECONDS = 120  # 2 minutes
 
 
-def _last_sync_time():
+def _last_sync_time_utc():
     row = get_db().execute("SELECT last_sync FROM sync_state WHERE id = 1").fetchone()
     if row and row["last_sync"]:
         try:
@@ -431,6 +407,22 @@ def _last_sync_time():
         except Exception:
             return None
     return None
+
+
+def get_last_sync_display_ph():
+    """
+    Returns a user-friendly PH time string from sync_state.last_sync (stored as UTC ISO).
+    """
+    dt_utc = _last_sync_time_utc()
+    if not dt_utc:
+        return "Never"
+    try:
+        # dt_utc is naive UTC (from utcnow isoformat). Attach UTC tz, convert to PH
+        dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
+        dt_ph = dt_utc.astimezone(PH_TZ)
+        return dt_ph.strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        return "Unknown"
 
 
 def _update_sync_time():
@@ -446,7 +438,7 @@ def sync_from_sheets_if_needed(force=False):
     Reads Google Sheets ONLY once per interval, stores into cache tables.
     AO pages read ONLY from cache tables (no quota spam).
     """
-    last = _last_sync_time()
+    last = _last_sync_time_utc()
     if not force and last and (datetime.utcnow() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
         return
 
@@ -510,7 +502,7 @@ def sync_from_sheets_if_needed(force=False):
                     str(cell(row, i_sex)).strip(),
                     str(cell(row, i_contact)).strip(),
                     str(cell(row, i_bday)).strip(),
-                    r + 1,  # sheet row number
+                    r + 1,
                 ),
             )
 
@@ -529,16 +521,13 @@ def sync_from_sheets_if_needed(force=False):
     if rep_values and len(rep_values) >= 2:
         headers = rep_values[0]
 
-        # required
         i_activity = _find_col(headers, "activity_date")
         i_status = _find_col(headers, "status")
 
-        # identifiers
         i_church = _find_col(headers, "church")
         i_pastor = _find_col(headers, "pastor")
         i_address = _find_col(headers, "address")
 
-        # numbers
         i_adult = _find_col(headers, "adult")
         i_youth = _find_col(headers, "youth")
         i_children = _find_col(headers, "children")
@@ -634,9 +623,6 @@ def sync_from_sheets_if_needed(force=False):
 
 
 def refresh_pastor_from_cache():
-    """
-    Replaces refresh_pastor_from_sheets to avoid quota spam.
-    """
     username = session.get("pastor_username")
     if not username:
         return False
@@ -653,6 +639,190 @@ def refresh_pastor_from_cache():
     return True
 
 
+# ========================
+# ✅ IMPORTANT FIX:
+# Cache → Local upsert for Pastor Tool display
+# ========================
+
+
+def sync_local_month_from_cache_for_pastor(year: int, month: int):
+    """
+    Pulls this pastor's month rows from sheet_report_cache and fills local tables:
+    - sunday_reports (mark complete + values)
+    - church_progress (mark complete + values)
+    - monthly_reports submitted/approved
+    This makes Pastor Tool show existing Google Sheets data again.
+    """
+    refresh_pastor_from_cache()
+    pastor_name = (session.get("pastor_name") or "").strip()
+    church_address = (session.get("pastor_church_address") or "").strip()
+    if not pastor_name and not church_address:
+        return
+
+    db = get_db()
+    cur = db.cursor()
+
+    # read from cache (DB only)
+    cached_rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (
+            TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?)
+            OR TRIM(pastor) = TRIM(?)
+          )
+        ORDER BY activity_date
+        """,
+        (year, month, church_address, church_address, pastor_name),
+    ).fetchall()
+
+    if not cached_rows:
+        return
+
+    mr = get_or_create_monthly_report(year, month)
+    mrid = mr["id"]
+
+    # ensure all sundays exist (so UI still shows full list)
+    ensure_sunday_reports(mrid, year, month)
+
+    # upsert each cached row into sunday_reports
+    statuses = set()
+    cp_seed = None
+
+    for r in cached_rows:
+        activity_date = str(r["activity_date"] or "").strip()
+        if not activity_date:
+            continue
+        try:
+            d = date.fromisoformat(activity_date)
+        except Exception:
+            continue
+
+        statuses.add(str(r["status"] or "").strip())
+
+        # choose first row as church progress seed
+        if cp_seed is None:
+            cp_seed = r
+
+        # find existing local row for that date
+        srow = db.execute(
+            """
+            SELECT id FROM sunday_reports
+            WHERE monthly_report_id = ? AND date = ?
+            """,
+            (mrid, d.isoformat()),
+        ).fetchone()
+
+        adult = float(r["adult"] or 0)
+        youth = float(r["youth"] or 0)
+        children = float(r["children"] or 0)
+
+        tithes_church = float(r["tithes"] or 0)
+        offering = float(r["offering"] or 0)
+        mission = float(r["mission_offering"] or 0)
+        personal = float(r["personal_tithes"] or 0)
+
+        if not srow:
+            cur.execute(
+                """
+                INSERT INTO sunday_reports
+                (monthly_report_id, date, is_complete,
+                 attendance_adult, attendance_youth, attendance_children,
+                 tithes_church, offering, mission, tithes_personal)
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mrid,
+                    d.isoformat(),
+                    adult,
+                    youth,
+                    children,
+                    tithes_church,
+                    offering,
+                    mission,
+                    personal,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE sunday_reports
+                SET is_complete = 1,
+                    attendance_adult = ?,
+                    attendance_youth = ?,
+                    attendance_children = ?,
+                    tithes_church = ?,
+                    offering = ?,
+                    mission = ?,
+                    tithes_personal = ?
+                WHERE id = ?
+                """,
+                (
+                    adult,
+                    youth,
+                    children,
+                    tithes_church,
+                    offering,
+                    mission,
+                    personal,
+                    srow["id"],
+                ),
+            )
+
+    # church progress upsert
+    cp = ensure_church_progress(mrid)
+    if cp_seed is not None:
+        cur.execute(
+            """
+            UPDATE church_progress
+            SET bible_new = ?,
+                bible_existing = ?,
+                received_christ = ?,
+                baptized_water = ?,
+                baptized_holy_spirit = ?,
+                healed = ?,
+                child_dedication = ?,
+                is_complete = 1
+            WHERE id = ?
+            """,
+            (
+                int(float(cp_seed["new_bible_study"] or 0)),
+                int(float(cp_seed["existing_bible_study"] or 0)),
+                int(float(cp_seed["received_jesus"] or 0)),
+                int(float(cp_seed["water_baptized"] or 0)),
+                int(float(cp_seed["holy_spirit_baptized"] or 0)),
+                int(float(cp_seed["healed"] or 0)),
+                int(float(cp_seed["childrens_dedication"] or 0)),
+                cp["id"],
+            ),
+        )
+
+    # monthly status (submitted/approved) based on cache statuses
+    submitted = 1 if any(s.strip() for s in statuses) else 1  # if rows exist, treat as submitted
+    approved = 0
+    for s in statuses:
+        if "approved" in str(s).lower():
+            approved = 1
+            break
+
+    cur.execute(
+        """
+        UPDATE monthly_reports
+        SET submitted = ?, approved = ?
+        WHERE id = ?
+        """,
+        (submitted, approved, mrid),
+    )
+
+    db.commit()
+
+
+# ========================
+# AO cache helpers
+# ========================
+
+
 def get_all_churches_from_cache():
     rows = get_db().execute(
         """
@@ -666,12 +836,6 @@ def get_all_churches_from_cache():
 
 
 def get_report_stats_for_month_and_church_cache(year: int, month: int, church_key: str):
-    """
-    AO church status stats (DB only).
-    - averages for attendance + spiritual
-    - totals for money + amount_to_send
-    - status: Approved if ALL rows Approved, Pending if has rows but not all Approved
-    """
     stats = {
         "church": church_key,
         "rows": 0,
@@ -716,7 +880,6 @@ def get_report_stats_for_month_and_church_cache(year: int, month: int, church_ke
 
     stats["rows"] = len(rows)
 
-    # sums
     sum_fields = {k: 0.0 for k in stats["avg"].keys()}
     totals = {k: 0.0 for k in stats["totals"].keys()}
     statuses = set()
@@ -744,13 +907,11 @@ def get_report_stats_for_month_and_church_cache(year: int, month: int, church_ke
         if s:
             statuses.add(s)
 
-    # averages
     for k in stats["avg"].keys():
         stats["avg"][k] = sum_fields[k] / stats["rows"]
 
     stats["totals"] = totals
 
-    # status logic
     if len(statuses) == 1:
         stats["sheet_status"] = list(statuses)[0]
     elif len(statuses) > 1:
@@ -762,9 +923,6 @@ def get_report_stats_for_month_and_church_cache(year: int, month: int, church_ke
 
 
 def cache_update_status_for_church_month(year: int, month: int, church_key: str, status_label: str):
-    """
-    Updates local cache rows for that church/month to status_label.
-    """
     db = get_db()
     db.execute(
         """
@@ -779,9 +937,6 @@ def cache_update_status_for_church_month(year: int, month: int, church_key: str,
 
 
 def sheet_batch_update_status_for_church_month(year: int, month: int, church_key: str, status_label: str):
-    """
-    Uses cached sheet_row list to update Google Sheet with minimal requests.
-    """
     db = get_db()
     rows = db.execute(
         """
@@ -801,7 +956,6 @@ def sheet_batch_update_status_for_church_month(year: int, month: int, church_key
     sh = client.open("District4 Data")
     ws = sh.worksheet("Report")
 
-    # Find status column index from header (one read)
     values = ws.get_all_values()
     if not values:
         return
@@ -811,9 +965,8 @@ def sheet_batch_update_status_for_church_month(year: int, month: int, church_key
         print("❌ Report sheet missing status header")
         return
 
-    # Batch update (many rows, one API call)
     requests_body = []
-    col_letter = chr(ord("A") + idx_status)  # works up to Z columns (your sheet is under 20 cols)
+    col_letter = chr(ord("A") + idx_status)
     for r in sheet_rows:
         a1 = f"{col_letter}{r}"
         requests_body.append({"range": a1, "values": [[status_label]]})
@@ -907,7 +1060,6 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     if not sunday_rows:
         return
 
-    # ensure cache is fresh and session has correct pastor details
     sync_from_sheets_if_needed()
     refresh_pastor_from_cache()
 
@@ -1075,7 +1227,6 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123"
 @app.before_request
 def before_request():
     init_db()
-    # keep cache fresh without spamming quota
     sync_from_sheets_if_needed()
 
 
@@ -1119,7 +1270,6 @@ def pastor_login():
         if not username or not password:
             error = "Username and password are required."
         else:
-            # CACHE lookup first
             row = get_db().execute(
                 "SELECT username, password, name, church_address FROM sheet_accounts_cache WHERE username = ?",
                 (username,),
@@ -1155,9 +1305,7 @@ def pastor_login():
                     session["pastor_church_address"] = matched.get("Church Address", "")
                     session.permanent = True
 
-                    # refresh cache immediately for everyone
                     sync_from_sheets_if_needed(force=True)
-
                     return redirect(request.form.get("next") or next_url)
 
                 error = "Invalid username or password."
@@ -1168,7 +1316,7 @@ def pastor_login():
 
 
 # ========================
-# Pastor Tool (same behavior)
+# Pastor Tool
 # ========================
 
 @app.route("/pastor-tool", methods=["GET", "POST"])
@@ -1181,6 +1329,9 @@ def pastor_tool():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
     month = request.args.get("month", type=int) or today.month
+
+    # ✅ FIX: fill local tables from cache for this pastor+month
+    sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
     ensure_sunday_reports(monthly_report["id"], year, month)
@@ -1224,7 +1375,9 @@ def pastor_tool():
     row = cursor.fetchone()
     monthly_total = row["total_amount"] or 0.0
 
-    year_options = list(range(today.year - 1, today.year + 4))
+    # ✅ 10+ years options
+    year_options = list(range(today.year - 10, today.year + 4))
+
     month_names = [
         ("January", 1), ("February", 2), ("March", 3), ("April", 4),
         ("May", 5), ("June", 6), ("July", 7), ("August", 8),
@@ -1249,8 +1402,9 @@ def pastor_tool():
             set_month_submitted(year, month)
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
-                # refresh cache shortly after export (optional)
                 sync_from_sheets_if_needed(force=True)
+                # refresh local view after export too
+                sync_local_month_from_cache_for_pastor(year, month)
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
         return redirect(url_for("pastor_tool", year=year, month=month))
@@ -1273,7 +1427,7 @@ def pastor_tool():
     )
 
 
-@app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"])
+@app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"], endpoint="sunday_detail")
 def sunday_detail(year, month, day):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
@@ -1284,6 +1438,9 @@ def sunday_detail(year, month, day):
         d = date(year, month, day)
     except ValueError:
         abort(404)
+
+    # ✅ keep local month in sync, so detail page also shows sheet values
+    sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
     ensure_sunday_reports(monthly_report["id"], year, month)
@@ -1386,6 +1543,9 @@ def church_progress_view(year, month):
         return redirect(url_for("pastor_login", next=request.path))
 
     refresh_pastor_from_cache()
+
+    # ✅ keep local month in sync, so progress also shows sheet values
+    sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
     cp_row = ensure_church_progress(monthly_report["id"])
@@ -1497,7 +1657,10 @@ def ao_login():
 def ao_tool():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
-    return render_template("ao_tool.html")
+
+    # ✅ pass PH-time display for badge
+    last_sync_ph = get_last_sync_display_ph()
+    return render_template("ao_tool.html", last_sync_ph=last_sync_ph)
 
 
 @app.route("/ao-tool/create-account", methods=["GET", "POST"])
@@ -1597,7 +1760,6 @@ def ao_create_account():
                         }
                         try:
                             append_account_to_sheet(pastor_data)
-                            # refresh cache soon
                             sync_from_sheets_if_needed(force=True)
                         except Exception as e:
                             print("Error sending account to Google Sheets:", e)
@@ -1616,8 +1778,7 @@ def ao_create_account():
 
 
 # ========================
-# AO Church Status (your dropdown design)
-# ✅ DB-only reads (no more 429)
+# AO Church Status (DB-cache only)
 # ========================
 
 @app.route("/ao-tool/church-status")
@@ -1627,7 +1788,9 @@ def ao_church_status():
 
     today = date.today()
     year = request.args.get("year", type=int) or today.year
-    year_options = list(range(today.year - 1, today.year + 4))
+
+    # ✅ 10+ years options
+    year_options = list(range(today.year - 10, today.year + 4))
 
     month_names = [
         ("January", 1), ("February", 2), ("March", 3), ("April", 4),
@@ -1709,9 +1872,7 @@ def ao_church_status_approve():
 
     if year and month and church:
         try:
-            # 1) update Google Sheet (batch)
             sheet_batch_update_status_for_church_month(year, month, church, "Approved")
-            # 2) update local cache immediately (fast UI)
             cache_update_status_for_church_month(year, month, church, "Approved")
         except Exception as e:
             print("Error approving church month:", e)
