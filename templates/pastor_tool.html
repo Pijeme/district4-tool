@@ -14,7 +14,8 @@
       <select id="month" name="month">
         {% for name, value in month_names %}
           <option value="{{ value }}" {% if value == month %}selected{% endif %}>
-            {{ name }}{% if submitted_map.get((year, value)) %} ✓{% endif %}
+           {{ name }}{% if submitted_map is defined and submitted_map.get((year, value)) %} ✓{% endif %}
+
           </option>
         {% endfor %}
       </select>
