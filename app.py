@@ -720,6 +720,231 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
             print("Error sending monthly Sunday row to Google Sheets:", e)
 
 
+def sync_from_sheets_for_pastor():
+    """
+    For the currently logged-in pastor, read all rows from the Report sheet
+    that belong to this pastor/church, and rebuild the local SQLite data:
+      - monthly_reports
+      - sunday_reports
+      - church_progress
+      - submitted / approved flags
+    """
+    username = session.get("pastor_username")
+    if not username:
+        return
+
+    # Refresh name & church address from Accounts sheet
+    refresh_pastor_from_sheets()
+    pastor_name = (session.get("pastor_name") or "").strip()
+    church_address = (session.get("pastor_church_address") or "").strip()
+
+    if not pastor_name and not church_address:
+        return
+
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws = sh.worksheet("Report")
+        records = ws.get_all_records()
+    except Exception as e:
+        print("Error syncing from Sheets for pastor:", e)
+        return
+
+    db = get_db()
+    cursor = db.cursor()
+
+    cp_cache = {}           # (year, month) -> church progress values
+    statuses_by_month = {}  # (year, month) -> set(status strings)
+
+    for rec in records:
+        rec_pastor = str(rec.get("pastor", "")).strip()
+        rec_address = str(rec.get("address", "")).strip()
+
+        # Match by church address if available
+        if church_address and rec_address != church_address:
+            continue
+
+        # Optional extra check by pastor name
+        if pastor_name and rec_pastor and rec_pastor != pastor_name:
+            continue
+
+        activity_date_str = str(rec.get("activity_date", "")).strip()
+        if not activity_date_str:
+            continue
+
+        try:
+            d = date.fromisoformat(activity_date_str)
+        except ValueError:
+            continue
+
+        year = d.year
+        month = d.month
+        day_iso = d.isoformat()
+
+        monthly_report = get_or_create_monthly_report(year, month)
+        mrid = monthly_report["id"]
+
+        # Ensure sunday_report row exists for that date
+        cursor.execute(
+            """
+            SELECT * FROM sunday_reports
+            WHERE monthly_report_id = ? AND date = ?
+            """,
+            (mrid, day_iso),
+        )
+        srow = cursor.fetchone()
+
+        adult = parse_float(rec.get("adult", 0))
+        youth = parse_float(rec.get("youth", 0))
+        children = parse_float(rec.get("children", 0))
+        tithes_church = parse_float(rec.get("tithes", 0))
+        offering = parse_float(rec.get("offering", 0))
+        mission = parse_float(rec.get("mission offering", 0))
+        tithes_personal = parse_float(rec.get("personal tithes", 0))
+
+        if not srow:
+            cursor.execute(
+                """
+                INSERT INTO sunday_reports
+                (monthly_report_id, date, is_complete,
+                 attendance_adult, attendance_youth, attendance_children,
+                 tithes_church, offering, mission, tithes_personal)
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mrid,
+                    day_iso,
+                    adult,
+                    youth,
+                    children,
+                    tithes_church,
+                    offering,
+                    mission,
+                    tithes_personal,
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE sunday_reports
+                SET is_complete = 1,
+                    attendance_adult = ?,
+                    attendance_youth = ?,
+                    attendance_children = ?,
+                    tithes_church = ?,
+                    offering = ?,
+                    mission = ?,
+                    tithes_personal = ?
+                WHERE id = ?
+                """,
+                (
+                    adult,
+                    youth,
+                    children,
+                    tithes_church,
+                    offering,
+                    mission,
+                    tithes_personal,
+                    srow["id"],
+                ),
+            )
+
+        key = (year, month)
+        if key not in cp_cache:
+            cp_cache[key] = {
+                "bible_new": int(parse_float(rec.get("new bible study", 0))),
+                "bible_existing": int(parse_float(rec.get("existing bible study", 0))),
+                "received_christ": int(parse_float(rec.get("received jesus", 0))),
+                "baptized_water": int(parse_float(rec.get("water baptized", 0))),
+                "baptized_holy_spirit": int(
+                    parse_float(rec.get("holy spirit baptized", 0))
+                ),
+                "healed": int(parse_float(rec.get("healed", 0))),
+                "child_dedication": int(
+                    parse_float(rec.get("childrens dedication", 0))
+                ),
+            }
+
+        status_val = str(rec.get("status", "")).strip()
+        if status_val:
+            statuses_by_month.setdefault(key, set()).add(status_val)
+
+    # Apply church progress + submitted/approved flags per month
+    for (year, month), cpvals in cp_cache.items():
+        monthly_report = get_or_create_monthly_report(year, month)
+        mrid = monthly_report["id"]
+
+        cursor.execute(
+            "SELECT * FROM church_progress WHERE monthly_report_id = ?",
+            (mrid,),
+        )
+        cprow = cursor.fetchone()
+
+        if not cprow:
+            cursor.execute(
+                """
+                INSERT INTO church_progress
+                (monthly_report_id, bible_new, bible_existing, received_christ,
+                 baptized_water, baptized_holy_spirit, healed, child_dedication, is_complete)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    mrid,
+                    cpvals["bible_new"],
+                    cpvals["bible_existing"],
+                    cpvals["received_christ"],
+                    cpvals["baptized_water"],
+                    cpvals["baptized_holy_spirit"],
+                    cpvals["healed"],
+                    cpvals["child_dedication"],
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE church_progress
+                SET bible_new = ?,
+                    bible_existing = ?,
+                    received_christ = ?,
+                    baptized_water = ?,
+                    baptized_holy_spirit = ?,
+                    healed = ?,
+                    child_dedication = ?,
+                    is_complete = 1
+                WHERE id = ?
+                """,
+                (
+                    cpvals["bible_new"],
+                    cpvals["bible_existing"],
+                    cpvals["received_christ"],
+                    cpvals["baptized_water"],
+                    cpvals["baptized_holy_spirit"],
+                    cpvals["healed"],
+                    cpvals["child_dedication"],
+                    cprow["id"],
+                ),
+            )
+
+        statuses = statuses_by_month.get((year, month), set())
+        submitted = 1 if statuses else 0
+        approved = 0
+        for s in statuses:
+            if "approved" in s.lower():
+                approved = 1
+                break
+
+        cursor.execute(
+            """
+            UPDATE monthly_reports
+            SET submitted = ?, approved = ?
+            WHERE id = ?
+            """,
+            (submitted, approved, mrid),
+        )
+
+    db.commit()
+
+
 # Bible verse of the day logic
 VERSE_REFERENCES = [
     "John 3:16",
@@ -800,11 +1025,9 @@ def generate_pastor_credentials(full_name: str, age: int):
         first_name_clean = "Pastor"
     else:
         first = parts[0]
-        # Keep letters only for username base
         base = "".join(ch for ch in first if ch.isalpha()).lower() or "pastor"
         first_name_clean = first.title()
 
-    # Ensure username unique
     username = base
     suffix = 1
     while True:
@@ -817,7 +1040,6 @@ def generate_pastor_credentials(full_name: str, age: int):
         suffix += 1
         username = f"{base}{suffix}"
 
-    # Simple, easy-to-remember password
     try:
         age_int = int(age)
     except (TypeError, ValueError):
@@ -870,7 +1092,7 @@ def bulletin():
 # ------------------------
 @app.route("/pastor-login", methods=["GET", "POST"])
 def pastor_login():
-    error = None
+    error = None    # noqa: F841
     next_url = request.args.get("next") or url_for("pastor_tool")
 
     if request.method == "POST":
@@ -888,7 +1110,7 @@ def pastor_login():
                 except gspread.WorksheetNotFound:
                     error = "Accounts sheet not found in District4 Data."
                 else:
-                    records = ws.get_all_records()  # list of dicts using header row
+                    records = ws.get_all_records()
                     matched = None
                     for rec in records:
                         sheet_username = str(rec.get("UserName", "")).strip()
@@ -905,6 +1127,13 @@ def pastor_login():
                             "Church Address", ""
                         )
                         session.permanent = True
+
+                        # After successful login, rebuild local DB from Sheets
+                        try:
+                            sync_from_sheets_for_pastor()
+                        except Exception as e:
+                            print("Error syncing from Sheets after login:", e)
+
                         form_next = request.form.get("next")
                         if form_next:
                             next_url_final = form_next
@@ -927,8 +1156,12 @@ def pastor_tool():
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    # Refresh pastor info from Google Sheets each time
+    # Refresh pastor info + sync local DB from Sheets
     refresh_pastor_from_sheets()
+    try:
+        sync_from_sheets_for_pastor()
+    except Exception as e:
+        print("Error syncing from Sheets on pastor_tool:", e)
 
     # Determine selected month/year (default: current)
     today = date.today()
@@ -975,7 +1208,7 @@ def pastor_tool():
             ) AS total_amount
         FROM sunday_reports
         WHERE monthly_report_id = ?
-        AND is_complete = 1
+          AND is_complete = 1
         """,
         (monthly_report["id"],),
     )
@@ -1001,8 +1234,7 @@ def pastor_tool():
         ("December", 12),
     ]
 
-    # Determine if submit/resubmit is enabled:
-    # all Sundays complete AND church progress complete
+    # Determine if submit/resubmit is enabled
     sundays_ok = all_sundays_complete(monthly_report["id"])
     can_submit = sundays_ok and cp_complete
     status_key = get_month_status(monthly_report)
@@ -1019,9 +1251,7 @@ def pastor_tool():
 
     if request.method == "POST":
         if can_submit:
-            # Mark as submitted in DB
             set_month_submitted(year, month)
-            # Export all Sundays + Church Progress to Google Sheets with "Pending AO approval"
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
             except Exception as e:
@@ -1051,7 +1281,6 @@ def sunday_detail(year, month, day):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    # Refresh pastor info from Google Sheets (optional here)
     refresh_pastor_from_sheets()
 
     try:
@@ -1103,7 +1332,6 @@ def sunday_detail(year, month, day):
                 break
 
         if not error:
-            # Update DB only (no Sheets yet)
             cursor.execute(
                 """
                 UPDATE sunday_reports
@@ -1161,7 +1389,6 @@ def church_progress_view(year, month):
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    # Refresh pastor info from Google Sheets (optional)
     refresh_pastor_from_sheets()
 
     monthly_report = get_or_create_monthly_report(year, month)
@@ -1197,7 +1424,6 @@ def church_progress_view(year, month):
                 break
 
         if not error:
-            # Update DB only (no Sheets yet)
             cursor.execute(
                 """
                 UPDATE church_progress
@@ -1339,7 +1565,6 @@ def ao_tool():
                 (avg_att - prev_avg_attendance) / prev_avg_attendance
             ) * 100.0
 
-        # Only update "previous" if this month actually has data
         if has_data:
             prev_avg_attendance = avg_att
 
@@ -1373,13 +1598,8 @@ def ao_month_detail(year, month):
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
-        (year, month),
-    )
-    monthly_report = cursor.fetchone()
-    if not monthly_report:
-        abort(404)
+    # Ensure monthly_report row exists even if DB was reset
+    monthly_report = get_or_create_monthly_report(year, month)
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
@@ -1397,19 +1617,12 @@ def ao_month_detail(year, month):
                 print("Error updating status to Pending:", e)
         return redirect(url_for("ao_month_detail", year=year, month=month))
 
-    # Reload monthly report for status
-    cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
-        (year, month),
-    )
-    monthly_report = cursor.fetchone()
     status_key = get_month_status(monthly_report)
 
     month_label = date(year, month, 1).strftime("%B %Y")
     submitted_at = monthly_report["submitted_at"]
     approved_at = monthly_report["approved_at"]
 
-    # Pull summary from Google Sheets Report tab
     sheet_stats = get_report_stats_for_month(year, month)
 
     can_approve = status_key != "not_submitted"
@@ -1483,7 +1696,6 @@ def ao_create_account():
                 db = get_db()
                 cursor = db.cursor()
 
-                # Prevent duplicate registration (same name + church address)
                 cursor.execute(
                     """
                     SELECT id FROM pastors
@@ -1520,7 +1732,6 @@ def ao_create_account():
                         generated_username = username
                         generated_password = password
 
-                        # Send to Google Sheets (Accounts tab)
                         pastor_data = {
                             "full_name": full_name,
                             "age": age_int,
