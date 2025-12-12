@@ -4,7 +4,12 @@
 {% block content %}
 <section class="card">
   <h2>Area Overseer's Tool</h2>
-  <p class="muted small">
+
+  <p class="muted small" style="margin: 6px 0 0;">
+    Cache last sync: <b>{{ last_sync_display or "Never" }}</b>
+  </p>
+
+  <p class="muted small" style="margin-top: 10px;">
     Use this page to manage district accounts, approve reports and prayer requests,
     and coordinate events, schedules, and announcements.
   </p>
@@ -14,10 +19,9 @@
       Create Account
     </a>
 
-   <a href="{{ url_for('ao_church_status') }}" class="btn-secondary">
-  Church status
-</a>
-
+    <a href="{{ url_for('ao_church_status') }}" class="btn-secondary">
+      Church status
+    </a>
 
     <button type="button" class="btn-secondary">
       Prayer Request Approval
