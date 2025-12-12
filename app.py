@@ -439,6 +439,161 @@ def update_sheet_status_for_month(year: int, month: int, status_label: str):
                 ws.update_cell(sheet_row, 20, status_label)
             except Exception as e:
                 print(f"Error updating status for row {sheet_row}:", e)
+# ------------------------
+# Sheets → DB Sync (CACHE)
+# ------------------------
+
+SYNC_INTERVAL_SECONDS = 120  # 2 minutes
+
+
+def ensure_sync_table():
+    db = get_db()
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sync_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_sync TEXT
+        )
+        """
+    )
+    db.execute("INSERT OR IGNORE INTO sync_state (id, last_sync) VALUES (1, NULL)")
+    db.commit()
+
+
+def last_sync_time():
+    row = get_db().execute("SELECT last_sync FROM sync_state WHERE id = 1").fetchone()
+    if row and row["last_sync"]:
+        return datetime.fromisoformat(row["last_sync"])
+    return None
+
+
+def update_sync_time():
+    get_db().execute(
+        "UPDATE sync_state SET last_sync = ? WHERE id = 1",
+        (datetime.utcnow().isoformat(),),
+    )
+    get_db().commit()
+
+
+def sync_from_sheets_if_needed(force=False):
+    ensure_sync_table()
+
+    last = last_sync_time()
+    if not force and last and (datetime.utcnow() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
+        return
+
+    print("🔄 Syncing from Google Sheets…")
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+
+    db = get_db()
+    cur = db.cursor()
+
+    # ---------- ACCOUNTS ----------
+    try:
+        ws_accounts = sh.worksheet("Accounts")
+        accounts = ws_accounts.get_all_records()
+    except Exception as e:
+        print("Accounts sync failed:", e)
+        accounts = []
+
+    cur.execute("DELETE FROM pastors")
+
+    for r in accounts:
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO pastors
+            (full_name, age, sex, church_address, contact_number, birthday, username, password)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                r.get("Name"),
+                r.get("Age"),
+                r.get("Sex"),
+                r.get("Church Address"),
+                r.get("Contact #"),
+                r.get("Birth Day"),
+                r.get("UserName"),
+                r.get("Password"),
+            ),
+        )
+
+    # ---------- REPORT ----------
+    try:
+        ws_report = sh.worksheet("Report")
+        reports = ws_report.get_all_records()
+    except Exception as e:
+        print("Report sync failed:", e)
+        reports = []
+
+    cur.execute("DELETE FROM monthly_reports")
+    cur.execute("DELETE FROM sunday_reports")
+    cur.execute("DELETE FROM church_progress")
+
+    for r in reports:
+        try:
+            d = date.fromisoformat(str(r.get("activity_date")))
+        except Exception:
+            continue
+
+        mr = get_or_create_monthly_report(d.year, d.month)
+        mrid = mr["id"]
+
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO sunday_reports
+            (monthly_report_id, date, is_complete,
+             attendance_adult, attendance_youth, attendance_children,
+             tithes_church, offering, mission, tithes_personal)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mrid,
+                d.isoformat(),
+                r.get("adult", 0),
+                r.get("youth", 0),
+                r.get("children", 0),
+                r.get("tithes", 0),
+                r.get("offering", 0),
+                r.get("mission offering", 0),
+                r.get("personal tithes", 0),
+            ),
+        )
+
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO church_progress
+            (monthly_report_id, bible_existing, bible_new, received_christ,
+             baptized_water, baptized_holy_spirit, healed, child_dedication, is_complete)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                mrid,
+                r.get("existing bible study", 0),
+                r.get("new bible study", 0),
+                r.get("received jesus", 0),
+                r.get("water baptized", 0),
+                r.get("holy spirit baptized", 0),
+                r.get("healed", 0),
+                r.get("childrens dedication", 0),
+            ),
+        )
+
+        status = str(r.get("status", "")).lower()
+        cur.execute(
+            """
+            UPDATE monthly_reports
+            SET submitted = 1,
+                approved = ?
+            WHERE id = ?
+            """,
+            (1 if "approved" in status else 0, mrid),
+        )
+
+    db.commit()
+    update_sync_time()
+    print("✅ Sync complete")
 
 
 def parse_float(value):
@@ -1199,6 +1354,7 @@ def pastor_login():
 # ------------------------
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
+    sync_from_sheets_if_needed()
     if not pastor_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
@@ -1658,6 +1814,7 @@ def ao_create_account():
 # ------------------------
 @app.route("/ao-tool/church-status")
 def ao_church_status():
+    sync_from_sheets_if_needed()
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
