@@ -4,6 +4,19 @@
 {% block content %}
 <section class="card">
   <h2>Prayer Request</h2>
-  <p>This feature is pending. It will allow members to submit prayer requests.</p>
+  <p class="muted small">
+    Submit prayer requests, track their status, and view answered prayers.
+  </p>
+
+  <div class="form-vertical" style="margin-top:12px;">
+    <!-- NOTE: These are plain URLs (not url_for) so the page won't break if routes aren't added yet. -->
+    <a href="/prayer-request/write" class="btn-primary">Write Prayer Request</a>
+    <a href="/prayer-request/status" class="btn-secondary">Prayer Request Status</a>
+    <a href="/prayer-request/answered" class="btn-secondary">Answered Prayer Request</a>
+  </div>
+
+  <div style="margin-top:14px;">
+    <a href="{{ url_for('splash') }}" class="btn-secondary">← Back</a>
+  </div>
 </section>
 {% endblock %}
