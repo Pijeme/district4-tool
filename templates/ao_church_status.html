@@ -35,6 +35,37 @@
         </div>
       </div>
     </summary>
+<div class="card" style="margin:8px 0; padding:10px;">
+
+  <form method="POST" action="{{ url_for('ao_aopt_submit') }}">
+    <input type="hidden" name="year" value="{{ month.year }}">
+    <input type="hidden" name="month" value="{{ month.month }}">
+
+    <label class="small"><b>AO Personal Tithes</b></label>
+
+    {% if month.aopt_amount is not none %}
+      <!-- DISPLAY MODE -->
+      <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+        <div><b>₱ {{ "%.2f"|format(month.aopt_amount) }}</b></div>
+        <button type="submit" class="btn-secondary">Edit</button>
+        <input type="hidden" name="amount" value="{{ month.aopt_amount }}">
+      </div>
+    {% else %}
+      <!-- INPUT MODE -->
+      <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+        <input
+          type="number"
+          step="0.01"
+          name="amount"
+          placeholder="Enter amount"
+          required
+        >
+        <button type="submit" class="btn-primary">Submit</button>
+      </div>
+    {% endif %}
+  </form>
+
+</div>
 
     <!-- AOPT Row -->
     <div style="display:flex; gap:12px; align-items:center; justify-content:center; flex-wrap:wrap; padding:10px 6px;">
@@ -46,7 +77,6 @@
 
         <label style="font-weight:800;">AO Personal Tithes</label>
 
-        {% set aopt_val = aopt_map.get(month.month) %}
         <input
           class="aopt-input"
           name="amount"
