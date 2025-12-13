@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Write Prayer Request - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Write Prayer Request</h2>
+  <p class="muted small" style="margin-top:6px;">
+    Please be respectful and concise. Your request will be <b>Pending</b> until approved by the AO.
+  </p>
+
+  {% if error %}
+    <div class="card" style="border:2px solid #a11; background:#ffd7d7; margin-top:12px;">
+      <b>Error:</b> {{ error }}
+    </div>
+  {% endif %}
+
+  {% if success %}
+    <div class="card" style="border:2px solid #1a7f1a; background:#d7ffd7; margin-top:12px;">
+      {{ success }}
+    </div>
+  {% endif %}
+
+  <form method="POST" action="/prayer-request/write" style="margin-top:14px;">
+    <label class="small"><b>Prayer Request Title</b></label>
+    <input
+      type="text"
+      name="title"
+      required
+      maxlength="120"
+      value="{{ values.title if values and values.title is defined else '' }}"
+      placeholder="e.g., Healing for my family"
+      style="width:100%; margin-top:6px;"
+    >
+
+    <div style="height:10px;"></div>
+
+    <label class="small"><b>Prayer Request</b></label>
+    <textarea
+      name="request"
+      required
+      rows="7"
+      placeholder="Write your prayer request here..."
+      style="width:100%; margin-top:6px;"
+    >{{ values.request if values and values.request is defined else '' }}</textarea>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+      <button class="btn-primary" type="submit">Submit Prayer Request</button>
+      <a href="/prayer-request" class="btn-secondary">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

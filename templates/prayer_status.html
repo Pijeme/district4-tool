@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Prayer Request Status - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+    <div>
+      <h2 style="margin-bottom:6px;">Prayer Request Status</h2>
+      <p class="muted small" style="margin:0;">
+        Your submitted prayer requests (Pending / Approved). You can edit, delete, or mark as answered.
+      </p>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <a href="/prayer-request/write" class="btn-primary">+ New Request</a>
+      <a href="/prayer-request" class="btn-secondary">← Back</a>
+    </div>
+  </div>
+
+  {% if requests and requests|length > 0 %}
+    <div style="margin-top:12px;">
+      {% for r in requests %}
+        <div class="card" style="margin-top:12px; border:2px solid #111;">
+          <details>
+            <summary style="cursor:pointer; list-style:none;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                  <div style="font-weight:900;">{{ r.title }}</div>
+                  <div class="muted small">
+                    {{ r.request_date }}
+                    {% if r.church_name %} • {{ r.church_name }}{% endif %}
+                  </div>
+                </div>
+
+                <div>
+                  {% set s = (r.status or '').lower() %}
+                  {% if 'approved' in s %}
+                    <span style="padding:6px 10px; border-radius:999px; border:1px solid #1a7f1a; background:#d7ffd7; font-weight:800; font-size:12px;">Approved</span>
+                  {% elif 'pending' in s %}
+                    <span style="padding:6px 10px; border-radius:999px; border:1px solid #9a7b00; background:#fff4cc; font-weight:800; font-size:12px;">Pending</span>
+                  {% elif 'answered' in s %}
+                    <span style="padding:6px 10px; border-radius:999px; border:1px solid #1a4a7f; background:#d7ebff; font-weight:800; font-size:12px;">Answered</span>
+                  {% else %}
+                    <span style="padding:6px 10px; border-radius:999px; border:1px solid #999; background:#f0f0f0; font-weight:800; font-size:12px;">{{ r.status or '—' }}</span>
+                  {% endif %}
+                </div>
+              </div>
+            </summary>
+
+            <div style="margin-top:12px;">
+              <div class="small" style="white-space:pre-wrap;">{{ r.request_text }}</div>
+
+              <div class="small muted" style="margin-top:10px;">
+                <b>Pastors Praying:</b>
+                {% if r.pastors_praying %}
+                  {{ r.pastors_praying }}
+                {% else %}
+                  —
+                {% endif %}
+              </div>
+
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                <!-- Edit -->
+                <a href="/prayer-request/edit/{{ r.request_id }}" class="btn-secondary">Edit</a>
+
+                <!-- Delete -->
+                <form method="POST" action="/prayer-request/delete" style="display:inline;">
+                  <input type="hidden" name="request_id" value="{{ r.request_id }}">
+                  <button class="btn-secondary" type="submit" onclick="return confirm('Delete this prayer request?')">Delete</button>
+                </form>
+
+                <!-- Mark Answered -->
+                <form method="POST" action="/prayer-request/mark-answered" style="display:inline;">
+                  <input type="hidden" name="request_id" value="{{ r.request_id }}">
+                  <button class="btn-primary" type="submit">Answered Prayer</button>
+                </form>
+              </div>
+            </div>
+          </details>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="card" style="margin-top:12px;">
+      <div class="muted">No prayer requests yet.</div>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
