@@ -3,119 +3,124 @@
 
 {% block content %}
 <section class="card">
-  <h2>Church Status</h2>
-  <p class="muted small">
-    Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
-  </p>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h2 style="margin-bottom:6px;">Church Status</h2>
+      <p class="muted small" style="margin:0;">
+        Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
+      </p>
+    </div>
 
-  <form method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
-    <label class="small"><b>Year:</b></label>
-    <select name="year" onchange="this.form.submit()">
-      {% for y in year_options %}
-        <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
-      {% endfor %}
-    </select>
-  </form>
-
-  <div class="form-vertical">
-    {% for m in months %}
-      <button type="button"
-              class="btn-secondary"
-              onclick="toggleMonth('{{ m.month }}')"
-              style="
-                width:100%;
-                border: 2px solid #111;
-                {% if m.all_reported %}
-                  background:#e9ffe9;
-                {% else %}
-                  background:#ffe9e9;
-                {% endif %}
-              ">
-        <span style="display:flex; justify-content:space-between; align-items:center;">
-          <span><b>{{ m.name }}</b></span>
-          <span style="font-size:18px;">▾</span>
-        </span>
-      </button>
-
-      <div id="month-{{ m.month }}" style="display:none; margin: 10px 0 16px 0;">
-        {% for c in m.churches %}
-          <div class="card" style="margin: 10px 0; border:2px solid #111;">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-              <div>
-                <div><b>{{ c.church }}</b></div>
-                <div class="muted small">
-                  {% if c.rows > 0 %}
-                    Rows: {{ c.rows }}
-                    {% if c.attendance_change is not none %}
-                      • Attendance change: <b>{{ "%.1f"|format(c.attendance_change) }}%</b>
-                    {% endif %}
-                  {% else %}
-                    No report submitted for this month.
-                  {% endif %}
-                </div>
-              </div>
-
-              {% if c.rows == 0 %}
-                <span style="padding:6px 10px; border-radius:999px; border:1px solid #a11; background:#ffd7d7; font-weight:800; font-size:12px;">
-                  Not submitted
-                </span>
-              {% else %}
-                {% if c.status_key == "approved" %}
-                  <span style="padding:6px 10px; border-radius:999px; border:1px solid #1a7f1a; background:#d7ffd7; font-weight:800; font-size:12px;">
-                    Approved
-                  </span>
-                {% else %}
-                  <span style="padding:6px 10px; border-radius:999px; border:1px solid #9a7b00; background:#fff4cc; font-weight:800; font-size:12px;">
-                    Pending
-                  </span>
-                {% endif %}
-              {% endif %}
-            </div>
-
-            {% if c.rows > 0 %}
-              <div class="small" style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:8px 14px;">
-                <div><b>Total Amount to Send:</b> {{ "%.2f"|format(c.totals.amount_to_send) }}</div>
-                <div><b>Total Tithes:</b> {{ "%.2f"|format(c.totals.tithes) }}</div>
-
-                <div><b>Total Offering:</b> {{ "%.2f"|format(c.totals.offering) }}</div>
-                <div><b>Total Personal Tithes:</b> {{ "%.2f"|format(c.totals.personal_tithes) }}</div>
-
-                <div><b>Total Mission Offering:</b> {{ "%.2f"|format(c.totals.mission_offering) }}</div>
-                <div><b>Avg Attendance:</b> A {{ "%.1f"|format(c.avg.adult) }} / Y {{ "%.1f"|format(c.avg.youth) }} / C {{ "%.1f"|format(c.avg.children) }}</div>
-
-                <div><b>Avg Received Jesus:</b> {{ "%.1f"|format(c.avg.received_jesus) }}</div>
-                <div><b>Avg Bible Study:</b> Existing {{ "%.1f"|format(c.avg.existing_bible_study) }} / New {{ "%.1f"|format(c.avg.new_bible_study) }}</div>
-
-                <div><b>Avg Baptism:</b> Water {{ "%.1f"|format(c.avg.water_baptized) }} / Holy Spirit {{ "%.1f"|format(c.avg.holy_spirit_baptized) }}</div>
-                <div><b>Avg Others:</b> Dedication {{ "%.1f"|format(c.avg.childrens_dedication) }} / Healed {{ "%.1f"|format(c.avg.healed) }}</div>
-              </div>
-
-              <form method="POST" action="{{ url_for('ao_church_status_approve') }}" style="margin-top:10px;">
-                <input type="hidden" name="year" value="{{ m.year }}">
-                <input type="hidden" name="month" value="{{ m.month }}">
-                <input type="hidden" name="church" value="{{ c.church }}">
-
-                <button class="btn-primary" type="submit" {% if c.status_key == "approved" %}disabled{% endif %}>
-                  {% if c.status_key == "approved" %}Approved{% else %}Approve{% endif %}
-                </button>
-              </form>
-            {% endif %}
-          </div>
+    <form method="get" action="{{ url_for('ao_church_status') }}" style="display:flex; align-items:center; gap:10px;">
+      <label style="font-weight:700;">Year:</label>
+      <select name="year" onchange="this.form.submit()" style="padding:10px 12px; border-radius:12px;">
+        {% for y in year_options %}
+          <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
         {% endfor %}
-      </div>
-    {% endfor %}
-  </div>
-
-  <div style="margin-top:14px;">
-    <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back to AO Tool</a>
+      </select>
+    </form>
   </div>
 </section>
 
+{% for month in months %}
+<section class="card"
+  style="margin-top:14px;
+         border-radius:18px;
+         {% if month.all_reported %} border:2px solid #27ae60; {% else %} border:1px solid rgba(0,0,0,0.10); {% endif %}">
+  <details>
+    <summary style="cursor:pointer; padding:10px 6px; list-style:none;">
+      <div style="display:flex; align-items:center; justify-content:center;">
+        <div style="font-weight:800; font-size:18px;">
+          {{ month.name }} {{ month.year }}
+        </div>
+      </div>
+    </summary>
+
+    <!-- AOPT Row -->
+    <div style="display:flex; gap:12px; align-items:center; justify-content:center; flex-wrap:wrap; padding:10px 6px;">
+      <form method="post" action="{{ url_for('ao_aopt_submit') }}"
+            class="aopt-form"
+            style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:center;">
+        <input type="hidden" name="year" value="{{ month.year }}">
+        <input type="hidden" name="month" value="{{ month.month }}">
+
+        <label style="font-weight:800;">AO Personal Tithes</label>
+
+        {% set aopt_val = aopt_map.get(month.month) %}
+        <input
+          class="aopt-input"
+          name="amount"
+          value="{% if aopt_val is not none %}{{ '%.2f'|format(aopt_val) }}{% endif %}"
+          {% if aopt_val is not none %}readonly{% endif %}
+          placeholder="0.00"
+          style="padding:10px 12px; border-radius:12px; min-width:180px;"
+        >
+
+        <button type="button"
+                class="btn-secondary aopt-toggle"
+                style="min-width:110px;">
+          {% if aopt_val is not none %}Edit{% else %}Submit{% endif %}
+        </button>
+      </form>
+
+      <!-- Placeholder button (as you requested “for now”) -->
+      <button type="button" class="btn-secondary" style="min-width:140px;">
+        Print Report
+      </button>
+    </div>
+
+    <!-- Churches list -->
+    <div style="margin-top:10px;">
+      {% for c in month.churches %}
+      <div class="card" style="margin-top:12px; border-radius:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:900; font-size:20px;">{{ c.church }}</div>
+            {% if c.rows == 0 %}
+              <div class="muted">No report submitted for this month.</div>
+            {% else %}
+              <div class="muted small">
+                Rows: {{ c.rows }}
+              </div>
+            {% endif %}
+          </div>
+
+          <div>
+            {% if c.status_key == 'approved' %}
+              <span class="pill pill-success">Approved</span>
+            {% elif c.status_key == 'pending' %}
+              <span class="pill pill-warn">Pending</span>
+            {% else %}
+              <span class="pill pill-danger">Not submitted</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+</section>
+{% endfor %}
+
 <script>
-  function toggleMonth(m) {
-    const el = document.getElementById("month-" + m);
-    if (!el) return;
-    el.style.display = (el.style.display === "block") ? "none" : "block";
-  }
+  // Toggle behavior:
+  // - if readonly: switch to edit mode (editable), button becomes "Submit"
+  // - if editable: submit the form
+  document.addEventListener("click", function(e) {
+    const btn = e.target.closest(".aopt-toggle");
+    if (!btn) return;
+
+    const form = btn.closest(".aopt-form");
+    const input = form.querySelector(".aopt-input");
+
+    if (input.hasAttribute("readonly")) {
+      input.removeAttribute("readonly");
+      input.focus();
+      btn.textContent = "Submit";
+      return;
+    }
+
+    form.submit();
+  });
 </script>
 {% endblock %}
