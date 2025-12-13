@@ -3,17 +3,17 @@
 
 {% block content %}
 <section class="card">
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
     <div>
       <h2 style="margin-bottom:6px;">Church Status</h2>
       <p class="muted small" style="margin:0;">
-        Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
+        Month turns <b>green</b> only if <b>all churches</b> submitted.
       </p>
     </div>
 
-    <form method="get" action="{{ url_for('ao_church_status') }}" style="display:flex; align-items:center; gap:10px;">
-      <label style="font-weight:700;">Year:</label>
-      <select name="year" onchange="this.form.submit()" style="padding:10px 12px; border-radius:12px;">
+    <form method="get" action="{{ url_for('ao_church_status') }}">
+      <label><b>Year:</b></label>
+      <select name="year" onchange="this.form.submit()" style="padding:8px 12px; border-radius:10px;">
         {% for y in year_options %}
           <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
         {% endfor %}
@@ -26,92 +26,57 @@
 <section class="card"
   style="margin-top:14px;
          border-radius:18px;
-         {% if month.all_reported %} border:2px solid #27ae60; {% else %} border:1px solid rgba(0,0,0,0.10); {% endif %}">
-  <details>
-    <summary style="cursor:pointer; padding:10px 6px; list-style:none;">
-      <div style="display:flex; align-items:center; justify-content:center;">
-        <div style="font-weight:800; font-size:18px;">
-          {{ month.name }} {{ month.year }}
-        </div>
+         {% if month.all_reported %}border:2px solid #27ae60;{% else %}border:1px solid rgba(0,0,0,0.12);{% endif %}">
+  <details {% if open_month == month.month %}open{% endif %}>
+    <summary style="cursor:pointer; padding:10px; list-style:none;">
+      <div style="text-align:center; font-weight:900; font-size:18px;">
+        {{ month.name }} {{ month.year }}
       </div>
     </summary>
-<div class="card" style="margin:8px 0; padding:10px;">
 
-  <form method="POST" action="{{ url_for('ao_aopt_submit') }}">
-    <input type="hidden" name="year" value="{{ month.year }}">
-    <input type="hidden" name="month" value="{{ month.month }}">
-
-    <label class="small"><b>AO Personal Tithes</b></label>
-
-    {% if month.aopt_amount is not none %}
-      <!-- DISPLAY MODE -->
-      <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
-        <div><b>₱ {{ "%.2f"|format(month.aopt_amount) }}</b></div>
-        <button type="submit" class="btn-secondary">Edit</button>
-        <input type="hidden" name="amount" value="{{ month.aopt_amount }}">
-      </div>
-    {% else %}
-      <!-- INPUT MODE -->
-      <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
-        <input
-          type="number"
-          step="0.01"
-          name="amount"
-          placeholder="Enter amount"
-          required
-        >
-        <button type="submit" class="btn-primary">Submit</button>
-      </div>
-    {% endif %}
-  </form>
-
-</div>
-
-    <!-- AOPT Row -->
-    <div style="display:flex; gap:12px; align-items:center; justify-content:center; flex-wrap:wrap; padding:10px 6px;">
-      <form method="post" action="{{ url_for('ao_aopt_submit') }}"
-            class="aopt-form"
-            style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:center;">
+    <!-- AO PERSONAL TITHES -->
+    <div class="card" style="margin-top:10px; padding:12px;">
+      <form method="POST" action="{{ url_for('ao_aopt_submit') }}"
+            style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <input type="hidden" name="year" value="{{ month.year }}">
         <input type="hidden" name="month" value="{{ month.month }}">
 
         <label style="font-weight:800;">AO Personal Tithes</label>
 
-        <input
-          class="aopt-input"
-          name="amount"
-          value="{% if aopt_val is not none %}{{ '%.2f'|format(aopt_val) }}{% endif %}"
-          {% if aopt_val is not none %}readonly{% endif %}
-          placeholder="0.00"
-          style="padding:10px 12px; border-radius:12px; min-width:180px;"
-        >
-
-        <button type="button"
-                class="btn-secondary aopt-toggle"
-                style="min-width:110px;">
-          {% if aopt_val is not none %}Edit{% else %}Submit{% endif %}
-        </button>
+        {% if month.aopt_amount is not none %}
+          <input
+            type="number"
+            step="0.01"
+            name="amount"
+            value="{{ '%.2f'|format(month.aopt_amount) }}"
+            style="padding:10px 12px; border-radius:12px; min-width:160px;"
+          >
+          <button class="btn-primary" type="submit">Update</button>
+        {% else %}
+          <input
+            type="number"
+            step="0.01"
+            name="amount"
+            placeholder="Enter amount"
+            required
+            style="padding:10px 12px; border-radius:12px; min-width:160px;"
+          >
+          <button class="btn-primary" type="submit">Submit</button>
+        {% endif %}
       </form>
-
-      <!-- Placeholder button (as you requested “for now”) -->
-      <button type="button" class="btn-secondary" style="min-width:140px;">
-        Print Report
-      </button>
     </div>
 
-    <!-- Churches list -->
+    <!-- CHURCH LIST -->
     <div style="margin-top:10px;">
       {% for c in month.churches %}
-      <div class="card" style="margin-top:12px; border-radius:18px;">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;">
+      <div class="card" style="margin-top:10px; border-radius:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
           <div>
-            <div style="font-weight:900; font-size:20px;">{{ c.church }}</div>
+            <div style="font-weight:900; font-size:18px;">{{ c.church }}</div>
             {% if c.rows == 0 %}
-              <div class="muted">No report submitted for this month.</div>
+              <div class="muted small">No report submitted.</div>
             {% else %}
-              <div class="muted small">
-                Rows: {{ c.rows }}
-              </div>
+              <div class="muted small">Rows: {{ c.rows }}</div>
             {% endif %}
           </div>
 
@@ -132,25 +97,7 @@
 </section>
 {% endfor %}
 
-<script>
-  // Toggle behavior:
-  // - if readonly: switch to edit mode (editable), button becomes "Submit"
-  // - if editable: submit the form
-  document.addEventListener("click", function(e) {
-    const btn = e.target.closest(".aopt-toggle");
-    if (!btn) return;
-
-    const form = btn.closest(".aopt-form");
-    const input = form.querySelector(".aopt-input");
-
-    if (input.hasAttribute("readonly")) {
-      input.removeAttribute("readonly");
-      input.focus();
-      btn.textContent = "Submit";
-      return;
-    }
-
-    form.submit();
-  });
-</script>
+<div style="margin-top:14px;">
+  <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back to AO Tool</a>
+</div>
 {% endblock %}
