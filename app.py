@@ -1858,8 +1858,8 @@ def ao_church_status():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
 
-   # Year dropdown should be forward only
-year_options = list(range(2025, 2036))  # 2025 to 2035
+    # ✅ Year dropdown forward only (2025–2035)
+    year_options = list(range(2025, 2036))
 
     month_names = [
         ("January", 1), ("February", 2), ("March", 3), ("April", 4),
@@ -1876,9 +1876,9 @@ year_options = list(range(2025, 2036))  # 2025 to 2035
         church_items = []
         all_reported = True
 
-                month_label = f"{name} {year}"
+        # ✅ AOPT per month label like "January 2025"
+        month_label = f"{name} {year}"
         aopt_amount = get_aopt_amount_from_cache(month_label)
-
 
         for church in all_churches:
             stats = get_report_stats_for_month_and_church_cache(year, m, church)
@@ -1916,28 +1916,28 @@ year_options = list(range(2025, 2036))  # 2025 to 2035
                 }
             )
 
-              months.append(
+        months.append(
             {
                 "name": name,
                 "month": m,
                 "year": year,
-                "label": month_label,      # "January 2025"
-                "aopt_amount": aopt_amount,
+                "label": month_label,        # "January 2025"
+                "aopt_amount": aopt_amount,  # number or None
                 "all_reported": all_reported,
                 "churches": church_items,
             }
         )
 
+    open_month = request.args.get("open_month", type=int)
 
-   open_month = request.args.get("open_month", type=int)
+    return render_template(
+        "ao_church_status.html",
+        year=year,
+        year_options=year_options,
+        months=months,
+        open_month=open_month,
+    )
 
-return render_template(
-    "ao_church_status.html",
-    year=year,
-    year_options=year_options,
-    months=months,
-    open_month=open_month,
-)
 
 @app.route("/ao-tool/church-status/aopt", methods=["POST"])
 def ao_aopt_submit():
@@ -1954,7 +1954,6 @@ def ao_aopt_submit():
     month_label = f"{calendar.month_name[month]} {year}"
     amount_val = parse_float(amount_raw)
 
-    # Update Google Sheet "AOPT"
     try:
         client = get_gs_client()
         sh = client.open("District4 Data")
@@ -1962,7 +1961,6 @@ def ao_aopt_submit():
 
         values = ws.get_all_values()
         if not values:
-            # If sheet is empty, create header row
             ws.append_row(["Month", "Amount"])
             values = ws.get_all_values()
 
@@ -1971,10 +1969,8 @@ def ao_aopt_submit():
         idx_amount = _find_col(headers, "Amount")
 
         if idx_month is None or idx_amount is None:
-            # If headers are wrong, fail safely (don’t destroy other tools)
             print("❌ AOPT sheet missing required headers Month/Amount")
         else:
-            # Check cache for existing row
             db = get_db()
             cached = db.execute(
                 "SELECT sheet_row FROM sheet_aopt_cache WHERE month = ?",
@@ -1988,15 +1984,15 @@ def ao_aopt_submit():
             else:
                 ws.append_row([month_label, amount_val])
 
-            # Update local cache immediately
-            # Re-sync soon to guarantee correct sheet_row after append
+            # ✅ refresh cache so UI switches to textbox after submit
             sync_from_sheets_if_needed(force=True)
 
     except Exception as e:
         print("❌ Error saving AOPT:", e)
 
-    # reopen the same month after submit
     return redirect(url_for("ao_church_status", year=year, open_month=month))
+
+
 
 
 @app.route("/ao-tool/church-status/approve", methods=["POST"])
