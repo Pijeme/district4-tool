@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, date
 import calendar
 import urllib.parse
+import uuid
 
 from zoneinfo import ZoneInfo
 
@@ -204,7 +205,30 @@ def init_db():
         """
     )
 
-    
+    # -----------------------
+    # ✅ PRAYER REQUEST CACHE (PrayerRequest sheet → local cache)
+    # Sheet tab: "PrayerRequest"
+    # Columns:
+    # Church Name | Submitted By | Request ID | Prayer Request Title | Prayer Request Date
+    # Prayer Request | Status | Pastor's Praying | Answered Date
+    # -----------------------
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_prayer_request_cache (
+            request_id TEXT PRIMARY KEY,
+            church_name TEXT,
+            submitted_by TEXT,
+            title TEXT,
+            request_date TEXT,
+            request_text TEXT,
+            status TEXT,
+            pastors_praying TEXT,
+            answered_date TEXT,
+            sheet_row INTEGER
+        )
+        """
+    )
+
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)"
     )
@@ -212,6 +236,13 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_report_ym_church ON sheet_report_cache(year, month, church)"
     )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_report_ym ON sheet_report_cache(year, month)")
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prayer_submitted_by ON sheet_prayer_request_cache(submitted_by)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prayer_status ON sheet_prayer_request_cache(status)"
+    )
 
     db.commit()
 
@@ -431,7 +462,6 @@ def get_last_sync_display_ph():
     if not dt_utc:
         return "Never"
     try:
-        # dt_utc is naive UTC (from utcnow isoformat). Attach UTC tz, convert to PH
         dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
         dt_ph = dt_utc.astimezone(PH_TZ)
         return dt_ph.strftime("%b %d, %Y %I:%M %p")
@@ -471,7 +501,7 @@ def sync_from_sheets_if_needed(force=False):
     # -----------------------
     try:
         ws_accounts = sh.worksheet("Accounts")
-        acc_values = ws_accounts.get_all_values()  # includes header
+        acc_values = ws_accounts.get_all_values()
     except Exception as e:
         print("❌ Accounts sync failed:", e)
         acc_values = []
@@ -573,7 +603,6 @@ def sync_from_sheets_if_needed(force=False):
             activity = str(cell(row, i_activity)).strip()
             if not activity:
                 continue
-
             try:
                 d = date.fromisoformat(activity)
             except Exception:
@@ -628,8 +657,6 @@ def sync_from_sheets_if_needed(force=False):
 
     # -----------------------
     # AOPT (AO Personal Tithes)
-    # Sheet tab name: "AOPT"
-    # Columns: "Month", "Amount"
     # -----------------------
     try:
         ws_aopt = sh.worksheet("AOPT")
@@ -663,14 +690,68 @@ def sync_from_sheets_if_needed(force=False):
                 INSERT OR REPLACE INTO sheet_aopt_cache (month, amount, sheet_row)
                 VALUES (?, ?, ?)
                 """,
+                (month_label, amount_val, r + 1),
+            )
+
+    # -----------------------
+    # PRAYER REQUEST (PrayerRequest)
+    # -----------------------
+    try:
+        ws_pr = sh.worksheet("PrayerRequest")
+        pr_values = ws_pr.get_all_values()
+    except Exception as e:
+        print("❌ PrayerRequest sync failed:", e)
+        pr_values = []
+
+    cur.execute("DELETE FROM sheet_prayer_request_cache")
+
+    if pr_values and len(pr_values) >= 2:
+        headers = pr_values[0]
+
+        i_church = _find_col(headers, "Church Name")
+        i_submitted_by = _find_col(headers, "Submitted By")
+        i_request_id = _find_col(headers, "Request ID")
+        i_title = _find_col(headers, "Prayer Request Title")
+        i_request_date = _find_col(headers, "Prayer Request Date")
+        i_request_text = _find_col(headers, "Prayer Request")
+        i_status = _find_col(headers, "Status")
+        i_praying = _find_col(headers, "Pastor's Praying")
+        i_answered = _find_col(headers, "Answered Date")
+
+        def cell(row, idx):
+            if idx is None:
+                return ""
+            if idx < len(row):
+                return row[idx]
+            return ""
+
+        for r in range(1, len(pr_values)):
+            row = pr_values[r]
+            req_id = str(cell(row, i_request_id)).strip()
+            if not req_id:
+                continue
+
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO sheet_prayer_request_cache (
+                    request_id, church_name, submitted_by, title, request_date,
+                    request_text, status, pastors_praying, answered_date, sheet_row
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
-                    month_label,
-                    amount_val,
-                    r + 1,  # sheet row number
+                    req_id,
+                    str(cell(row, i_church)).strip(),
+                    str(cell(row, i_submitted_by)).strip(),
+                    str(cell(row, i_title)).strip(),
+                    str(cell(row, i_request_date)).strip(),
+                    str(cell(row, i_request_text)).strip(),
+                    str(cell(row, i_status)).strip(),
+                    str(cell(row, i_praying)).strip(),
+                    str(cell(row, i_answered)).strip(),
+                    r + 1,
                 ),
             )
 
-    
     db.commit()
     _update_sync_time()
     print("✅ Sheets cache sync done.")
@@ -690,7 +771,6 @@ def get_aopt_amount_from_cache(month_label: str):
     return row["amount"]
 
 
-
 def refresh_pastor_from_cache():
     username = session.get("pastor_username")
     if not username:
@@ -708,6 +788,32 @@ def refresh_pastor_from_cache():
     return True
 
 
+def _current_user_key():
+    """
+    We store 'Submitted By' as username (preferred) so filtering is stable.
+    """
+    if session.get("pastor_logged_in"):
+        return (session.get("pastor_username") or "").strip() or "pastor"
+    if session.get("ao_logged_in"):
+        return (session.get("ao_username") or "").strip() or "ao"
+    return ""
+
+
+def _current_user_display():
+    if session.get("pastor_logged_in"):
+        return (session.get("pastor_name") or "").strip() or (session.get("pastor_username") or "Pastor")
+    if session.get("ao_logged_in"):
+        return (session.get("ao_username") or "").strip() or "AO"
+    return "Unknown"
+
+
+def _current_user_church_name():
+    if session.get("pastor_logged_in"):
+        refresh_pastor_from_cache()
+        return (session.get("pastor_church_address") or "").strip()
+    return ""
+
+
 # ========================
 # ✅ IMPORTANT FIX:
 # Cache → Local upsert for Pastor Tool display
@@ -715,13 +821,6 @@ def refresh_pastor_from_cache():
 
 
 def sync_local_month_from_cache_for_pastor(year: int, month: int):
-    """
-    Pulls this pastor's month rows from sheet_report_cache and fills local tables:
-    - sunday_reports (mark complete + values)
-    - church_progress (mark complete + values)
-    - monthly_reports submitted/approved
-    This makes Pastor Tool show existing Google Sheets data again.
-    """
     refresh_pastor_from_cache()
     pastor_name = (session.get("pastor_name") or "").strip()
     church_address = (session.get("pastor_church_address") or "").strip()
@@ -731,7 +830,6 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
     db = get_db()
     cur = db.cursor()
 
-    # read from cache (DB only)
     cached_rows = db.execute(
         """
         SELECT *
@@ -752,10 +850,8 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
     mr = get_or_create_monthly_report(year, month)
     mrid = mr["id"]
 
-    # ensure all sundays exist (so UI still shows full list)
     ensure_sunday_reports(mrid, year, month)
 
-    # upsert each cached row into sunday_reports
     statuses = set()
     cp_seed = None
 
@@ -770,11 +866,9 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
 
         statuses.add(str(r["status"] or "").strip())
 
-        # choose first row as church progress seed
         if cp_seed is None:
             cp_seed = r
 
-        # find existing local row for that date
         srow = db.execute(
             """
             SELECT id FROM sunday_reports
@@ -839,7 +933,6 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
                 ),
             )
 
-    # church progress upsert
     cp = ensure_church_progress(mrid)
     if cp_seed is not None:
         cur.execute(
@@ -867,8 +960,7 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
             ),
         )
 
-    # monthly status (submitted/approved) based on cache statuses
-    submitted = 1 if any(s.strip() for s in statuses) else 1  # if rows exist, treat as submitted
+    submitted = 1 if any(s.strip() for s in statuses) else 1
     approved = 0
     for s in statuses:
         if "approved" in str(s).lower():
@@ -1183,6 +1275,191 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
 
 
 # ========================
+# Prayer Request → Sheets helpers
+# ========================
+
+PRAYER_SHEET_NAME = "PrayerRequest"
+
+
+def _ensure_prayer_sheet_headers(ws):
+    """
+    Ensures header row exists (doesn't overwrite if already there).
+    """
+    values = ws.get_all_values()
+    if values:
+        return values
+
+    headers = [
+        "Church Name",
+        "Submitted By",
+        "Request ID",
+        "Prayer Request Title",
+        "Prayer Request Date",
+        "Prayer Request",
+        "Status",
+        "Pastor's Praying",
+        "Answered Date",
+    ]
+    ws.append_row(headers)
+    return ws.get_all_values()
+
+
+def _append_prayer_request_to_sheet(church_name, submitted_by, request_id, title, request_date, request_text):
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    try:
+        ws = sh.worksheet(PRAYER_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=PRAYER_SHEET_NAME, rows=1000, cols=12)
+
+    _ensure_prayer_sheet_headers(ws)
+    ws.append_row(
+        [
+            church_name,
+            submitted_by,
+            request_id,
+            title,
+            request_date,
+            request_text,
+            "Pending",
+            "",   # Pastor's Praying
+            "",   # Answered Date
+        ]
+    )
+
+
+def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
+    """
+    updates keys among: church_name, submitted_by, title, request_date, request_text,
+    status, pastors_praying, answered_date
+    """
+    db = get_db()
+    cached = db.execute(
+        "SELECT sheet_row FROM sheet_prayer_request_cache WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+    if not cached or not cached["sheet_row"]:
+        return False
+
+    sheet_row = int(cached["sheet_row"])
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet(PRAYER_SHEET_NAME)
+
+    values = ws.get_all_values()
+    if not values:
+        return False
+    headers = values[0]
+
+    col_map = {
+        "church_name": "Church Name",
+        "submitted_by": "Submitted By",
+        "request_id": "Request ID",
+        "title": "Prayer Request Title",
+        "request_date": "Prayer Request Date",
+        "request_text": "Prayer Request",
+        "status": "Status",
+        "pastors_praying": "Pastor's Praying",
+        "answered_date": "Answered Date",
+    }
+
+    body = []
+    for k, v in updates.items():
+        header = col_map.get(k)
+        if not header:
+            continue
+        idx = _find_col(headers, header)
+        if idx is None:
+            continue
+        col_letter = chr(ord("A") + idx)
+        body.append({"range": f"{col_letter}{sheet_row}", "values": [[v]]})
+
+    if not body:
+        return False
+
+    ws.batch_update(body)
+    return True
+
+
+def _delete_prayer_request_row_in_sheet(request_id):
+    db = get_db()
+    cached = db.execute(
+        "SELECT sheet_row FROM sheet_prayer_request_cache WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+    if not cached or not cached["sheet_row"]:
+        return False
+
+    sheet_row = int(cached["sheet_row"])
+    if sheet_row <= 1:
+        return False
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet(PRAYER_SHEET_NAME)
+
+    ws.delete_rows(sheet_row)
+    return True
+
+
+# ========================
+# Prayer Request cache queries
+# ========================
+
+def get_prayer_requests_for_user(submitted_by: str, include_answered=False):
+    db = get_db()
+    if include_answered:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM sheet_prayer_request_cache
+            WHERE TRIM(submitted_by) = TRIM(?)
+            ORDER BY request_date DESC, sheet_row DESC
+            """,
+            (submitted_by,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM sheet_prayer_request_cache
+            WHERE TRIM(submitted_by) = TRIM(?)
+              AND (status IS NULL OR TRIM(status) != 'Answered')
+            ORDER BY request_date DESC, sheet_row DESC
+            """,
+            (submitted_by,),
+        ).fetchall()
+    return rows
+
+
+def get_answered_prayer_requests_for_user(submitted_by: str):
+    db = get_db()
+    return db.execute(
+        """
+        SELECT *
+        FROM sheet_prayer_request_cache
+        WHERE TRIM(submitted_by) = TRIM(?)
+          AND TRIM(status) = 'Answered'
+        ORDER BY answered_date DESC, request_date DESC, sheet_row DESC
+        """,
+        (submitted_by,),
+    ).fetchall()
+
+
+def get_pending_prayers_for_ao():
+    db = get_db()
+    return db.execute(
+        """
+        SELECT *
+        FROM sheet_prayer_request_cache
+        WHERE TRIM(status) = 'Pending'
+        ORDER BY request_date DESC, sheet_row DESC
+        """
+    ).fetchall()
+
+
+# ========================
 # Bible verse of the day
 # ========================
 
@@ -1247,6 +1524,10 @@ def ao_logged_in():
 
 def pastor_logged_in():
     return session.get("pastor_logged_in") is True
+
+
+def any_user_logged_in():
+    return pastor_logged_in() or ao_logged_in()
 
 
 def generate_pastor_credentials(full_name: str, age: int):
@@ -1352,7 +1633,6 @@ def pastor_login():
                 session.permanent = True
                 return redirect(request.form.get("next") or next_url)
 
-            # fallback (only if cache empty / stale)
             try:
                 client = get_gs_client()
                 sh = client.open("District4 Data")
@@ -1399,7 +1679,6 @@ def pastor_tool():
     year = request.args.get("year", type=int) or today.year
     month = request.args.get("month", type=int) or today.month
 
-    # ✅ FIX: fill local tables from cache for this pastor+month
     sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
@@ -1444,7 +1723,6 @@ def pastor_tool():
     row = cursor.fetchone()
     monthly_total = row["total_amount"] or 0.0
 
-    # ✅ 10+ years options
     year_options = list(range(today.year - 10, today.year + 4))
 
     month_names = [
@@ -1472,7 +1750,6 @@ def pastor_tool():
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
                 sync_from_sheets_if_needed(force=True)
-                # refresh local view after export too
                 sync_local_month_from_cache_for_pastor(year, month)
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
@@ -1508,7 +1785,6 @@ def sunday_detail(year, month, day):
     except ValueError:
         abort(404)
 
-    # ✅ keep local month in sync, so detail page also shows sheet values
     sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
@@ -1613,7 +1889,6 @@ def church_progress_view(year, month):
 
     refresh_pastor_from_cache()
 
-    # ✅ keep local month in sync, so progress also shows sheet values
     sync_local_month_from_cache_for_pastor(year, month)
 
     monthly_report = get_or_create_monthly_report(year, month)
@@ -1727,7 +2002,6 @@ def ao_tool():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
-    # ✅ pass PH-time display for badge
     last_sync_ph = get_last_sync_display_ph()
     return render_template("ao_tool.html", last_sync_ph=last_sync_ph)
 
@@ -1858,7 +2132,6 @@ def ao_church_status():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
 
-    # ✅ Year dropdown forward only (2025–2035)
     year_options = list(range(2025, 2036))
 
     month_names = [
@@ -1876,7 +2149,6 @@ def ao_church_status():
         church_items = []
         all_reported = True
 
-        # ✅ AOPT per month label like "January 2025"
         month_label = f"{name} {year}"
         aopt_amount = get_aopt_amount_from_cache(month_label)
 
@@ -1921,8 +2193,8 @@ def ao_church_status():
                 "name": name,
                 "month": m,
                 "year": year,
-                "label": month_label,        # "January 2025"
-                "aopt_amount": aopt_amount,  # number or None
+                "label": month_label,
+                "aopt_amount": aopt_amount,
                 "all_reported": all_reported,
                 "churches": church_items,
             }
@@ -1965,11 +2237,10 @@ def ao_aopt_submit():
             values = ws.get_all_values()
 
         headers = values[0]
-        idx_month = _find_col(headers, "Month")
         idx_amount = _find_col(headers, "Amount")
 
-        if idx_month is None or idx_amount is None:
-            print("❌ AOPT sheet missing required headers Month/Amount")
+        if idx_amount is None:
+            print("❌ AOPT sheet missing required header Amount")
         else:
             db = get_db()
             cached = db.execute(
@@ -1979,20 +2250,17 @@ def ao_aopt_submit():
 
             if cached and cached["sheet_row"]:
                 sheet_row = int(cached["sheet_row"])
-                col_letter = chr(ord("A") + idx_amount)  # assumes <= Z
+                col_letter = chr(ord("A") + idx_amount)
                 ws.update(f"{col_letter}{sheet_row}", [[amount_val]])
             else:
                 ws.append_row([month_label, amount_val])
 
-            # ✅ refresh cache so UI switches to textbox after submit
             sync_from_sheets_if_needed(force=True)
 
     except Exception as e:
         print("❌ Error saving AOPT:", e)
 
     return redirect(url_for("ao_church_status", year=year, open_month=month))
-
-
 
 
 @app.route("/ao-tool/church-status/approve", methods=["POST"])
@@ -2015,13 +2283,268 @@ def ao_church_status_approve():
 
 
 # ========================
-# Other pages
+# Prayer Request (menu + pages)
 # ========================
 
 @app.route("/prayer-request")
 def prayer_request():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
     return render_template("prayer_request.html")
 
+
+@app.route("/prayer-request/write", methods=["GET", "POST"])
+def prayer_request_write():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    if request.method == "POST":
+        title = (request.form.get("title") or "").strip()
+        body = (request.form.get("prayer_request") or "").strip()
+
+        if not title or not body:
+            # keep it simple: reload with basic error
+            return render_template("prayer_write.html", error="Title and Prayer Request are required.", values={"title": title, "prayer_request": body})
+
+        req_id = str(uuid.uuid4())
+        submitted_by = _current_user_key()
+        church_name = _current_user_church_name()
+        req_date = date.today().isoformat()
+
+        try:
+            _append_prayer_request_to_sheet(
+                church_name=church_name,
+                submitted_by=submitted_by,
+                request_id=req_id,
+                title=title,
+                request_date=req_date,
+                request_text=body,
+            )
+            sync_from_sheets_if_needed(force=True)
+        except Exception as e:
+            print("❌ Error submitting prayer request:", e)
+
+        return redirect(url_for("prayer_request_status"))
+
+    return render_template("prayer_write.html", error=None, values={"title": "", "prayer_request": ""})
+
+
+@app.route("/prayer-request/status")
+def prayer_request_status():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    submitted_by = _current_user_key()
+    rows = get_prayer_requests_for_user(submitted_by, include_answered=False)
+
+    # shape for templates (dicts)
+    items = []
+    for r in rows:
+        items.append(
+            {
+                "request_id": r["request_id"],
+                "church_name": r["church_name"] or "",
+                "submitted_by": r["submitted_by"] or "",
+                "title": r["title"] or "",
+                "request_date": r["request_date"] or "",
+                "request_text": r["request_text"] or "",
+                "status": r["status"] or "Pending",
+                "pastors_praying": r["pastors_praying"] or "",
+                "answered_date": r["answered_date"] or "",
+            }
+        )
+
+    return render_template("prayer_status.html", items=items, user_display=_current_user_display())
+
+
+@app.route("/prayer-request/answered")
+def prayer_request_answered():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    submitted_by = _current_user_key()
+    rows = get_answered_prayer_requests_for_user(submitted_by)
+
+    items = []
+    for r in rows:
+        items.append(
+            {
+                "request_id": r["request_id"],
+                "title": r["title"] or "",
+                "request_date": r["request_date"] or "",
+                "answered_date": r["answered_date"] or "",
+                "request_text": r["request_text"] or "",
+            }
+        )
+
+    return render_template("prayer_answered.html", items=items, user_display=_current_user_display())
+
+
+@app.route("/prayer-request/edit/<request_id>", methods=["GET", "POST"])
+def prayer_request_edit(request_id):
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    submitted_by = _current_user_key()
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM sheet_prayer_request_cache WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+
+    if not row:
+        abort(404)
+
+    # permission: only owner or AO can edit
+    if not ao_logged_in() and (str(row["submitted_by"] or "").strip() != submitted_by):
+        abort(403)
+
+    if request.method == "POST":
+        title = (request.form.get("title") or "").strip()
+        body = (request.form.get("prayer_request") or "").strip()
+        if not title or not body:
+            return render_template(
+                "prayer_edit.html",
+                error="Title and Prayer Request are required.",
+                item={"request_id": request_id, "title": title, "request_text": body},
+            )
+
+        try:
+            _update_prayer_request_cells_in_sheet(
+                request_id,
+                {"title": title, "request_text": body},
+            )
+            sync_from_sheets_if_needed(force=True)
+        except Exception as e:
+            print("❌ Error editing prayer request:", e)
+
+        return redirect(url_for("prayer_request_status"))
+
+    return render_template(
+        "prayer_edit.html",
+        error=None,
+        item={
+            "request_id": request_id,
+            "title": row["title"] or "",
+            "request_text": row["request_text"] or "",
+        },
+    )
+
+
+@app.route("/prayer-request/delete/<request_id>", methods=["POST"])
+def prayer_request_delete(request_id):
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    submitted_by = _current_user_key()
+    db = get_db()
+    row = db.execute(
+        "SELECT submitted_by FROM sheet_prayer_request_cache WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+    if not row:
+        return redirect(url_for("prayer_request_status"))
+
+    if not ao_logged_in() and str(row["submitted_by"] or "").strip() != submitted_by:
+        abort(403)
+
+    try:
+        _delete_prayer_request_row_in_sheet(request_id)
+        sync_from_sheets_if_needed(force=True)
+    except Exception as e:
+        print("❌ Error deleting prayer request:", e)
+
+    return redirect(url_for("prayer_request_status"))
+
+
+@app.route("/prayer-request/mark-answered/<request_id>", methods=["POST"])
+def prayer_request_mark_answered(request_id):
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    submitted_by = _current_user_key()
+    db = get_db()
+    row = db.execute(
+        "SELECT submitted_by FROM sheet_prayer_request_cache WHERE request_id = ?",
+        (request_id,),
+    ).fetchone()
+    if not row:
+        return redirect(url_for("prayer_request_status"))
+
+    if not ao_logged_in() and str(row["submitted_by"] or "").strip() != submitted_by:
+        abort(403)
+
+    try:
+        _update_prayer_request_cells_in_sheet(
+            request_id,
+            {"status": "Answered", "answered_date": date.today().isoformat()},
+        )
+        sync_from_sheets_if_needed(force=True)
+    except Exception as e:
+        print("❌ Error marking answered:", e)
+
+    return redirect(url_for("prayer_request_answered"))
+
+
+# ========================
+# AO Tool → Prayer Request Approval
+# ========================
+
+@app.route("/ao-tool/prayer-requests")
+def ao_prayer_requests():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    rows = get_pending_prayers_for_ao()
+    items = []
+    for r in rows:
+        items.append(
+            {
+                "request_id": r["request_id"],
+                "church_name": r["church_name"] or "",
+                "submitted_by": r["submitted_by"] or "",
+                "title": r["title"] or "",
+                "request_date": r["request_date"] or "",
+                "request_text": r["request_text"] or "",
+                "status": r["status"] or "Pending",
+            }
+        )
+
+    return render_template("ao_prayer_approval.html", items=items)
+
+
+@app.route("/ao-tool/prayer-requests/approve/<request_id>", methods=["POST"])
+def ao_prayer_requests_approve(request_id):
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    try:
+        _update_prayer_request_cells_in_sheet(request_id, {"status": "Approved"})
+        sync_from_sheets_if_needed(force=True)
+    except Exception as e:
+        print("❌ Error approving prayer request:", e)
+
+    return redirect(url_for("ao_prayer_requests"))
+
+
+@app.route("/ao-tool/prayer-requests/reject/<request_id>", methods=["POST"])
+def ao_prayer_requests_reject(request_id):
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    # keep simple: mark as Pending (or delete). We'll delete as "rejected"
+    try:
+        _delete_prayer_request_row_in_sheet(request_id)
+        sync_from_sheets_if_needed(force=True)
+    except Exception as e:
+        print("❌ Error rejecting prayer request:", e)
+
+    return redirect(url_for("ao_prayer_requests"))
+
+
+# ========================
+# Other pages
+# ========================
 
 @app.route("/event-registration")
 def event_registration():
