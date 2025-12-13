@@ -191,6 +191,20 @@ def init_db():
         """
     )
 
+    # -----------------------
+    # ✅ AOPT CACHE (AO Personal Tithes)
+    # -----------------------
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_aopt_cache (
+            month TEXT PRIMARY KEY,   -- e.g. "January 2025"
+            amount REAL,
+            sheet_row INTEGER
+        )
+        """
+    )
+
+    
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)"
     )
@@ -612,6 +626,51 @@ def sync_from_sheets_if_needed(force=False):
                 ),
             )
 
+    # -----------------------
+    # AOPT (AO Personal Tithes)
+    # Sheet tab name: "AOPT"
+    # Columns: "Month", "Amount"
+    # -----------------------
+    try:
+        ws_aopt = sh.worksheet("AOPT")
+        aopt_values = ws_aopt.get_all_values()
+    except Exception as e:
+        print("❌ AOPT sync failed:", e)
+        aopt_values = []
+
+    cur.execute("DELETE FROM sheet_aopt_cache")
+
+    if aopt_values and len(aopt_values) >= 2:
+        headers = aopt_values[0]
+        i_month = _find_col(headers, "Month")
+        i_amount = _find_col(headers, "Amount")
+
+        def cell(row, idx):
+            if idx is None:
+                return ""
+            if idx < len(row):
+                return row[idx]
+            return ""
+
+        for r in range(1, len(aopt_values)):
+            row = aopt_values[r]
+            month_label = str(cell(row, i_month)).strip()
+            if not month_label:
+                continue
+            amount_val = parse_float(cell(row, i_amount))
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO sheet_aopt_cache (month, amount, sheet_row)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    month_label,
+                    amount_val,
+                    r + 1,  # sheet row number
+                ),
+            )
+
+    
     db.commit()
     _update_sync_time()
     print("✅ Sheets cache sync done.")
@@ -620,6 +679,16 @@ def sync_from_sheets_if_needed(force=False):
 # ========================
 # Cache-based helpers (NO Sheets calls)
 # ========================
+
+def get_aopt_amount_from_cache(month_label: str):
+    row = get_db().execute(
+        "SELECT amount FROM sheet_aopt_cache WHERE month = ?",
+        (month_label,),
+    ).fetchone()
+    if not row:
+        return None
+    return row["amount"]
+
 
 
 def refresh_pastor_from_cache():
@@ -1789,8 +1858,8 @@ def ao_church_status():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
 
-    # ✅ 10+ years options
-    year_options = list(range(today.year - 10, today.year + 4))
+   # Year dropdown should be forward only
+year_options = list(range(2025, 2036))  # 2025 to 2035
 
     month_names = [
         ("January", 1), ("February", 2), ("March", 3), ("April", 4),
@@ -1806,6 +1875,10 @@ def ao_church_status():
     for name, m in month_names:
         church_items = []
         all_reported = True
+
+                month_label = f"{name} {year}"
+        aopt_amount = get_aopt_amount_from_cache(month_label)
+
 
         for church in all_churches:
             stats = get_report_stats_for_month_and_church_cache(year, m, church)
@@ -1843,22 +1916,87 @@ def ao_church_status():
                 }
             )
 
-        months.append(
+              months.append(
             {
                 "name": name,
                 "month": m,
                 "year": year,
+                "label": month_label,      # "January 2025"
+                "aopt_amount": aopt_amount,
                 "all_reported": all_reported,
                 "churches": church_items,
             }
         )
 
-    return render_template(
-        "ao_church_status.html",
-        year=year,
-        year_options=year_options,
-        months=months,
-    )
+
+   open_month = request.args.get("open_month", type=int)
+
+return render_template(
+    "ao_church_status.html",
+    year=year,
+    year_options=year_options,
+    months=months,
+    open_month=open_month,
+)
+
+@app.route("/ao-tool/church-status/aopt", methods=["POST"])
+def ao_aopt_submit():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    year = int(request.form.get("year") or 0)
+    month = int(request.form.get("month") or 0)
+    amount_raw = (request.form.get("amount") or "").strip()
+
+    if not (year and month):
+        return redirect(url_for("ao_church_status", year=year or date.today().year))
+
+    month_label = f"{calendar.month_name[month]} {year}"
+    amount_val = parse_float(amount_raw)
+
+    # Update Google Sheet "AOPT"
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws = sh.worksheet("AOPT")
+
+        values = ws.get_all_values()
+        if not values:
+            # If sheet is empty, create header row
+            ws.append_row(["Month", "Amount"])
+            values = ws.get_all_values()
+
+        headers = values[0]
+        idx_month = _find_col(headers, "Month")
+        idx_amount = _find_col(headers, "Amount")
+
+        if idx_month is None or idx_amount is None:
+            # If headers are wrong, fail safely (don’t destroy other tools)
+            print("❌ AOPT sheet missing required headers Month/Amount")
+        else:
+            # Check cache for existing row
+            db = get_db()
+            cached = db.execute(
+                "SELECT sheet_row FROM sheet_aopt_cache WHERE month = ?",
+                (month_label,),
+            ).fetchone()
+
+            if cached and cached["sheet_row"]:
+                sheet_row = int(cached["sheet_row"])
+                col_letter = chr(ord("A") + idx_amount)  # assumes <= Z
+                ws.update(f"{col_letter}{sheet_row}", [[amount_val]])
+            else:
+                ws.append_row([month_label, amount_val])
+
+            # Update local cache immediately
+            # Re-sync soon to guarantee correct sheet_row after append
+            sync_from_sheets_if_needed(force=True)
+
+    except Exception as e:
+        print("❌ Error saving AOPT:", e)
+
+    # reopen the same month after submit
+    return redirect(url_for("ao_church_status", year=year, open_month=month))
 
 
 @app.route("/ao-tool/church-status/approve", methods=["POST"])
