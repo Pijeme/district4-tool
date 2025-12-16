@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Edit Prayer Request{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Edit Prayer Request</h2>
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+  <form method="POST" class="form">
+    <label>Title</label>
+    <input type="text" name="title" value="{{ item.title }}" required>
+
+    <label>Prayer Request</label>
+    <textarea name="prayer_request" rows="6" required>{{ item.request_text }}</textarea>
+
+    <div style="display:flex; gap:10px; margin-top:12px;">
+      <button class="btn" type="submit">Save</button>
+      <a class="btn" href="{{ url_for('prayer_request_status') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
