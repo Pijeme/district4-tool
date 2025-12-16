@@ -2503,6 +2503,9 @@ def ao_prayer_requests():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
+    # ✅ Always refresh so AO sees latest submissions
+    sync_from_sheets_if_needed(force=True)
+
     rows = get_pending_prayers_for_ao()
     items = []
     for r in rows:
@@ -2540,7 +2543,7 @@ def ao_prayer_requests_reject(request_id):
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
-    # keep simple: mark as Pending (or delete). We'll delete as "rejected"
+    # ✅ simple reject = delete row
     try:
         _delete_prayer_request_row_in_sheet(request_id)
         sync_from_sheets_if_needed(force=True)
@@ -2548,6 +2551,30 @@ def ao_prayer_requests_reject(request_id):
         print("❌ Error rejecting prayer request:", e)
 
     return redirect(url_for("ao_prayer_requests"))
+
+
+@app.route("/ao-tool/prayer-requests/approve-all", methods=["POST"])
+def ao_prayer_requests_approve_all():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    try:
+        # refresh then approve everything still pending
+        sync_from_sheets_if_needed(force=True)
+        rows = get_pending_prayers_for_ao()
+
+        for r in rows:
+            req_id = (r["request_id"] or "").strip()
+            if not req_id:
+                continue
+            _update_prayer_request_cells_in_sheet(req_id, {"status": "Approved"})
+
+        sync_from_sheets_if_needed(force=True)
+    except Exception as e:
+        print("❌ Error approving all prayer requests:", e)
+
+    return redirect(url_for("ao_prayer_requests"))
+
 
 
 # ========================
