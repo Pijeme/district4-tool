@@ -67,12 +67,19 @@
                   </button>
                 </form>
 
-                <!-- Mark Answered -->
-                <form method="POST" action="/prayer-request/mark-answered/{{ r.request_id }}" style="display:inline;">
-                  <button class="btn-primary" type="submit">
+                <!-- Mark Answered (enabled ONLY if Approved) -->
+                {% set s = (r.status or '').lower() %}
+                {% if 'approved' in s %}
+                  <form method="POST" action="/prayer-request/mark-answered/{{ r.request_id }}" style="display:inline;">
+                    <button class="btn-primary" type="submit">Answered Prayer</button>
+                  </form>
+                {% else %}
+                  <button class="btn-primary" type="button" disabled
+                          title="You can only mark as Answered after AO approval."
+                          style="opacity:0.55; cursor:not-allowed;">
                     Answered Prayer
                   </button>
-                </form>
+                {% endif %}
               </div>
             </div>
           </details>
