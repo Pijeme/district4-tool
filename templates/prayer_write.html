@@ -22,7 +22,7 @@
       name="title"
       required
       maxlength="120"
-      value="{{ values.title if values is defined else '' }}"
+      value="{{ values.title if values and values.title is defined else '' }}"
       placeholder="e.g., Healing for my family"
       style="width:100%; margin-top:6px;"
     >
@@ -36,7 +36,7 @@
       rows="7"
       placeholder="Write your prayer request here..."
       style="width:100%; margin-top:6px;"
-    >{{ values.prayer_request if values is defined else '' }}</textarea>
+    >{{ values.prayer_request if values and values.prayer_request is defined else '' }}</textarea>
 
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
       <button class="btn-primary" type="submit">Submit Prayer Request</button>
