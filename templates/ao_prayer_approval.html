@@ -1,25 +1,23 @@
 {% extends "base.html" %}
-{% block title %}AO • Prayer Requests Approval - District 4 Tool{% endblock %}
+{% block title %}AO - Prayer Request Approval{% endblock %}
 
 {% block content %}
 <section class="card">
   <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap;">
     <div>
-      <h2 style="margin-bottom:6px;">AO • Prayer Requests Approval</h2>
+      <h2 style="margin-bottom:6px;">Prayer Request Approval</h2>
       <p class="muted small" style="margin:0;">
-        Pending prayer requests awaiting approval. You may approve, reject, or approve all.
+        Approve or reject pending prayer requests.
       </p>
     </div>
 
     <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      {% if items and items|length > 0 %}
-        <form method="POST" action="{{ url_for('ao_prayer_requests_approve_all') }}" style="display:inline;">
-          <button class="btn-primary" type="submit"
-                  onclick="return confirm('Approve ALL pending prayer requests?')">
-            ✅ Approve All
-          </button>
-        </form>
-      {% endif %}
+      <form method="POST" action="{{ url_for('ao_prayer_requests_approve_all') }}" style="display:inline;">
+        <button class="btn-primary" type="submit"
+                onclick="return confirm('Approve ALL pending prayer requests?')">
+          Approve All
+        </button>
+      </form>
       <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back</a>
     </div>
   </div>
@@ -36,7 +34,7 @@
                   <div class="muted small">
                     {{ r.request_date }}
                     {% if r.church_name %} • {{ r.church_name }}{% endif %}
-                    {% if r.submitted_by %} • Submitted By: {{ r.submitted_by }}{% endif %}
+                    {% if r.submitted_by %} • {{ r.submitted_by }}{% endif %}
                   </div>
                 </div>
 
@@ -52,12 +50,10 @@
               <div class="small" style="white-space:pre-wrap;">{{ r.request_text }}</div>
 
               <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
-                <!-- Approve -->
                 <form method="POST" action="{{ url_for('ao_prayer_requests_approve', request_id=r.request_id) }}" style="display:inline;">
                   <button class="btn-primary" type="submit">Approve</button>
                 </form>
 
-                <!-- Reject -->
                 <form method="POST" action="{{ url_for('ao_prayer_requests_reject', request_id=r.request_id) }}" style="display:inline;">
                   <button class="btn-secondary" type="submit"
                           onclick="return confirm('Reject (delete) this prayer request?')">
@@ -72,7 +68,7 @@
     </div>
   {% else %}
     <div class="card" style="margin-top:12px;">
-      <div class="muted">No pending prayer requests right now.</div>
+      <div class="muted">No pending prayer requests.</div>
     </div>
   {% endif %}
 </section>
