@@ -2470,6 +2470,40 @@ def prayer_request_mark_answered(request_id):
     if not row:
         return redirect(url_for("prayer_request_status"))
 
+    @app.route("/prayer-request/answered")
+def prayer_request_answered():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    # ✅ Refresh so answered requests show immediately
+    sync_from_sheets_if_needed(force=True)
+
+    submitted_by = _current_user_key()
+    rows = get_answered_prayer_requests_for_user(submitted_by)
+
+    answered = []
+    for r in rows:
+        answered.append(
+            {
+                "request_id": r["request_id"],
+                "church_name": r["church_name"] or "",
+                "submitted_by": r["submitted_by"] or "",
+                "title": r["title"] or "",
+                "request_date": r["request_date"] or "",
+                "request_text": r["request_text"] or "",
+                "status": r["status"] or "Answered",
+                "pastors_praying": r["pastors_praying"] or "",
+                "answered_date": r["answered_date"] or "",
+            }
+        )
+
+    return render_template(
+        "prayer_answered.html",
+        answered=answered,
+        user_display=_current_user_display(),
+    )
+
+
     # owner or AO only
     if not ao_logged_in() and str(row["submitted_by"] or "").strip() != submitted_by:
         abort(403)
