@@ -2292,7 +2292,6 @@ def prayer_request():
         return redirect(url_for("pastor_login", next=request.path))
     return render_template("prayer_request.html")
 
-
 @app.route("/prayer-request/write", methods=["GET", "POST"])
 def prayer_request_write():
     if not any_user_logged_in():
@@ -2300,11 +2299,21 @@ def prayer_request_write():
 
     if request.method == "POST":
         title = (request.form.get("title") or "").strip()
-        body = (request.form.get("prayer_request") or "").strip()
+
+        # ✅ Accept multiple possible textarea names (prevents the “required” error)
+        body = (
+            request.form.get("prayer_request")
+            or request.form.get("request_text")
+            or request.form.get("prayerRequest")
+            or ""
+        ).strip()
 
         if not title or not body:
-            # keep it simple: reload with basic error
-            return render_template("prayer_write.html", error="Title and Prayer Request are required.", values={"title": title, "prayer_request": body})
+            return render_template(
+                "prayer_write.html",
+                error="Title and Prayer Request are required.",
+                values={"title": title, "prayer_request": body},
+            )
 
         req_id = str(uuid.uuid4())
         submitted_by = _current_user_key()
@@ -2326,7 +2335,11 @@ def prayer_request_write():
 
         return redirect(url_for("prayer_request_status"))
 
-    return render_template("prayer_write.html", error=None, values={"title": "", "prayer_request": ""})
+    return render_template(
+        "prayer_write.html",
+        error=None,
+        values={"title": "", "prayer_request": ""},
+    )
 
 
 @app.route("/prayer-request/status")
@@ -2337,7 +2350,6 @@ def prayer_request_status():
     submitted_by = _current_user_key()
     rows = get_prayer_requests_for_user(submitted_by, include_answered=False)
 
-    # shape for templates (dicts)
     items = []
     for r in rows:
         items.append(
@@ -2354,30 +2366,12 @@ def prayer_request_status():
             }
         )
 
-    return render_template("prayer_status.html", items=items, user_display=_current_user_display())
-
-
-@app.route("/prayer-request/answered")
-def prayer_request_answered():
-    if not any_user_logged_in():
-        return redirect(url_for("pastor_login", next=request.path))
-
-    submitted_by = _current_user_key()
-    rows = get_answered_prayer_requests_for_user(submitted_by)
-
-    items = []
-    for r in rows:
-        items.append(
-            {
-                "request_id": r["request_id"],
-                "title": r["title"] or "",
-                "request_date": r["request_date"] or "",
-                "answered_date": r["answered_date"] or "",
-                "request_text": r["request_text"] or "",
-            }
-        )
-
-    return render_template("prayer_answered.html", items=items, user_display=_current_user_display())
+    # ✅ IMPORTANT: your file is prayer_status.html (NOT prayer_request_status.html)
+    return render_template(
+        "prayer_status.html",
+        items=items,
+        user_display=_current_user_display(),
+    )
 
 
 @app.route("/prayer-request/edit/<request_id>", methods=["GET", "POST"])
@@ -2401,7 +2395,12 @@ def prayer_request_edit(request_id):
 
     if request.method == "POST":
         title = (request.form.get("title") or "").strip()
-        body = (request.form.get("prayer_request") or "").strip()
+        body = (
+            request.form.get("prayer_request")
+            or request.form.get("request_text")
+            or ""
+        ).strip()
+
         if not title or not body:
             return render_template(
                 "prayer_edit.html",
@@ -2429,6 +2428,7 @@ def prayer_request_edit(request_id):
             "request_text": row["request_text"] or "",
         },
     )
+
 
 
 @app.route("/prayer-request/delete/<request_id>", methods=["POST"])
