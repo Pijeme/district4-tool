@@ -2347,6 +2347,9 @@ def prayer_request_status():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
+    # ✅ Force refresh so newly submitted requests always show immediately
+    sync_from_sheets_if_needed(force=True)
+
     submitted_by = _current_user_key()
     rows = get_prayer_requests_for_user(submitted_by, include_answered=False)
 
@@ -2366,12 +2369,7 @@ def prayer_request_status():
             }
         )
 
-    # ✅ IMPORTANT: your file is prayer_status.html (NOT prayer_request_status.html)
-    return render_template(
-        "prayer_status.html",
-        items=items,
-        user_display=_current_user_display(),
-    )
+    return render_template("prayer_status.html", items=items, user_display=_current_user_display())
 
 
 @app.route("/prayer-request/edit/<request_id>", methods=["GET", "POST"])
