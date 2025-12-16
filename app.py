@@ -2454,7 +2454,6 @@ def prayer_request_delete(request_id):
 
     return redirect(url_for("prayer_request_status"))
 
-
 @app.route("/prayer-request/mark-answered/<request_id>", methods=["POST"])
 def prayer_request_mark_answered(request_id):
     if not any_user_logged_in():
@@ -2462,15 +2461,24 @@ def prayer_request_mark_answered(request_id):
 
     submitted_by = _current_user_key()
     db = get_db()
+
     row = db.execute(
-        "SELECT submitted_by FROM sheet_prayer_request_cache WHERE request_id = ?",
+        "SELECT submitted_by, status FROM sheet_prayer_request_cache WHERE request_id = ?",
         (request_id,),
     ).fetchone()
+
     if not row:
         return redirect(url_for("prayer_request_status"))
 
+    # owner or AO only
     if not ao_logged_in() and str(row["submitted_by"] or "").strip() != submitted_by:
         abort(403)
+
+    status = (str(row["status"] or "")).strip().lower()
+
+    # ✅ Only allow "Answered" when Approved (AO can still do it anytime if you want)
+    if "approved" not in status and not ao_logged_in():
+        return redirect(url_for("prayer_request_status"))
 
     try:
         _update_prayer_request_cells_in_sheet(
@@ -2481,7 +2489,9 @@ def prayer_request_mark_answered(request_id):
     except Exception as e:
         print("❌ Error marking answered:", e)
 
-    return redirect(url_for("prayer_request_answered"))
+    # ✅ Redirect to status page (safe)
+    return redirect(url_for("prayer_request_status"))
+
 
 
 # ========================
