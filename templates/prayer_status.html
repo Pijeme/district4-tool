@@ -17,9 +17,9 @@
     </div>
   </div>
 
-  {% if requests and requests|length > 0 %}
+  {% if items and items|length > 0 %}
     <div style="margin-top:12px;">
-      {% for r in requests %}
+      {% for r in items %}
         <div class="card" style="margin-top:12px; border:2px solid #111;">
           <details>
             <summary style="cursor:pointer; list-style:none;">
@@ -52,11 +52,7 @@
 
               <div class="small muted" style="margin-top:10px;">
                 <b>Pastors Praying:</b>
-                {% if r.pastors_praying %}
-                  {{ r.pastors_praying }}
-                {% else %}
-                  —
-                {% endif %}
+                {{ r.pastors_praying if r.pastors_praying else '—' }}
               </div>
 
               <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
@@ -64,15 +60,18 @@
                 <a href="/prayer-request/edit/{{ r.request_id }}" class="btn-secondary">Edit</a>
 
                 <!-- Delete -->
-                <form method="POST" action="/prayer-request/delete" style="display:inline;">
-                  <input type="hidden" name="request_id" value="{{ r.request_id }}">
-                  <button class="btn-secondary" type="submit" onclick="return confirm('Delete this prayer request?')">Delete</button>
+                <form method="POST" action="/prayer-request/delete/{{ r.request_id }}" style="display:inline;">
+                  <button class="btn-secondary" type="submit"
+                          onclick="return confirm('Delete this prayer request?')">
+                    Delete
+                  </button>
                 </form>
 
                 <!-- Mark Answered -->
-                <form method="POST" action="/prayer-request/mark-answered" style="display:inline;">
-                  <input type="hidden" name="request_id" value="{{ r.request_id }}">
-                  <button class="btn-primary" type="submit">Answered Prayer</button>
+                <form method="POST" action="/prayer-request/mark-answered/{{ r.request_id }}" style="display:inline;">
+                  <button class="btn-primary" type="submit">
+                    Answered Prayer
+                  </button>
                 </form>
               </div>
             </div>
