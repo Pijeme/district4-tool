@@ -37,6 +37,53 @@ def get_db():
     return db
 
 
+
+def migrate_monthly_reports_scope_to_pastor():
+    """One-time SQLite migration.
+
+    Old schema: monthly_reports UNIQUE(year, month)
+    New schema: monthly_reports UNIQUE(year, month, pastor_username)
+
+    Because Google Sheets is the source of truth, we can safely rebuild the table.
+    We preserve existing IDs so FK references (sunday_reports, church_progress) remain valid.
+    Old rows are tagged with pastor_username='__legacy__'.
+    """
+    db = get_db()
+    cur = db.cursor()
+
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(monthly_reports)").fetchall()]
+    if "pastor_username" in cols:
+        return
+
+    cur.execute("ALTER TABLE monthly_reports RENAME TO monthly_reports_old")
+
+    cur.execute(
+        """
+        CREATE TABLE monthly_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            pastor_username TEXT NOT NULL,
+            submitted INTEGER DEFAULT 0,
+            approved INTEGER DEFAULT 0,
+            submitted_at TEXT,
+            approved_at TEXT,
+            UNIQUE(year, month, pastor_username)
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        INSERT INTO monthly_reports (id, year, month, pastor_username, submitted, approved, submitted_at, approved_at)
+        SELECT id, year, month, '__legacy__', submitted, approved, submitted_at, approved_at
+        FROM monthly_reports_old
+        """
+    )
+
+    cur.execute("DROP TABLE monthly_reports_old")
+    db.commit()
+
 def init_db():
     db = get_db()
     cursor = db.cursor()
@@ -48,11 +95,12 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             year INTEGER NOT NULL,
             month INTEGER NOT NULL,
+            pastor_username TEXT NOT NULL,
             submitted INTEGER DEFAULT 0,
             approved INTEGER DEFAULT 0,
             submitted_at TEXT,
             approved_at TEXT,
-            UNIQUE(year, month)
+            UNIQUE(year, month, pastor_username)
         )
         """
     )
@@ -244,6 +292,8 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_prayer_status ON sheet_prayer_request_cache(status)"
     )
 
+        migrate_monthly_reports_scope_to_pastor()
+
     db.commit()
 
 
@@ -252,13 +302,17 @@ def init_db():
 # ========================
 
 
-def get_or_create_monthly_report(year: int, month: int):
+def get_or_create_monthly_report(year: int, month: int, pastor_username: str):
+    pastor_username = (pastor_username or "").strip()
+    if not pastor_username:
+        raise ValueError("Missing pastor_username in session.")
+
     db = get_db()
     cursor = db.cursor()
 
     cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
-        (year, month),
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ? AND pastor_username = ?",
+        (year, month, pastor_username),
     )
     row = cursor.fetchone()
     if row:
@@ -266,16 +320,16 @@ def get_or_create_monthly_report(year: int, month: int):
 
     cursor.execute(
         """
-        INSERT INTO monthly_reports (year, month, submitted, approved)
-        VALUES (?, ?, 0, 0)
+        INSERT INTO monthly_reports (year, month, pastor_username, submitted, approved)
+        VALUES (?, ?, ?, 0, 0)
         """,
-        (year, month),
+        (year, month, pastor_username),
     )
     db.commit()
 
     cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
-        (year, month),
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ? AND pastor_username = ?",
+        (year, month, pastor_username),
     )
     return cursor.fetchone()
 
@@ -331,7 +385,11 @@ def get_month_status(monthly_report):
     return "not_submitted"
 
 
-def set_month_submitted(year: int, month: int):
+def set_month_submitted(year: int, month: int, pastor_username: str):
+    pastor_username = (pastor_username or "").strip()
+    if not pastor_username:
+        raise ValueError("Missing pastor_username in session.")
+
     db = get_db()
     cursor = db.cursor()
     now_str = datetime.utcnow().isoformat()
@@ -342,9 +400,9 @@ def set_month_submitted(year: int, month: int):
             submitted_at = ?,
             approved = 0,
             approved_at = NULL
-        WHERE year = ? AND month = ?
+        WHERE year = ? AND month = ? AND pastor_username = ?
         """,
-        (now_str, year, month),
+        (now_str, year, month, pastor_username),
     )
     db.commit()
 
@@ -429,22 +487,10 @@ def _lower(s):
     return str(s or "").strip().lower()
 
 
-def _find_col(headers, *wanted):
-    """Find a column index in a Sheets header row.
-
-    Supports multiple aliases, e.g. _find_col(headers, "Area Number", "Age").
-    Returns None if no match is found.
-    """
-    # Allow callers to pass a single list/tuple/set of candidates
-    if len(wanted) == 1 and isinstance(wanted[0], (list, tuple, set)):
-        candidates = list(wanted[0])
-    else:
-        candidates = list(wanted)
-
-    candidates = [_lower(w) for w in candidates if w is not None]
-
+def _find_col(headers, wanted):
+    wanted = _lower(wanted)
     for i, h in enumerate(headers):
-        if _lower(h) in candidates:
+        if _lower(h) == wanted:
             return i
     return None
 
@@ -526,8 +572,12 @@ def sync_from_sheets_if_needed(force=False):
         i_user = _find_col(headers, "UserName")
         i_pass = _find_col(headers, "Password")
         i_addr = _find_col(headers, "Church Address")
-        i_age = _find_col(headers, "Area Number", "Age")
-        i_sex = _find_col(headers, "Church ID", "Sex")
+        i_age = _find_col(headers, "Area Number")
+        if i_age is None:
+            i_age = _find_col(headers, "Age")
+        i_sex = _find_col(headers, "Church ID")
+        if i_sex is None:
+            i_sex = _find_col(headers, "Sex")
         i_contact = _find_col(headers, "Contact #")
         i_bday = _find_col(headers, "Birth Day")
 
@@ -789,7 +839,7 @@ def refresh_pastor_from_cache():
         return False
 
     row = get_db().execute(
-        "SELECT name, church_address FROM sheet_accounts_cache WHERE username = ?",
+        "SELECT name, church_address, sex FROM sheet_accounts_cache WHERE username = ?",
         (username,),
     ).fetchone()
     if not row:
@@ -797,6 +847,8 @@ def refresh_pastor_from_cache():
 
     session["pastor_name"] = row["name"] or ""
     session["pastor_church_address"] = row["church_address"] or ""
+    session["pastor_church_id"] = row["sex"] or ""
+                session["pastor_church_id"] = row["sex"] or ""
     return True
 
 
@@ -836,6 +888,8 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
     refresh_pastor_from_cache()
     pastor_name = (session.get("pastor_name") or "").strip()
     church_address = (session.get("pastor_church_address") or "").strip()
+    church_id = (session.get("pastor_church_id") or "").strip()
+    church_key = church_id or church_address
     if not pastor_name and not church_address:
         return
 
@@ -853,13 +907,13 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
           )
         ORDER BY activity_date
         """,
-        (year, month, church_address, church_address, pastor_name),
+        (year, month, church_key, church_key, pastor_name),
     ).fetchall()
 
     if not cached_rows:
         return
 
-    mr = get_or_create_monthly_report(year, month)
+    mr = get_or_create_monthly_report(year, month, pastor_username)
     mrid = mr["id"]
 
     ensure_sunday_reports(mrid, year, month)
@@ -999,9 +1053,9 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
 def get_all_churches_from_cache():
     rows = get_db().execute(
         """
-        SELECT DISTINCT TRIM(church_address) AS c
+        SELECT DISTINCT TRIM(sex) AS c
         FROM sheet_accounts_cache
-        WHERE TRIM(church_address) != ''
+        WHERE TRIM(sex) != ''
         ORDER BY c
         """
     ).fetchall()
@@ -1210,9 +1264,13 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     db = get_db()
     cursor = db.cursor()
 
+    pastor_username = (session.get("pastor_username") or "").strip()
+    if not pastor_username:
+        return
+
     cursor.execute(
-        "SELECT * FROM monthly_reports WHERE year = ? AND month = ?",
-        (year, month),
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ? AND pastor_username = ?",
+        (year, month, pastor_username),
     )
     monthly_report = cursor.fetchone()
     if not monthly_report:
@@ -1238,6 +1296,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
 
     pastor_name = session.get("pastor_name", "")
     church_address = session.get("pastor_church_address", "")
+    church_id = (session.get("pastor_church_id") or "").strip()
 
     bible_new = cp_row["bible_new"] or 0
     bible_existing = cp_row["bible_existing"] or 0
@@ -1258,7 +1317,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
         amount_to_send = tithes_church + offering + mission + tithes_personal
 
         report_data = {
-            "church": church_address,
+            "church": church_id or church_address,
             "pastor": pastor_name,
             "address": church_address,
             "adult": row["attendance_adult"] or 0,
@@ -1633,7 +1692,7 @@ def pastor_login():
             error = "Username and password are required."
         else:
             row = get_db().execute(
-                "SELECT username, password, name, church_address FROM sheet_accounts_cache WHERE username = ?",
+                "SELECT username, password, name, church_address, sex FROM sheet_accounts_cache WHERE username = ?",
                 (username,),
             ).fetchone()
 
@@ -1664,6 +1723,7 @@ def pastor_login():
                     session["pastor_username"] = username
                     session["pastor_name"] = matched.get("Name", "")
                     session["pastor_church_address"] = matched.get("Church Address", "")
+                    session["pastor_church_id"] = matched.get("Church ID", "") or matched.get("Sex", "")
                     session.permanent = True
 
                     sync_from_sheets_if_needed(force=True)
@@ -1687,13 +1747,15 @@ def pastor_tool():
 
     refresh_pastor_from_cache()
 
+    pastor_username = (session.get("pastor_username") or "").strip()
+
     today = date.today()
     year = request.args.get("year", type=int) or today.year
     month = request.args.get("month", type=int) or today.month
 
     sync_local_month_from_cache_for_pastor(year, month)
 
-    monthly_report = get_or_create_monthly_report(year, month)
+    monthly_report = get_or_create_monthly_report(year, month, pastor_username)
     ensure_sunday_reports(monthly_report["id"], year, month)
     sunday_rows = get_sunday_reports(monthly_report["id"])
 
@@ -1748,8 +1810,8 @@ def pastor_tool():
     status_key = get_month_status(monthly_report)
 
     cursor.execute(
-        "SELECT year, month, submitted FROM monthly_reports WHERE year = ?",
-        (year,),
+        "SELECT year, month, submitted FROM monthly_reports WHERE year = ? AND pastor_username = ?",
+        (year, pastor_username),
     )
     submitted_map = {
         (r["year"], r["month"]): bool(r["submitted"])
@@ -1758,7 +1820,7 @@ def pastor_tool():
 
     if request.method == "POST":
         if can_submit:
-            set_month_submitted(year, month)
+            set_month_submitted(year, month, pastor_username)
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
                 sync_from_sheets_if_needed(force=True)
@@ -1799,7 +1861,7 @@ def sunday_detail(year, month, day):
 
     sync_local_month_from_cache_for_pastor(year, month)
 
-    monthly_report = get_or_create_monthly_report(year, month)
+    monthly_report = get_or_create_monthly_report(year, month, pastor_username)
     ensure_sunday_reports(monthly_report["id"], year, month)
 
     db = get_db()
@@ -1903,7 +1965,7 @@ def church_progress_view(year, month):
 
     sync_local_month_from_cache_for_pastor(year, month)
 
-    monthly_report = get_or_create_monthly_report(year, month)
+    monthly_report = get_or_create_monthly_report(year, month, pastor_username)
     cp_row = ensure_church_progress(monthly_report["id"])
 
     db = get_db()
@@ -2062,7 +2124,7 @@ def ao_create_account():
             try:
                 age_int = int(age_raw)
             except ValueError:
-                error = "Area Number must be a number."
+                error = "Age must be a number."
             else:
                 db = get_db()
                 cursor = db.cursor()
