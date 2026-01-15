@@ -292,7 +292,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_prayer_status ON sheet_prayer_request_cache(status)"
     )
 
-    migrate_monthly_reports_scope_to_pastor()
+        migrate_monthly_reports_scope_to_pastor()
 
     db.commit()
 
