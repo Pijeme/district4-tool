@@ -429,10 +429,22 @@ def _lower(s):
     return str(s or "").strip().lower()
 
 
-def _find_col(headers, wanted):
-    wanted = _lower(wanted)
+def _find_col(headers, *wanted):
+    """Find a column index in a Sheets header row.
+
+    Supports multiple aliases, e.g. _find_col(headers, "Area Number", "Age").
+    Returns None if no match is found.
+    """
+    # Allow callers to pass a single list/tuple/set of candidates
+    if len(wanted) == 1 and isinstance(wanted[0], (list, tuple, set)):
+        candidates = list(wanted[0])
+    else:
+        candidates = list(wanted)
+
+    candidates = [_lower(w) for w in candidates if w is not None]
+
     for i, h in enumerate(headers):
-        if _lower(h) == wanted:
+        if _lower(h) in candidates:
             return i
     return None
 
@@ -514,8 +526,8 @@ def sync_from_sheets_if_needed(force=False):
         i_user = _find_col(headers, "UserName")
         i_pass = _find_col(headers, "Password")
         i_addr = _find_col(headers, "Church Address")
-        i_age = _find_col(headers, "Age")
-        i_sex = _find_col(headers, "Sex")
+        i_age = _find_col(headers, "Area Number", "Age")
+        i_sex = _find_col(headers, "Church ID", "Sex")
         i_contact = _find_col(headers, "Contact #")
         i_bday = _find_col(headers, "Birth Day")
 
@@ -2050,7 +2062,7 @@ def ao_create_account():
             try:
                 age_int = int(age_raw)
             except ValueError:
-                error = "Age must be a number."
+                error = "Area Number must be a number."
             else:
                 db = get_db()
                 cursor = db.cursor()
