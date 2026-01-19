@@ -981,6 +981,9 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
 
     if not cached_rows:
         return
+    pastor_username = (session.get("pastor_username") or "").strip()
+    if not pastor_username:
+        return
 
     mr = get_or_create_monthly_report(year, month, pastor_username)
     mrid = mr["id"]
@@ -1742,9 +1745,35 @@ def close_connection(exception):
         db.close()
 
 
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def splash():
-    return render_template("splash.html")
+    logged_in = pastor_logged_in() or ao_logged_in()
+
+    error = None
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        if not username or not password:
+            error = "Username and password are required."
+        else:
+            row = get_db().execute(
+                "SELECT username, password, name, church_address, sex FROM sheet_accounts_cache WHERE username = ?",
+                (username,),
+            ).fetchone()
+
+            if row and str(row["password"] or "").strip() == password:
+                session["pastor_username"] = username
+                session["pastor_name"] = row["name"] or ""
+                session["pastor_church_address"] = row["church_address"] or ""
+                session["pastor_church_id"] = (row["sex"] or "").strip()
+                session.permanent = True
+                return redirect(url_for("pastor_tool"))
+
+            error = "Invalid username or password."
+
+    return render_template("splash.html", logged_in=logged_in, error=error)
+
 
 
 @app.route("/bulletin")
