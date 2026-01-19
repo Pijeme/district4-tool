@@ -919,6 +919,10 @@ def _current_user_church_name():
 
 def sync_local_month_from_cache_for_pastor(year: int, month: int):
     refresh_pastor_from_cache()
+    pastor_username = (session.get("pastor_username") or "").strip()
+    if not pastor_username:
+        return
+
     pastor_name = (session.get("pastor_name") or "").strip()
     church_address = (session.get("pastor_church_address") or "").strip()
     church_id = (session.get("pastor_church_id") or "").strip()
@@ -1282,6 +1286,39 @@ def append_account_to_sheet(pastor_data: dict):
     ]
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
+def _ensure_report_sheet_headers(ws):
+    """
+    Ensures the Report sheet has a header row.
+    If headers already exist, it does nothing.
+    """
+    values = ws.get_all_values()
+    if values:
+        return values
+
+    headers = [
+        "church",
+        "pastor",
+        "address",
+        "adult",
+        "youth",
+        "children",
+        "tithes",
+        "offering",
+        "personal tithes",
+        "mission offering",
+        "received jesus",
+        "existing bible study",
+        "new bible study",
+        "water baptized",
+        "holy spirit baptized",
+        "childrens dedication",
+        "healed",
+        "activity_date",
+        "amount to send",
+        "status",
+    ]
+    ws.append_row(headers)
+    return ws.get_all_values()
 
 def append_report_to_sheet(report_data: dict):
     client = get_gs_client()
@@ -1290,6 +1327,7 @@ def append_report_to_sheet(report_data: dict):
         worksheet = sh.worksheet("Report")
     except gspread.WorksheetNotFound:
         worksheet = sh.add_worksheet(title="Report", rows=1000, cols=25)
+    _ensure_report_sheet_headers(worksheet)
 
     row = [
         report_data.get("church", ""),
