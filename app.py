@@ -1320,14 +1320,17 @@ def _ensure_report_sheet_headers(ws):
     ws.append_row(headers)
     return ws.get_all_values()
 
+
 def append_report_to_sheet(report_data: dict):
     client = get_gs_client()
     sh = client.open("District4 Data")
+
     try:
-        worksheet = sh.worksheet("Report")
+        ws = sh.worksheet("Report")
     except gspread.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="Report", rows=1000, cols=25)
-    _ensure_report_sheet_headers(worksheet)
+        ws = sh.add_worksheet(title="Report", rows=1000, cols=25)
+
+    _ensure_report_sheet_headers(ws)
 
     row = [
         report_data.get("church", ""),
@@ -1351,8 +1354,10 @@ def append_report_to_sheet(report_data: dict):
         report_data.get("amount_to_send", ""),
         report_data.get("status", ""),
     ]
-    # USER_ENTERED lets Google Sheets interpret dates/numbers properly.
-    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+    # ✅ Force writing starting at column A by using a fixed range "A:..."
+    ws.append_rows([row], value_input_option="USER_ENTERED", table_range="A1")
+
 
 
 def export_month_to_sheet(year: int, month: int, status_label: str):
