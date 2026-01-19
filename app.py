@@ -1364,7 +1364,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
 
     for row in sunday_rows:
         d = datetime.fromisoformat(row["date"]).date()
-        activity_date = f"{d.month}/{d.day}/{d.year}"
+        activity_date = f"=DATE({d.year},{d.month},{d.day})"
 
         tithes_church = row["tithes_church"] or 0
         offering = row["offering"] or 0
@@ -1395,10 +1395,13 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
             "status": status_label,
         }
 
-        try:
-            append_report_to_sheet(report_data)
-        except Exception as e:
-            print("Error sending Sunday row to Google Sheets:", e)
+       import traceback
+try:
+    append_report_to_sheet(report_data)
+except Exception as e:
+    print("❌ Pastor export failed:", repr(e))
+    traceback.print_exc()
+
 
 
 # ========================
