@@ -2077,6 +2077,8 @@ def church_progress_view(year, month):
         session.setdefault("pastor_username", session.get("ao_username", "ao"))
 
     refresh_pastor_from_cache()
+    pastor_username = (session.get("pastor_username") or "").strip()
+
 
     sync_local_month_from_cache_for_pastor(year, month)
 
