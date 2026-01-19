@@ -1962,6 +1962,7 @@ def sunday_detail(year, month, day):
         session.setdefault("pastor_username", session.get("ao_username", "ao"))
 
     refresh_pastor_from_cache()
+    pastor_username = (session.get("pastor_username") or "").strip()
 
     try:
         d = date(year, month, day)
