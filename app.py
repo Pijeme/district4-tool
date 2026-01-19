@@ -489,37 +489,32 @@ def parse_float(value):
         return 0.0
 
 
+def parse_sheet_date(value):
+    """Parse a date string from Google Sheets.
 
-def parse_sheet_date(value: str):
-    """Parse a date coming from Google Sheets.
-
-    Accepts:
-    - 'YYYY-MM-DD' (ISO)
-    - 'M/D/YYYY' or 'MM/DD/YYYY'
-
-    Returns a datetime.date or None.
+    Accepts both:
+    - ISO: YYYY-MM-DD
+    - Slash: M/D/YYYY (e.g., 1/25/2026)
     """
-    s = str(value or '').strip()
+    s = str(value or "").strip()
     if not s:
         return None
-    # ISO first
+    # Try ISO first
     try:
         return date.fromisoformat(s)
     except Exception:
         pass
-    # Common US/PH style m/d/yyyy
+    # Try M/D/YYYY
     try:
-        parts = s.split('/')
+        parts = s.split("/")
         if len(parts) == 3:
-            mth = int(parts[0])
-            day = int(parts[1])
-            yr = int(parts[2])
-            return date(yr, mth, day)
+            m = int(parts[0])
+            d = int(parts[1])
+            y = int(parts[2])
+            return date(y, m, d)
     except Exception:
-        pass
+        return None
     return None
-
-
 def _lower(s):
     return str(s or "").strip().lower()
 
@@ -704,9 +699,7 @@ def sync_from_sheets_if_needed(force=False):
             activity = str(cell(row, i_activity)).strip()
             if not activity:
                 continue
-            try:                d = parse_sheet_date(activity)
-            except Exception:
-                d = None
+            d = parse_sheet_date(activity)
             if not d:
                 continue
 
@@ -734,7 +727,7 @@ def sync_from_sheets_if_needed(force=False):
                     r + 1,
                     d.year,
                     d.month,
-                    activity,
+                    d.isoformat(),
                     str(cell(row, i_church)).strip(),
                     str(cell(row, i_pastor)).strip(),
                     str(cell(row, i_address)).strip(),
@@ -1319,7 +1312,8 @@ def append_report_to_sheet(report_data: dict):
         report_data.get("amount_to_send", ""),
         report_data.get("status", ""),
     ]
-    worksheet.append_row(row)
+    # USER_ENTERED lets Google Sheets interpret dates/numbers properly.
+    worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 
 def export_month_to_sheet(year: int, month: int, status_label: str):
@@ -1720,9 +1714,52 @@ def close_connection(exception):
         db.close()
 
 
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def splash():
-    return render_template("splash.html")
+    """Splash page login.
+
+    This is a lightweight "front door" login. It does NOT replace the
+    dedicated /pastor-login and /ao-login routes.
+
+    - Pastors who log in here are treated as pastor_logged_in.
+    - AO login remains handled by /ao-login.
+    """
+
+    logged_in = bool(session.get("pastor_logged_in")) or bool(session.get("ao_logged_in"))
+    error = None
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        if not username or not password:
+            error = "Username and password are required."
+        else:
+            row = get_db().execute(
+                "SELECT username, password, name, church_address, sex, age FROM sheet_accounts_cache WHERE username = ?",
+                (username,),
+            ).fetchone()
+
+            if row and str(row["password"] or "").strip() == password:
+                # Mark as pastor session
+                session["pastor_logged_in"] = True
+                session["pastor_username"] = username
+                session["pastor_name"] = row["name"] or ""
+                session["pastor_church_address"] = row["church_address"] or ""
+                session["pastor_church_id"] = (row["sex"] or "").strip()
+                session["pastor_area_number"] = (row["age"] or "").strip()
+                session.permanent = True
+                return redirect(url_for("pastor_tool"))
+
+            error = "Invalid username or password."
+
+    return render_template("splash.html", logged_in=logged_in, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("splash"))
 
 
 @app.route("/bulletin")
