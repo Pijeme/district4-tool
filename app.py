@@ -1329,7 +1329,8 @@ def append_report_to_sheet(report_data: dict):
         report_data.get("amount_to_send", ""),
         report_data.get("status", ""),
     ]
-    worksheet.append_row(row)
+ 
+ worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 
 def export_month_to_sheet(year: int, month: int, status_label: str):
@@ -1379,8 +1380,9 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     child_dedication = cp_row["child_dedication"] or 0
 
     for row in sunday_rows:
-        d = datetime.fromisoformat(row["date"]).date()
-        activity_date = d.isoformat()
+       d = datetime.fromisoformat(row["date"]).date()
+activity_date = f"{d.month}/{d.day}/{d.year}"  # e.g. 1/25/2026
+
 
         tithes_church = row["tithes_church"] or 0
         offering = row["offering"] or 0
