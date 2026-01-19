@@ -10,12 +10,51 @@
   <div class="splash-container">
     <img src="{{ url_for('static', filename='img/logo.png') }}" alt="District 4 Logo" class="splash-logo">
     <h1 class="splash-title">District 4 Tool</h1>
+
+    {% if not logged_in %}
+      <div style="max-width: 360px; margin: 1.25rem auto 0; text-align: left; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 12px; padding: 1rem;">
+        <form method="POST" action="{{ url_for('splash') }}">
+          <div style="margin-bottom: 0.75rem;">
+            <label for="username" style="display:block; font-size: 0.9rem; margin-bottom: 0.25rem;">Username</label>
+            <input id="username" name="username" type="text" autocomplete="username" required
+                   style="width: 100%; padding: 0.6rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #f9fafb;">
+          </div>
+
+          <div style="margin-bottom: 0.75rem;">
+            <label for="password" style="display:block; font-size: 0.9rem; margin-bottom: 0.25rem;">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required
+                   style="width: 100%; padding: 0.6rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #f9fafb;">
+          </div>
+
+          {% if error %}
+            <div style="margin: 0 0 0.75rem; color: #fecaca; font-size: 0.9rem;">
+              {{ error }}
+            </div>
+          {% endif %}
+
+          <button type="submit"
+                  style="width: 100%; padding: 0.65rem; border-radius: 10px; border: none; background: #22c55e; color: #052e16; font-weight: 700; cursor: pointer;">
+            Log In
+          </button>
+
+          <p style="margin: 0.75rem 0 0; font-size: 0.85rem; opacity: 0.9; text-align: center;">
+            If you don’t have an account yet, please contact your Area Overseer.
+          </p>
+        </form>
+      </div>
+    {% else %}
+      <p style="margin-top: 0.75rem; opacity: 0.9; font-size: 0.95rem;">
+        Loading Bulletin Board…
+      </p>
+    {% endif %}
   </div>
 
+  {% if logged_in %}
   <script>
     setTimeout(function () {
-     window.location.href = "{{ url_for('bulletin') }}";
+      window.location.href = "{{ url_for('bulletin') }}";
     }, 5000);
   </script>
+  {% endif %}
 </body>
 </html>
