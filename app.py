@@ -1334,7 +1334,6 @@ def append_report_to_sheet(report_data: dict):
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 
-
 def export_month_to_sheet(year: int, month: int, status_label: str):
     db = get_db()
     cursor = db.cursor()
@@ -1373,18 +1372,9 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     church_address = session.get("pastor_church_address", "")
     church_id = (session.get("pastor_church_id") or "").strip()
 
-    bible_new = cp_row["bible_new"] or 0
-    bible_existing = cp_row["bible_existing"] or 0
-    received_christ = cp_row["received_christ"] or 0
-    baptized_water = cp_row["baptized_water"] or 0
-    baptized_holy_spirit = cp_row["baptized_holy_spirit"] or 0
-    healed = cp_row["healed"] or 0
-    child_dedication = cp_row["child_dedication"] or 0
-
     for row in sunday_rows:
-       d = datetime.fromisoformat(row["date"]).date()
-activity_date = f"{d.month}/{d.day}/{d.year}"  # e.g. 1/25/2026
-
+        d = datetime.fromisoformat(row["date"]).date()
+        activity_date = f"{d.month}/{d.day}/{d.year}"  # 1/25/2026
 
         tithes_church = row["tithes_church"] or 0
         offering = row["offering"] or 0
@@ -1403,13 +1393,13 @@ activity_date = f"{d.month}/{d.day}/{d.year}"  # e.g. 1/25/2026
             "offering": offering,
             "personal_tithes": tithes_personal,
             "mission_offering": mission,
-            "received_jesus": received_christ,
-            "existing_bible_study": bible_existing,
-            "new_bible_study": bible_new,
-            "water_baptized": baptized_water,
-            "holy_spirit_baptized": baptized_holy_spirit,
-            "childrens_dedication": child_dedication,
-            "healed": healed,
+            "received_jesus": cp_row["received_christ"] or 0,
+            "existing_bible_study": cp_row["bible_existing"] or 0,
+            "new_bible_study": cp_row["bible_new"] or 0,
+            "water_baptized": cp_row["baptized_water"] or 0,
+            "holy_spirit_baptized": cp_row["baptized_holy_spirit"] or 0,
+            "childrens_dedication": cp_row["child_dedication"] or 0,
+            "healed": cp_row["healed"] or 0,
             "activity_date": activity_date,
             "amount_to_send": amount_to_send,
             "status": status_label,
@@ -1418,7 +1408,7 @@ activity_date = f"{d.month}/{d.day}/{d.year}"  # e.g. 1/25/2026
         try:
             append_report_to_sheet(report_data)
         except Exception as e:
-            print("Error sending Sunday row to Google Sheets:", e)
+            print("Error exporting report row:", e)
 
 
 # ========================
