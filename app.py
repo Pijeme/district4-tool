@@ -83,6 +83,67 @@ def get_db():
 
     cur.execute("DROP TABLE monthly_reports_old")
     db.commit()
+def migrate_monthly_reports_scope_to_pastor():
+    """
+    Migration:
+    Old schema: monthly_reports UNIQUE(year, month)
+    New schema: monthly_reports UNIQUE(year, month, pastor_username)
+
+    Google Sheets is the source of truth, but we keep old local rows safely by
+    tagging them as pastor_username='__legacy__' while preserving IDs (so FK refs
+    from other local tables won't break).
+    """
+    db = get_db()
+    cur = db.cursor()
+
+    # If the table doesn't exist yet, nothing to migrate
+    table = cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='monthly_reports'"
+    ).fetchone()
+    if not table:
+        return
+
+    # Check if pastor_username column exists already
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(monthly_reports)").fetchall()]
+    if "pastor_username" in cols:
+        return  # already migrated
+
+    # Rebuild table with new schema
+    cur.execute("ALTER TABLE monthly_reports RENAME TO monthly_reports_old")
+
+    cur.execute(
+        """
+        CREATE TABLE monthly_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            pastor_username TEXT NOT NULL,
+
+            submitted INTEGER DEFAULT 0,
+            approved INTEGER DEFAULT 0,
+            submitted_at TEXT,
+            approved_at TEXT,
+
+            UNIQUE(year, month, pastor_username)
+        )
+        """
+    )
+
+    # Copy old rows into new table with a legacy tag
+    cur.execute(
+        """
+        INSERT INTO monthly_reports (
+            id, year, month, pastor_username, submitted, approved, submitted_at, approved_at
+        )
+        SELECT
+            id, year, month, '__legacy__', submitted, approved, submitted_at, approved_at
+        FROM monthly_reports_old
+        """
+    )
+
+    cur.execute("DROP TABLE monthly_reports_old")
+    db.commit()
+
 
 def init_db():
     db = get_db()
