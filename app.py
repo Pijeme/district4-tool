@@ -1721,7 +1721,6 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123"
 @app.before_request
 def before_request():
     init_db()
-    migrate_monthly_reports_scope_to_pastor()
     sync_from_sheets_if_needed()
 
 
