@@ -1396,13 +1396,11 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
             "status": status_label,
         }
 
-       import traceback
-try:
-    append_report_to_sheet(report_data)
-except Exception as e:
-    print("❌ Pastor export failed:", repr(e))
-    traceback.print_exc()
-
+        try:
+            append_report_to_sheet(report_data)
+        except Exception as e:
+            print("❌ Pastor export failed:", repr(e))
+            traceback.print_exc()
 
 
 # ========================
