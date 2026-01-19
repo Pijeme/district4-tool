@@ -84,53 +84,6 @@ def get_db():
     cur.execute("DROP TABLE monthly_reports_old")
     db.commit()
 
-def migrate_monthly_reports_scope_to_pastor():
-    """
-    Rebuild monthly_reports table to scope data by pastor_username.
-    Safe because Google Sheets is the source of truth.
-    """
-    db = get_db()
-    cur = db.cursor()
-
-    table = cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='monthly_reports'"
-    ).fetchone()
-    if not table:
-        return
-
-    cols = [r["name"] for r in cur.execute("PRAGMA table_info(monthly_reports)").fetchall()]
-    if "pastor_username" in cols:
-        return  # already migrated
-
-    cur.execute("ALTER TABLE monthly_reports RENAME TO monthly_reports_old")
-
-    cur.execute("""
-        CREATE TABLE monthly_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            year INTEGER NOT NULL,
-            month INTEGER NOT NULL,
-            pastor_username TEXT NOT NULL,
-            submitted INTEGER DEFAULT 0,
-            approved INTEGER DEFAULT 0,
-            submitted_at TEXT,
-            approved_at TEXT,
-            UNIQUE(year, month, pastor_username)
-        )
-    """)
-
-    cur.execute("""
-        INSERT INTO monthly_reports (
-            id, year, month, pastor_username, submitted, approved, submitted_at, approved_at
-        )
-        SELECT
-            id, year, month, '__legacy__', submitted, approved, submitted_at, approved_at
-        FROM monthly_reports_old
-    """)
-
-    cur.execute("DROP TABLE monthly_reports_old")
-    db.commit()
-
-
 def init_db():
     db = get_db()
     cursor = db.cursor()
@@ -967,9 +920,6 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
 
     if not cached_rows:
         return
-    pastor_username = (session.get("pastor_username") or "").strip()
-    if not pastor_username:
-        return
 
     mr = get_or_create_monthly_report(year, month, pastor_username)
     mrid = mr["id"]
@@ -1731,35 +1681,9 @@ def close_connection(exception):
         db.close()
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
 def splash():
-    logged_in = pastor_logged_in() or ao_logged_in()
-
-    error = None
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = (request.form.get("password") or "").strip()
-
-        if not username or not password:
-            error = "Username and password are required."
-        else:
-            row = get_db().execute(
-                "SELECT username, password, name, church_address, sex FROM sheet_accounts_cache WHERE username = ?",
-                (username,),
-            ).fetchone()
-
-            if row and str(row["password"] or "").strip() == password:
-                session["pastor_username"] = username
-                session["pastor_name"] = row["name"] or ""
-                session["pastor_church_address"] = row["church_address"] or ""
-                session["pastor_church_id"] = (row["sex"] or "").strip()
-                session.permanent = True
-                return redirect(url_for("pastor_tool"))
-
-            error = "Invalid username or password."
-
-    return render_template("splash.html", logged_in=logged_in, error=error)
-
+    return render_template("splash.html")
 
 
 @app.route("/bulletin")
