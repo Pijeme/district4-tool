@@ -1658,9 +1658,46 @@ def close_connection(exception):
         db.close()
 
 
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def splash():
-    return render_template("splash.html")
+    # If already logged in (Pastor or AO), keep the old splash behavior
+    logged_in = bool((session.get("pastor_username") or "").strip()) or bool(session.get("ao_logged_in"))
+
+    error = None
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        if not username or not password:
+            error = "Username and password are required."
+        else:
+            row = get_db().execute(
+                """
+                SELECT username, password, name, church_address, sex
+                FROM sheet_accounts_cache
+                WHERE username = ?
+                """,
+                (username,),
+            ).fetchone()
+
+            if row and (row["password"] or "").strip() == password:
+                # Pastor logged in
+                session["pastor_username"] = username
+                session["pastor_name"] = row["name"] or ""
+                session["pastor_church_address"] = row["church_address"] or ""
+                # "sex" column is now Church ID in your renamed Google Sheet setup
+                session["pastor_church_id"] = (row["sex"] or "").strip()
+                session.permanent = True
+                return redirect(url_for("pastor_tool"))
+
+            error = "Invalid username or password."
+
+    return render_template("splash.html", logged_in=logged_in, error=error)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("splash"))
 
 
 @app.route("/bulletin")
