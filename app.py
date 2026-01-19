@@ -1761,6 +1761,10 @@ def splash():
 
     return render_template("splash.html", logged_in=logged_in, error=error)
 
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("splash"))
 
 
 @app.route("/bulletin")
