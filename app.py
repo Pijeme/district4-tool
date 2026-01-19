@@ -1329,8 +1329,10 @@ def append_report_to_sheet(report_data: dict):
         report_data.get("amount_to_send", ""),
         report_data.get("status", ""),
     ]
- 
- worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+    # IMPORTANT: USER_ENTERED makes Sheets treat dates as real dates
+    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
 
 
 def export_month_to_sheet(year: int, month: int, status_label: str):
