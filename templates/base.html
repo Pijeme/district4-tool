@@ -35,6 +35,10 @@
       <li><a href="{{ url_for('prayer_request') }}">Prayer Request</a></li>
       <li><a href="{{ url_for('event_registration') }}">Event Registration (Pending)</a></li>
       <li><a href="{{ url_for('schedules') }}">Schedules (Pending)</a></li>
+      {% if session.get("pastor_username") or session.get("ao_logged_in") %}
+  <li><a href="{{ url_for('logout') }}">Log Out</a></li>
+{% endif %}
+
     </ul>
   </nav>
   <div class="backdrop" id="backdrop"></div>
