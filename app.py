@@ -1265,6 +1265,44 @@ def sheet_batch_update_status_for_church_month(year: int, month: int, church_key
 # Append / Export to sheet
 # ========================
 
+def _delete_report_rows_for_month_in_sheet(year: int, month: int, church_key: str, pastor_name: str):
+    """
+    Deletes existing rows in Google Sheets 'Report' that match:
+      - same year/month (based on activity_date)
+      - same church (matches either 'church' or 'address' column)
+      - same pastor name (extra safety)
+    Uses local cache sheet_report_cache to find exact sheet_row numbers.
+    """
+    db = get_db()
+
+    rows = db.execute(
+        """
+        SELECT sheet_row
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (
+                TRIM(church) = TRIM(?)
+             OR TRIM(address) = TRIM(?)
+          )
+          AND TRIM(pastor) = TRIM(?)
+          AND sheet_row IS NOT NULL
+        """,
+        (year, month, church_key, church_key, pastor_name),
+    ).fetchall()
+
+    sheet_rows = sorted({int(r["sheet_row"]) for r in rows if r["sheet_row"]}, reverse=True)
+    if not sheet_rows:
+        return
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Report")
+
+    # Delete from bottom to top so row numbers stay correct
+    for r in sheet_rows:
+        if r > 1:  # never delete header row
+            ws.delete_rows(r)
+
 
 def append_account_to_sheet(pastor_data: dict):
     client = get_gs_client()
@@ -1406,9 +1444,18 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     healed = cp_row["healed"] or 0
     child_dedication = cp_row["child_dedication"] or 0
 
+        # ✅ RESUBMIT BEHAVIOR:
+    # If this month already exists on Sheets for this pastor/church, delete it first then re-upload.
+    # (This prevents duplicates on resubmit.)
+    church_key = church_id or church_address
+    _delete_report_rows_for_month_in_sheet(year, month, church_key, pastor_name)
+
     for row in sunday_rows:
         d = datetime.fromisoformat(row["date"]).date()
-        activity_date = f"=DATE({d.year},{d.month},{d.day})"
+
+        # ✅ IMPORTANT: keep date like 12/21/2025 (NOT =DATE(...))
+        activity_date = f"{d.month}/{d.day}/{d.year}"
+
 
         tithes_church = row["tithes_church"] or 0
         offering = row["offering"] or 0
