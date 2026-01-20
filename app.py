@@ -2107,21 +2107,34 @@ def sunday_detail(year, month, day):
                 break
 
         if not error:
+            # ✅ HARD REPLACE (prevents duplicates / stale rows)
             cursor.execute(
                 """
-                UPDATE sunday_reports
-                SET attendance_adult = ?,
-                    attendance_youth = ?,
-                    attendance_children = ?,
-                    attendance_total = NULL,
-                    tithes_church = ?,
-                    offering = ?,
-                    mission = ?,
-                    tithes_personal = ?,
-                    is_complete = 1
-                WHERE id = ?
+                DELETE FROM sunday_reports
+                WHERE monthly_report_id = ? AND date = ?
+                """,
+                (monthly_report["id"], d.isoformat()),
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO sunday_reports (
+                    monthly_report_id,
+                    date,
+                    is_complete,
+                    attendance_adult,
+                    attendance_youth,
+                    attendance_children,
+                    attendance_total,
+                    tithes_church,
+                    offering,
+                    mission,
+                    tithes_personal
+                ) VALUES (?, ?, 1, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
                 (
+                    monthly_report["id"],
+                    d.isoformat(),
                     numeric_values["attendance_adult"],
                     numeric_values["attendance_youth"],
                     numeric_values["attendance_children"],
@@ -2129,11 +2142,12 @@ def sunday_detail(year, month, day):
                     numeric_values["offering"],
                     numeric_values["mission"],
                     numeric_values["tithes_personal"],
-                    sunday["id"],
                 ),
             )
+
             db.commit()
             return redirect(url_for("pastor_tool", year=year, month=month))
+
 
     if not values:
         values = {
