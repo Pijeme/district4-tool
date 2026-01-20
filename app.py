@@ -1453,7 +1453,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     healed = cp_row["healed"] or 0
     child_dedication = cp_row["child_dedication"] or 0
 
-  for row in sunday_rows:
+for row in sunday_rows:
     d = datetime.fromisoformat(row["date"]).date()
 
     tithes_church = row["tithes_church"] or 0
@@ -1462,7 +1462,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     tithes_personal = row["tithes_personal"] or 0
     amount_to_send = tithes_church + offering + mission + tithes_personal
 
-    # ✅ DATE MUST ALWAYS BE TEXT: MM/DD/YYYY
+    # ✅ DATE AS TEXT: M/D/YYYY (example: 12/21/2025)
     activity_date_text = f"{d.month}/{d.day}/{d.year}"
 
     report_data = {
@@ -1488,7 +1488,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
         "status": status_label,
     }
 
-    # 🔍 CHECK IF THIS DATE + CHURCH ALREADY EXISTS IN SHEET CACHE
+    # 🔍 find existing row (same church + same date)
     cached = db.execute(
         """
         SELECT sheet_row
@@ -1496,9 +1496,7 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
         WHERE year = ?
           AND month = ?
           AND activity_date = ?
-          AND (
-            TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?)
-          )
+          AND (TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?))
         """,
         (
             d.year,
@@ -1509,15 +1507,10 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
         ),
     ).fetchone()
 
-    try:
-        if cached and cached["sheet_row"]:
-            # 🔁 UPDATE EXISTING ROW (NO DATE CHANGE)
-            update_report_row_in_sheet(cached["sheet_row"], report_data)
-        else:
-            # ➕ APPEND NEW ROW
-            append_report_to_sheet(report_data)
-    except Exception:
-        traceback.print_exc()
+    if cached and cached["sheet_row"]:
+        update_report_row_in_sheet(int(cached["sheet_row"]), report_data)
+    else:
+        append_report_to_sheet(report_data)
 
 
 
