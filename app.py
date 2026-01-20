@@ -1453,93 +1453,72 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     healed = cp_row["healed"] or 0
     child_dedication = cp_row["child_dedication"] or 0
 
-    for row in sunday_rows:
-        d = datetime.fromisoformat(row["date"]).date()
+  for row in sunday_rows:
+    d = datetime.fromisoformat(row["date"]).date()
 
-        tithes_church = row["tithes_church"] or 0
-        offering = row["offering"] or 0
-        mission = row["mission"] or 0
-        tithes_personal = row["tithes_personal"] or 0
-        amount_to_send = tithes_church + offering + mission + tithes_personal
+    tithes_church = row["tithes_church"] or 0
+    offering = row["offering"] or 0
+    mission = row["mission"] or 0
+    tithes_personal = row["tithes_personal"] or 0
+    amount_to_send = tithes_church + offering + mission + tithes_personal
 
-        report_data = {
-            "church": church_id or church_address,
-            "pastor": pastor_name,
-            "address": church_address,
-            "adult": row["attendance_adult"] or 0,
-            "youth": row["attendance_youth"] or 0,
-            "children": row["attendance_children"] or 0,
-            "tithes": tithes_church,
-            "offering": offering,
-            "personal_tithes": tithes_personal,
-            "mission_offering": mission,
-            "received_jesus": received_christ,
-            "existing_bible_study": bible_existing,
-            "new_bible_study": bible_new,
-            "water_baptized": baptized_water,
-            "holy_spirit_baptized": baptized_holy_spirit,
-            "childrens_dedication": child_dedication,
-            "healed": healed,
-            "activity_date": activity_date,
-            "amount_to_send": amount_to_send,
-            "status": status_label,
-        }
+    # ✅ DATE MUST ALWAYS BE TEXT: MM/DD/YYYY
+    activity_date_text = f"{d.month}/{d.day}/{d.year}"
 
-        # 🔍 Check if this Sunday already exists in sheet cache
-        cached = db.execute(
-            """
-            SELECT sheet_row
-            FROM sheet_report_cache
-            WHERE year = ?
-              AND month = ?
-              AND activity_date = ?
-              AND (
-                TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?)
-              )
-            """,
-            (
-                year,
-                month,
-                d.isoformat(),
-                church_id or church_address,
-                church_id or church_address,
-            ),
-        ).fetchone()
+    report_data = {
+        "church": church_id or church_address,
+        "pastor": pastor_name,
+        "address": church_address,
+        "adult": row["attendance_adult"] or 0,
+        "youth": row["attendance_youth"] or 0,
+        "children": row["attendance_children"] or 0,
+        "tithes": tithes_church,
+        "offering": offering,
+        "personal_tithes": tithes_personal,
+        "mission_offering": mission,
+        "received_jesus": received_christ,
+        "existing_bible_study": bible_existing,
+        "new_bible_study": bible_new,
+        "water_baptized": baptized_water,
+        "holy_spirit_baptized": baptized_holy_spirit,
+        "childrens_dedication": child_dedication,
+        "healed": healed,
+        "activity_date": activity_date_text,
+        "amount_to_send": amount_to_send,
+        "status": status_label,
+    }
 
-      # 🔍 Look for existing sheet row (same date + church)
-db = get_db()
-cached = db.execute(
-    """
-    SELECT sheet_row
-    FROM sheet_report_cache
-    WHERE year = ?
-      AND month = ?
-      AND activity_date = ?
-      AND (TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?))
-    """,
-    (
-        d.year,
-        d.month,
-        d.isoformat(),
-        church_id or church_address,
-        church_id or church_address,
-    ),
-).fetchone()
+    # 🔍 CHECK IF THIS DATE + CHURCH ALREADY EXISTS IN SHEET CACHE
+    cached = db.execute(
+        """
+        SELECT sheet_row
+        FROM sheet_report_cache
+        WHERE year = ?
+          AND month = ?
+          AND activity_date = ?
+          AND (
+            TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?)
+          )
+        """,
+        (
+            d.year,
+            d.month,
+            d.isoformat(),
+            church_id or church_address,
+            church_id or church_address,
+        ),
+    ).fetchone()
 
-# ✅ Always keep date as TEXT: MM/DD/YYYY
-report_data["activity_date"] = f"{d.month}/{d.day}/{d.year}"
+    try:
+        if cached and cached["sheet_row"]:
+            # 🔁 UPDATE EXISTING ROW (NO DATE CHANGE)
+            update_report_row_in_sheet(cached["sheet_row"], report_data)
+        else:
+            # ➕ APPEND NEW ROW
+            append_report_to_sheet(report_data)
+    except Exception:
+        traceback.print_exc()
 
-try:
-    if cached and cached["sheet_row"]:
-        # 🔁 UPDATE existing row (no date change!)
-        update_report_row_in_sheet(cached["sheet_row"], report_data)
-    else:
-        # ➕ APPEND new row
-        append_report_to_sheet(report_data)
-
-except Exception as e:
-    print("❌ Pastor export failed:", repr(e))
-    traceback.print_exc()
 
 
 
