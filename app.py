@@ -2020,14 +2020,37 @@ def pastor_tool():
     can_submit = sundays_ok and cp_complete
     status_key = get_month_status(monthly_report)
 
-    cursor.execute(
-        "SELECT year, month, submitted FROM monthly_reports WHERE year = ? AND pastor_username = ?",
-        (year, pastor_username),
-    )
-    submitted_map = {
-        (r["year"], r["month"]): bool(r["submitted"])
-        for r in cursor.fetchall()
-    }
+    # ✅ Build checkmarks based on Google Sheets cache (not local DB)
+# This makes the ✅ appear even if you did NOT open each month one-by-one.
+db = get_db()
+cursor = db.cursor()
+
+refresh_pastor_from_cache()
+pastor_name = (session.get("pastor_name") or "").strip()
+church_address = (session.get("pastor_church_address") or "").strip()
+church_id = (session.get("pastor_church_id") or "").strip()
+church_key = church_id or church_address
+
+# Months that already have rows in the Report sheet (via cache)
+rows = db.execute(
+    """
+    SELECT month, COUNT(*) AS cnt
+    FROM sheet_report_cache
+    WHERE year = ?
+      AND (
+            TRIM(church) = TRIM(?)
+         OR TRIM(address) = TRIM(?)
+         OR TRIM(pastor) = TRIM(?)
+      )
+    GROUP BY month
+    """,
+    (year, church_key, church_key, pastor_name),
+).fetchall()
+
+month_has_data = {int(r["month"]): (int(r["cnt"] or 0) > 0) for r in rows}
+
+# Keep the old submitted_map name so your template keeps working
+submitted_map = {(year, m): bool(month_has_data.get(m)) for m in range(1, 13)}
 
     if request.method == "POST":
         if can_submit:
