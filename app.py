@@ -1359,24 +1359,17 @@ def append_report_to_sheet(report_data: dict):
     ws.append_rows([row], value_input_option="USER_ENTERED", table_range="A1")
     
 def update_report_row_in_sheet(sheet_row: int, report_data: dict):
-    """
-    Updates an existing Report row instead of appending.
-    sheet_row is the actual row number in Google Sheets.
-    """
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet("Report")
 
     values = ws.get_all_values()
-    if not values:
+    if not values or sheet_row <= 1:
         return
 
     headers = values[0]
 
     col_map = {
-        "church": "church",
-        "pastor": "pastor",
-        "address": "address",
         "adult": "adult",
         "youth": "youth",
         "children": "children",
@@ -1391,7 +1384,6 @@ def update_report_row_in_sheet(sheet_row: int, report_data: dict):
         "holy_spirit_baptized": "holy spirit baptized",
         "childrens_dedication": "childrens dedication",
         "healed": "healed",
-        "activity_date": "activity_date",
         "amount_to_send": "amount to send",
         "status": "status",
     }
@@ -1399,17 +1391,19 @@ def update_report_row_in_sheet(sheet_row: int, report_data: dict):
     updates = []
 
     for key, header in col_map.items():
+        if key not in report_data:
+            continue
         idx = _find_col(headers, header)
         if idx is None:
             continue
         col_letter = chr(ord("A") + idx)
-        updates.append({
-            "range": f"{col_letter}{sheet_row}",
-            "values": [[report_data.get(key, "")]],
-        })
+        updates.append(
+            {"range": f"{col_letter}{sheet_row}", "values": [[report_data[key]]]}
+        )
 
     if updates:
         ws.batch_update(updates)
+
 
 
 
@@ -1461,7 +1455,6 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
 
     for row in sunday_rows:
         d = datetime.fromisoformat(row["date"]).date()
-        activity_date = f"=DATE({d.year},{d.month},{d.day})"
 
         tithes_church = row["tithes_church"] or 0
         offering = row["offering"] or 0
@@ -1513,16 +1506,41 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
             ),
         ).fetchone()
 
-        try:
-            if cached and cached["sheet_row"]:
-                # ✅ UPDATE existing row
-                update_report_row_in_sheet(cached["sheet_row"], report_data)
-            else:
-                # ➕ APPEND new row
-                append_report_to_sheet(report_data)
-        except Exception as e:
-            print("❌ Pastor export failed:", repr(e))
-            traceback.print_exc()
+      # 🔍 Look for existing sheet row (same date + church)
+db = get_db()
+cached = db.execute(
+    """
+    SELECT sheet_row
+    FROM sheet_report_cache
+    WHERE year = ?
+      AND month = ?
+      AND activity_date = ?
+      AND (TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?))
+    """,
+    (
+        d.year,
+        d.month,
+        d.isoformat(),
+        church_id or church_address,
+        church_id or church_address,
+    ),
+).fetchone()
+
+# ✅ Always keep date as TEXT: MM/DD/YYYY
+report_data["activity_date"] = f"{d.month}/{d.day}/{d.year}"
+
+try:
+    if cached and cached["sheet_row"]:
+        # 🔁 UPDATE existing row (no date change!)
+        update_report_row_in_sheet(cached["sheet_row"], report_data)
+    else:
+        # ➕ APPEND new row
+        append_report_to_sheet(report_data)
+
+except Exception as e:
+    print("❌ Pastor export failed:", repr(e))
+    traceback.print_exc()
+
 
 
 
