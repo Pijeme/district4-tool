@@ -915,10 +915,25 @@ def _current_user_church_name():
 # ✅ IMPORTANT FIX:
 # Cache → Local upsert for Pastor Tool display
 # ========================
+def _dirty_key(year: int, month: int) -> str:
+    return f"dirty_{year}_{month}"
 
+def mark_month_dirty(year: int, month: int):
+    session[_dirty_key(year, month)] = True
+
+def clear_month_dirty(year: int, month: int):
+    session.pop(_dirty_key(year, month), None)
+
+def is_month_dirty(year: int, month: int) -> bool:
+    return session.get(_dirty_key(year, month)) is True
 
 def sync_local_month_from_cache_for_pastor(year: int, month: int):
+    # ✅ If user edited local data, DO NOT overwrite it with cache/sheets data
+    if is_month_dirty(year, month):
+        return
+
     refresh_pastor_from_cache()
+
     pastor_username = (session.get("pastor_username") or "").strip()
     if not pastor_username:
         return
@@ -2019,8 +2034,13 @@ def pastor_tool():
             set_month_submitted(year, month, pastor_username)
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
+
+                # ✅ export succeeded, allow cache to refresh local from Sheets again
+                clear_month_dirty(year, month)
+
                 sync_from_sheets_if_needed(force=True)
                 sync_local_month_from_cache_for_pastor(year, month)
+
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
         return redirect(url_for("pastor_tool", year=year, month=month))
@@ -2146,6 +2166,7 @@ def sunday_detail(year, month, day):
             )
 
             db.commit()
+            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
             return redirect(url_for("pastor_tool", year=year, month=month))
 
 
@@ -2246,6 +2267,7 @@ def church_progress_view(year, month):
                 ),
             )
             db.commit()
+            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
             return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
