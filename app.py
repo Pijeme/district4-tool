@@ -1404,10 +1404,45 @@ def update_report_row_in_sheet(sheet_row: int, report_data: dict):
     if updates:
         ws.batch_update(updates)
 
+def delete_report_rows_for_church_month_in_sheet(year: int, month: int, church_key: str):
+    """
+    Deletes all rows in Google Sheet 'Report' for a specific church + year + month.
+    Uses sheet_report_cache.sheet_row so we delete the correct rows safely.
+    """
+
+    # Make sure cache has the latest sheet_row values BEFORE deleting
+    sync_from_sheets_if_needed(force=True)
+
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT sheet_row
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?))
+        """,
+        (year, month, church_key, church_key),
+    ).fetchall()
+
+    sheet_rows = sorted([int(r["sheet_row"]) for r in rows if r["sheet_row"]], reverse=True)
+    if not sheet_rows:
+        return
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Report")
+
+    # Delete from bottom to top so row numbers don't shift while deleting
+    for r in sheet_rows:
+        if r > 1:  # never delete header row
+            ws.delete_rows(r)
+
+    # Refresh cache again because deleting rows changes sheet_row numbers
+    sync_from_sheets_if_needed(force=True)
 
 
 
-def export_month_to_sheet(year: int, month: int, status_label: str):
+def export_month_to_sheet(year: int, month: int, status_label: str, replace_existing: bool = False):
     db = get_db()
     cursor = db.cursor()
 
@@ -1438,12 +1473,18 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
     if not sunday_rows:
         return
 
-    sync_from_sheets_if_needed()
+    # Always refresh cache and pastor info before exporting
+    sync_from_sheets_if_needed(force=True)
     refresh_pastor_from_cache()
 
     pastor_name = session.get("pastor_name", "")
     church_address = session.get("pastor_church_address", "")
     church_id = (session.get("pastor_church_id") or "").strip()
+    church_key = church_id or church_address
+
+    # ✅ RESUBMIT MODE: delete old rows first
+    if replace_existing:
+        delete_report_rows_for_church_month_in_sheet(year, month, church_key)
 
     bible_new = cp_row["bible_new"] or 0
     bible_existing = cp_row["bible_existing"] or 0
@@ -1462,10 +1503,11 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
         tithes_personal = row["tithes_personal"] or 0
         amount_to_send = tithes_church + offering + mission + tithes_personal
 
+        # ✅ DATE AS TEXT (not formula): M/D/YYYY like 12/21/2025
         activity_date_text = f"{d.month}/{d.day}/{d.year}"
 
         report_data = {
-            "church": church_id or church_address,
+            "church": church_key,
             "pastor": pastor_name,
             "address": church_address,
             "adult": row["attendance_adult"] or 0,
@@ -1487,28 +1529,11 @@ def export_month_to_sheet(year: int, month: int, status_label: str):
             "status": status_label,
         }
 
-        cached = db.execute(
-            """
-            SELECT sheet_row
-            FROM sheet_report_cache
-            WHERE year = ?
-              AND month = ?
-              AND activity_date = ?
-              AND (TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?))
-            """,
-            (
-                d.year,
-                d.month,
-                d.isoformat(),
-                church_id or church_address,
-                church_id or church_address,
-            ),
-        ).fetchone()
+        # ✅ Always append fresh rows (simple + reliable)
+        append_report_to_sheet(report_data)
 
-        if cached and cached["sheet_row"]:
-            update_report_row_in_sheet(int(cached["sheet_row"]), report_data)
-        else:
-            append_report_to_sheet(report_data)
+    # Refresh cache so AO sees the new rows immediately
+    sync_from_sheets_if_needed(force=True)
 
 
 
@@ -2036,16 +2061,24 @@ def pastor_tool():
     }
 
     if request.method == "POST":
-        if can_submit:
-            set_month_submitted(year, month, pastor_username)
-            try:
-                export_month_to_sheet(year, month, "Pending AO approval")
-                sync_from_sheets_if_needed(force=True)
-                sync_local_month_from_cache_for_pastor(year, month)
-            except Exception as e:
-                print("Error exporting month to sheet on submit:", e)
-        return redirect(url_for("pastor_tool", year=year, month=month))
+       if can_submit:
+        was_submitted_before = bool(monthly_report["submitted"])
 
+        set_month_submitted(year, month, pastor_username)
+        try:
+            export_month_to_sheet(
+                year,
+                month,
+                "Pending AO approval",
+                replace_existing=was_submitted_before,  # ✅ resubmit = delete + replace
+            )
+            sync_from_sheets_if_needed(force=True)
+            sync_local_month_from_cache_for_pastor(year, month)
+        except Exception as e:
+            print("Error exporting month to sheet on submit:", e)
+            traceback.print_exc()
+
+    return redirect(url_for("pastor_tool", year=year, month=month))
     return render_template(
         "pastor_tool.html",
         year=year,
