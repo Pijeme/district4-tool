@@ -2019,14 +2019,29 @@ def pastor_tool():
             (ao_area,),
         ).fetchall()
 
-        ao_church_choices = [r["username"] for r in rows]
+        rows = get_db().execute(
+    """
+    SELECT username, church_id
+    FROM sheet_accounts_cache
+    WHERE TRIM(area_number) = TRIM(?)
+      AND LOWER(TRIM(position)) = 'pastor'
+    ORDER BY church_id
+    """,
+    (ao_area,),
+).fetchall()
+
+ao_church_choices = [{"username": r["username"], "church": r["church_id"]} for r in rows]
+
 
         selected_church = (request.args.get("church") or "").strip()
         if not selected_church and ao_church_choices:
-            selected_church = ao_church_choices[0]
+            selected_church = ao_church_choices[0]["username"]
 
-        if selected_church and selected_church not in ao_church_choices:
+
+        valid_usernames = [c["username"] for c in ao_church_choices]
+        if selected_church and selected_church not in valid_usernames:
             abort(403)
+
 
         session["pastor_username"] = selected_church or session.get("ao_username", "ao")
 
@@ -2307,7 +2322,13 @@ def sunday_detail(year, month, day):
 
             db.commit()
             mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
+            church = (request.args.get("church") or "").strip() or (request.form.get("church") or "").strip()
+
+            if church:
+                return redirect(url_for("pastor_tool", year=year, month=month, church=church))
+
             return redirect(url_for("pastor_tool", year=year, month=month))
+
 
 
     if not values:
