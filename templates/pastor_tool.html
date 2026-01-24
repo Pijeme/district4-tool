@@ -15,9 +15,12 @@
 
         <select name="church" onchange="this.form.submit()">
           {% for c in ao_church_choices %}
-            <option value="{{ c }}" {% if c == selected_church %}selected{% endif %}>{{ c }}</option>
+            <option value="{{ c.username }}" {% if c.username == selected_church %}selected{% endif %}>
+              {{ c.church }}
+            </option>
           {% endfor %}
         </select>
+
       </form>
     {% endif %}
   </div>
