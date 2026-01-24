@@ -1952,13 +1952,53 @@ def pastor_tool():
         return redirect(url_for("pastor_login", next=request.path))
 
     # If AO is logged in but not pastor, let AO access without another login by using AO identity
-    if ao_logged_in() and not pastor_logged_in():
-        session.setdefault("pastor_logged_in", True)
-        session.setdefault("pastor_username", session.get("ao_username", "ao"))
+        # AO dropdown support (simple)
+    is_ao = ao_logged_in()
+    church_options = []
+    selected_church_username = None
 
+    db = get_db()
+
+    if is_ao and not pastor_logged_in():
+        ao_area = (session.get("ao_area_number") or "").strip()
+
+        # List all accounts under the same Area Number (exclude the AO account if it's also in the sheet)
+        church_options = db.execute(
+            """
+            SELECT username, name, church_address
+            FROM sheet_accounts_cache
+            WHERE TRIM(age) = TRIM(?)
+              AND (LOWER(COALESCE(position,'')) != 'area overseer')
+            ORDER BY name
+            """,
+            (ao_area,),
+        ).fetchall()
+
+        # Pick selected church from querystring (?church=username) or default to first in list
+        selected_church_username = (request.args.get("church") or "").strip()
+        if (not selected_church_username) and church_options:
+            selected_church_username = church_options[0]["username"]
+
+        # Safety: only allow choosing churches within AO's area
+        if selected_church_username:
+            allowed = db.execute(
+                """
+                SELECT 1 FROM sheet_accounts_cache
+                WHERE username = ? AND TRIM(age) = TRIM(?)
+                """,
+                (selected_church_username, ao_area),
+            ).fetchone()
+            if not allowed:
+                abort(403)
+
+        # Force Pastor Tool to operate as the selected pastor
+        session["pastor_logged_in"] = True
+        session["pastor_username"] = selected_church_username or session.get("ao_username", "ao")
+
+    # Normal pastor flow (or AO already acting as pastor)
     refresh_pastor_from_cache()
-
     pastor_username = (session.get("pastor_username") or "").strip()
+
 
     today = date.today()
     year = request.args.get("year", type=int) or today.year
@@ -2084,6 +2124,10 @@ def pastor_tool():
         sundays_ok=sundays_ok,
         monthly_total=monthly_total,
         pastor_name=session.get("pastor_name", ""),
+        is_ao=is_ao,
+        church_options=church_options,
+        selected_church_username=selected_church_username,
+
     )
 
 
