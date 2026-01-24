@@ -926,11 +926,41 @@ def clear_month_dirty(year: int, month: int):
 
 def is_month_dirty(year: int, month: int) -> bool:
     return session.get(_dirty_key(year, month)) is True
+def get_current_sheet_status_for_church_month(year: int, month: int, church_key: str, pastor_name: str):
+    """
+    Try to preserve existing status from Sheets cache.
+    If none found, default to 'Approved' for AO edits (since AO is truth).
+    """
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT status
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (
+            TRIM(address) = TRIM(?) OR TRIM(church) = TRIM(?) OR TRIM(pastor) = TRIM(?)
+          )
+        ORDER BY sheet_row ASC
+        LIMIT 1
+        """,
+        (year, month, church_key, church_key, pastor_name),
+    ).fetchone()
+
+    s = (row["status"] if row else "") or ""
+    s = str(s).strip()
+    return s if s else "Approved"
+
+
 
 def sync_local_month_from_cache_for_pastor(year: int, month: int):
-    # ✅ If user edited local data, DO NOT overwrite it with cache/sheets data
-    if is_month_dirty(year, month):
-        return
+       # ✅ AO is absolute truth: AO always syncs from cache/sheets (never blocked by dirty)
+    if ao_logged_in():
+        clear_month_dirty(year, month)
+    else:
+        # Pastors keep protection so their local edits aren't overwritten
+        if is_month_dirty(year, month):
+            return
+
 
     refresh_pastor_from_cache()
 
@@ -2556,7 +2586,32 @@ def sunday_detail(year, month, day):
             )
 
             db.commit()
-            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
+
+            if ao_logged_in():
+                # ✅ AO is absolute truth: push immediately to Sheets
+                refresh_pastor_from_cache()
+                church_id = (session.get("pastor_church_id") or "").strip()
+                church_address = (session.get("pastor_church_address") or "").strip()
+                pastor_name = (session.get("pastor_name") or "").strip()
+                church_key = church_id or church_address
+
+                # Preserve/choose status
+                status_label = get_current_sheet_status_for_church_month(year, month, church_key, pastor_name)
+
+                # Export entire month immediately (overwrites Sheets rows for that month/church)
+                export_month_to_sheet(year, month, status_label)
+
+                # Force refresh cache so all pages see AO truth
+                sync_from_sheets_if_needed(force=True)
+
+                # Ensure local is aligned with Sheets again
+                clear_month_dirty(year, month)
+                sync_local_month_from_cache_for_pastor(year, month)
+
+            else:
+                # Pastors: keep local protection until they formally submit/export
+                mark_month_dirty(year, month)
+
             return redirect(url_for("pastor_tool", year=year, month=month))
 
 
@@ -2657,8 +2712,27 @@ def church_progress_view(year, month):
                 ),
             )
             db.commit()
-            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
+
+            if ao_logged_in():
+                refresh_pastor_from_cache()
+                church_id = (session.get("pastor_church_id") or "").strip()
+                church_address = (session.get("pastor_church_address") or "").strip()
+                pastor_name = (session.get("pastor_name") or "").strip()
+                church_key = church_id or church_address
+
+                status_label = get_current_sheet_status_for_church_month(year, month, church_key, pastor_name)
+
+                export_month_to_sheet(year, month, status_label)
+                sync_from_sheets_if_needed(force=True)
+
+                clear_month_dirty(year, month)
+                sync_local_month_from_cache_for_pastor(year, month)
+
+            else:
+                mark_month_dirty(year, month)
+
             return redirect(url_for("pastor_tool", year=year, month=month))
+
 
     if not values:
         values = {
