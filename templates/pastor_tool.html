@@ -52,7 +52,8 @@
   <div class="sunday-list">
     {% if sunday_list %}
       {% for s in sunday_list %}
-        <a href="{{ url_for('sunday_detail', year=s.year, month=s.month, day=s.day, church=selected_church if ao_mode else None) }}"
+       <a href="{{ url_for('sunday_detail', year=s.year, month=s.month, day=s.day, church=(selected_church if ao_mode else None)) }}"
+   class="sunday-card {% if s.is_complete %}complete{% else %}incomplete{% endif %}">
 
           <span>{{ s.display }}</span>
           <span class="status-pill">
@@ -67,7 +68,9 @@
 
   <!-- Church Progress as a colored card like Sundays -->
   <div class="progress-row">
-    <a href="{{ url_for('church_progress_view', year=year, month=month, church=selected_church if ao_mode else None) }}"
+<a href="{{ url_for('church_progress_view', year=year, month=month, church=(selected_church if ao_mode else None)) }}"
+   class="sunday-card progress-card {% if cp_complete %}complete{% else %}incomplete{% endif %}">
+
 
       <span>Church Progress</span>
       <span class="status-pill">
