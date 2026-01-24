@@ -15,18 +15,30 @@
 
         <select name="church" onchange="this.form.submit()">
           {% for c in ao_church_choices %}
-            <option value="{{ c.username }}" {% if c.username == selected_church %}selected{% endif %}>
-              {{ c.church }}
+            {# Supports both formats:
+               1) c is a dict/row: {username, church}
+               2) c is a username string
+               Prefer label from ao_church_labels if provided #}
+
+            {% if c is mapping %}
+              {% set u = c.username %}
+              {% set label = (ao_church_labels.get(u) if ao_church_labels is defined else c.church) %}
+            {% else %}
+              {% set u = c %}
+              {% set label = (ao_church_labels.get(u) if ao_church_labels is defined else u) %}
+            {% endif %}
+
+            <option value="{{ u }}" {% if u == selected_church %}selected{% endif %}>
+              {{ label }}
             </option>
           {% endfor %}
         </select>
-
       </form>
     {% endif %}
   </div>
 
   <form method="get" class="month-picker">
-    {# IMPORTANT: Keep selected church when AO changes Month/Year #}
+    {# Keep selected church when AO changes Month/Year #}
     {% if ao_mode %}
       <input type="hidden" name="church" value="{{ selected_church }}">
     {% endif %}
