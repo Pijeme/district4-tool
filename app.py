@@ -1947,61 +1947,18 @@ def pastor_login():
 # ========================
 
 @app.route("/pastor-tool", methods=["GET", "POST"])
+
 def pastor_tool():
-    # --- Defaults so template never crashes ---
+    # ✅ AO dropdown support + stable defaults
     ao_mode = False
-    ao_church_choices = []
-    selected_church = None
+    ao_church_choices = []      # list of pastor usernames
+    ao_church_labels = {}       # username -> Church ID (from Accounts sheet)
+    selected_church = None      # selected pastor username when AO is using dropdown
 
     if not (pastor_logged_in() or ao_logged_in()):
         return redirect(url_for("pastor_login", next=request.path))
 
-    # If AO is logged in but not pastor, let AO access without another login by using AO identity
-        # AO dropdown support (simple)
-    is_ao = ao_logged_in()
-    church_options = []
-    selected_church_username = None
-
-    db = get_db()
-
-    if is_ao and not pastor_logged_in():
-        ao_area = (session.get("ao_area_number") or "").strip()
-
-        # List all accounts under the same Area Number (exclude the AO account if it's also in the sheet)
-        church_options = db.execute(
-            """
-            SELECT username, name, church_address
-            FROM sheet_accounts_cache
-            WHERE TRIM(age) = TRIM(?)
-              AND (LOWER(COALESCE(position,'')) != 'area overseer')
-            ORDER BY name
-            """,
-            (ao_area,),
-        ).fetchall()
-
-        # Pick selected church from querystring (?church=username) or default to first in list
-        selected_church_username = (request.args.get("church") or "").strip()
-        if (not selected_church_username) and church_options:
-            selected_church_username = church_options[0]["username"]
-
-        # Safety: only allow choosing churches within AO's area
-        if selected_church_username:
-            allowed = db.execute(
-                """
-                SELECT 1 FROM sheet_accounts_cache
-                WHERE username = ? AND TRIM(age) = TRIM(?)
-                """,
-                (selected_church_username, ao_area),
-            ).fetchone()
-            if not allowed:
-                abort(403)
-
-        # Force Pastor Tool to operate as the selected pastor
-        session["pastor_logged_in"] = True
-        session["pastor_username"] = selected_church_username or session.get("ao_username", "ao")
-
-    # Normal pastor flow (or AO already acting as pastor)
-        # --- AO dropdown logic (simple) ---
+    # --- AO MODE: AO can act as pastor for churches in the same Area Number ---
     if ao_logged_in():
         ao_mode = True
         session.setdefault("pastor_logged_in", True)
@@ -2010,29 +1967,35 @@ def pastor_tool():
 
         rows = get_db().execute(
             """
-            SELECT username
+            SELECT username, sex
             FROM sheet_accounts_cache
             WHERE TRIM(age) = TRIM(?)
               AND LOWER(COALESCE(position,'')) != 'area overseer'
-            ORDER BY username
+              AND TRIM(username) != ''
+            ORDER BY TRIM(sex), TRIM(username)
             """,
             (ao_area,),
         ).fetchall()
 
         ao_church_choices = [r["username"] for r in rows]
+        ao_church_labels = {r["username"]: (r["sex"] or "").strip() for r in rows}
 
-        selected_church = (request.args.get("church") or "").strip()
-        if not selected_church and ao_church_choices:
+        # keep selection from URL (?church=username) or keep current session pastor_username
+        selected_church = (request.args.get("church") or "").strip() or (session.get("pastor_username") or "").strip()
+        if (not selected_church) and ao_church_choices:
             selected_church = ao_church_choices[0]
 
+        # Safety: AO can only choose within list
         if selected_church and selected_church not in ao_church_choices:
             abort(403)
 
-        session["pastor_username"] = selected_church or session.get("ao_username", "ao")
+        if selected_church:
+            session["pastor_username"] = selected_church
 
+    # --- Normal pastor flow (or AO acting as selected pastor) ---
     refresh_pastor_from_cache()
-    pastor_username = (session.get("pastor_username") or "").strip()
 
+    pastor_username = (session.get("pastor_username") or "").strip()
 
     today = date.today()
     year = request.args.get("year", type=int) or today.year
@@ -2095,7 +2058,6 @@ def pastor_tool():
     status_key = get_month_status(monthly_report)
 
     # ✅ Build checkmarks based on Google Sheets cache (not local DB)
-    # This makes the ✅ appear even if you did NOT open each month one-by-one.
     db = get_db()
     cursor = db.cursor()
 
@@ -2105,7 +2067,6 @@ def pastor_tool():
     church_id = (session.get("pastor_church_id") or "").strip()
     church_key = church_id or church_address
 
-    # Months that already have rows in the Report sheet (via cache)
     rows = db.execute(
         """
         SELECT month, COUNT(*) AS cnt
@@ -2122,25 +2083,22 @@ def pastor_tool():
     ).fetchall()
 
     month_has_data = {int(r["month"]): (int(r["cnt"] or 0) > 0) for r in rows}
-
-    # Keep the old submitted_map name so your template keeps working
     submitted_map = {(year, m): bool(month_has_data.get(m)) for m in range(1, 13)}
-
 
     if request.method == "POST":
         if can_submit:
             set_month_submitted(year, month, pastor_username)
             try:
                 export_month_to_sheet(year, month, "Pending AO approval")
-
-                # ✅ export succeeded, allow cache to refresh local from Sheets again
                 clear_month_dirty(year, month)
-
                 sync_from_sheets_if_needed(force=True)
                 sync_local_month_from_cache_for_pastor(year, month)
-
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
+
+        # ✅ keep AO selection after submit
+        if ao_mode and selected_church:
+            return redirect(url_for("pastor_tool", year=year, month=month, church=selected_church))
         return redirect(url_for("pastor_tool", year=year, month=month))
 
     return render_template(
@@ -2158,63 +2116,32 @@ def pastor_tool():
         sundays_ok=sundays_ok,
         monthly_total=monthly_total,
         pastor_name=session.get("pastor_name", ""),
-        is_ao=is_ao,
-        church_options=church_options,
-        selected_church_username=selected_church_username,
+        # AO dropdown context
         ao_mode=ao_mode,
         ao_church_choices=ao_church_choices,
+        ao_church_labels=ao_church_labels,
         selected_church=selected_church,
     )
 
 
 @app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"], endpoint="sunday_detail")
+
 def sunday_detail(year, month, day):
     if not (pastor_logged_in() or ao_logged_in()):
         return redirect(url_for("pastor_login", next=request.path))
 
-   
-      # --- AO MODE: allow AO to select any church under same Area Number ---
-    ao_mode = ao_logged_in()
+    # ✅ AO MODE: keep selected church via ?church=username
+    church = (request.args.get("church") or "").strip()
 
-    ao_church_choices = []
-    selected_church = None
-
-    if ao_mode:
-        # AO can access Pastor Tool without pastor login
+    if ao_logged_in():
         session.setdefault("pastor_logged_in", True)
-
-        ao_area = (session.get("ao_area_number") or "").strip()
-
-        # list all pastor usernames under same area number
-        rows = get_db().execute(
-            """
-            SELECT username
-            FROM sheet_accounts_cache
-            WHERE TRIM(age) = TRIM(?)
-              AND LOWER(COALESCE(position,'')) != 'area overseer'
-            ORDER BY username
-            """,
-            (ao_area,),
-        ).fetchall()
-
-        ao_church_choices = [r["username"] for r in rows]
-
-        # selected church from URL ?church=
-        selected_church = (request.args.get("church") or "").strip()
-        if not selected_church and ao_church_choices:
-            selected_church = ao_church_choices[0]
-
-        # Safety: only allow churches in AO list
-        if selected_church and selected_church not in ao_church_choices:
-            abort(403)
-
-        # Make the tool operate as the selected pastor
-        session["pastor_username"] = selected_church or session.get("ao_username", "ao")
+        if church:
+            session["pastor_username"] = church
+        else:
+            session.setdefault("pastor_username", session.get("ao_username", "ao"))
 
     refresh_pastor_from_cache()
-
     pastor_username = (session.get("pastor_username") or "").strip()
-
 
     try:
         d = date(year, month, day)
@@ -2306,9 +2233,12 @@ def sunday_detail(year, month, day):
             )
 
             db.commit()
-            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
-            return redirect(url_for("pastor_tool", year=year, month=month))
+            mark_month_dirty(year, month)
 
+            # ✅ keep AO church selection after save
+            if ao_logged_in() and church:
+                return redirect(url_for("pastor_tool", year=year, month=month, church=church))
+            return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
         values = {
@@ -2330,22 +2260,27 @@ def sunday_detail(year, month, day):
         date_str=date_str,
         values=values,
         error=error,
+        church=church,
     )
 
 
 @app.route("/pastor-tool/<int:year>/<int:month>/progress", methods=["GET", "POST"])
+
 def church_progress_view(year, month):
     if not (pastor_logged_in() or ao_logged_in()):
         return redirect(url_for("pastor_login", next=request.path))
 
-    # If AO is logged in but not pastor, let AO access without another login by using AO identity
-    if ao_logged_in() and not pastor_logged_in():
+    church = (request.args.get("church") or "").strip()
+
+    if ao_logged_in():
         session.setdefault("pastor_logged_in", True)
-        session.setdefault("pastor_username", session.get("ao_username", "ao"))
+        if church:
+            session["pastor_username"] = church
+        else:
+            session.setdefault("pastor_username", session.get("ao_username", "ao"))
 
     refresh_pastor_from_cache()
     pastor_username = (session.get("pastor_username") or "").strip()
-
 
     sync_local_month_from_cache_for_pastor(year, month)
 
@@ -2407,7 +2342,10 @@ def church_progress_view(year, month):
                 ),
             )
             db.commit()
-            mark_month_dirty(year, month)  # ✅ prevent cache from overwriting edits
+            mark_month_dirty(year, month)
+
+            if ao_logged_in() and church:
+                return redirect(url_for("pastor_tool", year=year, month=month, church=church))
             return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
@@ -2429,12 +2367,9 @@ def church_progress_view(year, month):
         date_label=date_label,
         values=values,
         error=error,
+        church=church,
     )
 
-
-# ========================
-# AO login & tools
-# ========================
 
 @app.route("/ao-login", methods=["GET", "POST"])
 def ao_login():
