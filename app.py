@@ -883,7 +883,48 @@ def refresh_pastor_from_cache():
     session["pastor_church_address"] = row["church_address"] or ""
     session["pastor_church_id"] = row["sex"] or ""
     return True
+    
+def set_ao_acting_church(church_id: str) -> bool:
+    """
+    When AO is logged in, pick a church under the AO and load its pastor account into session
+    so ALL existing pastor-tool logic works normally.
+    """
+    if not ao_logged_in():
+        return False
 
+    church_id = (church_id or "").strip()
+    if not church_id:
+        return False
+
+    db = get_db()
+
+    # Find the account row for that church_id (stored in sheet_accounts_cache.sex)
+    # We pick the first match.
+    row = db.execute(
+        """
+        SELECT username, name, church_address, sex, age
+        FROM sheet_accounts_cache
+        WHERE TRIM(sex) = TRIM(?)
+        LIMIT 1
+        """,
+        (church_id,),
+    ).fetchone()
+
+    # Even if no pastor row found, still allow acting church by using a synthetic username
+    if not row:
+        session["pastor_username"] = f"church::{church_id}"
+        session["pastor_name"] = "Area Overseer"
+        session["pastor_church_id"] = church_id
+        session["pastor_church_address"] = church_id
+    else:
+        session["pastor_username"] = (row["username"] or "").strip() or f"church::{church_id}"
+        session["pastor_name"] = row["name"] or "Pastor"
+        session["pastor_church_id"] = (row["sex"] or "").strip()
+        session["pastor_church_address"] = row["church_address"] or ""
+
+    # Remember AO selection
+    session["ao_acting_church_id"] = church_id
+    return True
 
 def _current_user_key():
     """
@@ -2348,11 +2389,30 @@ def pastor_tool():
         return redirect(url_for("pastor_login", next=request.path))
 
     # If AO is logged in but not pastor, let AO access without another login by using AO identity
-    if ao_logged_in() and not pastor_logged_in():
-        session.setdefault("pastor_logged_in", True)
-        session.setdefault("pastor_username", session.get("ao_username", "ao"))
+if ao_logged_in() and not pastor_logged_in():
+    session["pastor_logged_in"] = True  # force
 
+# ✅ AO dropdown selection
+selected_church = ""
+ao_church_choices = []
+
+if ao_logged_in():
+    ao_church_choices = get_all_churches_from_cache()
+
+    # read dropdown selection
+    selected_church = (request.args.get("church") or session.get("ao_acting_church_id") or "").strip()
+
+    # default if none chosen
+    if not selected_church and ao_church_choices:
+        selected_church = ao_church_choices[0]
+
+    # apply acting church (sets pastor_username/name/address/id)
+    if selected_church:
+        set_ao_acting_church(selected_church)
+else:
+    # normal pastor mode
     refresh_pastor_from_cache()
+
 
     pastor_username = (session.get("pastor_username") or "").strip()
 
@@ -2480,6 +2540,10 @@ def pastor_tool():
         sundays_ok=sundays_ok,
         monthly_total=monthly_total,
         pastor_name=session.get("pastor_name", ""),
+
+        ao_mode=ao_logged_in(),
+        ao_church_choices=ao_church_choices,
+        selected_church=selected_church,
     )
 
 
