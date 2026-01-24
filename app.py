@@ -542,7 +542,8 @@ def pastor_tool():
         })
 
     year_options = list(range(today.year - 10, today.year + 4))
-    month_names = [(calendar.month_name[i], i) for i in range(1, 13))
+    month_names = [(calendar.month_name[i], i) for i in range(1, 13)]
+
 
     return render_template(
         "pastor_tool.html",
