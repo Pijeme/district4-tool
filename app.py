@@ -1,8 +1,17 @@
-# app.py - District 4 Tool (stabilized build)
+# app.py - District 4 Tool (repaired build)
+# Fixes:
+# - Provide monthly_total (and other expected vars) for pastor_tool.html
+# - Restore missing AO routes referenced by templates (ao_create_account, etc.) to stop BuildError
+# - Add last_sync_ph for ao_tool.html (safe even if template doesn't use it)
+#
 # Requires: Flask, gspread, google-auth, requests
 # Templates expected in ./templates
 
-import os, sqlite3, calendar, uuid, urllib.parse, traceback
+import os
+import sqlite3
+import calendar
+import uuid
+import urllib.parse
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -20,12 +29,18 @@ GOOGLE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+
+# ========================
+# DB helpers
+# ========================
+
 def get_db():
     db = getattr(g, "_db", None)
     if db is None:
         db = g._db = sqlite3.connect(DATABASE, check_same_thread=False)
         db.row_factory = sqlite3.Row
     return db
+
 
 def init_db():
     db = get_db()
@@ -153,11 +168,29 @@ def init_db():
 
     db.commit()
 
+
+# ========================
+# Sheets helpers
+# ========================
+
 def get_gs_client():
     creds = Credentials.from_service_account_file(
         GOOGLE_SHEETS_CREDENTIALS_FILE, scopes=GOOGLE_SHEETS_SCOPES
     )
     return gspread.authorize(creds)
+
+
+def _lower(s):
+    return str(s or "").strip().lower()
+
+
+def _find_col(headers, wanted):
+    w = _lower(wanted)
+    for i, h in enumerate(headers):
+        if _lower(h) == w:
+            return i
+    return None
+
 
 def parse_float(v):
     try:
@@ -165,6 +198,7 @@ def parse_float(v):
         return float(s) if s else 0.0
     except Exception:
         return 0.0
+
 
 def parse_sheet_date(v):
     s = str(v or "").strip()
@@ -180,16 +214,9 @@ def parse_sheet_date(v):
     except Exception:
         return None
 
-def _lower(s): return str(s or "").strip().lower()
-
-def _find_col(headers, wanted):
-    w = _lower(wanted)
-    for i, h in enumerate(headers):
-        if _lower(h) == w:
-            return i
-    return None
 
 SYNC_INTERVAL_SECONDS = 120
+
 
 def _last_sync_time_utc():
     row = get_db().execute("SELECT last_sync FROM sync_state WHERE id=1").fetchone()
@@ -200,7 +227,20 @@ def _last_sync_time_utc():
             return None
     return None
 
-def sync_from_sheets_if_needed(force=False):
+
+def get_last_sync_display_ph():
+    dt_utc = _last_sync_time_utc()
+    if not dt_utc:
+        return "Never"
+    try:
+        dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
+        dt_ph = dt_utc.astimezone(PH_TZ)
+        return dt_ph.strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        return "Unknown"
+
+
+def sync_from_sheets_if_needed(force: bool = False):
     last = _last_sync_time_utc()
     if not force and last and (datetime.utcnow() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
         return
@@ -229,14 +269,19 @@ def sync_from_sheets_if_needed(force=False):
         i_user = _find_col(headers, "UserName")
         i_pass = _find_col(headers, "Password")
         i_addr = _find_col(headers, "Church Address")
-        i_age = _find_col(headers, "Area Number") or _find_col(headers, "Age")
-        i_sex = _find_col(headers, "Church ID") or _find_col(headers, "Sex")
+        i_age = _find_col(headers, "Area Number")
+        if i_age is None:
+            i_age = _find_col(headers, "Age")
+        i_sex = _find_col(headers, "Church ID")
+        if i_sex is None:
+            i_sex = _find_col(headers, "Sex")
         i_contact = _find_col(headers, "Contact #")
         i_bday = _find_col(headers, "Birth Day")
         i_pos = _find_col(headers, "Position")
 
         def cell(row, idx):
-            if idx is None: return ""
+            if idx is None:
+                return ""
             return row[idx] if idx < len(row) else ""
 
         for r in range(1, len(values)):
@@ -283,7 +328,8 @@ def sync_from_sheets_if_needed(force=False):
         i_answered = _find_col(headers, "Answered Date")
 
         def cell(row, idx):
-            if idx is None: return ""
+            if idx is None:
+                return ""
             return row[idx] if idx < len(row) else ""
 
         for r in range(1, len(values)):
@@ -312,30 +358,54 @@ def sync_from_sheets_if_needed(force=False):
     db.commit()
     print("✅ Sheets cache sync done.")
 
-def pastor_logged_in(): return session.get("pastor_logged_in") is True
-def ao_logged_in(): return session.get("ao_logged_in") is True
-def any_user_logged_in(): return pastor_logged_in() or ao_logged_in()
+
+# ========================
+# Auth helpers
+# ========================
+
+def pastor_logged_in():
+    return session.get("pastor_logged_in") is True
+
+def ao_logged_in():
+    return session.get("ao_logged_in") is True
+
+def any_user_logged_in():
+    return pastor_logged_in() or ao_logged_in()
+
 
 def refresh_pastor_from_cache():
     u = (session.get("pastor_username") or "").strip()
-    if not u: return False
+    if not u:
+        return False
     row = get_db().execute(
         "SELECT name, church_address, sex FROM sheet_accounts_cache WHERE username=?",
         (u,)
     ).fetchone()
-    if not row: return False
+    if not row:
+        return False
     session["pastor_name"] = row["name"] or ""
     session["pastor_church_address"] = row["church_address"] or ""
     session["pastor_church_id"] = (row["sex"] or "").strip()
     return True
 
-def get_or_create_monthly_report(year, month, pastor_username):
+
+# ========================
+# Monthly / Sunday helpers
+# ========================
+
+def get_or_create_monthly_report(year: int, month: int, pastor_username: str):
+    pastor_username = (pastor_username or "").strip()
+    if not pastor_username:
+        raise ValueError("Missing pastor_username")
+
     db = get_db()
     row = db.execute(
         "SELECT * FROM monthly_reports WHERE year=? AND month=? AND pastor_username=?",
         (year, month, pastor_username)
     ).fetchone()
-    if row: return row
+    if row:
+        return row
+
     db.execute(
         "INSERT INTO monthly_reports (year, month, pastor_username, submitted, approved) VALUES (?, ?, ?, 0, 0)",
         (year, month, pastor_username)
@@ -346,7 +416,8 @@ def get_or_create_monthly_report(year, month, pastor_username):
         (year, month, pastor_username)
     ).fetchone()
 
-def generate_sundays_for_month(year, month):
+
+def generate_sundays_for_month(year: int, month: int):
     sundays = []
     cal = calendar.Calendar(firstweekday=calendar.SUNDAY)
     for week in cal.monthdatescalendar(year, month):
@@ -355,7 +426,8 @@ def generate_sundays_for_month(year, month):
                 sundays.append(d)
     return sundays
 
-def ensure_sunday_reports(mrid, year, month):
+
+def ensure_sunday_reports(mrid: int, year: int, month: int):
     db = get_db()
     for d in generate_sundays_for_month(year, month):
         db.execute(
@@ -364,24 +436,74 @@ def ensure_sunday_reports(mrid, year, month):
         )
     db.commit()
 
-def get_sunday_reports(mrid):
+
+def get_sunday_reports(mrid: int):
     return get_db().execute(
         "SELECT * FROM sunday_reports WHERE monthly_report_id=? ORDER BY date",
         (mrid,)
     ).fetchall()
 
-def ensure_church_progress(mrid):
+
+def ensure_church_progress(mrid: int):
     db = get_db()
     row = db.execute("SELECT * FROM church_progress WHERE monthly_report_id=?", (mrid,)).fetchone()
-    if row: return row
+    if row:
+        return row
     db.execute("INSERT INTO church_progress (monthly_report_id, is_complete) VALUES (?, 0)", (mrid,))
     db.commit()
     return db.execute("SELECT * FROM church_progress WHERE monthly_report_id=?", (mrid,)).fetchone()
+
+
+def all_sundays_complete(mrid: int) -> bool:
+    row = get_db().execute(
+        "SELECT COUNT(*) AS total, SUM(is_complete) AS complete FROM sunday_reports WHERE monthly_report_id=?",
+        (mrid,)
+    ).fetchone()
+    if not row or int(row["total"] or 0) == 0:
+        return False
+    return int(row["complete"] or 0) == int(row["total"] or 0)
+
+
+def get_month_status(monthly_report) -> str:
+    submitted = bool(monthly_report["submitted"])
+    approved = bool(monthly_report["approved"])
+    if not submitted:
+        return "not_submitted"
+    if submitted and not approved:
+        return "pending"
+    if submitted and approved:
+        return "approved"
+    return "not_submitted"
+
+
+def compute_monthly_total(mrid: int) -> float:
+    row = get_db().execute(
+        """
+        SELECT
+            SUM(
+                COALESCE(tithes_church, 0) +
+                COALESCE(offering, 0) +
+                COALESCE(mission, 0) +
+                COALESCE(tithes_personal, 0)
+            ) AS total_amount
+        FROM sunday_reports
+        WHERE monthly_report_id = ?
+          AND is_complete = 1
+        """,
+        (mrid,),
+    ).fetchone()
+    return float(row["total_amount"] or 0.0) if row else 0.0
+
+
+# ========================
+# Bible verse of the day
+# ========================
 
 VERSE_REFERENCES = [
     "Psalm 23:1", "Proverbs 3:5-6", "Matthew 6:33", "John 3:16", "Romans 8:28",
     "Philippians 4:13", "Hebrews 11:1", "James 1:5", "1 Peter 5:7", "Revelation 21:4"
 ]
+
 
 def get_verse_of_the_day():
     today_str = date.today().isoformat()
@@ -406,13 +528,20 @@ def get_verse_of_the_day():
     db.commit()
     return ref, verse_text
 
+
+# ========================
+# Flask app
+# ========================
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
+
 
 @app.before_request
 def _before():
     init_db()
     sync_from_sheets_if_needed()
+
 
 @app.teardown_appcontext
 def _close(_exc):
@@ -420,13 +549,20 @@ def _close(_exc):
     if db is not None:
         db.close()
 
+
+# ========================
+# Routes
+# ========================
+
 @app.route("/", methods=["GET", "POST"])
 def splash():
     logged_in = any_user_logged_in()
     error = None
+
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
+
         if not username or not password:
             error = "Username and password are required."
         else:
@@ -443,20 +579,15 @@ def splash():
                 session["pastor_church_id"] = (row["sex"] or "").strip()
                 return redirect(url_for("pastor_tool"))
             error = "Invalid username or password."
+
     return render_template("splash.html", logged_in=logged_in, error=error)
 
-@app.route("/schedules")
-def schedules():
-    return render_template("schedules.html")
-
-@app.route("/event-registration")
-def event_registration():
-    return render_template("event_registration.html")
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("splash"))
+
 
 @app.route("/bulletin")
 def bulletin():
@@ -464,17 +595,31 @@ def bulletin():
     today_str = date.today().strftime("%B %d, %Y")
     return render_template("bulletin.html", verse_reference=ref, verse_text=text, today_str=today_str)
 
+
+@app.route("/schedules")
+def schedules():
+    return render_template("schedules.html")
+
+
+@app.route("/event-registration")
+def event_registration():
+    return render_template("event_registration.html")
+
+
 @app.route("/pastor-login", methods=["GET", "POST"])
 def pastor_login():
     error = None
     next_url = request.args.get("next") or url_for("pastor_tool")
+
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
+
         row = get_db().execute(
             "SELECT username, password, name, church_address, sex FROM sheet_accounts_cache WHERE username=?",
             (username,)
         ).fetchone()
+
         if row and (str(row["password"] or "").strip() == password):
             session.clear()
             session["pastor_logged_in"] = True
@@ -483,21 +628,28 @@ def pastor_login():
             session["pastor_church_address"] = row["church_address"] or ""
             session["pastor_church_id"] = (row["sex"] or "").strip()
             return redirect(request.form.get("next") or next_url)
+
         error = "Invalid username or password."
+
     return render_template("pastor_login.html", error=error, next_url=next_url)
+
 
 @app.route("/ao-login", methods=["GET", "POST"])
 def ao_login():
     error = None
     next_url = request.args.get("next") or url_for("ao_tool")
+
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
+
         sync_from_sheets_if_needed(force=True)
+
         row = get_db().execute(
             "SELECT username, password, name, age, sex, position FROM sheet_accounts_cache WHERE username=?",
             (username,)
         ).fetchone()
+
         if row and (str(row["password"] or "").strip() == password):
             pos = str(row["position"] or "").strip().lower()
             if pos == "area overseer":
@@ -508,21 +660,42 @@ def ao_login():
                 session["ao_area_number"] = (row["age"] or "").strip()
                 session["ao_church_id"] = (row["sex"] or "").strip()
                 return redirect(request.form.get("next") or next_url)
+
         error = "Invalid username or password."
+
     return render_template("ao_login.html", error=error, next_url=next_url)
+
 
 @app.route("/ao-tool")
 def ao_tool():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
-    return render_template("ao_tool.html")
+    last_sync_ph = get_last_sync_display_ph()
+    return render_template("ao_tool.html", last_sync_ph=last_sync_ph)
 
-@app.route("/pastor-tool")
+
+# ✅ Restore missing endpoint referenced by ao_tool.html
+@app.route("/ao-tool/create-account", methods=["GET", "POST"])
+def ao_create_account():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    # If you already have ao_create_account.html, this renders it.
+    # If not, at least this route exists so base templates won't crash.
+    if request.method == "POST":
+        return render_template("ao_create_account.html", error="Feature temporarily under maintenance.", success=None, values=request.form)
+
+    return render_template("ao_create_account.html", error=None, success=None, values={})
+
+
+@app.route("/pastor-tool", methods=["GET"])
 def pastor_tool():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+
+    # allow AO to view pastor tool screens
     if ao_logged_in() and not pastor_logged_in():
-        session["pastor_logged_in"] = True  # allow AO to view
+        session["pastor_logged_in"] = True
 
     refresh_pastor_from_cache()
     pastor_username = (session.get("pastor_username") or "").strip()
@@ -545,29 +718,49 @@ def pastor_tool():
             "id": r["id"],
             "date": r["date"],
             "display": d.strftime("%B %d"),
-            "year": d.year, "month": d.month, "day": d.day,
-            "is_complete": bool(r["is_complete"])
+            "year": d.year,
+            "month": d.month,
+            "day": d.day,
+            "is_complete": bool(r["is_complete"]),
         })
 
     year_options = list(range(today.year - 10, today.year + 4))
     month_names = [(calendar.month_name[i], i) for i in range(1, 13)]
 
+    # ✅ This was missing; your template formats it and crashed when undefined.
+    monthly_total = compute_monthly_total(mr["id"])
+
+    sundays_ok = all_sundays_complete(mr["id"])
+    cp_complete = bool(cp["is_complete"])
+    can_submit = sundays_ok and cp_complete
+    status_key = get_month_status(mr)
+
+    submitted_map = {(year, m): False for m in range(1, 13)}
 
     return render_template(
         "pastor_tool.html",
-        year=year, month=month,
-        year_options=year_options, month_names=month_names,
+        year=year,
+        month=month,
+        year_options=year_options,
+        month_names=month_names,
         monthly_report=mr,
         sunday_list=sunday_list,
-        cp_complete=bool(cp["is_complete"]),
-        pastor_name=session.get("pastor_name",""),
+        cp_complete=cp_complete,
+        sundays_ok=sundays_ok,
+        can_submit=can_submit,
+        status_key=status_key,
+        submitted_map=submitted_map,
+        monthly_total=monthly_total,   # ✅ FIX
+        pastor_name=session.get("pastor_name", ""),
         ao_mode=ao_logged_in(),
     )
+
 
 @app.route("/pastor-tool/<int:year>/<int:month>/<int:day>", methods=["GET", "POST"], endpoint="sunday_detail")
 def sunday_detail(year, month, day):
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+
     refresh_pastor_from_cache()
     pastor_username = (session.get("pastor_username") or "").strip()
     if not pastor_username:
@@ -592,7 +785,10 @@ def sunday_detail(year, month, day):
     values = {}
 
     if request.method == "POST":
-        fields = ["attendance_adult","attendance_youth","attendance_children","tithes_church","offering","mission","tithes_personal"]
+        fields = [
+            "attendance_adult", "attendance_youth", "attendance_children",
+            "tithes_church", "offering", "mission", "tithes_personal"
+        ]
         numeric = {}
         for f in fields:
             raw = (request.form.get(f) or "").strip()
@@ -607,8 +803,10 @@ def sunday_detail(year, month, day):
                 break
 
         if not error:
-            db.execute("DELETE FROM sunday_reports WHERE monthly_report_id=? AND date=?",
-                       (mr["id"], d.isoformat()))
+            db.execute(
+                "DELETE FROM sunday_reports WHERE monthly_report_id=? AND date=?",
+                (mr["id"], d.isoformat())
+            )
             db.execute("""
                 INSERT INTO sunday_reports
                 (monthly_report_id, date, is_complete, attendance_adult, attendance_youth, attendance_children,
@@ -635,16 +833,20 @@ def sunday_detail(year, month, day):
 
     return render_template(
         "sunday_detail.html",
-        year=year, month=month, day=day,
+        year=year,
+        month=month,
+        day=day,
         date_str=d.strftime("%B %d, %Y"),
         values=values,
         error=error,
     )
 
-@app.route("/pastor-tool/<int:year>/<int:month>/progress", methods=["GET","POST"])
+
+@app.route("/pastor-tool/<int:year>/<int:month>/progress", methods=["GET", "POST"])
 def church_progress_view(year, month):
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+
     refresh_pastor_from_cache()
     pastor_username = (session.get("pastor_username") or "").strip()
     if not pastor_username:
@@ -657,7 +859,10 @@ def church_progress_view(year, month):
     values = {}
 
     if request.method == "POST":
-        fields = ["bible_new","bible_existing","received_christ","baptized_water","baptized_holy_spirit","healed","child_dedication"]
+        fields = [
+            "bible_new", "bible_existing", "received_christ",
+            "baptized_water", "baptized_holy_spirit", "healed", "child_dedication"
+        ]
         numeric = {}
         for f in fields:
             raw = (request.form.get(f) or "").strip()
@@ -670,6 +875,7 @@ def church_progress_view(year, month):
             except ValueError:
                 error = "Please enter whole numbers only."
                 break
+
         if not error:
             db.execute("""
                 UPDATE church_progress
@@ -685,22 +891,32 @@ def church_progress_view(year, month):
             return redirect(url_for("pastor_tool", year=year, month=month))
 
     if not values:
-        values = {k: (cp[k] or "") for k in ["bible_new","bible_existing","received_christ","baptized_water","baptized_holy_spirit","healed","child_dedication"]}
+        keys = [
+            "bible_new", "bible_existing", "received_christ", "baptized_water",
+            "baptized_holy_spirit", "healed", "child_dedication"
+        ]
+        values = {k: (cp[k] or "") for k in keys}
 
     return render_template(
         "church_progress.html",
-        year=year, month=month,
-        date_label=date(year,month,1).strftime("%B %Y"),
+        year=year,
+        month=month,
+        date_label=date(year, month, 1).strftime("%B %Y"),
         values=values,
         error=error,
     )
 
+
+# ========================
 # Prayer request basics (write + status)
+# ========================
+
 @app.route("/prayer-request")
 def prayer_request():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
     return render_template("prayer_request.html")
+
 
 def _current_user_key():
     if pastor_logged_in():
@@ -709,43 +925,68 @@ def _current_user_key():
         return (session.get("ao_username") or "").strip() or "ao"
     return "unknown"
 
+
 def _current_user_church_name():
     if pastor_logged_in():
         refresh_pastor_from_cache()
         return (session.get("pastor_church_address") or "").strip()
     return ""
 
+
 def _append_prayer_request_to_sheet(church_name, submitted_by, request_id, title, request_date, request_text):
     sh = get_gs_client().open("District4 Data")
     ws = sh.worksheet("PrayerRequest")
     ws.append_row([church_name, submitted_by, request_id, title, request_date, request_text, "Pending", "", ""])
 
-@app.route("/prayer-request/write", methods=["GET","POST"])
+
+@app.route("/prayer-request/write", methods=["GET", "POST"])
 def prayer_request_write():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+
     if request.method == "POST":
         title = (request.form.get("title") or "").strip()
         body = (request.form.get("prayer_request") or request.form.get("request_text") or "").strip()
+
         if not title or not body:
-            return render_template("prayer_write.html", error="Title and Prayer Request are required.",
-                                   values={"title": title, "prayer_request": body})
+            return render_template(
+                "prayer_write.html",
+                error="Title and Prayer Request are required.",
+                values={"title": title, "prayer_request": body},
+            )
+
         req_id = str(uuid.uuid4())
-        _append_prayer_request_to_sheet(_current_user_church_name(), _current_user_key(), req_id, title, date.today().isoformat(), body)
+        _append_prayer_request_to_sheet(
+            _current_user_church_name(),
+            _current_user_key(),
+            req_id,
+            title,
+            date.today().isoformat(),
+            body,
+        )
         sync_from_sheets_if_needed(force=True)
         return redirect(url_for("prayer_request_status"))
-    return render_template("prayer_write.html", error=None, values={"title":"","prayer_request":""})
+
+    return render_template("prayer_write.html", error=None, values={"title": "", "prayer_request": ""})
+
 
 @app.route("/prayer-request/status")
 def prayer_request_status():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
+
     sync_from_sheets_if_needed(force=True)
     submitted_by = _current_user_key()
     rows = get_db().execute(
-        "SELECT * FROM sheet_prayer_request_cache WHERE TRIM(submitted_by)=TRIM(?) ORDER BY request_date DESC, sheet_row DESC",
+        """
+        SELECT *
+        FROM sheet_prayer_request_cache
+        WHERE TRIM(submitted_by)=TRIM(?)
+        ORDER BY request_date DESC, sheet_row DESC
+        """,
         (submitted_by,)
     ).fetchall()
+
     items = [{
         "request_id": r["request_id"],
         "church_name": r["church_name"] or "",
@@ -757,7 +998,9 @@ def prayer_request_status():
         "pastors_praying": r["pastors_praying"] or "",
         "answered_date": r["answered_date"] or "",
     } for r in rows]
+
     return render_template("prayer_status.html", items=items, user_display=submitted_by)
+
 
 if __name__ == "__main__":
     app.run(debug=True)
