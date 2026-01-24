@@ -4,9 +4,23 @@
 {% block content %}
 <section class="card">
   <h2>Pastor's Tool</h2>
-  <p style="font-size: 1rem; font-style: italic; margin-top: -5px;">
-  Hello Pastor {{ pastor_name }}
-</p>
+ <div style="display:flex; align-items:center; gap:12px; font-size:1rem; font-style:italic; margin-top:-5px;">
+  <div>Hello Pastor {{ pastor_name }}</div>
+
+  {% if ao_mode %}
+    <form method="get" action="{{ url_for('pastor_tool') }}" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="month" value="{{ month }}">
+
+      <select name="church" onchange="this.form.submit()">
+        {% for c in ao_church_choices %}
+          <option value="{{ c }}" {% if c == selected_church %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  {% endif %}
+</div>
+
 
   <form method="get" class="month-picker">
     <div class="field-group">
