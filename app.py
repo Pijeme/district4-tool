@@ -445,6 +445,10 @@ def splash():
             error = "Invalid username or password."
     return render_template("splash.html", logged_in=logged_in, error=error)
 
+@app.route("/event-registration")
+def event_registration():
+    return render_template("event_registration.html")
+
 @app.route("/logout")
 def logout():
     session.clear()
