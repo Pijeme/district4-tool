@@ -1948,6 +1948,11 @@ def pastor_login():
 
 @app.route("/pastor-tool", methods=["GET", "POST"])
 def pastor_tool():
+    # --- Defaults so template never crashes ---
+    ao_mode = False
+    ao_church_choices = []
+    selected_church = None
+
     if not (pastor_logged_in() or ao_logged_in()):
         return redirect(url_for("pastor_login", next=request.path))
 
@@ -1996,6 +2001,35 @@ def pastor_tool():
         session["pastor_username"] = selected_church_username or session.get("ao_username", "ao")
 
     # Normal pastor flow (or AO already acting as pastor)
+        # --- AO dropdown logic (simple) ---
+    if ao_logged_in():
+        ao_mode = True
+        session.setdefault("pastor_logged_in", True)
+
+        ao_area = (session.get("ao_area_number") or "").strip()
+
+        rows = get_db().execute(
+            """
+            SELECT username
+            FROM sheet_accounts_cache
+            WHERE TRIM(age) = TRIM(?)
+              AND LOWER(COALESCE(position,'')) != 'area overseer'
+            ORDER BY username
+            """,
+            (ao_area,),
+        ).fetchall()
+
+        ao_church_choices = [r["username"] for r in rows]
+
+        selected_church = (request.args.get("church") or "").strip()
+        if not selected_church and ao_church_choices:
+            selected_church = ao_church_choices[0]
+
+        if selected_church and selected_church not in ao_church_choices:
+            abort(403)
+
+        session["pastor_username"] = selected_church or session.get("ao_username", "ao")
+
     refresh_pastor_from_cache()
     pastor_username = (session.get("pastor_username") or "").strip()
 
