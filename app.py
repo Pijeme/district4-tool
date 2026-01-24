@@ -2127,7 +2127,9 @@ def pastor_tool():
         is_ao=is_ao,
         church_options=church_options,
         selected_church_username=selected_church_username,
-
+        ao_mode=ao_mode,
+        ao_church_choices=ao_church_choices,
+        selected_church=selected_church,
     )
 
 
@@ -2136,13 +2138,49 @@ def sunday_detail(year, month, day):
     if not (pastor_logged_in() or ao_logged_in()):
         return redirect(url_for("pastor_login", next=request.path))
 
-    # If AO is logged in but not pastor, let AO access without another login by using AO identity
-    if ao_logged_in() and not pastor_logged_in():
+   
+      # --- AO MODE: allow AO to select any church under same Area Number ---
+    ao_mode = ao_logged_in()
+
+    ao_church_choices = []
+    selected_church = None
+
+    if ao_mode:
+        # AO can access Pastor Tool without pastor login
         session.setdefault("pastor_logged_in", True)
-        session.setdefault("pastor_username", session.get("ao_username", "ao"))
+
+        ao_area = (session.get("ao_area_number") or "").strip()
+
+        # list all pastor usernames under same area number
+        rows = get_db().execute(
+            """
+            SELECT username
+            FROM sheet_accounts_cache
+            WHERE TRIM(age) = TRIM(?)
+              AND LOWER(COALESCE(position,'')) != 'area overseer'
+            ORDER BY username
+            """,
+            (ao_area,),
+        ).fetchall()
+
+        ao_church_choices = [r["username"] for r in rows]
+
+        # selected church from URL ?church=
+        selected_church = (request.args.get("church") or "").strip()
+        if not selected_church and ao_church_choices:
+            selected_church = ao_church_choices[0]
+
+        # Safety: only allow churches in AO list
+        if selected_church and selected_church not in ao_church_choices:
+            abort(403)
+
+        # Make the tool operate as the selected pastor
+        session["pastor_username"] = selected_church or session.get("ao_username", "ao")
 
     refresh_pastor_from_cache()
+
     pastor_username = (session.get("pastor_username") or "").strip()
+
 
     try:
         d = date(year, month, day)
