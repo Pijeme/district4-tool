@@ -1115,14 +1115,17 @@ def get_all_churches_from_cache():
     if ao_area:
         rows = db.execute(
             """
-            SELECT DISTINCT TRIM(sex) AS c
+            SELECT username, church
             FROM sheet_accounts_cache
-            WHERE TRIM(sex) != ''
-              AND TRIM(age) = TRIM(?)
-            ORDER BY c
+            WHERE TRIM(area_number) = TRIM(?)
+              AND LOWER(TRIM(position)) = 'pastor'
+            ORDER BY church
             """,
             (ao_area,),
         ).fetchall()
+
+        ao_church_choices = [{"username": r["username"], "church": r["church"]} for r in rows]
+
     else:
         rows = db.execute(
             """
