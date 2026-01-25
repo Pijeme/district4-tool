@@ -1,0 +1,17 @@
+{
+  "background_color": "#ffffff",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "district4-tool.onrender",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "district4-tool.onrender",
+  "start_url": "district4-tool.onrender.com",
+  "theme_color": "#ffffff",
+  "display_override": [
+    "fullscreen",
+    "standalone",
+    "window-controls-overlay"
+  ],
+  "lang": "en"
+}
