@@ -20,10 +20,30 @@ from flask import (
     url_for,
     abort,
     session,
+    flash,
 )
 
-DATABASE = "app_v2.db"
-PH_TZ = ZoneInfo("Asia/Manila")
+DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pastors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        church TEXT,
+        phone TEXT,
+        email TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+try:
+    PH_TZ = ZoneInfo("Asia/Manila")
+except Exception:
+    PH_TZ = None
 
 # ========================
 # DB helpers
@@ -270,21 +290,33 @@ def init_db():
     # -----------------------
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS sheet_prayer_request_cache (
-            request_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS sheet_district_schedule_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             church_name TEXT,
-            submitted_by TEXT,
-            title TEXT,
-            request_date TEXT,
-            request_text TEXT,
-            status TEXT,
-            pastors_praying TEXT,
-            answered_date TEXT,
+            church_address TEXT,
+            pastor_name TEXT,
+            contact_number TEXT,
+            activity_date_start TEXT,
+            activity_date_end TEXT,
+            activity_type TEXT,
+            note TEXT,
+            joining TEXT,
             sheet_row INTEGER
         )
         """
     )
+    cursor.execute("PRAGMA table_info(sheet_district_schedule_cache)")
+    _ds_cols = [row[1] for row in cursor.fetchall()]
+    if "joining" not in _ds_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_district_schedule_cache ADD COLUMN joining TEXT")
+        except Exception:
+            pass
 
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_district_schedule_start ON sheet_district_schedule_cache(activity_date_start)"
+    )
+    
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)"
     )
@@ -849,6 +881,72 @@ def sync_from_sheets_if_needed(force=False):
             )
 
     db.commit()
+    # -----------------------
+    # DISTRICT SCHEDULE
+    # -----------------------
+    try:
+        ws_ds = sh.worksheet("DistrictSchedule")
+        ds_values = ws_ds.get_all_values()
+    except Exception as e:
+        print("❌ DistrictSchedule sync failed:", e)
+        ds_values = []
+
+    cur.execute("DELETE FROM sheet_district_schedule_cache")
+
+    if ds_values and len(ds_values) >= 2:
+        headers = ds_values[0]
+
+        i_church_name = _find_col(headers, "Church Name")
+        i_church_address = _find_col(headers, "Church Address")
+        i_pastor_name = _find_col(headers, "Pastor's Name")
+        i_contact_number = _find_col(headers, "Contact Number")
+        i_activity_start = _find_col(headers, "Activity Date Start")
+        i_activity_end = _find_col(headers, "Activity Date End")
+        i_activity_type = _find_col(headers, "Activity Type")
+        i_note = _find_col(headers, "Note")
+        i_joining = _find_col(headers, "Joining")
+
+        def ds_cell(row, idx):
+            if idx is None:
+                return ""
+            return row[idx].strip() if idx < len(row) else ""
+
+        for rnum, row in enumerate(ds_values[1:], start=2):
+            church_name = ds_cell(row, i_church_name)
+            activity_start = ds_cell(row, i_activity_start)
+
+            if not church_name or not activity_start:
+                continue
+
+            cur.execute(
+                """
+                INSERT INTO sheet_district_schedule_cache (
+                    church_name,
+                    church_address,
+                    pastor_name,
+                    contact_number,
+                    activity_date_start,
+                    activity_date_end,
+                    activity_type,
+                    note,
+                    joining,
+                    sheet_row
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    church_name,
+                    ds_cell(row, i_church_address),
+                    ds_cell(row, i_pastor_name),
+                    ds_cell(row, i_contact_number),
+                    activity_start,
+                    ds_cell(row, i_activity_end),
+                    ds_cell(row, i_activity_type),
+                    ds_cell(row, i_note),
+                    ds_cell(row, i_joining),
+                    rnum,
+                ),
+            )
     _update_sync_time()
     print("✅ Sheets cache sync done.")
 
@@ -907,7 +1005,12 @@ def _current_user_display():
 def _current_user_church_name():
     if session.get("pastor_logged_in"):
         refresh_pastor_from_cache()
+        church_id = (session.get("pastor_church_id") or "").strip()
+        if church_id:
+            return church_id
         return (session.get("pastor_church_address") or "").strip()
+    if session.get("ao_logged_in"):
+        return (session.get("ao_church_id") or "").strip()
     return ""
 
 
@@ -2234,18 +2337,521 @@ def logout():
     session.clear()
     return redirect(url_for("splash"))
 
+def _normalize_key(value):
+    return str(value or "").strip().lower()
+
+
+def _current_user_area_number():
+    db = get_db()
+
+    if pastor_logged_in():
+        username = (session.get("pastor_username") or "").strip()
+        if not username:
+            return ""
+        row = db.execute(
+            "SELECT age FROM sheet_accounts_cache WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return str(row["age"] or "").strip() if row else ""
+
+    if ao_logged_in():
+        return (session.get("ao_area_number") or "").strip()
+
+    return ""
+
+
+def _get_area_directory(area_number: str):
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            TRIM(name) AS pastor_name,
+            TRIM(birthday) AS birthday,
+            TRIM(church_address) AS church_address,
+            TRIM(sex) AS church_id,
+            TRIM(position) AS position
+        FROM sheet_accounts_cache
+        WHERE TRIM(age) = TRIM(?)
+        ORDER BY church_id, church_address, pastor_name
+        """,
+        (area_number,),
+    ).fetchall()
+
+    keys_to_display = {}
+    churches = []
+    pastors = []
+
+    for r in rows:
+        church_id = str(r["church_id"] or "").strip()
+        church_address = str(r["church_address"] or "").strip()
+        display_church = church_id or church_address
+
+        if display_church:
+            churches.append(display_church)
+            keys_to_display[_normalize_key(display_church)] = display_church
+        if church_address:
+            keys_to_display[_normalize_key(church_address)] = display_church or church_address
+
+        pastors.append(
+            {
+                "pastor_name": str(r["pastor_name"] or "").strip(),
+                "birthday": str(r["birthday"] or "").strip(),
+                "church_name": display_church,
+                "position": str(r["position"] or "").strip(),
+            }
+        )
+
+    unique_churches = []
+    seen = set()
+    for c in churches:
+        n = _normalize_key(c)
+        if n and n not in seen:
+            seen.add(n)
+            unique_churches.append(c)
+
+    return {
+        "churches": unique_churches,
+        "keys_to_display": keys_to_display,
+        "pastors": pastors,
+    }
+
+
+def _match_area_church_display(church_name: str, area_directory=None):
+    church_name = str(church_name or "").strip()
+    if not church_name:
+        return ""
+
+    norm = _normalize_key(church_name)
+
+    if area_directory:
+        return area_directory["keys_to_display"].get(norm, "")
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT TRIM(sex) AS church_id, TRIM(church_address) AS church_address
+        FROM sheet_accounts_cache
+        WHERE TRIM(sex) = TRIM(?) OR TRIM(church_address) = TRIM(?)
+        LIMIT 1
+        """,
+        (church_name, church_name),
+    ).fetchone()
+
+    if not row:
+        return ""
+
+    return str(row["church_id"] or row["church_address"] or "").strip()
+
+
+def _parse_csv_churches(raw_value: str):
+    return [x.strip() for x in str(raw_value or "").split(",") if x.strip()]
+
+
+def _ordinal(n: int):
+    if 10 <= (n % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _sort_date_desc(post):
+    d = post.get("sort_date")
+    if isinstance(d, date):
+        return d
+    return date.min
+
+
+def _build_birthday_posts(area_directory, today):
+    posts = []
+
+    for p in area_directory["pastors"]:
+        birthday_raw = str(p.get("birthday") or "").strip()
+        pastor_name = str(p.get("pastor_name") or "").strip()
+        church_name = str(p.get("church_name") or "").strip()
+
+        if not birthday_raw or not pastor_name or not church_name:
+            continue
+
+        bday = parse_sheet_date(birthday_raw)
+        if not bday:
+            continue
+
+        if bday.month != today.month:
+            continue
+
+        age_turning = today.year - bday.year
+
+        message = (
+            f"Happy Birthday Ptr. {pastor_name} of {church_name} Church "
+            f"on your {_ordinal(age_turning)} birthday! "
+            f"We thank God for your life and ministry. "
+            f"May He continue to bless and strengthen you."
+        )
+
+        posts.append(
+            {
+                "type": "birthday",
+                "church_name": church_name,
+                "title": f"Birthday Greeting • {church_name}",
+                "summary": message,
+                "meta": bday.strftime("%B %d"),
+                "sort_date": date(today.year, today.month, bday.day),
+            }
+        )
+
+    return posts
+
+
+def _build_prayer_posts(area_directory, current_user_key, current_church_display):
+    posts = []
+    db = get_db()
+
+    rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_prayer_request_cache
+        WHERE TRIM(status) IN ('Approved', 'Answered')
+        ORDER BY sheet_row DESC
+        """
+    ).fetchall()
+
+    for r in rows:
+        church_display = _match_area_church_display(r["church_name"], area_directory)
+        if not church_display:
+            continue
+
+        request_date = parse_sheet_date(r["request_date"]) or date.today()
+        answered_date = parse_sheet_date(r["answered_date"]) if r["answered_date"] else None
+
+        raw_praying = _parse_csv_churches(r["pastors_praying"])
+        normalized_seen = set()
+        praying_churches = []
+
+        for item in raw_praying:
+            normalized = _match_area_church_display(item, area_directory) or item
+            key = _normalize_key(normalized)
+            if key and key not in normalized_seen:
+                normalized_seen.add(key)
+                praying_churches.append(normalized)
+
+        already_praying = _normalize_key(current_church_display) in {
+            _normalize_key(x) for x in praying_churches
+        }
+
+        is_owner = str(r["submitted_by"] or "").strip() == str(current_user_key or "").strip()
+
+        status = str(r["status"] or "").strip()
+
+        if status == "Approved":
+            posts.append(
+                {
+                    "type": "prayer_request",
+                    "request_id": r["request_id"],
+                    "church_name": church_display,
+                    "title": str(r["title"] or "").strip(),
+                    "request_text": str(r["request_text"] or "").strip(),
+                    "meta": request_date.strftime("%B %d, %Y"),
+                    "sort_date": request_date,
+                    "praying_churches": praying_churches,
+                    "praying_count": len(praying_churches),
+                    "already_praying": already_praying,
+                    "can_pray": bool(current_church_display) and not already_praying and (_normalize_key(current_church_display) != _normalize_key(church_display)),
+                    "is_owner": is_owner,
+                }
+            )
+
+        elif status == "Answered":
+            message = (
+                "Hallelujah! God answered our prayer. "
+                f"Request: {str(r['title'] or '').strip()}. "
+                f"Date Requested: {str(r['request_date'] or '').strip()}. "
+                f"Date Answered: {str(r['answered_date'] or '').strip()}. "
+                "Thank you for your prayers."
+            )
+
+            posts.append(
+                {
+                    "type": "answered_prayer",
+                    "church_name": church_display,
+                    "title": f"Answered Prayer • {church_display}",
+                    "summary": message,
+                    "meta": (answered_date or request_date).strftime("%B %d, %Y"),
+                    "sort_date": answered_date or request_date,
+                }
+            )
+
+    return posts
+
+
+def _build_report_recognition_posts(area_number, area_directory, today):
+    posts = []
+
+    expected_churches = area_directory["churches"]
+    if not expected_churches:
+        return posts
+
+    key_map = area_directory["keys_to_display"]
+    expected_keys = {_normalize_key(c) for c in expected_churches}
+
+    db = get_db()
+    report_rows = db.execute(
+        """
+        SELECT sheet_row, church, address
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+        ORDER BY sheet_row ASC
+        """,
+        (today.year, today.month),
+    ).fetchall()
+
+    reported_churches = set()
+    first_reporting_church = ""
+
+    for r in report_rows:
+        candidates = [
+            str(r["church"] or "").strip(),
+            str(r["address"] or "").strip(),
+        ]
+
+        matched = ""
+        for c in candidates:
+            if not c:
+                continue
+            matched = key_map.get(_normalize_key(c), "")
+            if matched:
+                break
+
+        if matched:
+            reported_churches.add(matched)
+            if not first_reporting_church:
+                first_reporting_church = matched
+
+    all_reported = bool(expected_keys) and expected_keys.issubset({_normalize_key(c) for c in reported_churches})
+
+    if not all_reported:
+        return posts
+
+    month_label = today.strftime("%B %Y")
+
+    if first_reporting_church:
+        posts.append(
+            {
+                "type": "recognition",
+                "church_name": first_reporting_church,
+                "title": "First Report Submitted",
+                "summary": (
+                    f"Congratulations to church {first_reporting_church} for being the first to submit "
+                    f"its report for {month_label}. Thank you for your diligence and faithfulness in the ministry!"
+                ),
+                "meta": month_label,
+                "sort_date": today,
+            }
+        )
+
+    prev_year = today.year
+    prev_month = today.month - 1
+    if prev_month == 0:
+        prev_month = 12
+        prev_year -= 1
+
+    for church in expected_churches:
+        current_stats = get_report_stats_for_month_and_church_cache(today.year, today.month, church)
+        prev_stats = get_report_stats_for_month_and_church_cache(prev_year, prev_month, church)
+
+        if current_stats["rows"] <= 0 or prev_stats["rows"] <= 0:
+            continue
+
+        current_att = (
+            float(current_stats["avg"]["adult"])
+            + float(current_stats["avg"]["youth"])
+            + float(current_stats["avg"]["children"])
+        )
+        prev_att = (
+            float(prev_stats["avg"]["adult"])
+            + float(prev_stats["avg"]["youth"])
+            + float(prev_stats["avg"]["children"])
+        )
+
+        if prev_att <= 0:
+            continue
+
+        change_pct = ((current_att - prev_att) / prev_att) * 100.0
+        if change_pct <= 0:
+            continue
+
+        posts.append(
+            {
+                "type": "recognition",
+                "church_name": church,
+                "title": "Attendance Increase",
+                "summary": (
+                    f"Congratulations to church {church} for a {round(change_pct)}% increase in attendance "
+                    f"this month. Glory to God!"
+                ),
+                "meta": month_label,
+                "sort_date": today,
+            }
+        )
+
+    return posts
+
+def _build_schedule_posts(area_directory, today):
+    posts = []
+    db = get_db()
+
+    tomorrow = date.fromordinal(today.toordinal() + 1)
+
+    rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        ORDER BY activity_date_start ASC, church_name ASC
+        """
+    ).fetchall()
+
+    for r in rows:
+        church_name = str(r["church_name"] or "").strip()
+        activity_type = str(r["activity_type"] or "").strip() or "Activity"
+        start_dt = parse_sheet_date(r["activity_date_start"])
+
+        if not church_name or not start_dt:
+            continue
+
+        # show only 1 day before the event
+        if start_dt != tomorrow:
+            continue
+
+        event_date_label = start_dt.strftime("%B %d, %Y")
+
+        if activity_type.lower() == "others":
+         summary = (
+        f"Tomorrow, {church_name} will hold an event on {event_date_label}. "
+        f"Let us support and pray for this special event."
+    )
+        else:
+         summary = (
+        f"Tomorrow, {church_name} will hold its {activity_type} on {event_date_label}. "
+        f"Let us support and pray for this special event."
+    )
+
+        posts.append(
+            {
+                "type": "schedule_notice",
+                "church_name": church_name,
+                "title": f"Upcoming Event • {church_name}",
+                "summary": summary,
+                "meta": f"Tomorrow • {event_date_label}",
+                "footer_note": "To know more, please visit Schedules in the menu.",
+                "sort_date": start_dt,
+            }
+        )
+
+    return posts
+
+
+def build_bulletin_board_posts():
+    area_number = _current_user_area_number()
+    if not area_number:
+        return [], ""
+
+    today = date.today()
+    area_directory = _get_area_directory(area_number)
+    current_user_key = _current_user_key()
+    current_church_display = _match_area_church_display(_current_user_church_name(), area_directory) or _current_user_church_name()
+
+    posts = []
+    posts.extend(_build_birthday_posts(area_directory, today))
+    posts.extend(_build_prayer_posts(area_directory, current_user_key, current_church_display))
+    posts.extend(_build_report_recognition_posts(area_number, area_directory, today))
+    posts.extend(_build_schedule_posts(area_directory, today))
+
+    posts.sort(key=_sort_date_desc, reverse=True)
+
+    return posts, current_church_display
 
 @app.route("/bulletin")
 def bulletin():
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    sync_from_sheets_if_needed(force=True)
+
     reference, text = get_verse_of_the_day()
     today_str = date.today().strftime("%B %d, %Y")
+    area_number = _current_user_area_number()
+    posts, current_church = build_bulletin_board_posts()
+
     return render_template(
         "bulletin.html",
         verse_reference=reference,
         verse_text=text,
         today_str=today_str,
+        area_number=area_number,
+        posts=posts,
+        current_church=current_church,
     )
 
+@app.route("/bulletin/pray/<request_id>", methods=["POST"])
+def bulletin_pray(request_id):
+    if not any_user_logged_in():
+        return redirect(url_for("pastor_login", next=request.path))
+
+    sync_from_sheets_if_needed(force=True)
+
+    area_number = _current_user_area_number()
+    if not area_number:
+        abort(403)
+
+    area_directory = _get_area_directory(area_number)
+    current_church = _match_area_church_display(_current_user_church_name(), area_directory) or _current_user_church_name()
+    if not current_church:
+        abort(403)
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT *
+        FROM sheet_prayer_request_cache
+        WHERE request_id = ?
+        """,
+        (request_id,),
+    ).fetchone()
+
+    if not row:
+        abort(404)
+
+    if str(row["status"] or "").strip() != "Approved":
+        abort(403)
+
+    owner_church = _match_area_church_display(row["church_name"], area_directory)
+    if not owner_church:
+        abort(403)
+
+    if _normalize_key(owner_church) == _normalize_key(current_church):
+        return redirect(url_for("bulletin"))
+
+    existing = _parse_csv_churches(row["pastors_praying"])
+    normalized_existing = set()
+    cleaned_existing = []
+
+    for item in existing:
+        normalized_item = _match_area_church_display(item, area_directory) or item
+        key = _normalize_key(normalized_item)
+        if key and key not in normalized_existing:
+            normalized_existing.add(key)
+            cleaned_existing.append(normalized_item)
+
+    current_key = _normalize_key(current_church)
+    if current_key not in normalized_existing:
+        cleaned_existing.append(current_church)
+        _update_prayer_request_cells_in_sheet(
+            request_id,
+            {"pastors_praying": ", ".join(cleaned_existing)},
+        )
+        sync_from_sheets_if_needed(force=True)
+
+    return redirect(url_for("bulletin"))
 
 # ========================
 # Pastor login (uses CACHE)
@@ -3395,11 +4001,479 @@ def ao_prayer_requests_approve_all():
 def event_registration():
     return render_template("event_registration.html")
 
+# Changes starts here 11/03/2026 2:02 pm until @app.route("/schedules")
 
-@app.route("/schedules")
+
+DISTRICT_SCHEDULE_SHEET_NAME = "DistrictSchedule"
+DISTRICT_SECRETARY_CODE = "District_Secretary_444"
+
+
+def _ensure_district_schedule_headers():
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    try:
+        ws = sh.worksheet(DISTRICT_SCHEDULE_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=DISTRICT_SCHEDULE_SHEET_NAME, rows=1000, cols=12)
+
+    values = ws.get_all_values()
+    headers = [
+        "Church Name",
+        "Church Address",
+        "Pastor's Name",
+        "Contact Number",
+        "Activity Date Start",
+        "Activity Date End",
+        "Activity Type",
+        "Note",
+        "Joining",
+    ]
+    if not values:
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+    return ws
+
+
+def _append_district_schedule_row(payload: dict):
+    ws = _ensure_district_schedule_headers()
+    ws.append_row(
+        [
+            payload.get("church_name", ""),
+            payload.get("church_address", ""),
+            payload.get("pastor_name", ""),
+            payload.get("contact_number", ""),
+            payload.get("activity_date_start", ""),
+            payload.get("activity_date_end", ""),
+            payload.get("activity_type", ""),
+            payload.get("note", ""),
+            payload.get("joining", ""),
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
+
+def _update_district_schedule_row(sheet_row: int, payload: dict):
+    ws = _ensure_district_schedule_headers()
+    ws.update(
+        f"A{sheet_row}:I{sheet_row}",
+        [[
+            payload.get("church_name", ""),
+            payload.get("church_address", ""),
+            payload.get("pastor_name", ""),
+            payload.get("contact_number", ""),
+            payload.get("activity_date_start", ""),
+            payload.get("activity_date_end", ""),
+            payload.get("activity_type", ""),
+            payload.get("note", ""),
+            payload.get("joining", ""),
+        ]],
+        value_input_option="USER_ENTERED",
+    )
+
+
+def _delete_district_schedule_row(sheet_row: int):
+    ws = _ensure_district_schedule_headers()
+    if int(sheet_row) > 1:
+        ws.delete_rows(int(sheet_row))
+
+
+def _get_schedule_row_from_cache(sheet_row: int):
+    db = get_db()
+    return db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        WHERE sheet_row = ?
+        """,
+        (sheet_row,),
+    ).fetchone()
+def _join_schedule(sheet_row: int, join_name: str):
+    join_name = str(join_name or "").strip()
+    if not join_name:
+        return False
+
+    row = _get_schedule_row_from_cache(sheet_row)
+    if not row:
+        return False
+
+    existing = _unique_joining_names(_parse_joining_names(row["joining"]))
+    existing_keys = {x.lower() for x in existing}
+
+    if join_name.lower() not in existing_keys:
+        existing.append(join_name)
+
+    payload = {
+        "church_name": row["church_name"] or "",
+        "church_address": row["church_address"] or "",
+        "pastor_name": row["pastor_name"] or "",
+        "contact_number": row["contact_number"] or "",
+        "activity_date_start": row["activity_date_start"] or "",
+        "activity_date_end": row["activity_date_end"] or "",
+        "activity_type": row["activity_type"] or "",
+        "note": row["note"] or "",
+        "joining": ", ".join(existing),
+    }
+
+    _update_district_schedule_row(sheet_row, payload)
+    return True
+
+def _get_schedule_rows_for_month(year: int, month: int):
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        ORDER BY activity_date_start ASC, church_name ASC
+        """
+    ).fetchall()
+
+    filtered = []
+    for r in rows:
+        start_dt, end_dt = _safe_schedule_end_date(r["activity_date_start"], r["activity_date_end"])
+        if not start_dt:
+            continue
+        if start_dt.year == year and start_dt.month == month:
+            filtered.append(r)
+            continue
+        if end_dt and end_dt.year == year and end_dt.month == month:
+            filtered.append(r)
+
+    return filtered
+
+
+def _safe_schedule_end_date(start_raw: str, end_raw: str):
+    start_dt = parse_sheet_date(start_raw)
+    end_dt = parse_sheet_date(end_raw) if str(end_raw or "").strip() else None
+
+    if not start_dt:
+        return None, None
+
+    if not end_dt:
+        end_dt = start_dt
+
+    if end_dt < start_dt:
+        end_dt = start_dt
+
+    return start_dt, end_dt
+
+
+def _schedule_type_class(activity_type: str):
+    t = str(activity_type or "").strip().lower()
+    if t == "thanksgiving":
+        return "type-thanksgiving"
+    if t == "convention":
+        return "type-convention"
+    if t == "area activities":
+        return "type-area"
+    if t == "district prayer & fasting":
+        return "type-prayer"
+    return "type-other"
+
+def _parse_joining_names(raw_value: str):
+    return [x.strip() for x in str(raw_value or "").split(",") if x.strip()]
+
+
+def _unique_joining_names(names):
+    cleaned = []
+    seen = set()
+    for name in names:
+        key = str(name or "").strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            cleaned.append(str(name).strip())
+    return cleaned
+
+def build_schedule_month(year: int, month: int):
+    sync_from_sheets_if_needed(force=True)
+
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        ORDER BY activity_date_start ASC, church_name ASC
+        """
+    ).fetchall()
+
+    cal = calendar.Calendar(firstweekday=6)
+    month_days = cal.monthdatescalendar(year, month)
+
+    event_lookup = {}
+    day_map = {}
+
+    for idx, r in enumerate(rows, start=1):
+        start_dt, end_dt = _safe_schedule_end_date(r["activity_date_start"], r["activity_date_end"])
+        if not start_dt:
+            continue
+
+        event_id = f"evt_{idx}"
+        event_obj = {
+            "id": event_id,
+            "sheet_row": r["sheet_row"],
+            "church_name": str(r["church_name"] or "").strip(),
+            "church_address": str(r["church_address"] or "").strip(),
+            "pastor_name": str(r["pastor_name"] or "").strip(),
+            "contact_number": str(r["contact_number"] or "").strip(),
+            "activity_date_start": str(r["activity_date_start"] or "").strip(),
+            "activity_date_end": str(r["activity_date_end"] or "").strip(),
+            "activity_type": str(r["activity_type"] or "").strip() or "Others",
+            "note": str(r["note"] or "").strip(),
+            "joining": str(r["joining"] or "").strip(),
+            "joining_count": len(_unique_joining_names(_parse_joining_names(r["joining"]))),
+            "type_class": _schedule_type_class(r["activity_type"]),
+        }
+        event_lookup[event_id] = event_obj
+
+        current = start_dt
+        while current <= end_dt:
+            key = current.isoformat()
+            day_map.setdefault(key, []).append(event_obj)
+            current = current.fromordinal(current.toordinal() + 1)
+
+    weeks = []
+    for week in month_days:
+        week_cells = []
+        for d in week:
+            key = d.isoformat()
+            items = day_map.get(key, [])
+            week_cells.append(
+                {
+                    "date": d,
+                    "iso": key,
+                    "in_month": d.month == month,
+                    "events": items,
+                    "visible_events": items[:2],
+                    "extra_count": max(0, len(items) - 2),
+                }
+            )
+        weeks.append(week_cells)
+
+    month_title = datetime(year, month, 1).strftime("%B %Y")
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+    return {
+        "month_title": month_title,
+        "year": year,
+        "month": month,
+        "weeks": weeks,
+        "event_lookup": event_lookup,
+        "prev_year": prev_year,
+        "prev_month": prev_month,
+        "next_year": next_year,
+        "next_month": next_month,
+    }
+
+
+@app.route("/schedules", methods=["GET", "POST"])
 def schedules():
-    return render_template("schedules.html")
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
 
+        if action == "district_secretary_access":
+            access_code = (request.form.get("access_code") or "").strip()
+            year = (request.form.get("year") or "").strip()
+            month = (request.form.get("month") or "").strip()
+
+            if access_code == DISTRICT_SECRETARY_CODE:
+                session["district_secretary_ok"] = True
+                flash("District Secretary access granted.", "success")
+            else:
+                flash("Invalid access code.", "error")
+
+            return redirect(url_for("schedules", year=year, month=month))
+
+        if action == "create_schedule":
+            if not session.get("district_secretary_ok"):
+                flash("District Secretary access is required.", "error")
+                return redirect(url_for("schedules"))
+
+            church_name = (request.form.get("church_name") or "").strip()
+            church_address = (request.form.get("church_address") or "").strip()
+            pastor_name = (request.form.get("pastor_name") or "").strip()
+            contact_number = (request.form.get("contact_number") or "").strip()
+            activity_date_start = (request.form.get("activity_date_start") or "").strip()
+            activity_date_end = (request.form.get("activity_date_end") or "").strip()
+            activity_type = (request.form.get("activity_type") or "").strip()
+            note = (request.form.get("note") or "").strip()
+            year = (request.form.get("year") or "").strip()
+            month = (request.form.get("month") or "").strip()
+
+            if not church_name or not activity_date_start or not activity_type:
+                flash("Please complete all required fields marked with *.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+            start_dt, end_dt = _safe_schedule_end_date(activity_date_start, activity_date_end)
+            if not start_dt:
+                flash("Activity Date Start is invalid.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+          
+            payload = {
+                "church_name": church_name,
+                "church_address": church_address,
+                "pastor_name": pastor_name,
+                "contact_number": contact_number,
+                "activity_date_start": activity_date_start,
+                "activity_date_end": activity_date_end if end_dt and end_dt != start_dt else "",
+                "activity_type": activity_type,
+                "note": note,
+                "joining": "",
+            }
+
+            try:
+                _append_district_schedule_row(payload)
+                sync_from_sheets_if_needed(force=True)
+                flash("Schedule created successfully.", "success")
+            except Exception as e:
+                print("❌ Create schedule failed:", e)
+                flash("Failed to create schedule.", "error")
+
+            return redirect(url_for("schedules", year=year, month=month))
+
+        if action == "edit_schedule":
+            if not session.get("district_secretary_ok"):
+                flash("District Secretary access is required.", "error")
+                return redirect(url_for("schedules"))
+
+            sheet_row = int(request.form.get("sheet_row") or 0)
+            church_name = (request.form.get("church_name") or "").strip()
+            church_address = (request.form.get("church_address") or "").strip()
+            pastor_name = (request.form.get("pastor_name") or "").strip()
+            contact_number = (request.form.get("contact_number") or "").strip()
+            activity_date_start = (request.form.get("activity_date_start") or "").strip()
+            activity_date_end = (request.form.get("activity_date_end") or "").strip()
+            activity_type = (request.form.get("activity_type") or "").strip()
+            note = (request.form.get("note") or "").strip()
+            year = (request.form.get("year") or "").strip()
+            month = (request.form.get("month") or "").strip()
+
+            if not sheet_row or not church_name or not activity_date_start or not activity_type:
+                flash("Please complete all required fields marked with *.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+            start_dt, end_dt = _safe_schedule_end_date(activity_date_start, activity_date_end)
+            if not start_dt:
+                flash("Activity Date Start is invalid.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+            
+            old_row = _get_schedule_row_from_cache(sheet_row)
+
+            payload = {
+                "church_name": church_name,
+                "church_address": church_address,
+                "pastor_name": pastor_name,
+                "contact_number": contact_number,
+                "activity_date_start": activity_date_start,
+                "activity_date_end": activity_date_end if end_dt and end_dt != start_dt else "",
+                "activity_type": activity_type,
+                "note": note,
+                "joining": (old_row["joining"] if old_row else "") or "",
+            }
+
+            try:
+                _update_district_schedule_row(sheet_row, payload)
+                sync_from_sheets_if_needed(force=True)
+                flash("Schedule updated successfully.", "success")
+            except Exception as e:
+                print("❌ Edit schedule failed:", e)
+                flash("Failed to update schedule.", "error")
+
+            return redirect(url_for("schedules", year=year, month=month))
+
+        if action == "delete_schedule":
+            if not session.get("district_secretary_ok"):
+                flash("District Secretary access is required.", "error")
+                return redirect(url_for("schedules"))
+
+            sheet_row = int(request.form.get("sheet_row") or 0)
+            year = (request.form.get("year") or "").strip()
+            month = (request.form.get("month") or "").strip()
+
+            if not sheet_row:
+                flash("Invalid schedule selected.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+            try:
+                _delete_district_schedule_row(sheet_row)
+                sync_from_sheets_if_needed(force=True)
+                flash("Schedule deleted successfully.", "success")
+            except Exception as e:
+                print("❌ Delete schedule failed:", e)
+                flash("Failed to delete schedule.", "error")
+
+            return redirect(url_for("schedules", year=year, month=month))
+
+        if action == "join_schedule":
+            sheet_row = int(request.form.get("sheet_row") or 0)
+            join_name = (request.form.get("join_name") or "").strip()
+            year = (request.form.get("year") or "").strip()
+            month = (request.form.get("month") or "").strip()
+
+            remembered_name = (session.get("schedule_join_name") or "").strip()
+            effective_name = join_name or remembered_name
+
+            if not sheet_row:
+                flash("Invalid schedule selected.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+            if not effective_name:
+                flash("Name is required to join this activity.", "error")
+                return redirect(url_for("schedules", year=year, month=month))
+
+            try:
+                _join_schedule(sheet_row, effective_name)
+                session["schedule_join_name"] = effective_name
+                sync_from_sheets_if_needed(force=True)
+                flash("You have been added as joining.", "success")
+            except Exception as e:
+                print("❌ Join schedule failed:", e)
+                flash("Failed to join this activity.", "error")
+
+            return redirect(url_for("schedules", year=year, month=month))
+
+    today = date.today()
+    try:
+        year = int(request.args.get("year", today.year))
+    except Exception:
+        year = today.year
+    try:
+        month = int(request.args.get("month", today.month))
+    except Exception:
+        month = today.month
+
+    if month < 1 or month > 12:
+        month = today.month
+
+    calendar_data = build_schedule_month(year, month)
+    month_rows = _get_schedule_rows_for_month(year, month)
+
+    return render_template(
+        "schedules.html",
+        month_title=calendar_data["month_title"],
+        year=calendar_data["year"],
+        month=calendar_data["month"],
+        weeks=calendar_data["weeks"],
+        event_lookup=calendar_data["event_lookup"],
+        prev_year=calendar_data["prev_year"],
+        prev_month=calendar_data["prev_month"],
+        next_year=calendar_data["next_year"],
+        next_month=calendar_data["next_month"],
+        district_secretary_ok=bool(session.get("district_secretary_ok")),
+        user_logged_in=any_user_logged_in(),
+        month_rows=month_rows,
+        activity_types=[
+            "Thanksgiving",
+            "Convention",
+            "Area Activities",
+            "District Prayer & Fasting",
+            "Others",
+        ],
+    )
 
 if __name__ == "__main__":
+    with app.app_context():
+        init_db()
+        print("Database initialized")
+        print("Timezone:", PH_TZ)
+
     app.run(debug=True)
