@@ -24,11 +24,11 @@
               onclick="toggleMonth('{{ m.month }}')"
               style="
                 width:100%;
-                border: 2px solid #111;
+                border:2px solid #111;
                 {% if m.all_reported %}
-                  background:#e9ffe9;
+                  background:#d7ffd7;
                 {% else %}
-                  background:#ffe9e9;
+                  background:#dbeafe;
                 {% endif %}
               ">
         <span style="display:flex; justify-content:space-between; align-items:center;">
@@ -37,9 +37,8 @@
         </span>
       </button>
 
-      <div id="month-{{ m.month }}" style="display:none; margin: 10px 0 16px 0;">
+      <div id="month-{{ m.month }}" style="display:{% if open_month == m.month %}block{% else %}none{% endif %}; margin: 10px 0 16px 0;">
 
-        <!-- ✅ AO PERSONAL TITHES + PRINT ROW -->
         <div class="card" style="margin: 10px 0; border:2px solid #111;">
           <div style="display:flex; gap:12px; align-items:center; justify-content:flex-start; flex-wrap:wrap;">
             <form method="POST"
@@ -66,14 +65,11 @@
                 {% if m.aopt_amount is none %}required{% endif %}
               >
 
-              <button type="button"
-                      class="btn-primary aopt-toggle"
-                      style="min-width:120px;">
+              <button type="button" class="btn-primary aopt-toggle" style="min-width:120px;">
                 {% if m.aopt_amount is not none %}Edit{% else %}Submit{% endif %}
               </button>
             </form>
 
-            <!-- Print button placeholder -->
             <button type="button" class="btn-secondary" style="min-width:140px;">
               Print Report
             </button>
@@ -84,7 +80,55 @@
           </div>
         </div>
 
-        <!-- ✅ CHURCH LIST (original working) -->
+        <div class="card" style="margin:10px 0; border:2px solid #111;">
+          <h3 style="margin-top:0; margin-bottom:12px;">Area Summary</h3>
+
+          <div style="display:grid; gap:14px;">
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Attendance</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px 14px;">
+                <div><b>Adult:</b> {{ m.area_summary.attendance_adult|int }}</div>
+                <div><b>Youth:</b> {{ m.area_summary.attendance_youth|int }}</div>
+                <div><b>Children:</b> {{ m.area_summary.attendance_children|int }}</div>
+                <div><b>General / All:</b> {{ m.area_summary.attendance_general|int }}</div>
+              </div>
+            </div>
+
+            <hr style="border:none; border-top:1px solid #d1d5db; margin:0;">
+
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Financial</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap:8px 14px;">
+                <div><b>Total Church Tithes:</b> {{ m.area_summary.church_tithes|phpeso }}</div>
+                <div><b>Total Offering:</b> {{ m.area_summary.offering|phpeso }}</div>
+                <div><b>N.O Mission:</b> {{ m.area_summary.no_mission|phpeso }}</div>
+                <div><b>A.O Mission:</b> {{ m.area_summary.ao_mission|phpeso }}</div>
+                <div><b>Pastor's Personal Tithes:</b> {{ m.area_summary.pastor_personal_tithes|phpeso }}</div>
+                <div><b>AO Personal Tithes:</b> {{ m.area_summary.ao_personal_tithes|phpeso }}</div>
+                <div><b>Total All Money Received:</b> {{ m.area_summary.total_all_money_received|phpeso }}</div>
+                <div><b>Total Money for N.O:</b> {{ m.area_summary.total_money_no|phpeso }}</div>
+                <div><b>Total Money for A.O:</b> {{ m.area_summary.total_money_ao|phpeso }}</div>
+              </div>
+            </div>
+
+            <hr style="border:none; border-top:1px solid #d1d5db; margin:0;">
+
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Activities / Ministry</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:8px 14px;">
+                <div><b>Bible Study Old:</b> {{ m.area_summary.bible_old|int }}</div>
+                <div><b>Bible Study New:</b> {{ m.area_summary.bible_new|int }}</div>
+                <div><b>Total Bible Study:</b> {{ m.area_summary.bible_total|int }}</div>
+                <div><b>Received the Holy Spirit:</b> {{ m.area_summary.received_holy_spirit|int }}</div>
+                <div><b>Received Jesus:</b> {{ m.area_summary.received_jesus|int }}</div>
+                <div><b>Baptized by Water:</b> {{ m.area_summary.baptized_water|int }}</div>
+                <div><b>Healed:</b> {{ m.area_summary.healed|int }}</div>
+                <div><b>Children Dedicated:</b> {{ m.area_summary.children_dedicated|int }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {% for c in m.churches %}
           <div class="card" style="margin: 10px 0; border:2px solid #111;">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
@@ -121,18 +165,14 @@
 
             {% if c.rows > 0 %}
               <div class="small" style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:8px 14px;">
-                <div><b>Total Amount to Send:</b> {{ "%.2f"|format(c.totals.amount_to_send) }}</div>
-                <div><b>Total Tithes:</b> {{ "%.2f"|format(c.totals.tithes) }}</div>
-
-                <div><b>Total Offering:</b> {{ "%.2f"|format(c.totals.offering) }}</div>
-                <div><b>Total Personal Tithes:</b> {{ "%.2f"|format(c.totals.personal_tithes) }}</div>
-
-                <div><b>Total Mission Offering:</b> {{ "%.2f"|format(c.totals.mission_offering) }}</div>
+                <div><b>Total Amount to Send:</b> {{ c.totals.amount_to_send|phpeso }}</div>
+                <div><b>Total Tithes:</b> {{ c.totals.tithes|phpeso }}</div>
+                <div><b>Total Offering:</b> {{ c.totals.offering|phpeso }}</div>
+                <div><b>Total Personal Tithes:</b> {{ c.totals.personal_tithes|phpeso }}</div>
+                <div><b>Total Mission Offering:</b> {{ c.totals.mission_offering|phpeso }}</div>
                 <div><b>Avg Attendance:</b> A {{ "%.1f"|format(c.avg.adult) }} / Y {{ "%.1f"|format(c.avg.youth) }} / C {{ "%.1f"|format(c.avg.children) }}</div>
-
                 <div><b>Avg Received Jesus:</b> {{ "%.1f"|format(c.avg.received_jesus) }}</div>
                 <div><b>Avg Bible Study:</b> Existing {{ "%.1f"|format(c.avg.existing_bible_study) }} / New {{ "%.1f"|format(c.avg.new_bible_study) }}</div>
-
                 <div><b>Avg Baptism:</b> Water {{ "%.1f"|format(c.avg.water_baptized) }} / Holy Spirit {{ "%.1f"|format(c.avg.holy_spirit_baptized) }}</div>
                 <div><b>Avg Others:</b> Dedication {{ "%.1f"|format(c.avg.childrens_dedication) }} / Healed {{ "%.1f"|format(c.avg.healed) }}</div>
               </div>
@@ -141,7 +181,6 @@
                 <input type="hidden" name="year" value="{{ m.year }}">
                 <input type="hidden" name="month" value="{{ m.month }}">
                 <input type="hidden" name="church" value="{{ c.church }}">
-
                 <button class="btn-primary" type="submit" {% if c.status_key == "approved" %}disabled{% endif %}>
                   {% if c.status_key == "approved" %}Approved{% else %}Approve{% endif %}
                 </button>
@@ -165,9 +204,6 @@
     el.style.display = (el.style.display === "block") ? "none" : "block";
   }
 
-  // AOPT toggle behavior:
-  // - readonly -> allow edit, button becomes "Save"
-  // - editable -> submit
   document.addEventListener("click", function(e) {
     const btn = e.target.closest(".aopt-toggle");
     if (!btn) return;
