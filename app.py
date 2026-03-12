@@ -1306,26 +1306,28 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         if item.get("rows", 0) > 0:
             summary["submitted_count"] += 1
 
-        rows = float(item.get("rows") or 0)
         avg = item.get("avg") or {}
         totals = item.get("totals") or {}
 
-        adult = float(avg.get("adult") or 0) * rows
-        youth = float(avg.get("youth") or 0) * rows
-        children = float(avg.get("children") or 0) * rows
-        bible_old = float(avg.get("existing_bible_study") or 0) * rows
-        bible_new = float(avg.get("new_bible_study") or 0) * rows
-        received_jesus = float(avg.get("received_jesus") or 0) * rows
-        baptized_water = float(avg.get("water_baptized") or 0) * rows
-        received_holy_spirit = float(avg.get("holy_spirit_baptized") or 0) * rows
-        children_dedicated = float(avg.get("childrens_dedication") or 0) * rows
-        healed = float(avg.get("healed") or 0) * rows
+        # Attendance + activity = add each church's MONTHLY AVERAGE once
+        adult = float(avg.get("adult") or 0)
+        youth = float(avg.get("youth") or 0)
+        children = float(avg.get("children") or 0)
+
+        bible_old = float(avg.get("existing_bible_study") or 0)
+        bible_new = float(avg.get("new_bible_study") or 0)
+        received_jesus = float(avg.get("received_jesus") or 0)
+        baptized_water = float(avg.get("water_baptized") or 0)
+        received_holy_spirit = float(avg.get("holy_spirit_baptized") or 0)
+        children_dedicated = float(avg.get("childrens_dedication") or 0)
+        healed = float(avg.get("healed") or 0)
 
         summary["attendance_adult"] += adult
         summary["attendance_youth"] += youth
         summary["attendance_children"] += children
         summary["attendance_general"] += adult + youth + children
 
+        # Financial = still use totals
         summary["church_tithes"] += float(totals.get("tithes") or 0)
         summary["offering"] += float(totals.get("offering") or 0)
         summary["mission_total"] += float(totals.get("mission_offering") or 0)
