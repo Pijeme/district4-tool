@@ -7,58 +7,112 @@
 <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap" rel="stylesheet">
 
 <style>
-  .schedule-wrap { display:flex; flex-direction:column; gap:16px; }
-  .schedule-top { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap; }
-  .schedule-subtitle { margin:4px 0 0; color:#6b7280; }
-  .schedule-secretary { text-align:right; }
-  .schedule-secretary-note { margin-top:8px; font-size:13px; color:#6b7280; max-width:260px; }
-  .schedule-nav { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:8px; flex-wrap:wrap; }
+  .schedule-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .schedule-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .schedule-subtitle {
+    margin: 4px 0 0;
+    color: #6b7280;
+  }
+
+  .schedule-secretary {
+    text-align: right;
+  }
+
+  .schedule-secretary-note {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #6b7280;
+    max-width: 260px;
+  }
+
+  .schedule-nav {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+  }
+
+  .schedule-nav-side {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .schedule-nav-side.left {
+    justify-content: flex-start;
+  }
+
+  .schedule-nav-side.right {
+    justify-content: flex-end;
+  }
+
+  .schedule-nav-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
   .schedule-nav-title {
-  font-family: "Dancing Script", cursive;
-  font-size: 54px;
-  font-weight: 700;
-  color: #1f2937;
-  text-align: center;
-  line-height: 1;
-  margin-bottom: 4px;
-}
-.schedule-nav-center {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
+    font-family: "Dancing Script", cursive;
+    font-size: 54px;
+    font-weight: 700;
+    color: #1f2937;
+    text-align: center;
+    line-height: 1;
+    margin: 0;
+  }
 
-.schedule-legend {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px 16px;
-  font-size: 13px;
-  color: #475569;
-}
+  .schedule-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px 16px;
+    font-size: 13px;
+    color: #475569;
+  }
 
-.schedule-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
+  .schedule-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
 
-.schedule-legend-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  display: inline-block;
-}
+  .schedule-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    display: inline-block;
+    flex: 0 0 auto;
+  }
 
-.legend-thanksgiving { background:#fb923c; }
-.legend-convention { background:#a78bfa; }
-.legend-area { background:#60a5fa; }
-.legend-prayer { background:#d97706; }
-.legend-other { background:#64748b; }
+  .legend-thanksgiving { background: #fb923c; }
+  .legend-convention { background: #a78bfa; }
+  .legend-area { background: #60a5fa; }
+  .legend-prayer { background: #d97706; }
+  .legend-other { background: #64748b; }
 
-  .schedule-nav-side { display:flex; gap:10px; align-items:center; }
+  .calendar-shell {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
 
   .calendar-grid {
     display: grid;
@@ -69,48 +123,57 @@
     overflow: hidden;
     background: #ffffff;
     width: 100%;
+    min-width: 980px;
   }
 
   .weekday {
-    background:#f8fafc;
-    border-bottom:1px solid #dbe3ef;
-    padding:14px 10px;
-    text-align:center;
-    font-weight:700;
-    color:#475569;
+    background: #f8fafc;
+    border-bottom: 1px solid #dbe3ef;
+    padding: 14px 10px;
+    text-align: center;
+    font-weight: 700;
+    color: #475569;
+    font-size: 15px;
   }
 
-.day-cell {
-  min-height: 155px;
-  height: 155px;
-  border-right: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
-  padding: 8px;
-  background: #fff;
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
+  .day-cell {
+    min-height: 155px;
+    height: 155px;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 8px;
+    background: #fff;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
 
-  .day-cell:nth-child(7n) { border-right:none; }
-  .day-muted { background:#fbfdff; color:#94a3b8; }
+  .day-cell:nth-child(7n) {
+    border-right: none;
+  }
+
+  .day-muted {
+    background: #fbfdff;
+    color: #94a3b8;
+  }
 
   .day-number {
-    font-weight:800;
-    margin-bottom:6px;
-    color:#334155;
+    font-weight: 800;
+    margin-bottom: 6px;
+    color: #334155;
     flex: 0 0 auto;
+    font-size: 16px;
   }
 
   .day-date-btn {
-    background:transparent;
-    border:none;
-    padding:0;
-    font:inherit;
-    font-weight:800;
-    color:inherit;
-    cursor:pointer;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-weight: 800;
+    color: inherit;
+    cursor: pointer;
   }
 
   .day-events {
@@ -124,8 +187,8 @@
     border: none;
     text-align: left;
     border-radius: 10px;
-    padding: 5px 8px;
-    margin-bottom: 5px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
     color: #fff;
     font-weight: 700;
     font-size: 11px;
@@ -136,10 +199,10 @@
   }
 
   .event-chip-title {
-    display:flex;
-    justify-content:space-between;
-    align-items:flex-start;
-    gap:6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 6px;
   }
 
   .event-chip-label {
@@ -147,17 +210,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    display:block;
+    display: block;
   }
 
   .event-chip-badge {
     flex: 0 0 auto;
-    font-size:10px;
-    font-weight:800;
-    background:rgba(255,255,255,0.18);
-    padding:2px 6px;
-    border-radius:999px;
-    line-height:1;
+    font-size: 10px;
+    font-weight: 800;
+    background: rgba(255,255,255,0.18);
+    padding: 2px 6px;
+    border-radius: 999px;
+    line-height: 1;
   }
 
   .event-host {
@@ -171,11 +234,11 @@
     overflow: hidden;
   }
 
-  .type-thanksgiving { background:linear-gradient(135deg,#f97316,#fb923c); }
-  .type-convention { background:linear-gradient(135deg,#8b5cf6,#a78bfa); }
-  .type-area { background:linear-gradient(135deg,#2563eb,#60a5fa); }
-  .type-prayer { background:linear-gradient(135deg,#b45309,#d97706); }
-  .type-other { background:linear-gradient(135deg,#475569,#64748b); }
+  .type-thanksgiving { background: linear-gradient(135deg,#f97316,#fb923c); }
+  .type-convention { background: linear-gradient(135deg,#8b5cf6,#a78bfa); }
+  .type-area { background: linear-gradient(135deg,#2563eb,#60a5fa); }
+  .type-prayer { background: linear-gradient(135deg,#b45309,#d97706); }
+  .type-other { background: linear-gradient(135deg,#475569,#64748b); }
 
   .more-btn-wrap {
     flex: 0 0 auto;
@@ -184,53 +247,83 @@
   }
 
   .more-btn {
-    background:transparent;
-    border:none;
-    color:#2563eb;
-    font-size:13px;
-    font-weight:700;
-    cursor:pointer;
-    padding:0;
+    background: transparent;
+    border: none;
+    color: #2563eb;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0;
   }
 
-  .flash-wrap { display:flex; flex-direction:column; gap:10px; }
-  .flash { padding:12px 14px; border-radius:12px; font-weight:600; }
-  .flash-success { background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }
-  .flash-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+  .flash-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .flash {
+    padding: 12px 14px;
+    border-radius: 12px;
+    font-weight: 600;
+  }
+
+  .flash-success {
+    background: #ecfdf5;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+  }
+
+  .flash-error {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+  }
 
   .modal-backdrop {
-    position:fixed;
-    inset:0;
-    background:rgba(15,23,42,.55);
-    display:none;
-    align-items:center;
-    justify-content:center;
-    padding:20px;
-    z-index:1000;
+    position: fixed;
+    inset: 0;
+    background: rgba(15,23,42,.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 1000;
   }
-  .modal-backdrop.open { display:flex; }
+
+  .modal-backdrop.open {
+    display: flex;
+  }
 
   .modal-card {
-    width:min(720px,100%);
-    max-height:90vh;
-    overflow:auto;
-    background:#fff;
-    border-radius:18px;
-    box-shadow:0 18px 50px rgba(15,23,42,.24);
-    border:1px solid #e5e7eb;
+    width: min(720px,100%);
+    max-height: 90vh;
+    overflow: auto;
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 18px 50px rgba(15,23,42,.24);
+    border: 1px solid #e5e7eb;
   }
-  .modal-card.small { width:min(460px,100%); }
+
+  .modal-card.small {
+    width: min(460px,100%);
+  }
 
   .modal-header {
-    display:flex;
-    justify-content:space-between;
-    gap:12px;
-    align-items:flex-start;
-    padding:18px 18px 12px;
-    border-bottom:1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 18px 18px 12px;
+    border-bottom: 1px solid #e5e7eb;
   }
 
-  .modal-title { font-size:24px; font-weight:800; color:#1f2937; margin:0; }
+  .modal-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #1f2937;
+    margin: 0;
+  }
 
   .join-header-btn {
     font-size: 0.75em;
@@ -238,92 +331,288 @@
     border-radius: 999px;
   }
 
-  .modal-subtitle { color:#6b7280; margin:4px 0 0; }
-  .modal-close {
-    border:none;
-    background:transparent;
-    font-size:30px;
-    line-height:1;
-    cursor:pointer;
-    color:#64748b;
+  .modal-subtitle {
+    color: #6b7280;
+    margin: 4px 0 0;
   }
-  .modal-body { padding:18px; }
 
-  .day-list { display:flex; flex-direction:column; gap:12px; }
+  .modal-close {
+    border: none;
+    background: transparent;
+    font-size: 30px;
+    line-height: 1;
+    cursor: pointer;
+    color: #64748b;
+  }
+
+  .modal-body {
+    padding: 18px;
+  }
+
+  .day-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .day-item {
-    border:1px solid #e5e7eb;
-    border-radius:14px;
-    padding:14px;
-    background:#fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 14px;
+    background: #fff;
   }
+
   .day-item-top {
-    display:flex;
-    justify-content:space-between;
-    gap:12px;
-    align-items:flex-start;
-    flex-wrap:wrap;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
-  .day-item-title { font-size:18px; font-weight:800; color:#1f2937; margin:0; }
-  .day-item-host { margin-top:4px; color:#475569; font-weight:600; }
-  .day-item-open { margin-top:12px; }
+
+  .day-item-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: #1f2937;
+    margin: 0;
+  }
+
+  .day-item-host {
+    margin-top: 4px;
+    color: #475569;
+    font-weight: 600;
+  }
+
+  .day-item-open {
+    margin-top: 12px;
+  }
 
   .detail-grid {
-    display:grid;
-    grid-template-columns:180px 1fr;
-    gap:10px 14px;
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 10px 14px;
   }
-  .detail-label { font-weight:800; color:#334155; }
-  .detail-value { color:#111827; white-space:pre-wrap; }
+
+  .detail-label {
+    font-weight: 800;
+    color: #334155;
+  }
+
+  .detail-value {
+    color: #111827;
+    white-space: pre-wrap;
+  }
 
   .form-grid {
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
   }
-  .form-grid .full { grid-column:1 / -1; }
 
-  .field-label { display:block; font-weight:700; margin-bottom:6px; color:#334155; }
-  .field-required { color:#dc2626; }
-  .field-input, .field-select, .field-textarea {
-    width:100%;
-    border:1px solid #cbd5e1;
-    border-radius:10px;
-    padding:10px 12px;
-    font:inherit;
-    box-sizing:border-box;
+  .form-grid .full {
+    grid-column: 1 / -1;
   }
-  .field-textarea { min-height:100px; resize:vertical; }
+
+  .field-label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: #334155;
+  }
+
+  .field-required {
+    color: #dc2626;
+  }
+
+  .field-input,
+  .field-select,
+  .field-textarea {
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: inherit;
+    box-sizing: border-box;
+  }
+
+  .field-textarea {
+    min-height: 100px;
+    resize: vertical;
+  }
 
   .modal-actions {
-    display:flex;
-    justify-content:flex-end;
-    gap:10px;
-    margin-top:16px;
-    flex-wrap:wrap;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+    flex-wrap: wrap;
   }
 
-  .secretary-menu { display:flex; flex-direction:column; gap:12px; }
+  .secretary-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
 
-  .manage-list { display:flex; flex-direction:column; gap:10px; }
+  .manage-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
   .manage-item {
-    border:1px solid #e5e7eb;
-    border-radius:12px;
-    padding:12px;
-    background:#fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 12px;
+    background: #fff;
   }
-  .manage-item-title { font-weight:800; color:#1f2937; }
-  .manage-item-meta { font-size:13px; color:#6b7280; margin-top:4px; }
-  .manage-item-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
 
-  @media (max-width:900px) {
-    .day-cell {
-      min-height:120px;
-      height:120px;
-      padding:8px;
+  .manage-item-title {
+    font-weight: 800;
+    color: #1f2937;
+  }
+
+  .manage-item-meta {
+    font-size: 13px;
+    color: #6b7280;
+    margin-top: 4px;
+  }
+
+  .manage-item-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 900px) {
+    .schedule-top {
+      flex-direction: column;
+      align-items: stretch;
     }
-    .schedule-nav { justify-content:center; }
-    .schedule-secretary { text-align:left; }
-    .form-grid, .detail-grid { grid-template-columns:1fr; }
+
+    .schedule-secretary {
+      text-align: left;
+    }
+
+    .schedule-secretary .btn-primary {
+      width: 100%;
+    }
+
+    .schedule-secretary-note {
+      max-width: none;
+    }
+
+    .schedule-nav {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .schedule-nav-side.left,
+    .schedule-nav-side.right {
+      justify-content: center;
+    }
+
+    .schedule-nav-side.left {
+      order: 1;
+    }
+
+    .schedule-nav-center {
+      order: 2;
+    }
+
+    .schedule-nav-side.right {
+      order: 3;
+    }
+
+    .schedule-nav-title {
+      font-size: 44px;
+    }
+
+    .schedule-legend {
+      gap: 8px 14px;
+      font-size: 12px;
+    }
+
+    .calendar-grid {
+      min-width: 720px;
+    }
+
+    .weekday {
+      padding: 12px 8px;
+      font-size: 13px;
+    }
+
+    .day-cell {
+      min-height: 118px;
+      height: 118px;
+      padding: 6px;
+    }
+
+    .day-number {
+      font-size: 14px;
+      margin-bottom: 5px;
+    }
+
+    .event-chip {
+      padding: 5px 6px;
+      margin-bottom: 4px;
+      font-size: 10px;
+      border-radius: 9px;
+    }
+
+    .event-host {
+      font-size: 9px;
+      margin-top: 2px;
+      max-height: 2.2em;
+    }
+
+    .event-chip-badge {
+      font-size: 9px;
+      padding: 2px 5px;
+    }
+
+    .more-btn {
+      font-size: 12px;
+    }
+
+    .form-grid,
+    .detail-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .schedule-nav-title {
+      font-size: 36px;
+    }
+
+    .calendar-grid {
+      min-width: 680px;
+    }
+
+    .day-cell {
+      min-height: 110px;
+      height: 110px;
+    }
+
+    .event-chip {
+      font-size: 9px;
+      padding: 4px 6px;
+    }
+
+    .event-host {
+      font-size: 8.5px;
+    }
+
+    .more-btn {
+      font-size: 11px;
+    }
+
+    .join-header-btn {
+      font-size: 0.7em;
+      padding: 4px 8px;
+    }
   }
 </style>
 
@@ -346,38 +635,38 @@
     </div>
 
     <div class="schedule-nav">
-      <div class="schedule-nav-side">
+      <div class="schedule-nav-side left">
         <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month) }}">← Previous</a>
       </div>
 
       <div class="schedule-nav-center">
-  <div class="schedule-nav-title">{{ month_title }}</div>
+        <div class="schedule-nav-title">{{ month_title }}</div>
 
-  <div class="schedule-legend">
-    <span class="schedule-legend-item">
-      <span class="schedule-legend-dot legend-thanksgiving"></span>
-      Thanksgiving
-    </span>
-    <span class="schedule-legend-item">
-      <span class="schedule-legend-dot legend-convention"></span>
-      Convention
-    </span>
-    <span class="schedule-legend-item">
-      <span class="schedule-legend-dot legend-area"></span>
-      Area Activities
-    </span>
-    <span class="schedule-legend-item">
-      <span class="schedule-legend-dot legend-prayer"></span>
-      District Prayer & Fasting
-    </span>
-    <span class="schedule-legend-item">
-      <span class="schedule-legend-dot legend-other"></span>
-      Others
-    </span>
-  </div>
-</div>
+        <div class="schedule-legend">
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-thanksgiving"></span>
+            Thanksgiving
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-convention"></span>
+            Convention
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-area"></span>
+            Area Activities
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-prayer"></span>
+            District Prayer & Fasting
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-other"></span>
+            Others
+          </span>
+        </div>
+      </div>
 
-      <div class="schedule-nav-side">
+      <div class="schedule-nav-side right">
         <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month) }}">Next →</a>
       </div>
     </div>
@@ -395,53 +684,55 @@
     {% endif %}
   {% endwith %}
 
-  <section class="card" style="padding:0; overflow:hidden;">
-    <div class="calendar-grid">
-      <div class="weekday">Sun</div>
-      <div class="weekday">Mon</div>
-      <div class="weekday">Tue</div>
-      <div class="weekday">Wed</div>
-      <div class="weekday">Thu</div>
-      <div class="weekday">Fri</div>
-      <div class="weekday">Sat</div>
+  <section class="card" style="padding:0;">
+    <div class="calendar-shell">
+      <div class="calendar-grid">
+        <div class="weekday">Sun</div>
+        <div class="weekday">Mon</div>
+        <div class="weekday">Tue</div>
+        <div class="weekday">Wed</div>
+        <div class="weekday">Thu</div>
+        <div class="weekday">Fri</div>
+        <div class="weekday">Sat</div>
 
-      {% for week in weeks %}
-        {% for cell in week %}
-          <div class="day-cell {% if not cell.in_month %}day-muted{% endif %}">
-            <div class="day-number">
-              <button type="button" class="day-date-btn" onclick="openDayModal('{{ cell.iso }}')">
-                {{ cell.date.day }}
-              </button>
-            </div>
-
-            <div class="day-events">
-              {% for event in cell.visible_events %}
-                <button
-                  type="button"
-                  class="event-chip {{ event.type_class }}"
-                  onclick="openEventModal('{{ event.id }}')"
-                >
-                  <div class="event-chip-title">
-                    <span class="event-chip-label">{{ event.activity_type }}</span>
-                    {% if event.joining_count > 0 %}
-                      <span class="event-chip-badge">🙋 {{ event.joining_count }}</span>
-                    {% endif %}
-                  </div>
-                  <span class="event-host">{{ event.church_name }}</span>
-                </button>
-              {% endfor %}
-            </div>
-
-            {% if cell.extra_count > 0 %}
-              <div class="more-btn-wrap">
-                <button type="button" class="more-btn" onclick="openDayModal('{{ cell.iso }}')">
-                  +{{ cell.extra_count }} more
+        {% for week in weeks %}
+          {% for cell in week %}
+            <div class="day-cell {% if not cell.in_month %}day-muted{% endif %}">
+              <div class="day-number">
+                <button type="button" class="day-date-btn" onclick="openDayModal('{{ cell.iso }}')">
+                  {{ cell.date.day }}
                 </button>
               </div>
-            {% endif %}
-          </div>
+
+              <div class="day-events">
+                {% for event in cell.visible_events %}
+                  <button
+                    type="button"
+                    class="event-chip {{ event.type_class }}"
+                    onclick="openEventModal('{{ event.id }}')"
+                  >
+                    <div class="event-chip-title">
+                      <span class="event-chip-label">{{ event.activity_type }}</span>
+                      {% if event.joining_count > 0 %}
+                        <span class="event-chip-badge">🙋 {{ event.joining_count }}</span>
+                      {% endif %}
+                    </div>
+                    <span class="event-host">{{ event.church_name }}</span>
+                  </button>
+                {% endfor %}
+              </div>
+
+              {% if cell.extra_count > 0 %}
+                <div class="more-btn-wrap">
+                  <button type="button" class="more-btn" onclick="openDayModal('{{ cell.iso }}')">
+                    +{{ cell.extra_count }} more
+                  </button>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
         {% endfor %}
-      {% endfor %}
+      </div>
     </div>
   </section>
 </div>
@@ -858,25 +1149,26 @@
     if (!evt) return;
 
     const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
-let showJoinButton = true;
+    let showJoinButton = true;
 
-if (rememberedName && evt.joining) {
-  const names = evt.joining.split(",").map(x => x.trim().toLowerCase());
-  if (names.includes(rememberedName.trim().toLowerCase())) {
-    showJoinButton = false;
-  }
-}
-
-document.getElementById("eventModalTitle").innerHTML = `
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-    <span>${escapeHtml(evt.activity_type)}</span>
-    ${
-      showJoinButton
-        ? `<button type="button" class="btn-primary join-header-btn" onclick="joinSchedule(${evt.sheet_row || 0})">I’m Joining 🙋</button>`
-        : ``
+    if (rememberedName && evt.joining) {
+      const names = evt.joining.split(",").map(x => x.trim().toLowerCase());
+      if (names.includes(rememberedName.trim().toLowerCase())) {
+        showJoinButton = false;
+      }
     }
-  </div>
-`;
+
+    document.getElementById("eventModalTitle").innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span>${escapeHtml(evt.activity_type)}</span>
+        ${
+          showJoinButton
+            ? `<button type="button" class="btn-primary join-header-btn" onclick="joinSchedule(${evt.sheet_row || 0})">I’m Joining 🙋</button>`
+            : ``
+        }
+      </div>
+    `;
+
     document.getElementById("eventModalSubtitle").textContent = evt.church_name;
 
     const dateLabel = evt.activity_date_end
