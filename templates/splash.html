@@ -26,6 +26,16 @@
                    style="width: 100%; padding: 0.6rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #f9fafb;">
           </div>
 
+          <div style="margin-bottom: 0.75rem;">
+            <label for="position" style="display:block; font-size: 0.9rem; margin-bottom: 0.25rem;">Position</label>
+            <select id="position" name="position" required
+                    style="width: 100%; padding: 0.6rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #f9fafb;">
+              <option value="Pastor" style="color:#111827; background:#ffffff;">Pastor</option>
+              <option value="Member" style="color:#111827; background:#ffffff;">Member</option>
+              <option value="Area Overseer" style="color:#111827; background:#ffffff;">Area Overseer</option>
+            </select>
+          </div>
+
           {% if error %}
             <div style="margin: 0 0 0.75rem; color: #fecaca; font-size: 0.9rem;">
               {{ error }}
