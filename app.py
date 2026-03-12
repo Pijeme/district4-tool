@@ -522,6 +522,14 @@ def parse_float(value):
         return 0.0
 
 
+def format_php_currency(value):
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+    return f"₱{amount:,.2f}"
+
+
 def parse_sheet_date(value):
     """Parse a date string from Google Sheets.
 
@@ -1211,6 +1219,7 @@ def get_all_churches_from_cache():
     - Area Number is stored in sheet_accounts_cache.age
 
     If an AO is logged in and has an area number, only churches in that same area are returned.
+    Area Overseer accounts themselves are excluded from the church list.
     """
     db = get_db()
     ao_area = (session.get("ao_area_number") or "").strip() if ao_logged_in() else ""
@@ -1222,6 +1231,7 @@ def get_all_churches_from_cache():
             FROM sheet_accounts_cache
             WHERE TRIM(sex) != ''
               AND TRIM(age) = TRIM(?)
+              AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
             ORDER BY c
             """,
             (ao_area,),
@@ -1232,12 +1242,121 @@ def get_all_churches_from_cache():
             SELECT DISTINCT TRIM(sex) AS c
             FROM sheet_accounts_cache
             WHERE TRIM(sex) != ''
+              AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
             ORDER BY c
             """
         ).fetchall()
 
     return [r["c"] for r in rows]
 
+def get_accounts_for_area_cache(area_number: str):
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            TRIM(username) AS username,
+            TRIM(name) AS name,
+            TRIM(age) AS area_number,
+            TRIM(sex) AS church_id,
+            TRIM(church_address) AS church_address,
+            TRIM(contact) AS contact,
+            TRIM(birthday) AS birthday,
+            TRIM(password) AS password,
+            TRIM(position) AS position,
+            sheet_row
+        FROM sheet_accounts_cache
+        WHERE TRIM(age) = TRIM(?)
+          AND TRIM(username) != ''
+          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+        ORDER BY church_id, church_address, name
+        """,
+        (area_number,),
+    ).fetchall()
+    return rows
+
+def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_amount: float):
+    summary = {
+        "submitted_count": 0,
+        "total_churches": len(church_items),
+        "attendance_adult": 0.0,
+        "attendance_youth": 0.0,
+        "attendance_children": 0.0,
+        "attendance_general": 0.0,
+        "church_tithes": 0.0,
+        "offering": 0.0,
+        "mission_total": 0.0,
+        "no_mission": 0.0,
+        "ao_mission": 0.0,
+        "pastor_personal_tithes": 0.0,
+        "ao_personal_tithes": float(aopt_amount or 0.0),
+        "total_all_money_received": 0.0,
+        "bible_old": 0.0,
+        "bible_new": 0.0,
+        "bible_total": 0.0,
+        "received_holy_spirit": 0.0,
+        "received_jesus": 0.0,
+        "baptized_water": 0.0,
+        "healed": 0.0,
+        "children_dedicated": 0.0,
+        "total_money_no": 0.0,
+        "total_money_ao": 0.0,
+    }
+
+    for item in church_items:
+        if item.get("rows", 0) > 0:
+            summary["submitted_count"] += 1
+
+        rows = float(item.get("rows") or 0)
+        avg = item.get("avg") or {}
+        totals = item.get("totals") or {}
+
+        adult = float(avg.get("adult") or 0) * rows
+        youth = float(avg.get("youth") or 0) * rows
+        children = float(avg.get("children") or 0) * rows
+        bible_old = float(avg.get("existing_bible_study") or 0) * rows
+        bible_new = float(avg.get("new_bible_study") or 0) * rows
+        received_jesus = float(avg.get("received_jesus") or 0) * rows
+        baptized_water = float(avg.get("water_baptized") or 0) * rows
+        received_holy_spirit = float(avg.get("holy_spirit_baptized") or 0) * rows
+        children_dedicated = float(avg.get("childrens_dedication") or 0) * rows
+        healed = float(avg.get("healed") or 0) * rows
+
+        summary["attendance_adult"] += adult
+        summary["attendance_youth"] += youth
+        summary["attendance_children"] += children
+        summary["attendance_general"] += adult + youth + children
+
+        summary["church_tithes"] += float(totals.get("tithes") or 0)
+        summary["offering"] += float(totals.get("offering") or 0)
+        summary["mission_total"] += float(totals.get("mission_offering") or 0)
+        summary["pastor_personal_tithes"] += float(totals.get("personal_tithes") or 0)
+        summary["total_all_money_received"] += float(totals.get("amount_to_send") or 0)
+
+        summary["bible_old"] += bible_old
+        summary["bible_new"] += bible_new
+        summary["received_jesus"] += received_jesus
+        summary["baptized_water"] += baptized_water
+        summary["received_holy_spirit"] += received_holy_spirit
+        summary["children_dedicated"] += children_dedicated
+        summary["healed"] += healed
+
+    summary["bible_total"] = summary["bible_old"] + summary["bible_new"]
+    summary["no_mission"] = summary["mission_total"] * 0.20
+    summary["ao_mission"] = summary["mission_total"] * 0.80
+    summary["total_money_no"] = (
+        summary["church_tithes"]
+        + summary["offering"]
+        + summary["no_mission"]
+        + (summary["pastor_personal_tithes"] * 0.10)
+        + 300
+        + summary["ao_personal_tithes"]
+        - 3000
+    )
+    summary["total_money_ao"] = (
+        (summary["pastor_personal_tithes"] * 0.90)
+        + summary["ao_mission"]
+    )
+    return summary
 
 
 def get_report_stats_for_month_and_church_cache(year: int, month: int, church_key: str):
@@ -2276,6 +2395,10 @@ def generate_pastor_credentials(full_name: str, age: int):
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
 
+@app.template_filter("phpeso")
+def phpeso_filter(value):
+    return format_php_currency(value)
+
 
 @app.before_request
 def before_request():
@@ -2292,14 +2415,7 @@ def close_connection(exception):
 
 @app.route("/", methods=["GET", "POST"])
 def splash():
-    """Splash page login.
-
-    This is a lightweight "front door" login. It does NOT replace the
-    dedicated /pastor-login and /ao-login routes.
-
-    - Pastors who log in here are treated as pastor_logged_in.
-    - AO login remains handled by /ao-login.
-    """
+    """Splash page login with role selection."""
 
     logged_in = bool(session.get("pastor_logged_in")) or bool(session.get("ao_logged_in"))
     error = None
@@ -2307,27 +2423,50 @@ def splash():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
+        selected_role = (request.form.get("position") or "Pastor").strip().lower()
 
         if not username or not password:
             error = "Username and password are required."
         else:
+            sync_from_sheets_if_needed(force=True)
             row = get_db().execute(
-                "SELECT username, password, name, church_address, sex, age FROM sheet_accounts_cache WHERE username = ?",
+                """
+                SELECT username, password, name, church_address, sex, age, position
+                FROM sheet_accounts_cache
+                WHERE username = ?
+                """,
                 (username,),
             ).fetchone()
 
-            if row and str(row["password"] or "").strip() == password:
-                # Mark as pastor session
-                session["pastor_logged_in"] = True
-                session["pastor_username"] = username
-                session["pastor_name"] = row["name"] or ""
-                session["pastor_church_address"] = row["church_address"] or ""
-                session["pastor_church_id"] = (row["sex"] or "").strip()
-                session["pastor_area_number"] = (row["age"] or "").strip()
-                session.permanent = True
-                return redirect(url_for("pastor_tool"))
+            stored_role = str((row["position"] if row and "position" in row.keys() else "") or "").strip().lower()
 
-            error = "Invalid username or password."
+            if row and str(row["password"] or "").strip() == password:
+                session.clear()
+                session["selected_position"] = selected_role
+                session.permanent = True
+
+                if selected_role == "area overseer":
+                    if stored_role != "area overseer":
+                        error = "This account is not registered as Area Overseer."
+                    else:
+                        session["ao_logged_in"] = True
+                        session["ao_username"] = username
+                        session["ao_name"] = row["name"] or ""
+                        session["ao_area_number"] = (row["age"] or "").strip()
+                        session["ao_church_id"] = (row["sex"] or "").strip()
+                        return redirect(url_for("ao_tool"))
+                else:
+                    session["pastor_logged_in"] = True
+                    session["pastor_username"] = username
+                    session["pastor_name"] = row["name"] or ""
+                    session["pastor_church_address"] = row["church_address"] or ""
+                    session["pastor_church_id"] = (row["sex"] or "").strip()
+                    session["pastor_area_number"] = (row["age"] or "").strip()
+                    if selected_role == "member":
+                        return redirect(url_for("bulletin"))
+                    return redirect(url_for("pastor_tool"))
+            else:
+                error = "Invalid username or password."
 
     return render_template("splash.html", logged_in=logged_in, error=error)
 
@@ -2696,59 +2835,6 @@ def _build_report_recognition_posts(area_number, area_directory, today):
 
     return posts
 
-def _build_schedule_posts(area_directory, today):
-    posts = []
-    db = get_db()
-
-    tomorrow = date.fromordinal(today.toordinal() + 1)
-
-    rows = db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        ORDER BY activity_date_start ASC, church_name ASC
-        """
-    ).fetchall()
-
-    for r in rows:
-        church_name = str(r["church_name"] or "").strip()
-        activity_type = str(r["activity_type"] or "").strip() or "Activity"
-        start_dt = parse_sheet_date(r["activity_date_start"])
-
-        if not church_name or not start_dt:
-            continue
-
-        # show only 1 day before the event
-        if start_dt != tomorrow:
-            continue
-
-        event_date_label = start_dt.strftime("%B %d, %Y")
-
-        if activity_type.lower() == "others":
-         summary = (
-        f"Tomorrow, {church_name} will hold an event on {event_date_label}. "
-        f"Let us support and pray for this special event."
-    )
-        else:
-         summary = (
-        f"Tomorrow, {church_name} will hold its {activity_type} on {event_date_label}. "
-        f"Let us support and pray for this special event."
-    )
-
-        posts.append(
-            {
-                "type": "schedule_notice",
-                "church_name": church_name,
-                "title": f"Upcoming Event • {church_name}",
-                "summary": summary,
-                "meta": f"Tomorrow • {event_date_label}",
-                "footer_note": "To know more, please visit Schedules in the menu.",
-                "sort_date": start_dt,
-            }
-        )
-
-    return posts
-
 
 def build_bulletin_board_posts():
     area_number = _current_user_area_number()
@@ -2764,7 +2850,6 @@ def build_bulletin_board_posts():
     posts.extend(_build_birthday_posts(area_directory, today))
     posts.extend(_build_prayer_posts(area_directory, current_user_key, current_church_display))
     posts.extend(_build_report_recognition_posts(area_number, area_directory, today))
-    posts.extend(_build_schedule_posts(area_directory, today))
 
     posts.sort(key=_sort_date_desc, reverse=True)
 
@@ -3386,8 +3471,107 @@ def ao_tool():
         return redirect(url_for("ao_login", next=request.path))
 
     last_sync_ph = get_last_sync_display_ph()
-    return render_template("ao_tool.html", last_sync_ph=last_sync_ph)
+    area_number = (session.get("ao_area_number") or "").strip()
+    area_accounts = get_accounts_for_area_cache(area_number)
 
+    selected_username = (request.args.get("edit_username") or "").strip()
+    selected_account = None
+    if selected_username:
+        for row in area_accounts:
+            if str(row["username"] or "").strip() == selected_username:
+                selected_account = row
+                break
+
+    return render_template(
+        "ao_tool.html",
+        last_sync_ph=last_sync_ph,
+        area_accounts=area_accounts,
+        selected_account=selected_account,
+        ao_area_number=area_number,
+    )
+
+def _get_account_cache_row(username: str):
+    return get_db().execute(
+        """
+        SELECT *
+        FROM sheet_accounts_cache
+        WHERE TRIM(username) = TRIM(?)
+        """,
+        (username,),
+    ).fetchone()
+
+@app.route("/ao-tool/edit-account/save", methods=["POST"])
+def ao_edit_account_save():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    area_number = (session.get("ao_area_number") or "").strip()
+    original_username = (request.form.get("original_username") or "").strip()
+
+    row = _get_account_cache_row(original_username)
+    if not row or str(row["age"] or "").strip() != area_number:
+        abort(403)
+
+    full_name = (request.form.get("full_name") or "").strip()
+    church_id = (request.form.get("sex") or "").strip()
+    church_address = (request.form.get("church_address") or "").strip()
+    contact_number = (request.form.get("contact_number") or "").strip()
+    birthday = (request.form.get("birthday") or "").strip()
+    username = (request.form.get("username") or "").strip()
+    password = (request.form.get("password") or "").strip()
+
+    if not all([full_name, church_id, church_address, contact_number, birthday, username, password]):
+        flash("All account fields are required.", "error")
+        return redirect(url_for("ao_tool", edit_username=original_username))
+
+    existing_username = _get_account_cache_row(username)
+    if existing_username and str(existing_username["username"] or "").strip() != original_username:
+        flash("Username already exists. Please choose a different username.", "error")
+        return redirect(url_for("ao_tool", edit_username=original_username))
+
+    payload = {
+        "full_name": full_name,
+        "age": area_number,
+        "sex": church_id,
+        "church_address": church_address,
+        "contact_number": contact_number,
+        "birthday": birthday,
+        "username": username,
+        "password": password,
+        "position": "Pastor",
+    }
+
+    try:
+        _update_account_in_sheet(original_username, payload)
+        sync_from_sheets_if_needed(force=True)
+        flash("Account updated successfully.", "success")
+        return redirect(url_for("ao_tool", edit_username=username))
+    except Exception as e:
+        print("❌ Edit account failed:", e)
+        flash("Failed to update account.", "error")
+        return redirect(url_for("ao_tool", edit_username=original_username))
+
+@app.route("/ao-tool/edit-account/delete", methods=["POST"])
+def ao_edit_account_delete():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    area_number = (session.get("ao_area_number") or "").strip()
+    username = (request.form.get("original_username") or "").strip()
+
+    row = _get_account_cache_row(username)
+    if not row or str(row["age"] or "").strip() != area_number:
+        abort(403)
+
+    try:
+        _delete_account_row_in_sheet(username)
+        sync_from_sheets_if_needed(force=True)
+        flash("Account deleted successfully.", "success")
+    except Exception as e:
+        print("❌ Delete account failed:", e)
+        flash("Failed to delete account.", "error")
+
+    return redirect(url_for("ao_tool"))
 
 @app.route("/ao-tool/create-account", methods=["GET", "POST"])
 def ao_create_account():
@@ -3494,7 +3678,8 @@ def ao_create_account():
                         error = "Unable to create account (username conflict). Please try again."
 
     return render_template(
-        "ao_create_account.html",
+       "ao_create_account.html",
+    ao_area_number=session.get("ao_area_number"),
         error=error,
         success=success,
         values=values,
@@ -3571,6 +3756,8 @@ def ao_church_status():
                 }
             )
 
+        area_summary = get_area_summary_for_month_cache(year, m, church_items, aopt_amount or 0.0)
+
         months.append(
             {
                 "name": name,
@@ -3580,6 +3767,7 @@ def ao_church_status():
                 "aopt_amount": aopt_amount,
                 "all_reported": all_reported,
                 "churches": church_items,
+                "area_summary": area_summary,
             }
         )
 
@@ -4307,7 +4495,6 @@ def schedules():
                 flash("Activity Date Start is invalid.", "error")
                 return redirect(url_for("schedules", year=year, month=month))
 
-          
             payload = {
                 "church_name": church_name,
                 "church_address": church_address,
@@ -4355,8 +4542,6 @@ def schedules():
             if not start_dt:
                 flash("Activity Date Start is invalid.", "error")
                 return redirect(url_for("schedules", year=year, month=month))
-            
-            old_row = _get_schedule_row_from_cache(sheet_row)
 
             payload = {
                 "church_name": church_name,
@@ -4367,7 +4552,7 @@ def schedules():
                 "activity_date_end": activity_date_end if end_dt and end_dt != start_dt else "",
                 "activity_type": activity_type,
                 "note": note,
-                "joining": (old_row["joining"] if old_row else "") or "",
+                "joining": "",
             }
 
             try:
@@ -4469,6 +4654,60 @@ def schedules():
             "Others",
         ],
     )
+# ===============================
+# AO ACCOUNT EDIT HELPERS
+# ===============================
+
+def _update_account_in_sheet(original_username: str, payload: dict):
+    db = get_db()
+    cached = db.execute(
+        "SELECT sheet_row FROM sheet_accounts_cache WHERE TRIM(username) = TRIM(?)",
+        (original_username,),
+    ).fetchone()
+    if not cached or not cached["sheet_row"]:
+        return False
+
+    sheet_row = int(cached["sheet_row"])
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Accounts")
+
+    row = [[
+        payload.get("full_name", ""),
+        payload.get("age", ""),
+        payload.get("sex", ""),
+        payload.get("church_address", ""),
+        payload.get("contact_number", ""),
+        payload.get("birthday", ""),
+        payload.get("username", ""),
+        payload.get("password", ""),
+        payload.get("position", "Pastor"),
+    ]]
+
+    ws.update(f"A{sheet_row}:I{sheet_row}", row, value_input_option="USER_ENTERED")
+    return True
+
+
+def _delete_account_row_in_sheet(username: str):
+    db = get_db()
+    cached = db.execute(
+        "SELECT sheet_row FROM sheet_accounts_cache WHERE TRIM(username) = TRIM(?)",
+        (username,),
+    ).fetchone()
+    if not cached or not cached["sheet_row"]:
+        return False
+
+    sheet_row = int(cached["sheet_row"])
+    if sheet_row <= 1:
+        return False
+
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Accounts")
+
+    ws.delete_rows(sheet_row)
+    return True
 
 if __name__ == "__main__":
     with app.app_context():
