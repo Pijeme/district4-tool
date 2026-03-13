@@ -52,6 +52,30 @@
     margin-bottom: 4px;
   }
 
+  .schedule-nav-title-btn {
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    color: inherit;
+    line-height: inherit;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .schedule-nav-title-btn:hover {
+    opacity: 0.88;
+  }
+
+  .schedule-nav-title-btn:focus {
+    outline: none;
+    text-decoration: underline;
+    text-underline-offset: 6px;
+  }
+
   .schedule-legend {
     display:flex;
     flex-wrap:wrap;
@@ -347,6 +371,61 @@
   .manage-item-meta { font-size:13px; color:#6b7280; margin-top:4px; }
   .manage-item-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
 
+  .month-picker-year {
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:12px;
+    margin-bottom:16px;
+  }
+
+  .month-picker-year-label {
+    font-size:24px;
+    font-weight:800;
+    color:#1f2937;
+    min-width:120px;
+    text-align:center;
+  }
+
+  .month-picker-grid {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0, 1fr));
+    gap:10px;
+  }
+
+  .month-picker-btn {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:52px;
+    padding:10px 12px;
+    border:1px solid #cbd5e1;
+    border-radius:12px;
+    background:#fff;
+    color:#1f2937;
+    font-weight:700;
+    text-decoration:none;
+    transition:all .15s ease;
+  }
+
+  .month-picker-btn:hover {
+    background:#f8fafc;
+    border-color:#94a3b8;
+  }
+
+  .month-picker-btn.current {
+    background:#2563eb;
+    border-color:#2563eb;
+    color:#fff;
+  }
+
+  .month-picker-note {
+    margin-top:14px;
+    text-align:center;
+    font-size:13px;
+    color:#6b7280;
+  }
+
   @media (max-width: 900px) {
     .schedule-top {
       flex-direction:column;
@@ -445,6 +524,10 @@
     .detail-grid {
       grid-template-columns:1fr;
     }
+
+    .month-picker-grid {
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+    }
   }
 </style>
 
@@ -472,7 +555,11 @@
       </div>
 
       <div class="schedule-nav-center">
-        <div class="schedule-nav-title">{{ month_title }}</div>
+        <div class="schedule-nav-title">
+          <button type="button" class="schedule-nav-title-btn" onclick="openMonthPickerModal()">
+            {{ month_title }}
+          </button>
+        </div>
 
         <div class="schedule-legend">
           <span class="schedule-legend-item">
@@ -572,6 +659,31 @@
       </div>
     </div>
   </section>
+</div>
+
+<div class="modal-backdrop" id="monthPickerBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Choose Month</h3>
+        <p class="modal-subtitle">Quickly jump to any month while keeping the current design.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeMonthPickerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="month-picker-year">
+        <button type="button" class="btn-secondary" onclick="changeMonthPickerYear(-1)">←</button>
+        <div class="month-picker-year-label" id="monthPickerYearLabel">{{ year }}</div>
+        <button type="button" class="btn-secondary" onclick="changeMonthPickerYear(1)">→</button>
+      </div>
+
+      <div class="month-picker-grid" id="monthPickerGrid"></div>
+
+      <div class="month-picker-note">
+        You can still use the Previous and Next buttons anytime.
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="modal-backdrop" id="dayModalBackdrop">
@@ -888,6 +1000,15 @@
 {% endfor %}
 
 <script>
+  const currentScheduleYear = {{ year|tojson }};
+  const currentScheduleMonth = {{ month|tojson }};
+  let monthPickerYear = currentScheduleYear;
+
+  const monthNames = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+
   const calendarDays = {
     {% for week in weeks %}
       {% for cell in week %}
@@ -933,6 +1054,38 @@
       }{% if not loop.last %},{% endif %}
     {% endfor %}
   };
+
+  function renderMonthPicker() {
+    document.getElementById("monthPickerYearLabel").textContent = monthPickerYear;
+
+    const grid = document.getElementById("monthPickerGrid");
+    grid.innerHTML = monthNames.map((name, index) => {
+      const monthNumber = index + 1;
+      const isCurrent = monthPickerYear === currentScheduleYear && monthNumber === currentScheduleMonth;
+      const href = "{{ url_for('schedules') }}" + "?year=" + monthPickerYear + "&month=" + monthNumber;
+
+      return `
+        <a href="${href}" class="month-picker-btn ${isCurrent ? 'current' : ''}">
+          ${name}
+        </a>
+      `;
+    }).join("");
+  }
+
+  function openMonthPickerModal() {
+    monthPickerYear = currentScheduleYear;
+    renderMonthPicker();
+    document.getElementById("monthPickerBackdrop").classList.add("open");
+  }
+
+  function closeMonthPickerModal() {
+    document.getElementById("monthPickerBackdrop").classList.remove("open");
+  }
+
+  function changeMonthPickerYear(delta) {
+    monthPickerYear += delta;
+    renderMonthPicker();
+  }
 
   function formatDateLabel(isoDate) {
     const d = new Date(isoDate + "T00:00:00");
