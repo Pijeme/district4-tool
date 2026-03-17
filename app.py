@@ -606,6 +606,21 @@ def _update_sync_time():
         (datetime.utcnow().isoformat(),),
     )
     get_db().commit()
+    
+def ensure_schedule_cache_loaded():
+    """
+    For the Schedule page only:
+    - if local schedule cache is empty (ex: Render restarted), load once from Sheets
+    - otherwise use local DB only
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT COUNT(*) AS cnt FROM sheet_district_schedule_cache"
+    ).fetchone()
+
+    count = int(row["cnt"] or 0) if row else 0
+    if count <= 0:
+        sync_from_sheets_if_needed(force=True)
 
 
 def sync_from_sheets_if_needed(force=False):
@@ -2405,7 +2420,6 @@ def phpeso_filter(value):
 @app.before_request
 def before_request():
     init_db()
-    sync_from_sheets_if_needed()
 
 
 @app.teardown_appcontext
@@ -4373,7 +4387,7 @@ def _unique_joining_names(names):
     return cleaned
 
 def build_schedule_month(year: int, month: int):
-    sync_from_sheets_if_needed(force=True)
+    ensure_schedule_cache_loaded()
 
     db = get_db()
     rows = db.execute(
@@ -4630,6 +4644,8 @@ def schedules():
 
     if month < 1 or month > 12:
         month = today.month
+
+    ensure_schedule_cache_loaded()
 
     calendar_data = build_schedule_month(year, month)
     month_rows = _get_schedule_rows_for_month(year, month)
