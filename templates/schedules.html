@@ -104,6 +104,7 @@
   .legend-area { background:#60a5fa; }
   .legend-prayer { background:#ef4444; }
   .legend-other { background:#64748b; }
+  .legend-chain-prayer { background:#16a34a; }
 
   .schedule-nav-mobile-buttons {
     display:none;
@@ -151,6 +152,15 @@
 
   .day-cell:nth-child(7n) { border-right:none; }
   .day-muted { background:#fbfdff; color:#94a3b8; }
+  .day-today {
+    background: #eef6ff;
+    box-shadow: inset 0 0 0 2px #bfdbfe;
+  }
+
+  .day-today .day-number,
+  .day-today .day-date-btn {
+    color: #1d4ed8;
+  }
 
   .day-number {
     font-weight:800;
@@ -231,6 +241,9 @@
   .type-convention { background:linear-gradient(135deg,#8b5cf6,#a78bfa); }
   .type-area { background:linear-gradient(135deg,#2563eb,#60a5fa); }
   .type-prayer { background:linear-gradient(135deg,#dc2626,#ef4444); }
+ .chain-prayer-view .type-prayer {
+  background: linear-gradient(135deg,#15803d,#16a34a);
+}
   .type-other { background:linear-gradient(135deg,#475569,#64748b); }
 
   .more-btn-wrap {
@@ -531,27 +544,53 @@
   }
 </style>
 
-<div class="schedule-wrap">
+<div class="schedule-wrap {% if view == 'chain_prayer' %}chain-prayer-view{% endif %}">
   <section class="card">
     <div class="schedule-top">
       <div>
-        <h2 style="margin:0;">District 4 Schedule of Activities</h2>
-        <p class="schedule-subtitle">Upcoming Events</p>
+        <h2 style="margin:0;">
+  {% if view == "chain_prayer" %}
+    District Chain Prayer Schedule
+  {% else %}
+    District 4 Schedule of Activities
+  {% endif %}
+</h2>
+        <p class="schedule-subtitle">
+  {% if view == "chain_prayer" %}
+    Churches Daily Chain Prayer Schedule
+  {% else %}
+    Upcoming Events
+  {% endif %}
+</p>
       </div>
 
       <div class="schedule-secretary">
-        <button type="button" class="btn-primary" onclick="openSecretaryFlow()">
-          District Secretary Tool
-        </button>
-        <div class="schedule-secretary-note">
-          This is only intended for the District Secretary.
-        </div>
-      </div>
+  <button type="button" class="btn-primary" onclick="openSecretaryFlow()">
+    District Secretary Tool
+  </button>
+
+  
+
+  <!-- ✅ NEW: Schedule View Toggle -->
+  <!-- ✅ Schedule Toggle Button (single button) -->
+<div style="margin-top:10px;">
+  <a
+    class="btn-primary"
+    href="{{ url_for('schedules', year=year, month=month, view='chain_prayer' if view != 'chain_prayer' else 'district') }}"
+  >
+    {% if view == "chain_prayer" %}
+      District Schedule
+    {% else %}
+      Chain Prayer Schedule
+    {% endif %}
+  </a>
+</div>
+</div>
     </div>
 
     <div class="schedule-nav">
       <div class="schedule-nav-side left">
-        <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month) }}">← Previous</a>
+        <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month, view=view) }}">← Previous</a>
       </div>
 
       <div class="schedule-nav-center">
@@ -579,19 +618,23 @@
             District Prayer &amp; Fasting
           </span>
           <span class="schedule-legend-item">
+  <span class="schedule-legend-dot legend-chain-prayer"></span>
+  Chain Prayer
+</span>
+          <span class="schedule-legend-item">
             <span class="schedule-legend-dot legend-other"></span>
             Others
           </span>
         </div>
 
         <div class="schedule-nav-mobile-buttons">
-          <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month) }}">← Previous</a>
-          <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month) }}">Next →</a>
+          <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month, view=view) }}">← Previous</a>
+          <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month, view=view) }}">Next →</a>
         </div>
       </div>
 
       <div class="schedule-nav-side right">
-        <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month) }}">Next →</a>
+        <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month, view=view) }}">Next →</a>
       </div>
     </div>
   </section>
@@ -621,7 +664,7 @@
 
         {% for week in weeks %}
           {% for cell in week %}
-            <div class="day-cell {% if not cell.in_month %}day-muted{% endif %}">
+            <div class="day-cell {% if not cell.in_month %}day-muted{% endif %} {% if cell.is_today %}day-today{% endif %}">
               <div class="day-number">
                 <button type="button" class="day-date-btn" onclick="openDayModal('{{ cell.iso }}')">
                   {{ cell.date.day }}
@@ -636,12 +679,21 @@
                     onclick="openEventModal('{{ event.id }}')"
                   >
                     <div class="event-chip-title">
-                      <span class="event-chip-label">{{ event.activity_type }}</span>
-                      {% if event.joining_count > 0 %}
-                        <span class="event-chip-badge">🙋 {{ event.joining_count }}</span>
+                      {% if view == "chain_prayer" %}
+                        <span class="event-chip-label">Chain Prayer</span>
+                      {% else %}
+                        <span class="event-chip-label">{{ event.activity_type }}</span>
+                        {% if event.joining_count > 0 %}
+                          <span class="event-chip-badge">🙋 {{ event.joining_count }}</span>
+                        {% endif %}
                       {% endif %}
                     </div>
-                    <span class="event-host">{{ event.church_name }}</span>
+
+                    {% if view == "chain_prayer" %}
+                      <span class="event-host">{{ event.church_name_assigned }}</span>
+                    {% else %}
+                      <span class="event-host">{{ event.church_name }}</span>
+                    {% endif %}
                   </button>
                 {% endfor %}
               </div>
@@ -998,10 +1050,10 @@
   </div>
 </div>
 {% endfor %}
-
 <script>
   const currentScheduleYear = {{ year|tojson }};
   const currentScheduleMonth = {{ month|tojson }};
+  const currentScheduleView = {{ view|tojson }};
   let monthPickerYear = currentScheduleYear;
 
   const monthNames = [
@@ -1016,18 +1068,20 @@
           {% for event in cell.events %}
             {
               id: {{ event.id|tojson }},
-              sheet_row: {{ event.sheet_row|tojson }},
-              church_name: {{ event.church_name|tojson }},
-              church_address: {{ event.church_address|tojson }},
-              pastor_name: {{ event.pastor_name|tojson }},
-              contact_number: {{ event.contact_number|tojson }},
-              activity_date_start: {{ event.activity_date_start|tojson }},
-              activity_date_end: {{ event.activity_date_end|tojson }},
-              activity_type: {{ event.activity_type|tojson }},
-              note: {{ event.note|tojson }},
-              joining: {{ event.joining|tojson }},
-              joining_count: {{ event.joining_count|tojson }},
-              type_class: {{ event.type_class|tojson }}
+              sheet_row: {{ event.sheet_row|default(0)|tojson }},
+              church_name: {{ event.church_name|default('', true)|tojson }},
+              church_address: {{ event.church_address|default('', true)|tojson }},
+              pastor_name: {{ event.pastor_name|default('', true)|tojson }},
+              contact_number: {{ event.contact_number|default('', true)|tojson }},
+              activity_date_start: {{ event.activity_date_start|default('', true)|tojson }},
+              activity_date_end: {{ event.activity_date_end|default('', true)|tojson }},
+              activity_type: {{ event.activity_type|default('', true)|tojson }},
+              note: {{ event.note|default('', true)|tojson }},
+              joining: {{ event.joining|default('', true)|tojson }},
+              joining_count: {{ event.joining_count|default(0, true)|tojson }},
+              church_name_assigned: {{ event.church_name_assigned|default('', true)|tojson }},
+              prayer_date: {{ event.prayer_date|default('', true)|tojson }},
+              type_class: {{ event.type_class|default('type-prayer', true)|tojson }}
             }{% if not loop.last %},{% endif %}
           {% endfor %}
         ],
@@ -1039,18 +1093,20 @@
     {% for event_id, event in event_lookup.items() %}
       "{{ event_id }}": {
         id: {{ event.id|tojson }},
-        sheet_row: {{ event.sheet_row|tojson }},
-        church_name: {{ event.church_name|tojson }},
-        church_address: {{ event.church_address|tojson }},
-        pastor_name: {{ event.pastor_name|tojson }},
-        contact_number: {{ event.contact_number|tojson }},
-        activity_date_start: {{ event.activity_date_start|tojson }},
-        activity_date_end: {{ event.activity_date_end|tojson }},
-        activity_type: {{ event.activity_type|tojson }},
-        note: {{ event.note|tojson }},
-        joining: {{ event.joining|tojson }},
-        joining_count: {{ event.joining_count|tojson }},
-        type_class: {{ event.type_class|tojson }}
+        sheet_row: {{ event.sheet_row|default(0)|tojson }},
+        church_name: {{ event.church_name|default('', true)|tojson }},
+        church_address: {{ event.church_address|default('', true)|tojson }},
+        pastor_name: {{ event.pastor_name|default('', true)|tojson }},
+        contact_number: {{ event.contact_number|default('', true)|tojson }},
+        activity_date_start: {{ event.activity_date_start|default('', true)|tojson }},
+        activity_date_end: {{ event.activity_date_end|default('', true)|tojson }},
+        activity_type: {{ event.activity_type|default('', true)|tojson }},
+        note: {{ event.note|default('', true)|tojson }},
+        joining: {{ event.joining|default('', true)|tojson }},
+        joining_count: {{ event.joining_count|default(0, true)|tojson }},
+        church_name_assigned: {{ event.church_name_assigned|default('', true)|tojson }},
+        prayer_date: {{ event.prayer_date|default('', true)|tojson }},
+        type_class: {{ event.type_class|default('type-prayer', true)|tojson }}
       }{% if not loop.last %},{% endif %}
     {% endfor %}
   };
@@ -1062,7 +1118,7 @@
     grid.innerHTML = monthNames.map((name, index) => {
       const monthNumber = index + 1;
       const isCurrent = monthPickerYear === currentScheduleYear && monthNumber === currentScheduleMonth;
-      const href = "{{ url_for('schedules') }}" + "?year=" + monthPickerYear + "&month=" + monthNumber;
+      const href = "{{ url_for('schedules') }}" + "?year=" + monthPickerYear + "&month=" + monthNumber + "&view=" + currentScheduleView;
 
       return `
         <a href="${href}" class="month-picker-btn ${isCurrent ? 'current' : ''}">
@@ -1109,20 +1165,19 @@
     title.textContent = formatDateLabel(isoDate);
 
     if (!events.length) {
-      list.innerHTML = '<div class="day-item"><p style="margin:0;">No scheduled activities for this day.</p></div>';
+      list.innerHTML = '<div class="day-item"><p>No scheduled activities.</p></div>';
+    } else if (currentScheduleView === "chain_prayer") {
+      list.innerHTML = events.map(evt => `
+        <div class="day-item">
+          <div class="day-item-title">Chain Prayer</div>
+          <div class="day-item-host">${escapeHtml(evt.church_name_assigned)}</div>
+        </div>
+      `).join("");
     } else {
       list.innerHTML = events.map(evt => `
         <div class="day-item">
-          <div class="day-item-top">
-            <div>
-              <div class="day-item-title">${escapeHtml(evt.activity_type)}</div>
-              <div class="day-item-host">${escapeHtml(evt.church_name)}</div>
-            </div>
-            <span class="event-chip ${evt.type_class}" style="width:auto; cursor:default;">${escapeHtml(evt.activity_type)}</span>
-          </div>
-          <div class="day-item-open">
-            <button type="button" class="btn-secondary" onclick="openEventModal('${evt.id}')">View Details</button>
-          </div>
+          <div class="day-item-title">${escapeHtml(evt.activity_type)}</div>
+          <div class="day-item-host">${escapeHtml(evt.church_name)}</div>
         </div>
       `).join("");
     }
@@ -1138,160 +1193,36 @@
     const evt = eventLookup[eventId];
     if (!evt) return;
 
-    const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
-    let showJoinButton = true;
+    if (currentScheduleView === "chain_prayer") {
+      document.getElementById("eventModalTitle").textContent = "Chain Prayer";
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name_assigned;
 
-    if (rememberedName && evt.joining) {
-      const names = evt.joining.split(",").map(x => x.trim().toLowerCase());
-      if (names.includes(rememberedName.trim().toLowerCase())) {
-        showJoinButton = false;
-      }
+      document.getElementById("eventModalDetails").innerHTML = `
+        <div class="detail-label">Church</div>
+        <div>${escapeHtml(evt.church_name_assigned)}</div>
+
+        <div class="detail-label">Date</div>
+        <div>${escapeHtml(evt.prayer_date)}</div>
+      `;
+    } else {
+      document.getElementById("eventModalTitle").textContent = evt.activity_type;
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name;
+
+      document.getElementById("eventModalDetails").innerHTML = `
+        <div class="detail-label">Church</div>
+        <div>${escapeHtml(evt.church_name)}</div>
+
+        <div class="detail-label">Date</div>
+        <div>${escapeHtml(evt.activity_date_start)}</div>
+      `;
     }
 
-    document.getElementById("eventModalTitle").innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-        <span>${escapeHtml(evt.activity_type)}</span>
-        ${
-          showJoinButton
-            ? `<button type="button" class="btn-primary join-header-btn" onclick="joinSchedule(${evt.sheet_row || 0})">I’m Joining 🙋</button>`
-            : ``
-        }
-      </div>
-    `;
-    document.getElementById("eventModalSubtitle").textContent = evt.church_name;
-
-    const dateLabel = evt.activity_date_end
-      ? `${evt.activity_date_start} to ${evt.activity_date_end}`
-      : evt.activity_date_start;
-
-    document.getElementById("eventModalDetails").innerHTML = `
-      <div class="detail-label">Church Name</div>
-      <div class="detail-value">${escapeHtml(evt.church_name || "-")}</div>
-
-      <div class="detail-label">Church Address</div>
-      <div class="detail-value">${escapeHtml(evt.church_address || "-")}</div>
-
-      <div class="detail-label">Pastor's Name</div>
-      <div class="detail-value">${escapeHtml(evt.pastor_name || "-")}</div>
-
-      <div class="detail-label">Contact Number</div>
-      <div class="detail-value">${escapeHtml(evt.contact_number || "-")}</div>
-
-      <div class="detail-label">Activity Date</div>
-      <div class="detail-value">${escapeHtml(dateLabel || "-")}</div>
-
-      <div class="detail-label">Potential Attendees</div>
-      <div class="detail-value">${escapeHtml(String(evt.joining_count || 0))}</div>
-
-      <div class="detail-label">Note</div>
-      <div class="detail-value">${escapeHtml(evt.note || "-")}</div>
-    `;
-
-    closeDayModal();
     document.getElementById("eventModalBackdrop").classList.add("open");
   }
 
   function closeEventModal() {
     document.getElementById("eventModalBackdrop").classList.remove("open");
   }
-
-  function joinSchedule(sheetRow) {
-    const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
-
-    if (rememberedName && rememberedName.trim()) {
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = {{ url_for('schedules')|tojson }};
-
-      const fields = {
-        action: "join_schedule",
-        sheet_row: String(sheetRow),
-        join_name: rememberedName,
-        year: {{ year|tojson }},
-        month: {{ month|tojson }}
-      };
-
-      for (const key in fields) {
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = key;
-        input.value = fields[key];
-        form.appendChild(input);
-      }
-
-      document.body.appendChild(form);
-      form.submit();
-      return;
-    }
-
-    document.getElementById("join_sheet_row").value = sheetRow;
-    document.getElementById("joinModalBackdrop").classList.add("open");
-  }
-
-  function closeJoinModal() {
-    document.getElementById("joinModalBackdrop").classList.remove("open");
-  }
-
-  function openSecretaryFlow() {
-    {% if district_secretary_ok %}
-      document.getElementById("secretaryToolBackdrop").classList.add("open");
-    {% else %}
-      document.getElementById("codeModalBackdrop").classList.add("open");
-    {% endif %}
-  }
-
-  function closeCodeModal() {
-    document.getElementById("codeModalBackdrop").classList.remove("open");
-  }
-
-  function closeSecretaryTool() {
-    document.getElementById("secretaryToolBackdrop").classList.remove("open");
-  }
-
-  function openCreateModal() {
-    closeSecretaryTool();
-    document.getElementById("createModalBackdrop").classList.add("open");
-  }
-
-  function closeCreateModal() {
-    document.getElementById("createModalBackdrop").classList.remove("open");
-  }
-
-  function openEditPickerModal() {
-    closeSecretaryTool();
-    document.getElementById("editPickerBackdrop").classList.add("open");
-  }
-
-  function closeEditPickerModal() {
-    document.getElementById("editPickerBackdrop").classList.remove("open");
-  }
-
-  function openDeletePickerModal() {
-    closeSecretaryTool();
-    document.getElementById("deletePickerBackdrop").classList.add("open");
-  }
-
-  function closeDeletePickerModal() {
-    document.getElementById("deletePickerBackdrop").classList.remove("open");
-  }
-
-  function openEditModal(sheetRow) {
-    closeEditPickerModal();
-    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
-    if (el) el.classList.add("open");
-  }
-
-  function closeEditModal(sheetRow) {
-    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
-    if (el) el.classList.remove("open");
-  }
-
-  document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
-    backdrop.addEventListener("click", function (e) {
-      if (e.target === backdrop) {
-        backdrop.classList.remove("open");
-      }
-    });
-  });
 </script>
+
 {% endblock %}
