@@ -305,6 +305,21 @@ def init_db():
         )
         """
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_chain_prayer_schedule_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            church_name_assigned TEXT,
+            prayer_date TEXT,
+            sheet_row INTEGER
+        )
+        """
+    )
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chain_prayer_date ON sheet_chain_prayer_schedule_cache(prayer_date)"
+    )
     cursor.execute("PRAGMA table_info(sheet_district_schedule_cache)")
     _ds_cols = [row[1] for row in cursor.fetchall()]
     if "joining" not in _ds_cols:
@@ -610,16 +625,23 @@ def _update_sync_time():
 def ensure_schedule_cache_loaded():
     """
     For the Schedule page only:
-    - if local schedule cache is empty (ex: Render restarted), load once from Sheets
+    - if either district schedule cache or chain prayer cache is empty,
+      load once from Sheets
     - otherwise use local DB only
     """
     db = get_db()
-    row = db.execute(
+
+    row_ds = db.execute(
         "SELECT COUNT(*) AS cnt FROM sheet_district_schedule_cache"
     ).fetchone()
+    district_count = int(row_ds["cnt"] or 0) if row_ds else 0
 
-    count = int(row["cnt"] or 0) if row else 0
-    if count <= 0:
+    row_cp = db.execute(
+        "SELECT COUNT(*) AS cnt FROM sheet_chain_prayer_schedule_cache"
+    ).fetchone()
+    chain_count = int(row_cp["cnt"] or 0) if row_cp else 0
+
+    if district_count <= 0 or chain_count <= 0:
         sync_from_sheets_if_needed(force=True)
 
 
@@ -967,6 +989,51 @@ def sync_from_sheets_if_needed(force=False):
                     ds_cell(row, i_activity_type),
                     ds_cell(row, i_note),
                     ds_cell(row, i_joining),
+                    rnum,
+                ),
+            )
+        # -----------------------
+    # CHAIN PRAYER SCHEDULE
+    # -----------------------
+    try:
+        ws_cp = sh.worksheet("ChainPrayerSchedules")
+        cp_values = ws_cp.get_all_values()
+    except Exception as e:
+        print("❌ ChainPrayerSchedules sync failed:", e)
+        cp_values = []
+
+    cur.execute("DELETE FROM sheet_chain_prayer_schedule_cache")
+
+    if cp_values and len(cp_values) >= 2:
+        headers = cp_values[0]
+
+        i_church_name_assigned = _find_col(headers, "ChurchNameAssigned")
+        i_prayer_date = _find_col(headers, "Date")
+
+        def cp_cell(row, idx):
+            if idx is None:
+                return ""
+            return row[idx].strip() if idx < len(row) else ""
+
+        for rnum, row in enumerate(cp_values[1:], start=2):
+            church_name_assigned = cp_cell(row, i_church_name_assigned)
+            prayer_date = cp_cell(row, i_prayer_date)
+
+            if not church_name_assigned or not prayer_date:
+                continue
+
+            cur.execute(
+                """
+                INSERT INTO sheet_chain_prayer_schedule_cache (
+                    church_name_assigned,
+                    prayer_date,
+                    sheet_row
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    church_name_assigned,
+                    prayer_date,
                     rnum,
                 ),
             )
@@ -4210,6 +4277,7 @@ def event_registration():
 
 DISTRICT_SCHEDULE_SHEET_NAME = "DistrictSchedule"
 DISTRICT_SECRETARY_CODE = "District_Secretary_444"
+CHAIN_PRAYER_SCHEDULE_SHEET_NAME = "ChainPrayerSchedules"
 
 
 def _ensure_district_schedule_headers():
@@ -4447,6 +4515,77 @@ def build_schedule_month(year: int, month: int):
                     "events": items,
                     "visible_events": items[:2],
                     "extra_count": max(0, len(items) - 2),
+                    "is_today": d == date.today(),
+                }
+            )
+        weeks.append(week_cells)
+
+    month_title = datetime(year, month, 1).strftime("%B %Y")
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+    return {
+        "month_title": month_title,
+        "year": year,
+        "month": month,
+        "weeks": weeks,
+        "event_lookup": event_lookup,
+        "prev_year": prev_year,
+        "prev_month": prev_month,
+        "next_year": next_year,
+        "next_month": next_month,
+        
+    }
+def build_chain_prayer_month(year: int, month: int):
+    ensure_schedule_cache_loaded()
+
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_chain_prayer_schedule_cache
+        ORDER BY prayer_date ASC, church_name_assigned ASC
+        """
+    ).fetchall()
+
+    cal = calendar.Calendar(firstweekday=6)
+    month_days = cal.monthdatescalendar(year, month)
+
+    day_map = {}
+    event_lookup = {}
+
+    for idx, r in enumerate(rows, start=1):
+        prayer_dt = parse_sheet_date(r["prayer_date"])
+        if not prayer_dt:
+            continue
+
+        event_id = f"cp_{idx}"
+        event_obj = {
+            "id": event_id,
+            "sheet_row": r["sheet_row"],
+            "church_name_assigned": str(r["church_name_assigned"] or "").strip(),
+            "prayer_date": str(r["prayer_date"] or "").strip(),
+            "type_class": "type-prayer",
+        }
+
+        event_lookup[event_id] = event_obj
+        day_map.setdefault(prayer_dt.isoformat(), []).append(event_obj)
+
+    weeks = []
+    for week in month_days:
+        week_cells = []
+        for d in week:
+            key = d.isoformat()
+            items = day_map.get(key, [])
+            week_cells.append(
+                {
+                    "date": d,
+                    "iso": key,
+                    "in_month": d.month == month,
+                    "events": items,
+                    "visible_events": items[:2],
+                    "extra_count": max(0, len(items) - 2),
+                    "is_today": d == date.today(),
                 }
             )
         weeks.append(week_cells)
@@ -4466,7 +4605,6 @@ def build_schedule_month(year: int, month: int):
         "next_year": next_year,
         "next_month": next_month,
     }
-
 
 @app.route("/schedules", methods=["GET", "POST"])
 def schedules():
@@ -4645,33 +4783,67 @@ def schedules():
     if month < 1 or month > 12:
         month = today.month
 
+        ensure_schedule_cache_loaded()
+
+    schedule_view = (request.args.get("view") or "district").strip().lower()
+    if schedule_view not in ("district", "chain_prayer"):
+        schedule_view = "district"
+
+    if schedule_view == "chain_prayer":
+        calendar_data = build_chain_prayer_month(year, month)
+        month_rows = []
+    else:
+        calendar_data = build_schedule_month(year, month)
+        month_rows = _get_schedule_rows_for_month(year, month)
+    today = date.today()
+    try:
+        year = int(request.args.get("year", today.year))
+    except Exception:
+        year = today.year
+    try:
+        month = int(request.args.get("month", today.month))
+    except Exception:
+        month = today.month
+
+    if month < 1 or month > 12:
+        month = today.month
+
     ensure_schedule_cache_loaded()
 
-    calendar_data = build_schedule_month(year, month)
-    month_rows = _get_schedule_rows_for_month(year, month)
+    view = (request.args.get("view") or "district").strip().lower()
+    if view not in ("district", "chain_prayer"):
+        view = "district"
+
+    if view == "chain_prayer":
+        calendar_data = build_chain_prayer_month(year, month)
+        month_rows = []
+    else:
+        calendar_data = build_schedule_month(year, month)
+        month_rows = _get_schedule_rows_for_month(year, month)
 
     return render_template(
-        "schedules.html",
-        month_title=calendar_data["month_title"],
-        year=calendar_data["year"],
-        month=calendar_data["month"],
-        weeks=calendar_data["weeks"],
-        event_lookup=calendar_data["event_lookup"],
-        prev_year=calendar_data["prev_year"],
-        prev_month=calendar_data["prev_month"],
-        next_year=calendar_data["next_year"],
-        next_month=calendar_data["next_month"],
-        district_secretary_ok=bool(session.get("district_secretary_ok")),
-        user_logged_in=any_user_logged_in(),
-        month_rows=month_rows,
-        activity_types=[
-            "Thanksgiving",
-            "Convention",
-            "Area Activities",
-            "District Prayer & Fasting",
-            "Others",
-        ],
-    )
+    "schedules.html",
+    month_title=calendar_data["month_title"],
+    view=schedule_view,  # ✅ keep this (for template)
+    year=calendar_data["year"],
+    month=calendar_data["month"],
+    weeks=calendar_data["weeks"],
+    event_lookup=calendar_data["event_lookup"],
+    prev_year=calendar_data["prev_year"],
+    prev_month=calendar_data["prev_month"],
+    next_year=calendar_data["next_year"],
+    next_month=calendar_data["next_month"],
+    district_secretary_ok=session.get("district_secretary_ok", False),  # ✅ only once
+    user_logged_in=any_user_logged_in(),
+    month_rows=month_rows,
+    activity_types=[  # ✅ choose ONE version only
+        "Thanksgiving",
+        "Convention",
+        "Area Activities",
+        "District Prayer & Fasting",
+        "Others",
+    ],
+)
 # ===============================
 # AO ACCOUNT EDIT HELPERS
 # ===============================
