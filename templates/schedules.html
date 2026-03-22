@@ -241,9 +241,9 @@
   .type-convention { background:linear-gradient(135deg,#8b5cf6,#a78bfa); }
   .type-area { background:linear-gradient(135deg,#2563eb,#60a5fa); }
   .type-prayer { background:linear-gradient(135deg,#dc2626,#ef4444); }
- .chain-prayer-view .type-prayer {
-  background: linear-gradient(135deg,#15803d,#16a34a);
-}
+  .chain-prayer-view .type-prayer {
+    background: linear-gradient(135deg,#15803d,#16a34a);
+  }
   .type-other { background:linear-gradient(135deg,#475569,#64748b); }
 
   .more-btn-wrap {
@@ -549,43 +549,43 @@
     <div class="schedule-top">
       <div>
         <h2 style="margin:0;">
-  {% if view == "chain_prayer" %}
-    District Chain Prayer Schedule
-  {% else %}
-    District 4 Schedule of Activities
-  {% endif %}
-</h2>
+          {% if view == "chain_prayer" %}
+            District Chain Prayer Schedule
+          {% else %}
+            District 4 Schedule of Activities
+          {% endif %}
+        </h2>
         <p class="schedule-subtitle">
-  {% if view == "chain_prayer" %}
-    Churches Daily Chain Prayer Schedule
-  {% else %}
-    Upcoming Events
-  {% endif %}
-</p>
+          {% if view == "chain_prayer" %}
+            Churches Daily Chain Prayer Schedule
+          {% else %}
+            Upcoming Events
+          {% endif %}
+        </p>
       </div>
 
       <div class="schedule-secretary">
-  <button type="button" class="btn-primary" onclick="openSecretaryFlow()">
-    District Secretary Tool
-  </button>
+        <button type="button" class="btn-primary" onclick="openSecretaryFlow()">
+          District Secretary Tool
+        </button>
 
-  
+        <div style="margin-top:10px;">
+          <a
+            class="btn-primary"
+            href="{{ url_for('schedules', year=year, month=month, view='chain_prayer' if view != 'chain_prayer' else 'district') }}"
+          >
+            {% if view == "chain_prayer" %}
+              District Schedule
+            {% else %}
+              Chain Prayer Schedule
+            {% endif %}
+          </a>
+        </div>
 
-  <!-- ✅ NEW: Schedule View Toggle -->
-  <!-- ✅ Schedule Toggle Button (single button) -->
-<div style="margin-top:10px;">
-  <a
-    class="btn-primary"
-    href="{{ url_for('schedules', year=year, month=month, view='chain_prayer' if view != 'chain_prayer' else 'district') }}"
-  >
-    {% if view == "chain_prayer" %}
-      District Schedule
-    {% else %}
-      Chain Prayer Schedule
-    {% endif %}
-  </a>
-</div>
-</div>
+        <div class="schedule-secretary-note">
+          This is only intended for the District Secretary.
+        </div>
+      </div>
     </div>
 
     <div class="schedule-nav">
@@ -618,9 +618,9 @@
             District Prayer &amp; Fasting
           </span>
           <span class="schedule-legend-item">
-  <span class="schedule-legend-dot legend-chain-prayer"></span>
-  Chain Prayer
-</span>
+            <span class="schedule-legend-dot legend-chain-prayer"></span>
+            Chain Prayer
+          </span>
           <span class="schedule-legend-item">
             <span class="schedule-legend-dot legend-other"></span>
             Others
@@ -1050,7 +1050,17 @@
   </div>
 </div>
 {% endfor %}
+
 <script>
+  function openSecretaryFlow() {
+    const hasAccess = {{ district_secretary_ok|tojson }};
+    if (hasAccess) {
+      document.getElementById("secretaryToolBackdrop").classList.add("open");
+    } else {
+      document.getElementById("codeModalBackdrop").classList.add("open");
+    }
+  }
+
   const currentScheduleYear = {{ year|tojson }};
   const currentScheduleMonth = {{ month|tojson }};
   const currentScheduleView = {{ view|tojson }};
@@ -1165,19 +1175,35 @@
     title.textContent = formatDateLabel(isoDate);
 
     if (!events.length) {
-      list.innerHTML = '<div class="day-item"><p>No scheduled activities.</p></div>';
+      list.innerHTML = '<div class="day-item"><p style="margin:0;">No scheduled activities.</p></div>';
     } else if (currentScheduleView === "chain_prayer") {
       list.innerHTML = events.map(evt => `
         <div class="day-item">
-          <div class="day-item-title">Chain Prayer</div>
-          <div class="day-item-host">${escapeHtml(evt.church_name_assigned)}</div>
+          <div class="day-item-top">
+            <div>
+              <div class="day-item-title">Chain Prayer</div>
+              <div class="day-item-host">${escapeHtml(evt.church_name_assigned || "-")}</div>
+            </div>
+            <span class="event-chip ${evt.type_class}" style="width:auto; cursor:default;">Chain Prayer</span>
+          </div>
+          <div class="day-item-open">
+            <button type="button" class="btn-secondary" onclick="openEventModal('${evt.id}')">View Details</button>
+          </div>
         </div>
       `).join("");
     } else {
       list.innerHTML = events.map(evt => `
         <div class="day-item">
-          <div class="day-item-title">${escapeHtml(evt.activity_type)}</div>
-          <div class="day-item-host">${escapeHtml(evt.church_name)}</div>
+          <div class="day-item-top">
+            <div>
+              <div class="day-item-title">${escapeHtml(evt.activity_type || "-")}</div>
+              <div class="day-item-host">${escapeHtml(evt.church_name || "-")}</div>
+            </div>
+            <span class="event-chip ${evt.type_class}" style="width:auto; cursor:default;">${escapeHtml(evt.activity_type || "-")}</span>
+          </div>
+          <div class="day-item-open">
+            <button type="button" class="btn-secondary" onclick="openEventModal('${evt.id}')">View Details</button>
+          </div>
         </div>
       `).join("");
     }
@@ -1195,25 +1221,64 @@
 
     if (currentScheduleView === "chain_prayer") {
       document.getElementById("eventModalTitle").textContent = "Chain Prayer";
-      document.getElementById("eventModalSubtitle").textContent = evt.church_name_assigned;
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name_assigned || "";
 
       document.getElementById("eventModalDetails").innerHTML = `
-        <div class="detail-label">Church</div>
-        <div>${escapeHtml(evt.church_name_assigned)}</div>
+        <div class="detail-label">Church Name</div>
+        <div class="detail-value">${escapeHtml(evt.church_name_assigned || "-")}</div>
 
         <div class="detail-label">Date</div>
-        <div>${escapeHtml(evt.prayer_date)}</div>
+        <div class="detail-value">${escapeHtml(evt.prayer_date || "-")}</div>
       `;
     } else {
-      document.getElementById("eventModalTitle").textContent = evt.activity_type;
-      document.getElementById("eventModalSubtitle").textContent = evt.church_name;
+      const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
+      let showJoinButton = true;
+
+      if (rememberedName && evt.joining) {
+        const names = evt.joining.split(",").map(x => x.trim().toLowerCase());
+        if (names.includes(rememberedName.trim().toLowerCase())) {
+          showJoinButton = false;
+        }
+      }
+
+      document.getElementById("eventModalTitle").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span>${escapeHtml(evt.activity_type || "Schedule Details")}</span>
+          ${
+            showJoinButton
+              ? `<button type="button" class="btn-primary join-header-btn" onclick="joinSchedule(${evt.sheet_row || 0})">I’m Joining 🙋</button>`
+              : ``
+          }
+        </div>
+      `;
+
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name || "";
+
+      const dateLabel = evt.activity_date_end
+        ? `${evt.activity_date_start} to ${evt.activity_date_end}`
+        : (evt.activity_date_start || "-");
 
       document.getElementById("eventModalDetails").innerHTML = `
-        <div class="detail-label">Church</div>
-        <div>${escapeHtml(evt.church_name)}</div>
+        <div class="detail-label">Church Name</div>
+        <div class="detail-value">${escapeHtml(evt.church_name || "-")}</div>
 
-        <div class="detail-label">Date</div>
-        <div>${escapeHtml(evt.activity_date_start)}</div>
+        <div class="detail-label">Church Address</div>
+        <div class="detail-value">${escapeHtml(evt.church_address || "-")}</div>
+
+        <div class="detail-label">Pastor's Name</div>
+        <div class="detail-value">${escapeHtml(evt.pastor_name || "-")}</div>
+
+        <div class="detail-label">Contact Number</div>
+        <div class="detail-value">${escapeHtml(evt.contact_number || "-")}</div>
+
+        <div class="detail-label">Activity Date</div>
+        <div class="detail-value">${escapeHtml(dateLabel)}</div>
+
+        <div class="detail-label">Potential Attendees</div>
+        <div class="detail-value">${escapeHtml(String(evt.joining_count || 0))}</div>
+
+        <div class="detail-label">Note</div>
+        <div class="detail-value">${escapeHtml(evt.note || "-")}</div>
       `;
     }
 
@@ -1223,6 +1288,97 @@
   function closeEventModal() {
     document.getElementById("eventModalBackdrop").classList.remove("open");
   }
+
+  function joinSchedule(sheetRow) {
+    const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
+
+    if (rememberedName && rememberedName.trim()) {
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = {{ url_for('schedules')|tojson }};
+
+      const fields = {
+        action: "join_schedule",
+        sheet_row: String(sheetRow),
+        join_name: rememberedName,
+        year: {{ year|tojson }},
+        month: {{ month|tojson }}
+      };
+
+      for (const key in fields) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+      }
+
+      document.body.appendChild(form);
+      form.submit();
+      return;
+    }
+
+    document.getElementById("join_sheet_row").value = sheetRow;
+    document.getElementById("joinModalBackdrop").classList.add("open");
+  }
+
+  function closeJoinModal() {
+    document.getElementById("joinModalBackdrop").classList.remove("open");
+  }
+
+  function closeCodeModal() {
+    document.getElementById("codeModalBackdrop").classList.remove("open");
+  }
+
+  function closeSecretaryTool() {
+    document.getElementById("secretaryToolBackdrop").classList.remove("open");
+  }
+
+  function openCreateModal() {
+    closeSecretaryTool();
+    document.getElementById("createModalBackdrop").classList.add("open");
+  }
+
+  function closeCreateModal() {
+    document.getElementById("createModalBackdrop").classList.remove("open");
+  }
+
+  function openEditPickerModal() {
+    closeSecretaryTool();
+    document.getElementById("editPickerBackdrop").classList.add("open");
+  }
+
+  function closeEditPickerModal() {
+    document.getElementById("editPickerBackdrop").classList.remove("open");
+  }
+
+  function openDeletePickerModal() {
+    closeSecretaryTool();
+    document.getElementById("deletePickerBackdrop").classList.add("open");
+  }
+
+  function closeDeletePickerModal() {
+    document.getElementById("deletePickerBackdrop").classList.remove("open");
+  }
+
+  function openEditModal(sheetRow) {
+    closeEditPickerModal();
+    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
+    if (el) el.classList.add("open");
+  }
+
+  function closeEditModal(sheetRow) {
+    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
+    if (el) el.classList.remove("open");
+  }
+
+  document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
+    backdrop.addEventListener("click", function (e) {
+      if (e.target === backdrop) {
+        backdrop.classList.remove("open");
+      }
+    });
+  });
 </script>
 
 {% endblock %}
