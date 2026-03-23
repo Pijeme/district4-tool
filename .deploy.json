@@ -1,0 +1,10 @@
+{
+  "DEPLOYPATH": "/home/admin_user/public_html/iowod4tool",
+  "task": [
+    "app.py",
+    "requirements.txt",
+    "static",
+    "templates",
+    "gitignore"
+  ]
+}
