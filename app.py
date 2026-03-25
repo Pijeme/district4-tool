@@ -311,11 +311,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS sheet_chain_prayer_schedule_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             church_name_assigned TEXT,
+            pastor_name TEXT,
             prayer_date TEXT,
             sheet_row INTEGER
         )
         """
     )
+
+    cursor.execute("PRAGMA table_info(sheet_chain_prayer_schedule_cache)")
+    _cp_cols = [row[1] for row in cursor.fetchall()]
+    if "pastor_name" not in _cp_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_chain_prayer_schedule_cache ADD COLUMN pastor_name TEXT")
+        except Exception:
+            pass
 
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_chain_prayer_date ON sheet_chain_prayer_schedule_cache(prayer_date)"
@@ -701,9 +710,21 @@ def sync_from_sheets_if_needed(force=False):
 
         for r in range(1, len(acc_values)):
             row = acc_values[r]
+
             username = str(cell(row, i_user)).strip()
-            if not username:
+            password = str(cell(row, i_pass)).strip()
+            full_name = str(cell(row, i_name)).strip()
+            church_address = str(cell(row, i_addr)).strip()
+            area_number = str(cell(row, i_age)).strip()
+            church_id = str(cell(row, i_sex)).strip()
+            contact = str(cell(row, i_contact)).strip()
+            birthday = str(cell(row, i_bday)).strip()
+            position = str(cell(row, i_pos)).strip()
+
+            # keep rows that have the search essentials even if username/password are blank
+            if not area_number and not church_id and not full_name and not church_address:
                 continue
+
             cur.execute(
                 """
                 INSERT OR REPLACE INTO sheet_accounts_cache
@@ -712,14 +733,14 @@ def sync_from_sheets_if_needed(force=False):
                 """,
                 (
                     username,
-                    str(cell(row, i_name)).strip(),
-                    str(cell(row, i_addr)).strip(),
-                    str(cell(row, i_pass)).strip(),
-                    str(cell(row, i_age)).strip(),
-                    str(cell(row, i_sex)).strip(),
-                    str(cell(row, i_contact)).strip(),
-                    str(cell(row, i_bday)).strip(),
-                    str(cell(row, i_pos)).strip(),
+                    full_name,
+                    church_address,
+                    password,
+                    area_number,
+                    church_id,
+                    contact,
+                    birthday,
+                    position,
                     r + 1,
                 ),
             )
@@ -1008,6 +1029,7 @@ def sync_from_sheets_if_needed(force=False):
         headers = cp_values[0]
 
         i_church_name_assigned = _find_col(headers, "ChurchNameAssigned")
+        i_pastor_name = _find_col(headers, "Pastor")
         i_prayer_date = _find_col(headers, "Date")
 
         def cp_cell(row, idx):
@@ -1017,6 +1039,7 @@ def sync_from_sheets_if_needed(force=False):
 
         for rnum, row in enumerate(cp_values[1:], start=2):
             church_name_assigned = cp_cell(row, i_church_name_assigned)
+            pastor_name = cp_cell(row, i_pastor_name)
             prayer_date = cp_cell(row, i_prayer_date)
 
             if not church_name_assigned or not prayer_date:
@@ -1026,17 +1049,20 @@ def sync_from_sheets_if_needed(force=False):
                 """
                 INSERT INTO sheet_chain_prayer_schedule_cache (
                     church_name_assigned,
+                    pastor_name,
                     prayer_date,
                     sheet_row
                 )
-                VALUES (?, ?, ?)
+                VALUES (?, ?, ?, ?)
                 """,
                 (
                     church_name_assigned,
+                    pastor_name,
                     prayer_date,
                     rnum,
                 ),
             )
+
     _update_sync_time()
     print("✅ Sheets cache sync done.")
 
@@ -4564,6 +4590,7 @@ def build_chain_prayer_month(year: int, month: int):
             "id": event_id,
             "sheet_row": r["sheet_row"],
             "church_name_assigned": str(r["church_name_assigned"] or "").strip(),
+            "pastor_name": str(r["pastor_name"] or "").strip(),
             "prayer_date": str(r["prayer_date"] or "").strip(),
             "type_class": "type-prayer",
         }
@@ -4605,6 +4632,278 @@ def build_chain_prayer_month(year: int, month: int):
         "next_year": next_year,
         "next_month": next_month,
     }
+
+def _normalize_schedule_search_value(value):
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def get_schedule_search_accounts():
+    """
+    Build searchable options from Accounts cache.
+    Uses:
+    - age  -> Area Number
+    - sex  -> Church ID
+    - name -> Pastor Name
+    """
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            TRIM(age) AS area_number,
+            TRIM(sex) AS church_name,
+            TRIM(name) AS pastor_name,
+            TRIM(church_address) AS church_address,
+            TRIM(position) AS position
+        FROM sheet_accounts_cache
+        WHERE TRIM(COALESCE(age, '')) != ''
+          AND TRIM(COALESCE(name, '')) != ''
+          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+        ORDER BY area_number, church_name, pastor_name
+        """
+    ).fetchall()
+
+    items = []
+    seen = set()
+
+    for r in rows:
+        area_number = str(r["area_number"] or "").strip()
+        church_name = str(r["church_name"] or "").strip()
+        pastor_name = str(r["pastor_name"] or "").strip()
+        church_address = str(r["church_address"] or "").strip()
+
+        # fallback in case church id/name is blank
+        display_church = church_name or church_address
+        if not area_number or not display_church or not pastor_name:
+            continue
+
+        key = (
+            _normalize_schedule_search_value(area_number),
+            _normalize_schedule_search_value(display_church),
+            _normalize_schedule_search_value(pastor_name),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+
+        items.append({
+            "area_number": area_number,
+            "church_name": display_church,
+            "pastor_name": pastor_name,
+            "church_address": church_address,
+        })
+
+    return items
+
+
+def search_schedule_rows(area_number="", church_name="", pastor_name=""):
+    """
+    Search both local schedule caches using Accounts cache as filter source.
+    """
+    db = get_db()
+
+    area_key = _normalize_schedule_search_value(area_number)
+    church_key = _normalize_schedule_search_value(church_name)
+    pastor_key = _normalize_schedule_search_value(pastor_name)
+
+    account_rows = get_schedule_search_accounts()
+
+    matched_accounts = []
+    for row in account_rows:
+        if area_key and _normalize_schedule_search_value(row["area_number"]) != area_key:
+            continue
+        if church_key and _normalize_schedule_search_value(row["church_name"]) != church_key:
+            continue
+        if pastor_key and _normalize_schedule_search_value(row["pastor_name"]) != pastor_key:
+            continue
+        matched_accounts.append(row)
+
+    allowed_churches = {
+        _normalize_schedule_search_value(r["church_name"])
+        for r in matched_accounts
+        if str(r.get("church_name") or "").strip()
+    }
+    allowed_pastors = {
+        _normalize_schedule_search_value(r["pastor_name"])
+        for r in matched_accounts
+        if str(r.get("pastor_name") or "").strip()
+    }
+
+    district_rows_all = db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        ORDER BY activity_date_start ASC, church_name ASC
+        """
+    ).fetchall()
+
+    chain_rows_all = db.execute(
+        """
+        SELECT *
+        FROM sheet_chain_prayer_schedule_cache
+        ORDER BY prayer_date ASC, church_name_assigned ASC
+        """
+    ).fetchall()
+
+    district_rows = []
+    for row in district_rows_all:
+        row_church = _normalize_schedule_search_value(row["church_name"])
+        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
+
+        if allowed_churches and row_church not in allowed_churches:
+            continue
+        if pastor_key and allowed_pastors and row_pastor not in allowed_pastors:
+            continue
+
+        district_rows.append(row)
+
+    chain_rows = []
+    for row in chain_rows_all:
+        row_church = _normalize_schedule_search_value(row["church_name_assigned"])
+
+        if allowed_churches and row_church not in allowed_churches:
+            continue
+
+        chain_rows.append(row)
+
+    return district_rows, chain_rows
+
+import re
+
+def _normalize_schedule_search_value(value):
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def get_schedule_search_accounts():
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            TRIM(age) AS area_number,
+            TRIM(sex) AS church_name,
+            TRIM(name) AS pastor_name,
+            TRIM(position) AS position
+        FROM sheet_accounts_cache
+        WHERE TRIM(COALESCE(age, '')) != ''
+          AND TRIM(COALESCE(sex, '')) != ''
+          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+        ORDER BY age, sex, name
+        """
+    ).fetchall()
+
+    items = []
+    seen = set()
+
+    for r in rows:
+        area_number = str(r["area_number"] or "").strip()
+        church_name = str(r["church_name"] or "").strip()
+        pastor_name = str(r["pastor_name"] or "").strip()
+
+        if not area_number or not church_name:
+            continue
+
+        key = (
+            _normalize_schedule_search_value(area_number),
+            _normalize_schedule_search_value(church_name),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+
+        items.append({
+            "area_number": area_number,
+            "church_name": church_name,
+            "pastor_name": pastor_name,
+        })
+
+    return items
+
+
+def search_schedule_rows(area_number="", church_name="", pastor_name=""):
+    db = get_db()
+
+    area_key = _normalize_schedule_search_value(area_number)
+    church_key = _normalize_schedule_search_value(church_name)
+    pastor_key = _normalize_schedule_search_value(pastor_name)
+
+    account_rows = get_schedule_search_accounts()
+
+    matched_accounts = []
+    for row in account_rows:
+        row_area = _normalize_schedule_search_value(row["area_number"])
+        row_church = _normalize_schedule_search_value(row["church_name"])
+        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
+
+        if area_key and row_area != area_key:
+            continue
+        if church_key and row_church != church_key:
+            continue
+        if pastor_key and row_pastor and row_pastor != pastor_key:
+            continue
+
+        matched_accounts.append(row)
+
+    allowed_churches = {
+        _normalize_schedule_search_value(r["church_name"])
+        for r in matched_accounts
+        if str(r.get("church_name") or "").strip()
+    }
+
+    allowed_pastors = {
+        _normalize_schedule_search_value(r["pastor_name"])
+        for r in matched_accounts
+        if str(r.get("pastor_name") or "").strip()
+    }
+
+    district_rows_all = db.execute(
+        """
+        SELECT *
+        FROM sheet_district_schedule_cache
+        ORDER BY activity_date_start ASC, church_name ASC
+        """
+    ).fetchall()
+
+    chain_rows_all = db.execute(
+        """
+        SELECT *
+        FROM sheet_chain_prayer_schedule_cache
+        ORDER BY prayer_date ASC, church_name_assigned ASC
+        """
+    ).fetchall()
+
+    district_rows = []
+    chain_rows = []
+
+    for row in district_rows_all:
+        row_church = _normalize_schedule_search_value(row["church_name"])
+        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
+
+        if allowed_churches and row_church not in allowed_churches:
+            continue
+
+        if pastor_key and allowed_pastors:
+            # if the row has a pastor, require an exact pastor match too
+            if row_pastor and row_pastor not in allowed_pastors:
+                continue
+
+        district_rows.append(row)
+
+    for row in chain_rows_all:
+        row_church = _normalize_schedule_search_value(row["church_name_assigned"])
+        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
+
+        if allowed_churches and row_church not in allowed_churches:
+            continue
+
+        if pastor_key and allowed_pastors:
+            if row_pastor and row_pastor not in allowed_pastors:
+                continue
+
+        chain_rows.append(row)
+
+    return district_rows, chain_rows
+
 
 @app.route("/schedules", methods=["GET", "POST"])
 def schedules():
@@ -4785,6 +5084,26 @@ def schedules():
 
         ensure_schedule_cache_loaded()
 
+    # keep Accounts cache refreshed too, using existing sync interval logic
+    sync_from_sheets_if_needed()
+
+    search_area_number = (request.args.get("search_area_number") or "").strip()
+    search_church_name = (request.args.get("search_church_name") or "").strip()
+    search_pastor_name = (request.args.get("search_pastor_name") or "").strip()
+
+    account_search_rows = get_schedule_search_accounts()
+    search_applied = any([search_area_number, search_church_name, search_pastor_name])
+
+    if search_applied:
+        district_search_rows, chain_search_rows = search_schedule_rows(
+            area_number=search_area_number,
+            church_name=search_church_name,
+            pastor_name=search_pastor_name,
+        )
+    else:
+        district_search_rows = []
+        chain_search_rows = []
+
     schedule_view = (request.args.get("view") or "district").strip().lower()
     if schedule_view not in ("district", "chain_prayer"):
         schedule_view = "district"
@@ -4795,6 +5114,7 @@ def schedules():
     else:
         calendar_data = build_schedule_month(year, month)
         month_rows = _get_schedule_rows_for_month(year, month)
+
     today = date.today()
     try:
         year = int(request.args.get("year", today.year))
@@ -4809,10 +5129,28 @@ def schedules():
         month = today.month
 
     ensure_schedule_cache_loaded()
+    sync_from_sheets_if_needed()
 
     view = (request.args.get("view") or "district").strip().lower()
     if view not in ("district", "chain_prayer"):
         view = "district"
+
+    search_area_number = (request.args.get("search_area_number") or "").strip()
+    search_church_name = (request.args.get("search_church_name") or "").strip()
+    search_pastor_name = (request.args.get("search_pastor_name") or "").strip()
+
+    account_search_rows = get_schedule_search_accounts()
+    search_applied = any([search_area_number, search_church_name, search_pastor_name])
+
+    if search_applied:
+        district_search_rows, chain_search_rows = search_schedule_rows(
+            area_number=search_area_number,
+            church_name=search_church_name,
+            pastor_name=search_pastor_name,
+        )
+    else:
+        district_search_rows = []
+        chain_search_rows = []
 
     if view == "chain_prayer":
         calendar_data = build_chain_prayer_month(year, month)
@@ -4822,28 +5160,37 @@ def schedules():
         month_rows = _get_schedule_rows_for_month(year, month)
 
     return render_template(
-    "schedules.html",
-    month_title=calendar_data["month_title"],
-    view=schedule_view,  # ✅ keep this (for template)
-    year=calendar_data["year"],
-    month=calendar_data["month"],
-    weeks=calendar_data["weeks"],
-    event_lookup=calendar_data["event_lookup"],
-    prev_year=calendar_data["prev_year"],
-    prev_month=calendar_data["prev_month"],
-    next_year=calendar_data["next_year"],
-    next_month=calendar_data["next_month"],
-    district_secretary_ok=session.get("district_secretary_ok", False),  # ✅ only once
-    user_logged_in=any_user_logged_in(),
-    month_rows=month_rows,
-    activity_types=[  # ✅ choose ONE version only
-        "Thanksgiving",
-        "Convention",
-        "Area Activities",
-        "District Prayer & Fasting",
-        "Others",
-    ],
-)
+        "schedules.html",
+        month_title=calendar_data["month_title"],
+        view=view,
+        year=calendar_data["year"],
+        month=calendar_data["month"],
+        weeks=calendar_data["weeks"],
+        event_lookup=calendar_data["event_lookup"],
+        prev_year=calendar_data["prev_year"],
+        prev_month=calendar_data["prev_month"],
+        next_year=calendar_data["next_year"],
+        next_month=calendar_data["next_month"],
+        district_secretary_ok=session.get("district_secretary_ok", False),
+        user_logged_in=any_user_logged_in(),
+        month_rows=month_rows,
+        search_area_number=search_area_number,
+        search_church_name=search_church_name,
+        search_pastor_name=search_pastor_name,
+        account_search_rows=account_search_rows,
+        search_applied=search_applied,
+        district_search_rows=district_search_rows,
+        chain_search_rows=chain_search_rows,
+        activity_types=[
+            "Thanksgiving",
+            "Convention",
+            "Area Activities",
+            "District Prayer & Fasting",
+            "Others",
+        ],
+    )
+
+
 # ===============================
 # AO ACCOUNT EDIT HELPERS
 # ===============================
