@@ -5,7 +5,6 @@ import calendar
 import urllib.parse
 import uuid
 import traceback
-import time
 
 from zoneinfo import ZoneInfo
 
@@ -592,6 +591,29 @@ GOOGLE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+APPS_SCRIPT_PREP_URL = "https://script.google.com/macros/s/AKfycbxaDvRol8XtOTynQKbO2qF395qhW0W832bggGcPX2FjcRVfUjqqc8vxTNY-kdGkDTRA/exec"
+APPS_SCRIPT_PREP_TOKEN = "psr550pijeme"
+def _prepare_report_print_via_apps_script(area_number: str, year: int, month: int):
+    payload = {
+        "action": "prepare_ao_report_print",
+        "token": APPS_SCRIPT_PREP_TOKEN,
+        "area_number": str(area_number or "").strip(),
+        "year": int(year),
+        "month": int(month),
+    }
+
+    resp = requests.post(
+        APPS_SCRIPT_PREP_URL,
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error") or "Apps Script prepare failed.")
+
+    return data
 
 def get_gs_client():
     creds = Credentials.from_service_account_file(
@@ -1205,17 +1227,6 @@ def _get_report_print_sheet():
     return client, sh, ws
 
 
-def _set_ao_report_print_inputs(area_number: str, year: int, month: int):
-    _, _, ws = _get_report_print_sheet()
-    ws.batch_update(
-        [
-            {"range": "I1", "values": [[str(area_number or "")]]},
-            {"range": "K2", "values": [[calendar.month_name[int(month)]]]},
-            {"range": "M2", "values": [[int(year)]]},
-        ],
-        value_input_option="USER_ENTERED",
-    )
-    return ws
 
 
 def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
@@ -1228,8 +1239,8 @@ def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
     export_url = (
         f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
         f"?format=pdf&gid={worksheet_gid}"
-        f"&size=letter"
-        f"&portrait=true"
+        f"&size=legal"
+        f"&portrait=false"
         f"&fitw=true"
         f"&sheetnames=false"
         f"&printtitle=false"
@@ -1252,115 +1263,15 @@ def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
 
 
 
-def _update_report_print_row_visibility(sh, ws, start_row: int = 7, end_row: int = 70):
-    sh.batch_update({
-        "requests": [
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": int(ws.id),
-                        "dimension": "ROWS",
-                        "startIndex": start_row - 1,
-                        "endIndex": end_row,
-                    },
-                    "properties": {"hiddenByUser": False},
-                    "fields": "hiddenByUser",
-                }
-            }
-        ]
-    })
-
-    time.sleep(1.0)
-    values = ws.get(f"A{start_row}:A{end_row}", value_render_option="FORMATTED_VALUE")
-    hide_requests = []
-    for row_number, row in enumerate(values, start=start_row):
-        first_value = str((row[0] if row else "") or "").strip()
-        if first_value == "":
-            hide_requests.append(
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": int(ws.id),
-                            "dimension": "ROWS",
-                            "startIndex": row_number - 1,
-                            "endIndex": row_number,
-                        },
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser",
-                    }
-                }
-            )
-    if hide_requests:
-        sh.batch_update({"requests": hide_requests})
-
-
-def _get_report_print_blank_rows(ws, start_row: int = 7, end_row: int = 70):
-    values = ws.get(f"A{start_row}:A{end_row}", value_render_option="FORMATTED_VALUE")
-    blank_rows = []
-    for row_number, row in enumerate(values, start=start_row):
-        first_value = str((row[0] if row else "") or "").strip()
-        if first_value == "":
-            blank_rows.append(row_number)
-    return blank_rows
-
-
-def _duplicate_report_print_for_export(sh, source_ws, rows_to_delete):
-    temp_title = f"AO Report Print Export {uuid.uuid4().hex[:8]}"
-    response = sh.batch_update({
-        "requests": [
-            {
-                "duplicateSheet": {
-                    "sourceSheetId": int(source_ws.id),
-                    "newSheetName": temp_title,
-                }
-            }
-        ]
-    })
-
-    new_sheet_id = (
-        response.get("replies", [{}])[0]
-        .get("duplicateSheet", {})
-        .get("properties", {})
-        .get("sheetId")
-    )
-
-    temp_ws = None
-    if new_sheet_id is not None:
-        for candidate in sh.worksheets():
-            try:
-                if int(candidate.id) == int(new_sheet_id):
-                    temp_ws = candidate
-                    break
-            except Exception:
-                pass
-
-    if temp_ws is None:
-        temp_ws = sh.worksheet(temp_title)
-
-    for row_number in sorted(set(int(r) for r in rows_to_delete if int(r) >= 1), reverse=True):
-        temp_ws.delete_rows(row_number)
-
-    return temp_ws
-
-
-def _safe_delete_worksheet(sh, ws):
-    try:
-        sh.del_worksheet(ws)
-    except Exception as e:
-        print("⚠️ Unable to delete temporary export sheet:", e)
 
 
 
-PRINT_REPORT_QUEUED_TIMEOUT_SECONDS = 600
-PRINT_REPORT_PROCESSING_TIMEOUT_SECONDS = 300
-PRINT_REPORT_DUPLICATE_DOWNLOAD_WINDOW_SECONDS = 5
+
+
+
 
 
 def _create_print_report_job(user_area: str, year: int, month: int):
-    reusable_job = _get_reusable_print_report_job(user_area, year, month)
-    if reusable_job:
-        return reusable_job["id"]
-
     job_id = str(uuid.uuid4())
     get_db().execute(
         """
@@ -1378,106 +1289,6 @@ def _get_print_report_job(job_id: str):
         "SELECT * FROM print_report_jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
-
-
-def _get_reusable_print_report_job(user_area: str, year: int, month: int):
-    rows = get_db().execute(
-        """
-        SELECT *
-        FROM print_report_jobs
-        WHERE TRIM(user_area) = TRIM(?)
-          AND year = ?
-          AND month = ?
-          AND status IN ('queued', 'processing', 'done')
-        ORDER BY datetime(created_at) DESC, id DESC
-        """,
-        (str(user_area or "").strip(), int(year), int(month)),
-    ).fetchall()
-
-    for job in rows:
-        status = str(job["status"] or "").strip().lower()
-        if status == "done":
-            result_path = str(job["result_path"] or "").strip()
-            if result_path and os.path.exists(result_path):
-                return job
-            continue
-        return job
-    return None
-
-
-def _cleanup_stale_print_report_jobs():
-    now_ts = time.time()
-    db = get_db()
-    cur = db.cursor()
-
-    queued_rows = cur.execute(
-        """
-        SELECT id, created_at
-        FROM print_report_jobs
-        WHERE status = 'queued'
-        """
-    ).fetchall()
-
-    processing_rows = cur.execute(
-        """
-        SELECT id, started_at, created_at
-        FROM print_report_jobs
-        WHERE status = 'processing'
-        """
-    ).fetchall()
-
-    queued_to_fail = []
-    for row in queued_rows:
-        created_at = str(row["created_at"] or "").strip()
-        try:
-            created_ts = datetime.fromisoformat(created_at).timestamp()
-        except Exception:
-            created_ts = None
-        if created_ts is None or (now_ts - created_ts) > PRINT_REPORT_QUEUED_TIMEOUT_SECONDS:
-            queued_to_fail.append(str(row["id"]))
-
-    processing_to_fail = []
-    for row in processing_rows:
-        basis = str(row["started_at"] or row["created_at"] or "").strip()
-        try:
-            basis_ts = datetime.fromisoformat(basis).timestamp()
-        except Exception:
-            basis_ts = None
-        if basis_ts is None or (now_ts - basis_ts) > PRINT_REPORT_PROCESSING_TIMEOUT_SECONDS:
-            processing_to_fail.append(str(row["id"]))
-
-    if queued_to_fail:
-        cur.executemany(
-            """
-            UPDATE print_report_jobs
-            SET status = 'failed',
-                finished_at = ?,
-                error_message = ?
-            WHERE id = ?
-            """,
-            [
-                (utc_now_iso(), "Queue timed out. Please try again.", job_id)
-                for job_id in queued_to_fail
-            ],
-        )
-
-    if processing_to_fail:
-        cur.executemany(
-            """
-            UPDATE print_report_jobs
-            SET status = 'failed',
-                finished_at = ?,
-                error_message = ?
-            WHERE id = ?
-            """,
-            [
-                (utc_now_iso(), "Processing timed out. Please try again.", job_id)
-                for job_id in processing_to_fail
-            ],
-        )
-
-    if queued_to_fail or processing_to_fail:
-        db.commit()
 
 
 def _count_jobs_ahead(job_row):
@@ -1576,26 +1387,12 @@ def _process_print_report_job(job_id: str):
         )
         get_db().commit()
         print("❌ Error processing print report job:", e)
-
-
+        
 def _advance_print_report_queue():
-    _cleanup_stale_print_report_jobs()
     next_job_id = _claim_next_print_report_job()
     if next_job_id:
         _process_print_report_job(next_job_id)
 
-
-from flask import send_file, abort, make_response
-import threading
-
-download_locks = {}
-download_done = {}
-
-
-def get_lock(job_id):
-    if job_id not in download_locks:
-        download_locks[job_id] = threading.Lock()
-    return download_locks[job_id]
 
 
 def refresh_pastor_from_cache():
@@ -4810,9 +4607,7 @@ def ao_church_status_print_report_start():
         return jsonify({"ok": False, "error": "Missing parameters"}), 400
 
     try:
-        _cleanup_stale_print_report_jobs()
         job_id = _create_print_report_job(area_number, year, month)
-        _advance_print_report_queue()
         return jsonify({
             "ok": True,
             "job_id": job_id,
@@ -4829,9 +4624,7 @@ def ao_church_status_print_report_status(job_id):
     if not ao_logged_in():
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
-    _cleanup_stale_print_report_jobs()
     _advance_print_report_queue()
-
     job = _get_print_report_job(job_id)
     if not job:
         return jsonify({"ok": False, "error": "Job not found"}), 404
@@ -4856,9 +4649,19 @@ def ao_church_status_print_report_status(job_id):
         "status": status,
         "queue_ahead": queue_ahead,
         "message": message,
-        "download_url": url_for("ao_church_status_print_report_download", job_id=job_id) if status in ("done", "downloaded") else "",
+        "download_url": url_for("ao_church_status_print_report_download", job_id=job_id) if status == "done" else "",
         "error": job["error_message"] or "",
     })
+from flask import send_file, abort, make_response
+import threading
+
+download_locks = {}
+download_done = {}
+
+def get_lock(job_id):
+    if job_id not in download_locks:
+        download_locks[job_id] = threading.Lock()
+    return download_locks[job_id]
 
 
 @app.route("/ao-tool/church-status/print-report/download/<job_id>")
@@ -4870,10 +4673,6 @@ def ao_church_status_print_report_download(job_id):
     if not job:
         abort(404)
 
-    status = str(job["status"] or "").strip().lower()
-    if status not in ("done", "downloaded"):
-        abort(404)
-
     result_path = str(job["result_path"] or "").strip()
     if not result_path or not os.path.exists(result_path):
         abort(404)
@@ -4881,21 +4680,13 @@ def ao_church_status_print_report_download(job_id):
     lock = get_lock(job_id)
 
     with lock:
-        now_ts = time.time()
-        last_download_ts = float(download_done.get(job_id) or 0.0)
-
-        if last_download_ts and (now_ts - last_download_ts) < PRINT_REPORT_DUPLICATE_DOWNLOAD_WINDOW_SECONDS:
+        # prevent duplicate downloads
+        if download_done.get(job_id):
             return ("", 204)
 
         try:
-            get_db().execute(
-                "UPDATE print_report_jobs SET status = 'downloaded' WHERE id = ?",
-                (job_id,),
-            )
-            get_db().commit()
-
             response = make_response(send_file(result_path, as_attachment=True))
-            download_done[job_id] = now_ts
+            download_done[job_id] = True
             return response
         except Exception as e:
             return str(e), 500
@@ -4904,7 +4695,6 @@ def ao_church_status_print_report_download(job_id):
 # ========================
 # Prayer Request (menu + pages)
 # ========================
-
 
 
 @app.route("/prayer-request")
