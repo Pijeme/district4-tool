@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import calendar
 import urllib.parse
 import uuid
@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from flask import (
     Flask,
     g,
@@ -21,6 +22,8 @@ from flask import (
     abort,
     session,
     flash,
+    jsonify,
+    make_response,
 )
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
@@ -44,6 +47,14 @@ try:
     PH_TZ = ZoneInfo("Asia/Manila")
 except Exception:
     PH_TZ = None
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def utc_now_iso():
+    return utc_now().isoformat()
 
 # ========================
 # DB helpers
@@ -208,6 +219,46 @@ def init_db():
 
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS print_report_jobs (
+            id TEXT PRIMARY KEY,
+            user_area TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            error_message TEXT,
+            result_path TEXT
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_print_report_jobs_status_created ON print_report_jobs(status, created_at)"
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS submit_report_jobs (
+            id TEXT PRIMARY KEY,
+            pastor_username TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress_message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            error_message TEXT
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_submit_report_jobs_user_month ON submit_report_jobs(pastor_username, year, month, status)"
+    )
+
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS sheet_accounts_cache (
             username TEXT PRIMARY KEY,
             name TEXT,
@@ -274,12 +325,26 @@ def init_db():
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sheet_aopt_cache (
-            month TEXT PRIMARY KEY,   -- e.g. "January 2025"
+            month TEXT NOT NULL,
+            area_number TEXT NOT NULL DEFAULT '',
             amount REAL,
-            sheet_row INTEGER
+            sheet_row INTEGER,
+            PRIMARY KEY (month, area_number)
         )
         """
     )
+
+    cursor.execute("PRAGMA table_info(sheet_aopt_cache)")
+    _aopt_cols = [row[1] for row in cursor.fetchall()]
+    if "area_number" not in _aopt_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_aopt_cache ADD COLUMN area_number TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_aopt_month_area ON sheet_aopt_cache(month, area_number)")
+    except Exception:
+        pass
 
     # -----------------------
     # ✅ PRAYER REQUEST CACHE (PrayerRequest sheet → local cache)
@@ -455,7 +520,7 @@ def set_month_submitted(year: int, month: int, pastor_username: str):
 
     db = get_db()
     cursor = db.cursor()
-    now_str = datetime.utcnow().isoformat()
+    now_str = utc_now_iso()
     cursor.execute(
         """
         UPDATE monthly_reports
@@ -526,6 +591,29 @@ GOOGLE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+APPS_SCRIPT_PREP_URL = "https://script.google.com/macros/s/AKfycbxaDvRol8XtOTynQKbO2qF395qhW0W832bggGcPX2FjcRVfUjqqc8vxTNY-kdGkDTRA/exec"
+APPS_SCRIPT_PREP_TOKEN = "psr550pijeme"
+def _prepare_report_print_via_apps_script(area_number: str, year: int, month: int):
+    payload = {
+        "action": "prepare_ao_report_print",
+        "token": APPS_SCRIPT_PREP_TOKEN,
+        "area_number": str(area_number or "").strip(),
+        "year": int(year),
+        "month": int(month),
+    }
+
+    resp = requests.post(
+        APPS_SCRIPT_PREP_URL,
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error") or "Apps Script prepare failed.")
+
+    return data
 
 def get_gs_client():
     creds = Credentials.from_service_account_file(
@@ -603,7 +691,10 @@ def _last_sync_time_utc():
     row = get_db().execute("SELECT last_sync FROM sync_state WHERE id = 1").fetchone()
     if row and row["last_sync"]:
         try:
-            return datetime.fromisoformat(row["last_sync"])
+            dt = datetime.fromisoformat(row["last_sync"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except Exception:
             return None
     return None
@@ -627,7 +718,7 @@ def get_last_sync_display_ph():
 def _update_sync_time():
     get_db().execute(
         "UPDATE sync_state SET last_sync = ? WHERE id = 1",
-        (datetime.utcnow().isoformat(),),
+        (utc_now_iso(),),
     )
     get_db().commit()
     
@@ -660,7 +751,7 @@ def sync_from_sheets_if_needed(force=False):
     AO pages read ONLY from cache tables (no quota spam).
     """
     last = _last_sync_time_utc()
-    if not force and last and (datetime.utcnow() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
+    if not force and last and (utc_now() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
         return
 
     try:
@@ -865,6 +956,7 @@ def sync_from_sheets_if_needed(force=False):
         headers = aopt_values[0]
         i_month = _find_col(headers, "Month")
         i_amount = _find_col(headers, "Amount")
+        i_area = _find_col(headers, "Area Number")
 
         def cell(row, idx):
             if idx is None:
@@ -879,12 +971,13 @@ def sync_from_sheets_if_needed(force=False):
             if not month_label:
                 continue
             amount_val = parse_float(cell(row, i_amount))
+            area_number = str(cell(row, i_area)).strip()
             cur.execute(
                 """
-                INSERT OR REPLACE INTO sheet_aopt_cache (month, amount, sheet_row)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, amount, sheet_row)
+                VALUES (?, ?, ?, ?)
                 """,
-                (month_label, amount_val, r + 1),
+                (month_label, area_number, amount_val, r + 1),
             )
 
     # -----------------------
@@ -1071,14 +1164,235 @@ def sync_from_sheets_if_needed(force=False):
 # Cache-based helpers (NO Sheets calls)
 # ========================
 
-def get_aopt_amount_from_cache(month_label: str):
+def get_aopt_amount_from_cache(month_label: str, area_number: str = ""):
+    area_number = str(area_number or "").strip()
     row = get_db().execute(
-        "SELECT amount FROM sheet_aopt_cache WHERE month = ?",
-        (month_label,),
+        """
+        SELECT amount
+        FROM sheet_aopt_cache
+        WHERE month = ? AND TRIM(area_number) = TRIM(?)
+        """,
+        (month_label, area_number),
     ).fetchone()
+    if not row and not area_number:
+        row = get_db().execute(
+            "SELECT amount FROM sheet_aopt_cache WHERE month = ? ORDER BY sheet_row DESC LIMIT 1",
+            (month_label,),
+        ).fetchone()
     if not row:
         return None
     return row["amount"]
+
+
+def _ensure_aopt_headers(ws):
+    values = ws.get_all_values()
+    headers = ["Month", "Amount", "Area Number"]
+    if not values:
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return headers
+
+    current = list(values[0])
+    changed = False
+
+    if _find_col(current, "Month") is None:
+        while len(current) < 1:
+            current.append("")
+        current[0] = "Month"
+        changed = True
+
+    if _find_col(current, "Amount") is None:
+        while len(current) < 2:
+            current.append("")
+        current[1] = "Amount"
+        changed = True
+
+    if _find_col(current, "Area Number") is None:
+        while len(current) < 3:
+            current.append("")
+        current[2] = "Area Number"
+        changed = True
+
+    if changed:
+        ws.update("A1:C1", [current[:3]], value_input_option="USER_ENTERED")
+        values = ws.get_all_values()
+        return values[0]
+
+    return current
+
+
+def _get_report_print_sheet():
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("AO Report Print")
+    return client, sh, ws
+
+
+
+
+def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
+    creds = Credentials.from_service_account_file(
+        GOOGLE_SHEETS_CREDENTIALS_FILE,
+        scopes=GOOGLE_SHEETS_SCOPES,
+    )
+    creds.refresh(GoogleAuthRequest())
+
+    export_url = (
+        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
+        f"?format=pdf&gid={worksheet_gid}"
+        f"&size=legal"
+        f"&portrait=false"
+        f"&fitw=true"
+        f"&sheetnames=false"
+        f"&printtitle=false"
+        f"&pagenumbers=false"
+        f"&gridlines=false"
+        f"&fzr=false"
+        f"&top_margin=0.30"
+        f"&bottom_margin=0.30"
+        f"&left_margin=0.30"
+        f"&right_margin=0.30"
+    )
+
+    resp = requests.get(
+        export_url,
+        headers={"Authorization": f"Bearer {creds.token}"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
+
+
+
+
+
+
+
+
+
+def _create_print_report_job(user_area: str, year: int, month: int):
+    job_id = str(uuid.uuid4())
+    get_db().execute(
+        """
+        INSERT INTO print_report_jobs (id, user_area, year, month, status, created_at)
+        VALUES (?, ?, ?, ?, 'queued', ?)
+        """,
+        (job_id, str(user_area or "").strip(), int(year), int(month), utc_now_iso()),
+    )
+    get_db().commit()
+    return job_id
+
+
+def _get_print_report_job(job_id: str):
+    return get_db().execute(
+        "SELECT * FROM print_report_jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+
+
+def _count_jobs_ahead(job_row):
+    if not job_row:
+        return 0
+    queued_before = get_db().execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM print_report_jobs
+        WHERE status = 'queued' AND datetime(created_at) < datetime(?)
+        """,
+        (job_row["created_at"],),
+    ).fetchone()
+    processing = get_db().execute(
+        "SELECT COUNT(*) AS cnt FROM print_report_jobs WHERE status = 'processing'"
+    ).fetchone()
+    return int((queued_before["cnt"] or 0) + (processing["cnt"] or 0))
+
+
+def _claim_next_print_report_job():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("BEGIN IMMEDIATE")
+    processing = cur.execute(
+        "SELECT id FROM print_report_jobs WHERE status = 'processing' LIMIT 1"
+    ).fetchone()
+    if processing:
+        db.commit()
+        return None
+
+    next_job = cur.execute(
+        """
+        SELECT * FROM print_report_jobs
+        WHERE status = 'queued'
+        ORDER BY datetime(created_at) ASC, id ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not next_job:
+        db.commit()
+        return None
+
+    cur.execute(
+        """
+        UPDATE print_report_jobs
+        SET status = 'processing', started_at = ?, error_message = NULL
+        WHERE id = ? AND status = 'queued'
+        """,
+        (utc_now_iso(), next_job["id"]),
+    )
+    db.commit()
+    return next_job["id"]
+
+
+def _process_print_report_job(job_id: str):
+    job = _get_print_report_job(job_id)
+    if not job:
+        return
+
+    try:
+        _prepare_report_print_via_apps_script(
+            job["user_area"],
+            int(job["year"]),
+            int(job["month"]),
+        )
+
+        _, sh, ws = _get_report_print_sheet()
+        pdf_bytes = _export_gsheet_worksheet_pdf(sh.id, str(ws.id))
+
+        out_dir = os.path.join(os.path.dirname(__file__), "generated_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        filename = f"AO_Report_Print_Area_{job['user_area']}_{calendar.month_name[int(job['month'])]}_{int(job['year'])}_{job_id}.pdf".replace(" ", "_")
+        result_path = os.path.join(out_dir, filename)
+
+        with open(result_path, "wb") as f:
+            f.write(pdf_bytes)
+
+        get_db().execute(
+            """
+            UPDATE print_report_jobs
+            SET status = 'done', finished_at = ?, result_path = ?, error_message = NULL
+            WHERE id = ?
+            """,
+            (utc_now_iso(), result_path, job_id),
+        )
+        get_db().commit()
+
+    except Exception as e:
+        get_db().execute(
+            """
+            UPDATE print_report_jobs
+            SET status = 'failed', finished_at = ?, error_message = ?
+            WHERE id = ?
+            """,
+            (utc_now_iso(), str(e), job_id),
+        )
+        get_db().commit()
+        print("❌ Error processing print report job:", e)
+        
+def _advance_print_report_queue():
+    next_job_id = _claim_next_print_report_job()
+    if next_job_id:
+        _process_print_report_job(next_job_id)
+
 
 
 def refresh_pastor_from_cache():
@@ -1383,6 +1697,10 @@ def get_accounts_for_area_cache(area_number: str):
     return rows
 
 def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_amount: float):
+    monthly_lovegift_tithes = 300.0
+    base_aopt_amount = float(aopt_amount or 0.0)
+    display_aopt_amount = base_aopt_amount + monthly_lovegift_tithes
+
     summary = {
         "submitted_count": 0,
         "total_churches": len(church_items),
@@ -1396,7 +1714,10 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         "no_mission": 0.0,
         "ao_mission": 0.0,
         "pastor_personal_tithes": 0.0,
-        "ao_personal_tithes": float(aopt_amount or 0.0),
+        "ao_personal_tithes_base": base_aopt_amount,
+        "monthly_lovegift_tithes": monthly_lovegift_tithes,
+        "ao_personal_tithes_note": "(+300 for the tithes of the monthly lovegift received)",
+        "ao_personal_tithes": display_aopt_amount,
         "total_all_money_received": 0.0,
         "bible_old": 0.0,
         "bible_new": 0.0,
@@ -1417,7 +1738,6 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         avg = item.get("avg") or {}
         totals = item.get("totals") or {}
 
-        # Attendance + activity = add each church's MONTHLY AVERAGE once
         adult = float(avg.get("adult") or 0)
         youth = float(avg.get("youth") or 0)
         children = float(avg.get("children") or 0)
@@ -1435,7 +1755,6 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         summary["attendance_children"] += children
         summary["attendance_general"] += adult + youth + children
 
-        # Financial = still use totals
         summary["church_tithes"] += float(totals.get("tithes") or 0)
         summary["offering"] += float(totals.get("offering") or 0)
         summary["mission_total"] += float(totals.get("mission_offering") or 0)
@@ -1458,7 +1777,6 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         + summary["offering"]
         + summary["no_mission"]
         + (summary["pastor_personal_tithes"] * 0.10)
-        + 300
         + summary["ao_personal_tithes"]
         - 3000
     )
@@ -1467,7 +1785,6 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         + summary["ao_mission"]
     )
     return summary
-
 
 def get_report_stats_for_month_and_church_cache(year: int, month: int, church_key: str):
     stats = {
@@ -2876,12 +3193,10 @@ def _build_report_recognition_posts(area_number, area_directory, today):
                 first_reporting_church = matched
 
     all_reported = bool(expected_keys) and expected_keys.issubset({_normalize_key(c) for c in reported_churches})
-
-    if not all_reported:
-        return posts
-
     month_label = today.strftime("%B %Y")
 
+    # Show the first-submission congratulations as soon as there is a first report
+    # for the current month in this area. It no longer waits for all churches.
     if first_reporting_church:
         posts.append(
             {
@@ -2896,6 +3211,11 @@ def _build_report_recognition_posts(area_number, area_directory, today):
                 "sort_date": today,
             }
         )
+
+    # Keep the attendance-increase recognition only after all churches in the area
+    # have submitted for the month, so those comparisons are based on a complete set.
+    if not all_reported:
+        return posts
 
     prev_year = today.year
     prev_month = today.month - 1
@@ -3112,6 +3432,299 @@ def pastor_login():
 # Pastor Tool
 # ========================
 
+def _get_cached_pastor_account(pastor_username: str):
+    return get_db().execute(
+        """
+        SELECT username, name, church_address, sex
+        FROM sheet_accounts_cache
+        WHERE username = ?
+        """,
+        ((pastor_username or "").strip(),),
+    ).fetchone()
+
+
+def _report_exists_for_pastor_month_from_cache(pastor_username: str, year: int, month: int) -> bool:
+    acc = _get_cached_pastor_account(pastor_username)
+    if not acc:
+        return False
+
+    pastor_name = str(acc["name"] or "").strip()
+    church_address = str(acc["church_address"] or "").strip()
+    church_id = str(acc["sex"] or "").strip()
+    church_key = church_id or church_address
+
+    row = get_db().execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (
+                TRIM(church) = TRIM(?)
+             OR TRIM(address) = TRIM(?)
+             OR TRIM(pastor) = TRIM(?)
+          )
+        """,
+        (int(year), int(month), church_key, church_key, pastor_name),
+    ).fetchone()
+    return bool(row and int(row["cnt"] or 0) > 0)
+
+
+def _export_month_to_sheet_for_pastor(pastor_username: str, year: int, month: int, status_label: str):
+    db = get_db()
+    cursor = db.cursor()
+
+    pastor_username = (pastor_username or "").strip()
+    if not pastor_username:
+        return False
+
+    monthly_report = cursor.execute(
+        "SELECT * FROM monthly_reports WHERE year = ? AND month = ? AND pastor_username = ?",
+        (year, month, pastor_username),
+    ).fetchone()
+    if not monthly_report:
+        return False
+
+    monthly_report_id = monthly_report["id"]
+    cp_row = ensure_church_progress(monthly_report_id)
+    sunday_rows = cursor.execute(
+        """
+        SELECT * FROM sunday_reports
+        WHERE monthly_report_id = ?
+        ORDER BY date
+        """,
+        (monthly_report_id,),
+    ).fetchall()
+    if not sunday_rows:
+        return False
+
+    sync_from_sheets_if_needed(force=True)
+    acc = _get_cached_pastor_account(pastor_username)
+    if not acc:
+        return False
+
+    pastor_name = str(acc["name"] or "").strip()
+    church_address = str(acc["church_address"] or "").strip()
+    church_id = str(acc["sex"] or "").strip()
+
+    bible_new = cp_row["bible_new"] or 0
+    bible_existing = cp_row["bible_existing"] or 0
+    received_christ = cp_row["received_christ"] or 0
+    baptized_water = cp_row["baptized_water"] or 0
+    baptized_holy_spirit = cp_row["baptized_holy_spirit"] or 0
+    healed = cp_row["healed"] or 0
+    child_dedication = cp_row["child_dedication"] or 0
+
+    church_key = church_id or church_address
+    _delete_report_rows_for_month_in_sheet(year, month, church_key, pastor_name)
+
+    for row in sunday_rows:
+        d = datetime.fromisoformat(row["date"]).date()
+        activity_date = f"{d.month}/{d.day}/{d.year}"
+
+        tithes_church = row["tithes_church"] or 0
+        offering = row["offering"] or 0
+        mission = row["mission"] or 0
+        tithes_personal = row["tithes_personal"] or 0
+        amount_to_send = tithes_church + offering + mission + tithes_personal
+
+        report_data = {
+            "church": church_key,
+            "pastor": pastor_name,
+            "address": church_address,
+            "adult": row["attendance_adult"] or 0,
+            "youth": row["attendance_youth"] or 0,
+            "children": row["attendance_children"] or 0,
+            "tithes": tithes_church,
+            "offering": offering,
+            "personal_tithes": tithes_personal,
+            "mission_offering": mission,
+            "received_jesus": received_christ,
+            "existing_bible_study": bible_existing,
+            "new_bible_study": bible_new,
+            "water_baptized": baptized_water,
+            "holy_spirit_baptized": baptized_holy_spirit,
+            "childrens_dedication": child_dedication,
+            "healed": healed,
+            "activity_date": activity_date,
+            "amount_to_send": amount_to_send,
+            "status": status_label,
+        }
+        append_report_to_sheet(report_data)
+
+    return True
+
+
+def _get_existing_submit_report_job(pastor_username: str, year: int, month: int):
+    return get_db().execute(
+        """
+        SELECT *
+        FROM submit_report_jobs
+        WHERE pastor_username = ? AND year = ? AND month = ?
+          AND status IN ('queued', 'processing')
+        ORDER BY datetime(created_at) DESC
+        LIMIT 1
+        """,
+        ((pastor_username or "").strip(), int(year), int(month)),
+    ).fetchone()
+
+
+def _create_submit_report_job(pastor_username: str, year: int, month: int):
+    existing = _get_existing_submit_report_job(pastor_username, year, month)
+    if existing:
+        return existing["id"]
+
+    job_id = str(uuid.uuid4())
+    get_db().execute(
+        """
+        INSERT INTO submit_report_jobs (id, pastor_username, year, month, status, progress_message, created_at)
+        VALUES (?, ?, ?, ?, 'queued', ?, ?)
+        """,
+        (job_id, (pastor_username or "").strip(), int(year), int(month), 'Request received...', utc_now_iso()),
+    )
+    get_db().commit()
+    return job_id
+
+
+def _get_submit_report_job(job_id: str):
+    return get_db().execute(
+        "SELECT * FROM submit_report_jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+
+
+def _process_submit_report_job(job_id: str):
+    db = get_db()
+    job = _get_submit_report_job(job_id)
+    if not job or str(job["status"] or "") not in ("queued", "processing"):
+        return
+
+    pastor_username = str(job["pastor_username"] or "").strip()
+    year = int(job["year"] or 0)
+    month = int(job["month"] or 0)
+
+    db.execute(
+        """
+        UPDATE submit_report_jobs
+        SET status = 'processing', started_at = COALESCE(started_at, ?), progress_message = ?
+        WHERE id = ?
+        """,
+        (utc_now_iso(), 'Checking Google Sheets...', job_id),
+    )
+    db.commit()
+
+    try:
+        sync_from_sheets_if_needed(force=True)
+        if _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
+            db.execute(
+                """
+                UPDATE submit_report_jobs
+                SET status = 'done', finished_at = ?, progress_message = ?
+                WHERE id = ?
+                """,
+                (utc_now_iso(), 'Report already found in Google Sheets.', job_id),
+            )
+            db.commit()
+            return
+
+        db.execute(
+            "UPDATE submit_report_jobs SET progress_message = ? WHERE id = ?",
+            ('Submitting report...', job_id),
+        )
+        db.commit()
+
+        set_month_submitted(year, month, pastor_username)
+        _export_month_to_sheet_for_pastor(pastor_username, year, month, 'Pending AO approval')
+
+        db.execute(
+            "UPDATE submit_report_jobs SET progress_message = ? WHERE id = ?",
+            ('Syncing with Google Sheets...', job_id),
+        )
+        db.commit()
+
+        sync_from_sheets_if_needed(force=True)
+        exists_now = _report_exists_for_pastor_month_from_cache(pastor_username, year, month)
+        final_message = 'Submission complete.' if exists_now else 'Submitted. Waiting for cache refresh.'
+
+        db.execute(
+            """
+            UPDATE submit_report_jobs
+            SET status = 'done', finished_at = ?, progress_message = ?
+            WHERE id = ?
+            """,
+            (utc_now_iso(), final_message, job_id),
+        )
+        db.commit()
+    except Exception as e:
+        db.execute(
+            """
+            UPDATE submit_report_jobs
+            SET status = 'failed', finished_at = ?, error_message = ?, progress_message = ?
+            WHERE id = ?
+            """,
+            (utc_now_iso(), str(e), 'Submission failed.', job_id),
+        )
+        db.commit()
+        print('❌ Error processing submit report job:', e)
+
+
+@app.route("/pastor-tool/submit/start", methods=["POST"])
+def pastor_tool_submit_start():
+    if not (pastor_logged_in() or ao_logged_in()):
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    pastor_username = (request.form.get("church") or session.get("pastor_username") or "").strip()
+    year = int(request.form.get("year") or 0)
+    month = int(request.form.get("month") or 0)
+    if not (pastor_username and year and month):
+        return jsonify({"ok": False, "error": "Missing parameters"}), 400
+
+    monthly_report = get_or_create_monthly_report(year, month, pastor_username)
+    if bool(monthly_report["approved"]):
+        return jsonify({"ok": False, "error": "This report has already been approved by AO."}), 400
+
+    ensure_sunday_reports(monthly_report["id"], year, month)
+    if not (all_sundays_complete(monthly_report["id"]) and bool(ensure_church_progress(monthly_report["id"])["is_complete"])):
+        return jsonify({"ok": False, "error": "Complete all Sundays and Church Progress first."}), 400
+
+    try:
+        job_id = _create_submit_report_job(pastor_username, year, month)
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "status_url": url_for("pastor_tool_submit_status", job_id=job_id),
+        })
+    except Exception as e:
+        print('❌ Error starting submit report job:', e)
+        return jsonify({"ok": False, "error": "Unable to start submit job."}), 500
+
+
+@app.route("/pastor-tool/submit/status/<job_id>")
+def pastor_tool_submit_status(job_id):
+    if not (pastor_logged_in() or ao_logged_in()):
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    job = _get_submit_report_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+
+    current_pastor = (session.get("pastor_username") or "").strip()
+    if str(job["pastor_username"] or "").strip() != current_pastor:
+        return jsonify({"ok": False, "error": "Forbidden"}), 403
+
+    if str(job["status"] or "") == 'queued':
+        _process_submit_report_job(job_id)
+        job = _get_submit_report_job(job_id)
+
+    return jsonify({
+        "ok": True,
+        "job_id": job_id,
+        "status": str(job["status"] or 'queued'),
+        "message": str(job["progress_message"] or 'Working...'),
+        "error": str(job["error_message"] or ''),
+        "redirect_url": url_for('pastor_tool', year=int(job['year']), month=int(job['month']), church=(current_pastor if ao_logged_in() else None)),
+    })
+
+
 @app.route("/pastor-tool", methods=["GET", "POST"])
 
 def pastor_tool():
@@ -3251,18 +3864,27 @@ def pastor_tool():
     month_has_data = {int(r["month"]): (int(r["cnt"] or 0) > 0) for r in rows}
     submitted_map = {(year, m): bool(month_has_data.get(m)) for m in range(1, 13)}
 
+    existing_submit_job = _get_existing_submit_report_job(pastor_username, year, month)
+    submit_job_id = existing_submit_job["id"] if existing_submit_job else ""
+
     if request.method == "POST":
+        if bool(monthly_report["approved"]):
+            if ao_mode and selected_church:
+                return redirect(url_for("pastor_tool", year=year, month=month, church=selected_church))
+            return redirect(url_for("pastor_tool", year=year, month=month))
+
         if can_submit:
-            set_month_submitted(year, month, pastor_username)
             try:
-                export_month_to_sheet(year, month, "Pending AO approval")
-                clear_month_dirty(year, month)
                 sync_from_sheets_if_needed(force=True)
-                sync_local_month_from_cache_for_pastor(year, month)
+                if not _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
+                    set_month_submitted(year, month, pastor_username)
+                    _export_month_to_sheet_for_pastor(pastor_username, year, month, "Pending AO approval")
+                    clear_month_dirty(year, month)
+                    sync_from_sheets_if_needed(force=True)
+                    sync_local_month_from_cache_for_pastor(year, month)
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
 
-        # ✅ keep AO selection after submit
         if ao_mode and selected_church:
             return redirect(url_for("pastor_tool", year=year, month=month, church=selected_church))
         return redirect(url_for("pastor_tool", year=year, month=month))
@@ -3275,18 +3897,18 @@ def pastor_tool():
         month_names=month_names,
         monthly_report=monthly_report,
         sunday_list=sunday_list,
-        can_submit=can_submit,
+        can_submit=can_submit and not bool(monthly_report["approved"]),
         status_key=status_key,
         submitted_map=submitted_map,
         cp_complete=cp_complete,
         sundays_ok=sundays_ok,
         monthly_total=monthly_total,
         pastor_name=session.get("pastor_name", ""),
-        # AO dropdown context
         ao_mode=ao_mode,
         ao_church_choices=ao_church_choices,
         ao_church_labels=ao_church_labels,
         selected_church=selected_church,
+        submit_job_id=submit_job_id,
     )
 
 
@@ -3818,6 +4440,7 @@ def ao_church_status():
     ]
 
     all_churches = get_all_churches_from_cache()
+    ao_area_number = (session.get("ao_area_number") or "").strip()
 
     months = []
     prev_avg_attendance_by_church = {}
@@ -3827,7 +4450,7 @@ def ao_church_status():
         all_reported = True
 
         month_label = f"{name} {year}"
-        aopt_amount = get_aopt_amount_from_cache(month_label)
+        aopt_amount = get_aopt_amount_from_cache(month_label, ao_area_number)
 
         for church in all_churches:
             stats = get_report_stats_for_month_and_church_cache(year, m, church)
@@ -3905,35 +4528,40 @@ def ao_aopt_submit():
 
     month_label = f"{calendar.month_name[month]} {year}"
     amount_val = parse_float(amount_raw)
+    area_number = (session.get("ao_area_number") or "").strip()
 
     try:
         client = get_gs_client()
         sh = client.open("District4 Data")
         ws = sh.worksheet("AOPT")
 
-        values = ws.get_all_values()
-        if not values:
-            ws.append_row(["Month", "Amount"])
-            values = ws.get_all_values()
-
-        headers = values[0]
+        headers = _ensure_aopt_headers(ws)
+        idx_month = _find_col(headers, "Month")
         idx_amount = _find_col(headers, "Amount")
+        idx_area = _find_col(headers, "Area Number")
 
-        if idx_amount is None:
-            print("❌ AOPT sheet missing required header Amount")
+        if idx_amount is None or idx_month is None or idx_area is None:
+            print("❌ AOPT sheet missing required headers")
         else:
             db = get_db()
             cached = db.execute(
-                "SELECT sheet_row FROM sheet_aopt_cache WHERE month = ?",
-                (month_label,),
+                """
+                SELECT sheet_row
+                FROM sheet_aopt_cache
+                WHERE month = ? AND TRIM(area_number) = TRIM(?)
+                """,
+                (month_label, area_number),
             ).fetchone()
 
             if cached and cached["sheet_row"]:
                 sheet_row = int(cached["sheet_row"])
-                col_letter = chr(ord("A") + idx_amount)
-                ws.update(f"{col_letter}{sheet_row}", [[amount_val]])
+                ws.update(
+                    f"A{sheet_row}:C{sheet_row}",
+                    [[month_label, amount_val, area_number]],
+                    value_input_option="USER_ENTERED",
+                )
             else:
-                ws.append_row([month_label, amount_val])
+                ws.append_row([month_label, amount_val, area_number], value_input_option="USER_ENTERED")
 
             sync_from_sheets_if_needed(force=True)
 
@@ -3952,19 +4580,122 @@ def ao_church_status_approve():
     month = int(request.form.get("month") or 0)
     church = (request.form.get("church") or "").strip()
 
+    ok = False
     if year and month and church:
         try:
             sheet_batch_update_status_for_church_month(year, month, church, "Approved")
             cache_update_status_for_church_month(year, month, church, "Approved")
+            ok = True
         except Exception as e:
             print("Error approving church month:", e)
 
-    return redirect(url_for("ao_church_status", year=year))
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"ok": ok, "year": year, "month": month, "church": church})
+
+    return redirect(url_for("ao_church_status", year=year, open_month=month))
+
+
+@app.route("/ao-tool/church-status/print-report/start", methods=["POST"])
+def ao_church_status_print_report_start():
+    if not ao_logged_in():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    year = int(request.form.get("year") or 0)
+    month = int(request.form.get("month") or 0)
+    area_number = (session.get("ao_area_number") or "").strip()
+    if not (year and month and area_number):
+        return jsonify({"ok": False, "error": "Missing parameters"}), 400
+
+    try:
+        job_id = _create_print_report_job(area_number, year, month)
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "status_url": url_for("ao_church_status_print_report_status", job_id=job_id),
+            "download_url": url_for("ao_church_status_print_report_download", job_id=job_id),
+        })
+    except Exception as e:
+        print("❌ Error starting print report job:", e)
+        return jsonify({"ok": False, "error": "Unable to start print job"}), 500
+
+
+@app.route("/ao-tool/church-status/print-report/status/<job_id>")
+def ao_church_status_print_report_status(job_id):
+    if not ao_logged_in():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    _advance_print_report_queue()
+    job = _get_print_report_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+
+    status = str(job["status"] or "queued")
+    queue_ahead = _count_jobs_ahead(job) if status == "queued" else 0
+    message = "Request received..."
+    if status == "queued":
+        message = "Waiting in queue..." if queue_ahead > 0 else "Preparing report..."
+    elif status == "processing":
+        message = "Generating PDF..."
+    elif status == "done":
+        message = "Download ready..."
+    elif status == "downloaded":
+        message = "Download already started."
+    elif status == "failed":
+        message = job["error_message"] or "Failed to generate report."
+
+    return jsonify({
+        "ok": True,
+        "job_id": job_id,
+        "status": status,
+        "queue_ahead": queue_ahead,
+        "message": message,
+        "download_url": url_for("ao_church_status_print_report_download", job_id=job_id) if status == "done" else "",
+        "error": job["error_message"] or "",
+    })
+from flask import send_file, abort, make_response
+import threading
+
+download_locks = {}
+download_done = {}
+
+def get_lock(job_id):
+    if job_id not in download_locks:
+        download_locks[job_id] = threading.Lock()
+    return download_locks[job_id]
+
+
+@app.route("/ao-tool/church-status/print-report/download/<job_id>")
+def ao_church_status_print_report_download(job_id):
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+
+    job = _get_print_report_job(job_id)
+    if not job:
+        abort(404)
+
+    result_path = str(job["result_path"] or "").strip()
+    if not result_path or not os.path.exists(result_path):
+        abort(404)
+
+    lock = get_lock(job_id)
+
+    with lock:
+        # prevent duplicate downloads
+        if download_done.get(job_id):
+            return ("", 204)
+
+        try:
+            response = make_response(send_file(result_path, as_attachment=True))
+            download_done[job_id] = True
+            return response
+        except Exception as e:
+            return str(e), 500
 
 
 # ========================
 # Prayer Request (menu + pages)
 # ========================
+
 
 @app.route("/prayer-request")
 def prayer_request():
