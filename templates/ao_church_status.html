@@ -457,7 +457,7 @@
                               data-modal-id="modal-{{ m.month }}-{{ loop.index }}"
                               method="POST"
                               action="{{ url_for('ao_church_status_approve') }}"
-                              onsubmit="approveChurch(event, this)">
+                              onsubmit="approveChurch(event, this); return false;">
                           <input type="hidden" name="year" value="{{ m.year }}">
                           <input type="hidden" name="month" value="{{ m.month }}">
                           <input type="hidden" name="church" value="{{ c.church }}">
