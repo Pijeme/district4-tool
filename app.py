@@ -222,6 +222,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS print_report_jobs (
             id TEXT PRIMARY KEY,
             user_area TEXT NOT NULL,
+            sub_area TEXT,
+            report_type TEXT NOT NULL DEFAULT 'ao',
             year INTEGER NOT NULL,
             month INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'queued',
@@ -269,6 +271,7 @@ def init_db():
             contact TEXT,
             birthday TEXT,
             position TEXT,
+            sub_area TEXT,
             sheet_row INTEGER
         )
         """
@@ -280,6 +283,24 @@ def init_db():
     if "position" not in _acc_cols:
         try:
             cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN position TEXT")
+        except Exception:
+            pass
+    if "sub_area" not in _acc_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN sub_area TEXT")
+        except Exception:
+            pass
+
+    cursor.execute("PRAGMA table_info(print_report_jobs)")
+    _pr_cols=[row[1] for row in cursor.fetchall()]
+    if "sub_area" not in _pr_cols:
+        try:
+            cursor.execute("ALTER TABLE print_report_jobs ADD COLUMN sub_area TEXT")
+        except Exception:
+            pass
+    if "report_type" not in _pr_cols:
+        try:
+            cursor.execute("ALTER TABLE print_report_jobs ADD COLUMN report_type TEXT NOT NULL DEFAULT 'ao'")
         except Exception:
             pass
 
@@ -345,6 +366,70 @@ def init_db():
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_aopt_month_area ON sheet_aopt_cache(month, area_number)")
     except Exception:
         pass
+
+    cursor.execute("PRAGMA table_info(sheet_aopt_cache)")
+    _aopt_cols2 = [row[1] for row in cursor.fetchall()]
+    if "sub_area" not in _aopt_cols2:
+        try:
+            cursor.execute("ALTER TABLE sheet_aopt_cache ADD COLUMN sub_area TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_aopt_month_area_sub ON sheet_aopt_cache(month, area_number, sub_area)")
+    except Exception:
+        pass
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_prayer_request_cache (
+            request_id TEXT PRIMARY KEY,
+            church_name TEXT,
+            submitted_by TEXT,
+            title TEXT,
+            request_date TEXT,
+            request_text TEXT,
+            status TEXT,
+            pastors_praying TEXT,
+            answered_date TEXT,
+            sheet_row INTEGER
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_announcement_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            announcement TEXT,
+            announcement_date TEXT,
+            area TEXT,
+            sub_area TEXT,
+            author_username TEXT,
+            author_name TEXT,
+            sheet_row INTEGER
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_announcement_scope ON sheet_announcement_cache(area, sub_area)")
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS developer_visit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            actor_username TEXT,
+            actor_name TEXT,
+            actor_role TEXT,
+            request_path TEXT,
+            page_label TEXT,
+            method TEXT
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dev_logs_created_at ON developer_visit_logs(created_at)")
 
     # -----------------------
     # ✅ PRAYER REQUEST CACHE (PrayerRequest sheet → local cache)
@@ -593,14 +678,16 @@ GOOGLE_SHEETS_SCOPES = [
 
 APPS_SCRIPT_PREP_URL = "https://script.google.com/macros/s/AKfycbxaDvRol8XtOTynQKbO2qF395qhW0W832bggGcPX2FjcRVfUjqqc8vxTNY-kdGkDTRA/exec"
 APPS_SCRIPT_PREP_TOKEN = "psr550pijeme"
-def _prepare_report_print_via_apps_script(area_number: str, year: int, month: int):
+def _prepare_report_print_via_apps_script(area_number: str, year: int, month: int, report_type: str = "ao", sub_area: str = ""):
     payload = {
-        "action": "prepare_ao_report_print",
+        "action": "prepare_sub_area_report_print" if report_type == "sub_area" else "prepare_ao_report_print",
         "token": APPS_SCRIPT_PREP_TOKEN,
         "area_number": str(area_number or "").strip(),
         "year": int(year),
         "month": int(month),
     }
+    if report_type == "sub_area":
+        payload["sub_area"] = str(sub_area or "").strip()
 
     resp = requests.post(
         APPS_SCRIPT_PREP_URL,
@@ -791,6 +878,9 @@ def sync_from_sheets_if_needed(force=False):
         i_contact = _find_col(headers, "Contact #")
         i_bday = _find_col(headers, "Birth Day")
         i_pos = _find_col(headers, "Position")
+        i_sub = _find_col(headers, "Sub Area")
+        if i_sub is None:
+            i_sub = _find_col(headers, "SubArea")
 
         def cell(row, idx):
             if idx is None:
@@ -811,6 +901,7 @@ def sync_from_sheets_if_needed(force=False):
             contact = str(cell(row, i_contact)).strip()
             birthday = str(cell(row, i_bday)).strip()
             position = str(cell(row, i_pos)).strip()
+            sub_area = str(cell(row, i_sub)).strip()
 
             # keep rows that have the search essentials even if username/password are blank
             if not area_number and not church_id and not full_name and not church_address:
@@ -819,8 +910,8 @@ def sync_from_sheets_if_needed(force=False):
             cur.execute(
                 """
                 INSERT OR REPLACE INTO sheet_accounts_cache
-                (username, name, church_address, password, age, sex, contact, birthday, position, sheet_row)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, sheet_row)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -832,6 +923,7 @@ def sync_from_sheets_if_needed(force=False):
                     contact,
                     birthday,
                     position,
+                    sub_area,
                     r + 1,
                 ),
             )
@@ -957,6 +1049,11 @@ def sync_from_sheets_if_needed(force=False):
         i_month = _find_col(headers, "Month")
         i_amount = _find_col(headers, "Amount")
         i_area = _find_col(headers, "Area Number")
+        if i_area is None:
+            i_area = _find_col(headers, "Area")
+        i_sub_area = _find_col(headers, "Sub Area")
+        if i_sub_area is None:
+            i_sub_area = _find_col(headers, "SubArea")
 
         def cell(row, idx):
             if idx is None:
@@ -972,12 +1069,13 @@ def sync_from_sheets_if_needed(force=False):
                 continue
             amount_val = parse_float(cell(row, i_amount))
             area_number = str(cell(row, i_area)).strip()
+            sub_area = str(cell(row, i_sub_area)).strip()
             cur.execute(
                 """
-                INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, amount, sheet_row)
-                VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, sub_area, amount, sheet_row)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (month_label, area_number, amount_val, r + 1),
+                (month_label, area_number, sub_area, amount_val, r + 1),
             )
 
     # -----------------------
@@ -1156,6 +1254,60 @@ def sync_from_sheets_if_needed(force=False):
                 ),
             )
 
+    # -----------------------
+    # ANOUNCEMENT
+    # -----------------------
+    try:
+        ws_ann = sh.worksheet("Anouncement")
+        ann_values = ws_ann.get_all_values()
+    except Exception as e:
+        print("❌ Anouncement sync failed:", e)
+        ann_values = []
+
+    cur.execute("DELETE FROM sheet_announcement_cache")
+
+    if ann_values and len(ann_values) >= 2:
+        headers = ann_values[0]
+        i_title = _find_col(headers, "Title")
+        i_announcement = _find_col(headers, "Announcement")
+        i_date = _find_col(headers, "Date")
+        i_area = _find_col(headers, "Area")
+        i_sub = _find_col(headers, "SubArea")
+        if i_sub is None:
+            i_sub = _find_col(headers, "Sub Area")
+        i_author_u = _find_col(headers, "Author Username")
+        i_author_n = _find_col(headers, "Author Name")
+
+        def ann_cell(row, idx):
+            if idx is None:
+                return ""
+            return row[idx].strip() if idx < len(row) else ""
+
+        for rnum, row in enumerate(ann_values[1:], start=2):
+            title = ann_cell(row, i_title)
+            body = ann_cell(row, i_announcement)
+            if not title and not body:
+                continue
+            cur.execute(
+                """
+                INSERT INTO sheet_announcement_cache (
+                    title, announcement, announcement_date, area, sub_area,
+                    author_username, author_name, sheet_row
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title,
+                    body,
+                    ann_cell(row, i_date),
+                    ann_cell(row, i_area),
+                    ann_cell(row, i_sub),
+                    ann_cell(row, i_author_u),
+                    ann_cell(row, i_author_n),
+                    rnum,
+                ),
+            )
+
+
     _update_sync_time()
     print("✅ Sheets cache sync done.")
 
@@ -1164,66 +1316,74 @@ def sync_from_sheets_if_needed(force=False):
 # Cache-based helpers (NO Sheets calls)
 # ========================
 
-def get_aopt_amount_from_cache(month_label: str, area_number: str = ""):
+def get_aopt_amount_from_cache(month_label: str, area_number: str = "", sub_area: str = ""):
     area_number = str(area_number or "").strip()
-    row = get_db().execute(
+    sub_area = str(sub_area or "").strip()
+    db = get_db()
+    if sub_area:
+        row = db.execute(
+            """
+            SELECT amount
+            FROM sheet_aopt_cache
+            WHERE month = ? AND TRIM(area_number) = TRIM(?) AND TRIM(COALESCE(sub_area,'')) = TRIM(?)
+            ORDER BY sheet_row DESC
+            LIMIT 1
+            """,
+            (month_label, area_number, sub_area),
+        ).fetchone()
+        if row:
+            return row["amount"]
+
+    row = db.execute(
         """
         SELECT amount
         FROM sheet_aopt_cache
-        WHERE month = ? AND TRIM(area_number) = TRIM(?)
+        WHERE month = ? AND TRIM(area_number) = TRIM(?) AND TRIM(COALESCE(sub_area,'')) = ''
+        ORDER BY sheet_row DESC
+        LIMIT 1
         """,
         (month_label, area_number),
     ).fetchone()
-    if not row and not area_number:
-        row = get_db().execute(
+    if row:
+        return row["amount"]
+
+    if not area_number:
+        row = db.execute(
             "SELECT amount FROM sheet_aopt_cache WHERE month = ? ORDER BY sheet_row DESC LIMIT 1",
             (month_label,),
         ).fetchone()
-    if not row:
-        return None
-    return row["amount"]
+        return row["amount"] if row else None
+    return None
 
 
 def _ensure_aopt_headers(ws):
     values = ws.get_all_values()
-    headers = ["Month", "Amount", "Area Number"]
+    headers = ["Month", "Amount", "Area", "SubArea"]
     if not values:
         ws.append_row(headers, value_input_option="USER_ENTERED")
         return headers
 
     current = list(values[0])
+    needed = [("Month",0), ("Amount",1), ("Area",2), ("SubArea",3)]
     changed = False
-
-    if _find_col(current, "Month") is None:
-        while len(current) < 1:
-            current.append("")
-        current[0] = "Month"
-        changed = True
-
-    if _find_col(current, "Amount") is None:
-        while len(current) < 2:
-            current.append("")
-        current[1] = "Amount"
-        changed = True
-
-    if _find_col(current, "Area Number") is None:
-        while len(current) < 3:
-            current.append("")
-        current[2] = "Area Number"
-        changed = True
-
+    for name, pos in needed:
+        if _find_col(current, name) is None and not (name=="Area" and _find_col(current, "Area Number") is not None) and not (name=="SubArea" and _find_col(current, "Sub Area") is not None):
+            while len(current) <= pos:
+                current.append("")
+            current[pos] = name
+            changed = True
     if changed:
-        ws.update("A1:C1", [current[:3]], value_input_option="USER_ENTERED")
+        rng = f"A1:{chr(ord('A') + len(current) - 1)}1"
+        ws.update(rng, [current], value_input_option="USER_ENTERED")
         values = ws.get_all_values()
         return values[0]
-
     return current
 
 
-def _get_report_print_sheet():
+def _get_report_print_sheet(report_type: str = "ao"):
     client = get_gs_client()
     sh = client.open("District4 Data")
-    ws = sh.worksheet("AO Report Print")
+    ws = sh.worksheet("SubAreaPrint" if report_type == "sub_area" else "AO Report Print")
     return client, sh, ws
 
 
@@ -1271,14 +1431,14 @@ def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
 
 
 
-def _create_print_report_job(user_area: str, year: int, month: int):
+def _create_print_report_job(user_area: str, year: int, month: int, report_type: str = "ao", sub_area: str = ""):
     job_id = str(uuid.uuid4())
     get_db().execute(
         """
-        INSERT INTO print_report_jobs (id, user_area, year, month, status, created_at)
-        VALUES (?, ?, ?, ?, 'queued', ?)
+        INSERT INTO print_report_jobs (id, user_area, sub_area, report_type, year, month, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
         """,
-        (job_id, str(user_area or "").strip(), int(year), int(month), utc_now_iso()),
+        (job_id, str(user_area or "").strip(), str(sub_area or "").strip(), str(report_type or "ao").strip(), int(year), int(month), utc_now_iso()),
     )
     get_db().commit()
     return job_id
@@ -1349,18 +1509,24 @@ def _process_print_report_job(job_id: str):
         return
 
     try:
+        report_type = str(job["report_type"] or "ao").strip()
+        sub_area = str(job["sub_area"] or "").strip()
         _prepare_report_print_via_apps_script(
             job["user_area"],
             int(job["year"]),
             int(job["month"]),
+            report_type=report_type,
+            sub_area=sub_area,
         )
 
-        _, sh, ws = _get_report_print_sheet()
+        _, sh, ws = _get_report_print_sheet(report_type=report_type)
         pdf_bytes = _export_gsheet_worksheet_pdf(sh.id, str(ws.id))
 
         out_dir = os.path.join(os.path.dirname(__file__), "generated_reports")
         os.makedirs(out_dir, exist_ok=True)
-        filename = f"AO_Report_Print_Area_{job['user_area']}_{calendar.month_name[int(job['month'])]}_{int(job['year'])}_{job_id}.pdf".replace(" ", "_")
+        prefix = "SubAreaPrint" if str(job["report_type"] or "").strip() == "sub_area" else "AO_Report_Print"
+        extra = f"_{str(job['sub_area'] or '').strip()}" if str(job["report_type"] or "").strip() == "sub_area" and str(job['sub_area'] or '').strip() else ""
+        filename = f"{prefix}_Area_{job['user_area']}{extra}_{calendar.month_name[int(job['month'])]}_{int(job['year'])}_{job_id}.pdf".replace(" ", "_")
         result_path = os.path.join(out_dir, filename)
 
         with open(result_path, "wb") as f:
@@ -1635,28 +1801,27 @@ def sync_local_month_from_cache_for_pastor(year: int, month: int):
 
 
 def get_all_churches_from_cache():
-    """
-    Returns the list of Church IDs from the Accounts cache.
-    - Church ID is stored in sheet_accounts_cache.sex
-    - Area Number is stored in sheet_accounts_cache.age
-
-    If an AO is logged in and has an area number, only churches in that same area are returned.
-    Area Overseer accounts themselves are excluded from the church list.
-    """
     db = get_db()
     ao_area = (session.get("ao_area_number") or "").strip() if ao_logged_in() else ""
+    ao_sub_area = (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""
 
     if ao_area:
+        params = [ao_area]
+        extra = ""
+        if ao_sub_area:
+            extra = " AND TRIM(COALESCE(sub_area, '')) = TRIM(?)"
+            params.append(ao_sub_area)
         rows = db.execute(
-            """
+            f"""
             SELECT DISTINCT TRIM(sex) AS c
             FROM sheet_accounts_cache
             WHERE TRIM(sex) != ''
               AND TRIM(age) = TRIM(?)
-              AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+              AND LOWER(TRIM(COALESCE(position, ''))) = 'pastor'
+              {extra}
             ORDER BY c
             """,
-            (ao_area,),
+            tuple(params),
         ).fetchall()
     else:
         rows = db.execute(
@@ -1664,7 +1829,7 @@ def get_all_churches_from_cache():
             SELECT DISTINCT TRIM(sex) AS c
             FROM sheet_accounts_cache
             WHERE TRIM(sex) != ''
-              AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+              AND LOWER(TRIM(COALESCE(position, ''))) = 'pastor'
             ORDER BY c
             """
         ).fetchall()
@@ -1673,8 +1838,14 @@ def get_all_churches_from_cache():
 
 def get_accounts_for_area_cache(area_number: str):
     db = get_db()
+    ao_sub_area = (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""
+    params = [area_number]
+    extra = ""
+    if ao_sub_area:
+        extra = " AND TRIM(COALESCE(sub_area, '')) = TRIM(?)"
+        params.append(ao_sub_area)
     rows = db.execute(
-        """
+        f"""
         SELECT
             TRIM(username) AS username,
             TRIM(name) AS name,
@@ -1685,21 +1856,21 @@ def get_accounts_for_area_cache(area_number: str):
             TRIM(birthday) AS birthday,
             TRIM(password) AS password,
             TRIM(position) AS position,
+            TRIM(COALESCE(sub_area, '')) AS sub_area,
             sheet_row
         FROM sheet_accounts_cache
         WHERE TRIM(age) = TRIM(?)
           AND TRIM(username) != ''
-          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
+          AND LOWER(TRIM(COALESCE(position, ''))) = 'pastor'
+          {extra}
         ORDER BY church_id, church_address, name
         """,
-        (area_number,),
+        tuple(params),
     ).fetchall()
     return rows
 
-def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_amount: float):
-    monthly_lovegift_tithes = 300.0
+def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_amount: float, is_sub_ao: bool = False):
     base_aopt_amount = float(aopt_amount or 0.0)
-    display_aopt_amount = base_aopt_amount + monthly_lovegift_tithes
 
     summary = {
         "submitted_count": 0,
@@ -1714,10 +1885,7 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
         "no_mission": 0.0,
         "ao_mission": 0.0,
         "pastor_personal_tithes": 0.0,
-        "ao_personal_tithes_base": base_aopt_amount,
-        "monthly_lovegift_tithes": monthly_lovegift_tithes,
-        "ao_personal_tithes_note": "(+300 for the tithes of the monthly lovegift received)",
-        "ao_personal_tithes": display_aopt_amount,
+        "ao_personal_tithes": base_aopt_amount,
         "total_all_money_received": 0.0,
         "bible_old": 0.0,
         "bible_new": 0.0,
@@ -1772,18 +1940,28 @@ def get_area_summary_for_month_cache(year: int, month: int, church_items, aopt_a
     summary["bible_total"] = summary["bible_old"] + summary["bible_new"]
     summary["no_mission"] = summary["mission_total"] * 0.20
     summary["ao_mission"] = summary["mission_total"] * 0.80
-    summary["total_money_no"] = (
-        summary["church_tithes"]
-        + summary["offering"]
-        + summary["no_mission"]
-        + (summary["pastor_personal_tithes"] * 0.10)
-        + summary["ao_personal_tithes"]
-        - 3000
-    )
-    summary["total_money_ao"] = (
-        (summary["pastor_personal_tithes"] * 0.90)
-        + summary["ao_mission"]
-    )
+    if is_sub_ao:
+        summary["total_money_no"] = (
+            summary["church_tithes"]
+            + summary["offering"]
+            + summary["mission_total"]
+            + (summary["pastor_personal_tithes"] * 0.20)
+            + summary["ao_personal_tithes"]
+        )
+        summary["total_money_ao"] = summary["pastor_personal_tithes"] * 0.80
+    else:
+        summary["total_money_no"] = (
+            summary["church_tithes"]
+            + summary["offering"]
+            + summary["no_mission"]
+            + (summary["pastor_personal_tithes"] * 0.10)
+            + summary["ao_personal_tithes"]
+            - 3000
+        )
+        summary["total_money_ao"] = (
+            (summary["pastor_personal_tithes"] * 0.90)
+            + summary["ao_mission"]
+        )
     return summary
 
 def get_report_stats_for_month_and_church_cache(year: int, month: int, church_key: str):
@@ -1968,24 +2146,60 @@ def _delete_report_rows_for_month_in_sheet(year: int, month: int, church_key: st
             ws.delete_rows(r)
 
 
+def _ensure_accounts_headers(ws):
+    values = ws.get_all_values()
+    headers = ["Name", "Area Number", "Church ID", "Church Address", "Contact #", "Birth Day", "UserName", "Password", "Position", "Sub Area"]
+    if not values:
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return headers
+    current = list(values[0])
+    changed = False
+    for i, name in enumerate(headers):
+        if _find_col(current, name) is None:
+            while len(current) <= i:
+                current.append("")
+            current[i] = name
+            changed = True
+    if changed:
+        rng = f"A1:{chr(ord('A') + len(current) - 1)}1"
+        ws.update(rng, [current], value_input_option="USER_ENTERED")
+        values = ws.get_all_values()
+        return values[0]
+    return current
+
+
+def _build_account_row_from_headers(headers, payload: dict):
+    row = [""] * len(headers)
+    mapping = {
+        "Name": payload.get("full_name", ""),
+        "Area Number": payload.get("age", ""),
+        "Age": payload.get("age", ""),
+        "Church ID": payload.get("sex", ""),
+        "Sex": payload.get("sex", ""),
+        "Church Address": payload.get("church_address", ""),
+        "Contact #": payload.get("contact_number", ""),
+        "Birth Day": payload.get("birthday", ""),
+        "UserName": payload.get("username", ""),
+        "Password": payload.get("password", ""),
+        "Position": payload.get("position", "Pastor"),
+        "Sub Area": payload.get("sub_area", ""),
+        "SubArea": payload.get("sub_area", ""),
+    }
+    for i, h in enumerate(headers):
+        if h in mapping:
+            row[i] = mapping[h]
+    return row
+
+
 def append_account_to_sheet(pastor_data: dict):
     client = get_gs_client()
     sh = client.open("District4 Data")
     try:
         worksheet = sh.worksheet("Accounts")
     except gspread.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="Accounts", rows=100, cols=10)
-
-    row = [
-        pastor_data.get("full_name", ""),
-        pastor_data.get("age", ""),
-        pastor_data.get("sex", ""),
-        pastor_data.get("church_address", ""),
-        pastor_data.get("contact_number", ""),
-        pastor_data.get("birthday", ""),
-        pastor_data.get("username", ""),
-        pastor_data.get("password", ""),
-    ]
+        worksheet = sh.add_worksheet(title="Accounts", rows=100, cols=12)
+    headers = _ensure_accounts_headers(worksheet)
+    row = _build_account_row_from_headers(headers, pastor_data)
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
 def _ensure_report_sheet_headers(ws):
@@ -2332,7 +2546,7 @@ def get_answered_prayer_requests_for_user(submitted_by: str):
 
 def get_pending_prayers_for_ao():
     db = get_db()
-    return db.execute(
+    rows = db.execute(
         """
         SELECT *
         FROM sheet_prayer_request_cache
@@ -2340,6 +2554,19 @@ def get_pending_prayers_for_ao():
         ORDER BY request_date DESC, sheet_row DESC
         """
     ).fetchall()
+    if not ao_logged_in():
+        return rows
+    area = str(session.get("ao_area_number") or "").strip()
+    filtered = []
+    for r in rows:
+        church_name = str(r["church_name"] or "").strip()
+        row = db.execute(
+            "SELECT age FROM sheet_accounts_cache WHERE TRIM(sex)=TRIM(?) OR TRIM(church_address)=TRIM(?) LIMIT 1",
+            (church_name, church_name),
+        ).fetchone()
+        if row and str(row["age"] or "").strip() == area:
+            filtered.append(r)
+    return filtered
 
 
 # ========================
@@ -2779,6 +3006,69 @@ def any_user_logged_in():
     return pastor_logged_in() or ao_logged_in()
 
 
+def ao_is_sub_area_overseer():
+    return ao_logged_in() and str(session.get("ao_role") or "").strip().lower() == "sub area overseer"
+
+
+def current_ao_scope():
+    return {
+        "area": str(session.get("ao_area_number") or "").strip(),
+        "sub_area": str(session.get("ao_sub_area") or "").strip(),
+        "role": str(session.get("ao_role") or "").strip().lower(),
+    }
+
+
+def _account_row_in_current_ao_scope(row):
+    if not row:
+        return False
+    scope = current_ao_scope()
+    row_area = str(row["age"] or "").strip()
+    row_sub = str(row["sub_area"] or "").strip() if "sub_area" in row.keys() else ""
+    if row_area != scope["area"]:
+        return False
+    if ao_is_sub_area_overseer() and row_sub != scope["sub_area"]:
+        return False
+    return True
+
+
+def _pastor_username_in_current_ao_scope(username: str):
+    row = get_db().execute(
+        "SELECT username, age, sub_area, position FROM sheet_accounts_cache WHERE TRIM(username)=TRIM(?)",
+        ((username or "").strip(),),
+    ).fetchone()
+    if not row:
+        return False
+    if str(row["position"] or "").strip().lower() != "pastor":
+        return False
+    return _account_row_in_current_ao_scope(row)
+
+
+def _church_in_current_ao_scope(church_key: str):
+    row = get_db().execute(
+        """
+        SELECT age, sub_area
+        FROM sheet_accounts_cache
+        WHERE TRIM(sex)=TRIM(?) OR TRIM(church_address)=TRIM(?)
+        LIMIT 1
+        """,
+        ((church_key or "").strip(), (church_key or "").strip()),
+    ).fetchone()
+    if not row:
+        return False
+    scope = current_ao_scope()
+    if str(row["age"] or "").strip() != scope["area"]:
+        return False
+    if ao_is_sub_area_overseer() and str(row["sub_area"] or "").strip() != scope["sub_area"]:
+        return False
+    return True
+
+
+def _prayer_in_current_ao_manage_scope(prayer_row):
+    if not prayer_row:
+        return False
+    return _church_in_current_ao_scope(str(prayer_row["church_name"] or "").strip())
+
+
 def generate_pastor_credentials(full_name: str, age: int):
     db = get_db()
     cursor = db.cursor()
@@ -2827,9 +3117,76 @@ def phpeso_filter(value):
     return format_php_currency(value)
 
 
+def _cleanup_old_visit_logs():
+    cutoff = datetime.now(timezone.utc).timestamp() - (2 * 24 * 60 * 60)
+    cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    get_db().execute("DELETE FROM developer_visit_logs WHERE datetime(created_at) < datetime(?)", (cutoff_iso,))
+    get_db().commit()
+
+
+def _page_label_from_path(path: str):
+    path = str(path or "")
+    if path == "/":
+        return "Splash/Login"
+    mappings = [
+        ("/pastor-tool", "Pastor Tool"),
+        ("/ao-tool/church-status", "Church Status"),
+        ("/ao-tool/prayer-requests", "AO Prayer Requests"),
+        ("/ao-tool", "AO Tool"),
+        ("/prayer-request", "Prayer Request"),
+        ("/schedules", "Schedules"),
+        ("/bulletin", "Bulletin Board"),
+        ("/event-registration", "Event Registration"),
+        ("/pastor-login", "Pastor Login"),
+        ("/ao-login", "AO Login"),
+    ]
+    for prefix, label in mappings:
+        if path.startswith(prefix):
+            return label
+    return path
+
+
+def _log_visit_if_needed():
+    path = request.path or ""
+    if path.startswith("/static/") or path == "/favicon.ico":
+        return
+    actor_username = ""
+    actor_name = ""
+    actor_role = ""
+    if pastor_logged_in():
+        actor_username = (session.get("pastor_username") or "").strip()
+        actor_name = (session.get("pastor_name") or "").strip()
+        actor_role = str(session.get("selected_position") or "Pastor")
+    elif ao_logged_in():
+        actor_username = (session.get("ao_username") or "").strip()
+        actor_name = (session.get("ao_name") or "").strip()
+        actor_role = str(session.get("ao_role") or "Area Overseer")
+    get_db().execute(
+        """
+        INSERT INTO developer_visit_logs (
+            created_at, ip_address, user_agent, actor_username, actor_name, actor_role, request_path, page_label, method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            utc_now_iso(),
+            str(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
+            str(request.headers.get("User-Agent") or "").strip(),
+            actor_username,
+            actor_name,
+            actor_role,
+            path,
+            _page_label_from_path(path),
+            request.method,
+        ),
+    )
+    get_db().commit()
+    _cleanup_old_visit_logs()
+
+
 @app.before_request
 def before_request():
     init_db()
+    _log_visit_if_needed()
 
 
 @app.teardown_appcontext
@@ -2857,7 +3214,7 @@ def splash():
             sync_from_sheets_if_needed(force=True)
             row = get_db().execute(
                 """
-                SELECT username, password, name, church_address, sex, age, position
+                SELECT username, password, name, church_address, sex, age, position, sub_area
                 FROM sheet_accounts_cache
                 WHERE username = ?
                 """,
@@ -2868,20 +3225,30 @@ def splash():
 
             if row and str(row["password"] or "").strip() == password:
                 session.clear()
-                session["selected_position"] = selected_role
                 session.permanent = True
 
-                if selected_role == "area overseer":
-                    if stored_role != "area overseer":
+                # AO login flow now supports both Area Overseer and Sub Area Overseer
+                # as distinct session roles. For backward compatibility, if the UI still
+                # posts "area overseer" for a Sub Area Overseer account, we still allow
+                # login and store the real role from Accounts.
+                if selected_role in ("area overseer", "sub area overseer"):
+                    if stored_role == "area overseer" and selected_role == "sub area overseer":
+                        error = "This account is not registered as Sub Area Overseer."
+                    elif stored_role not in ("area overseer", "sub area overseer"):
                         error = "This account is not registered as Area Overseer."
                     else:
+                        real_role = (row["position"] or "").strip()
+                        session["selected_position"] = real_role.lower()
                         session["ao_logged_in"] = True
                         session["ao_username"] = username
                         session["ao_name"] = row["name"] or ""
                         session["ao_area_number"] = (row["age"] or "").strip()
                         session["ao_church_id"] = (row["sex"] or "").strip()
+                        session["ao_role"] = real_role
+                        session["ao_sub_area"] = (row["sub_area"] or "").strip()
                         return redirect(url_for("ao_tool"))
                 else:
+                    session["selected_position"] = selected_role
                     session["pastor_logged_in"] = True
                     session["pastor_username"] = username
                     session["pastor_name"] = row["name"] or ""
@@ -2901,6 +3268,29 @@ def splash():
 def logout():
     session.clear()
     return redirect(url_for("splash"))
+
+
+@app.route("/sync-area-data-log")
+def sync_area_data_log():
+    rows = get_db().execute(
+        "SELECT * FROM developer_visit_logs ORDER BY datetime(created_at) DESC, id DESC LIMIT 500"
+    ).fetchall()
+    lines = ["District 4 Tool Developer Log", "=" * 32, ""]
+    for r in rows:
+        who = str(r["actor_name"] or r["actor_username"] or "Guest").strip() or "Guest"
+        role = str(r["actor_role"] or "Unregistered").strip() or "Unregistered"
+        ip = str(r["ip_address"] or "").strip()
+        ua = str(r["user_agent"] or "").strip()
+        lines.extend([
+            f"[{r['created_at']}] {who} ({role})",
+            f"Page: {r['page_label']}  Method: {r['method']}",
+            f"Path: {r['request_path']}",
+            f"IP: {ip}",
+            f"User-Agent: {ua}",
+            "-" * 72,
+        ])
+    body = "\n".join(lines)
+    return make_response(f"<html><body style='background:#000;color:#fff;font-family:monospace;white-space:pre-wrap;padding:16px'>{body}</body></html>")
 
 def _normalize_key(value):
     return str(value or "").strip().lower()
@@ -3277,6 +3667,16 @@ def build_bulletin_board_posts():
 
     posts = []
     posts.extend(_build_birthday_posts(area_directory, today))
+    for a in get_announcements_for_current_user():
+        ann_date = parse_sheet_date(a["announcement_date"]) or today
+        posts.append({
+            "type": "announcement",
+            "church_name": "Area Announcement" if not str(a["sub_area"] or "").strip() else f"Sub Area {str(a['sub_area'] or '').strip()} Announcement",
+            "title": str(a["title"] or "").strip(),
+            "summary": str(a["announcement"] or "").strip(),
+            "meta": ann_date.strftime("%B %d, %Y"),
+            "sort_date": ann_date,
+        })
     posts.extend(_build_prayer_posts(area_directory, current_user_key, current_church_display))
     posts.extend(_build_report_recognition_posts(area_number, area_directory, today))
 
@@ -3677,6 +4077,8 @@ def pastor_tool_submit_start():
     month = int(request.form.get("month") or 0)
     if not (pastor_username and year and month):
         return jsonify({"ok": False, "error": "Missing parameters"}), 400
+    if ao_logged_in() and not _pastor_username_in_current_ao_scope(pastor_username):
+        return jsonify({"ok": False, "error": "Forbidden"}), 403
 
     monthly_report = get_or_create_monthly_report(year, month, pastor_username)
     if bool(monthly_report["approved"]):
@@ -3749,11 +4151,12 @@ def pastor_tool():
             SELECT username, sex
             FROM sheet_accounts_cache
             WHERE TRIM(age) = TRIM(?)
-              AND LOWER(COALESCE(position,'')) != 'area overseer'
+              AND LOWER(COALESCE(position,'')) = 'pastor'
               AND TRIM(username) != ''
+              AND (? = '' OR TRIM(COALESCE(sub_area,'')) = TRIM(?))
             ORDER BY TRIM(sex), TRIM(username)
             """,
-            (ao_area,),
+            (ao_area, (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "", (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""),
         ).fetchall()
 
         ao_church_choices = [r["username"] for r in rows]
@@ -3924,6 +4327,8 @@ def sunday_detail(year, month, day):
     if ao_logged_in():
         session.setdefault("pastor_logged_in", True)
         if church:
+            if not _pastor_username_in_current_ao_scope(church):
+                abort(403)
             session["pastor_username"] = church
         else:
             session.setdefault("pastor_username", session.get("ao_username", "ao"))
@@ -4063,6 +4468,8 @@ def church_progress_view(year, month):
     if ao_logged_in():
         session.setdefault("pastor_logged_in", True)
         if church:
+            if not _pastor_username_in_current_ao_scope(church):
+                abort(403)
             session["pastor_username"] = church
         else:
             session.setdefault("pastor_username", session.get("ao_username", "ao"))
@@ -4173,7 +4580,7 @@ def ao_login():
 
         row = get_db().execute(
             """
-            SELECT username, password, name, age, sex, position
+            SELECT username, password, name, age, sex, position, sub_area
             FROM sheet_accounts_cache
             WHERE username = ?
             """,
@@ -4182,12 +4589,14 @@ def ao_login():
 
         if row and (str(row["password"] or "").strip() == password):
             pos = str((row["position"] if "position" in row.keys() else "") or "").strip().lower()
-            if pos == "area overseer":
+            if pos in ("area overseer", "sub area overseer"):
                 session["ao_logged_in"] = True
                 session["ao_username"] = username
                 session["ao_name"] = row["name"] or ""
                 session["ao_area_number"] = (row["age"] or "").strip()
                 session["ao_church_id"] = (row["sex"] or "").strip()
+                session["ao_role"] = (row["position"] or "").strip()
+                session["ao_sub_area"] = (row["sub_area"] or "").strip()
                 session.permanent = True
                 return redirect(request.form.get("next") or next_url)
 
@@ -4203,6 +4612,7 @@ def ao_tool():
 
     last_sync_ph = get_last_sync_display_ph()
     area_number = (session.get("ao_area_number") or "").strip()
+    sub_area = (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""
     area_accounts = get_accounts_for_area_cache(area_number)
 
     selected_username = (request.args.get("edit_username") or "").strip()
@@ -4213,12 +4623,19 @@ def ao_tool():
                 selected_account = row
                 break
 
+    announcement_rows = get_db().execute(
+        "SELECT * FROM sheet_announcement_cache WHERE TRIM(area) = TRIM(?) AND (? = '' OR TRIM(COALESCE(sub_area,'')) = TRIM(?)) ORDER BY sheet_row DESC",
+        (area_number, (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "", (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""),
+    ).fetchall()
     return render_template(
         "ao_tool.html",
         last_sync_ph=last_sync_ph,
         area_accounts=area_accounts,
         selected_account=selected_account,
         ao_area_number=area_number,
+        ao_is_sub_area=ao_is_sub_area_overseer(),
+        ao_sub_area=(session.get("ao_sub_area") or "").strip(),
+        announcement_rows=announcement_rows,
     )
 
 def _get_account_cache_row(username: str):
@@ -4240,7 +4657,7 @@ def ao_edit_account_save():
     original_username = (request.form.get("original_username") or "").strip()
 
     row = _get_account_cache_row(original_username)
-    if not row or str(row["age"] or "").strip() != area_number:
+    if not row or not _account_row_in_current_ao_scope(row):
         abort(403)
 
     full_name = (request.form.get("full_name") or "").strip()
@@ -4270,6 +4687,7 @@ def ao_edit_account_save():
         "username": username,
         "password": password,
         "position": "Pastor",
+        "sub_area": (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else str(row["sub_area"] or "").strip(),
     }
 
     try:
@@ -4291,7 +4709,7 @@ def ao_edit_account_delete():
     username = (request.form.get("original_username") or "").strip()
 
     row = _get_account_cache_row(username)
-    if not row or str(row["age"] or "").strip() != area_number:
+    if not row or not _account_row_in_current_ao_scope(row):
         abort(403)
 
     try:
@@ -4303,6 +4721,90 @@ def ao_edit_account_delete():
         flash("Failed to delete account.", "error")
 
     return redirect(url_for("ao_tool"))
+
+@app.route("/ao-tool/announcements/create", methods=["POST"])
+def ao_announcement_create():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+    title = (request.form.get("title") or "").strip()
+    body = (request.form.get("announcement") or "").strip()
+    if not title or not body:
+        flash("Title and announcement are required.", "error")
+        return redirect(url_for("ao_tool"))
+    payload = {
+        "title": title,
+        "announcement": body,
+        "announcement_date": date.today().isoformat(),
+        "area": (session.get("ao_area_number") or "").strip(),
+        "sub_area": (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "",
+        "author_username": (session.get("ao_username") or "").strip(),
+        "author_name": (session.get("ao_name") or "").strip(),
+    }
+    try:
+        _append_announcement_to_sheet(payload)
+        sync_from_sheets_if_needed(force=True)
+        flash("Announcement submitted successfully.", "success")
+    except Exception as e:
+        print("❌ Error creating announcement:", e)
+        flash("Failed to submit announcement.", "error")
+    return redirect(url_for("ao_tool"))
+
+
+@app.route("/ao-tool/announcements/update", methods=["POST"])
+def ao_announcement_update():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+    sheet_row = int(request.form.get("sheet_row") or 0)
+    row = _get_announcement_row(sheet_row)
+    if not row:
+        abort(404)
+    if str(row["area"] or "").strip() != (session.get("ao_area_number") or "").strip():
+        abort(403)
+    if ao_is_sub_area_overseer() and str(row["sub_area"] or "").strip() != (session.get("ao_sub_area") or "").strip():
+        abort(403)
+    payload = {
+        "title": (request.form.get("title") or "").strip(),
+        "announcement": (request.form.get("announcement") or "").strip(),
+        "announcement_date": str(row["announcement_date"] or date.today().isoformat()).strip() or date.today().isoformat(),
+        "area": str(row["area"] or "").strip(),
+        "sub_area": str(row["sub_area"] or "").strip(),
+        "author_username": str(row["author_username"] or session.get("ao_username") or "").strip(),
+        "author_name": str(row["author_name"] or session.get("ao_name") or "").strip(),
+    }
+    if not payload["title"] or not payload["announcement"]:
+        flash("Title and announcement are required.", "error")
+        return redirect(url_for("ao_tool"))
+    try:
+        _update_announcement_in_sheet(sheet_row, payload)
+        sync_from_sheets_if_needed(force=True)
+        flash("Announcement updated successfully.", "success")
+    except Exception as e:
+        print("❌ Error updating announcement:", e)
+        flash("Failed to update announcement.", "error")
+    return redirect(url_for("ao_tool"))
+
+
+@app.route("/ao-tool/announcements/delete", methods=["POST"])
+def ao_announcement_delete():
+    if not ao_logged_in():
+        return redirect(url_for("ao_login", next=request.path))
+    sheet_row = int(request.form.get("sheet_row") or 0)
+    row = _get_announcement_row(sheet_row)
+    if not row:
+        abort(404)
+    if str(row["area"] or "").strip() != (session.get("ao_area_number") or "").strip():
+        abort(403)
+    if ao_is_sub_area_overseer() and str(row["sub_area"] or "").strip() != (session.get("ao_sub_area") or "").strip():
+        abort(403)
+    try:
+        _delete_announcement_in_sheet(sheet_row)
+        sync_from_sheets_if_needed(force=True)
+        flash("Announcement deleted successfully.", "success")
+    except Exception as e:
+        print("❌ Error deleting announcement:", e)
+        flash("Failed to delete announcement.", "error")
+    return redirect(url_for("ao_tool"))
+
 
 @app.route("/ao-tool/create-account", methods=["GET", "POST"])
 def ao_create_account():
@@ -4325,7 +4827,7 @@ def ao_create_account():
 
     if request.method == "POST":
         full_name = (request.form.get("full_name") or "").strip()
-        age_raw = (request.form.get("age") or "").strip()
+        age_raw = (session.get("ao_area_number") or request.form.get("age") or "").strip()
         sex = (request.form.get("sex") or "").strip()
         church_address = (request.form.get("church_address") or "").strip()
         contact_number = (request.form.get("contact_number") or "").strip()
@@ -4353,14 +4855,14 @@ def ao_create_account():
                 db = get_db()
                 cursor = db.cursor()
 
-                cursor.execute(
+                existing = get_db().execute(
                     """
-                    SELECT id FROM pastors
-                    WHERE full_name = ? AND church_address = ?
+                    SELECT username FROM sheet_accounts_cache
+                    WHERE TRIM(name) = TRIM(?) AND TRIM(church_address) = TRIM(?)
+                    LIMIT 1
                     """,
                     (full_name, church_address),
-                )
-                existing = cursor.fetchone()
+                ).fetchone()
                 if existing:
                     error = "Account already exists for this pastor and church."
                 else:
@@ -4398,6 +4900,8 @@ def ao_create_account():
                             "birthday": birthday_raw,
                             "username": username,
                             "password": password,
+                            "position": "Pastor",
+                            "sub_area": (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "",
                         }
                         try:
                             append_account_to_sheet(pastor_data)
@@ -4450,7 +4954,7 @@ def ao_church_status():
         all_reported = True
 
         month_label = f"{name} {year}"
-        aopt_amount = get_aopt_amount_from_cache(month_label, ao_area_number)
+        aopt_amount = get_aopt_amount_from_cache(month_label, ao_area_number, (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "")
 
         for church in all_churches:
             stats = get_report_stats_for_month_and_church_cache(year, m, church)
@@ -4488,7 +4992,7 @@ def ao_church_status():
                 }
             )
 
-        area_summary = get_area_summary_for_month_cache(year, m, church_items, aopt_amount or 0.0)
+        area_summary = get_area_summary_for_month_cache(year, m, church_items, aopt_amount or 0.0, is_sub_ao=ao_is_sub_area_overseer())
 
         months.append(
             {
@@ -4511,6 +5015,9 @@ def ao_church_status():
         year_options=year_options,
         months=months,
         open_month=open_month,
+        ao_is_sub_area=ao_is_sub_area_overseer(),
+        ao_sub_area=(session.get("ao_sub_area") or "").strip(),
+        ao_role=(session.get("ao_role") or "").strip(),
     )
 
 
@@ -4529,6 +5036,7 @@ def ao_aopt_submit():
     month_label = f"{calendar.month_name[month]} {year}"
     amount_val = parse_float(amount_raw)
     area_number = (session.get("ao_area_number") or "").strip()
+    sub_area = (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""
 
     try:
         client = get_gs_client()
@@ -4538,9 +5046,14 @@ def ao_aopt_submit():
         headers = _ensure_aopt_headers(ws)
         idx_month = _find_col(headers, "Month")
         idx_amount = _find_col(headers, "Amount")
-        idx_area = _find_col(headers, "Area Number")
+        idx_area = _find_col(headers, "Area")
+        if idx_area is None:
+            idx_area = _find_col(headers, "Area Number")
+        idx_sub = _find_col(headers, "SubArea")
+        if idx_sub is None:
+            idx_sub = _find_col(headers, "Sub Area")
 
-        if idx_amount is None or idx_month is None or idx_area is None:
+        if idx_amount is None or idx_month is None or idx_area is None or idx_sub is None:
             print("❌ AOPT sheet missing required headers")
         else:
             db = get_db()
@@ -4548,20 +5061,31 @@ def ao_aopt_submit():
                 """
                 SELECT sheet_row
                 FROM sheet_aopt_cache
-                WHERE month = ? AND TRIM(area_number) = TRIM(?)
+                WHERE month = ? AND TRIM(area_number) = TRIM(?) AND TRIM(COALESCE(sub_area,'')) = TRIM(?)
                 """,
-                (month_label, area_number),
+                (month_label, area_number, sub_area),
             ).fetchone()
 
             if cached and cached["sheet_row"]:
                 sheet_row = int(cached["sheet_row"])
+                end_col = chr(ord('A') + max(idx_month, idx_amount, idx_area, idx_sub))
+                row_values = [""] * (max(idx_month, idx_amount, idx_area, idx_sub) + 1)
+                row_values[idx_month] = month_label
+                row_values[idx_amount] = amount_val
+                row_values[idx_area] = area_number
+                row_values[idx_sub] = sub_area
                 ws.update(
-                    f"A{sheet_row}:C{sheet_row}",
-                    [[month_label, amount_val, area_number]],
+                    f"A{sheet_row}:{end_col}{sheet_row}",
+                    [row_values],
                     value_input_option="USER_ENTERED",
                 )
             else:
-                ws.append_row([month_label, amount_val, area_number], value_input_option="USER_ENTERED")
+                row_values = [""] * (max(idx_month, idx_amount, idx_area, idx_sub) + 1)
+                row_values[idx_month] = month_label
+                row_values[idx_amount] = amount_val
+                row_values[idx_area] = area_number
+                row_values[idx_sub] = sub_area
+                ws.append_row(row_values, value_input_option="USER_ENTERED")
 
             sync_from_sheets_if_needed(force=True)
 
@@ -4581,7 +5105,7 @@ def ao_church_status_approve():
     church = (request.form.get("church") or "").strip()
 
     ok = False
-    if year and month and church:
+    if year and month and church and _church_in_current_ao_scope(church):
         try:
             sheet_batch_update_status_for_church_month(year, month, church, "Approved")
             cache_update_status_for_church_month(year, month, church, "Approved")
@@ -4607,7 +5131,8 @@ def ao_church_status_print_report_start():
         return jsonify({"ok": False, "error": "Missing parameters"}), 400
 
     try:
-        job_id = _create_print_report_job(area_number, year, month)
+        report_type = "sub_area" if ao_is_sub_area_overseer() else "ao"
+        job_id = _create_print_report_job(area_number, year, month, report_type=report_type, sub_area=(session.get("ao_sub_area") or "").strip())
         return jsonify({
             "ok": True,
             "job_id": job_id,
@@ -4974,6 +5499,9 @@ def ao_prayer_requests_approve(request_id):
         return redirect(url_for("ao_login", next=request.path))
 
     try:
+        prayer_row = get_db().execute("SELECT * FROM sheet_prayer_request_cache WHERE request_id = ?", (request_id,)).fetchone()
+        if not _prayer_in_current_ao_manage_scope(prayer_row):
+            abort(403)
         _update_prayer_request_cells_in_sheet(request_id, {"status": "Approved"})
         sync_from_sheets_if_needed(force=True)
     except Exception as e:
@@ -4989,6 +5517,9 @@ def ao_prayer_requests_reject(request_id):
 
     # ✅ simple reject = delete row
     try:
+        prayer_row = get_db().execute("SELECT * FROM sheet_prayer_request_cache WHERE request_id = ?", (request_id,)).fetchone()
+        if not _prayer_in_current_ao_manage_scope(prayer_row):
+            abort(403)
         _delete_prayer_request_row_in_sheet(request_id)
         sync_from_sheets_if_needed(force=True)
     except Exception as e:
@@ -5009,7 +5540,7 @@ def ao_prayer_requests_approve_all():
 
         for r in rows:
             req_id = (r["request_id"] or "").strip()
-            if not req_id:
+            if not req_id or not _prayer_in_current_ao_manage_scope(r):
                 continue
             _update_prayer_request_cells_in_sheet(req_id, {"status": "Approved"})
 
@@ -5018,6 +5549,118 @@ def ao_prayer_requests_approve_all():
         print("❌ Error approving all prayer requests:", e)
 
     return redirect(url_for("ao_prayer_requests"))
+
+
+
+def _ensure_announcement_sheet_headers(ws):
+    values = ws.get_all_values()
+    headers = ["Title", "Announcement", "Date", "Area", "SubArea", "Author Username", "Author Name"]
+    if not values:
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return headers
+    current = list(values[0])
+    changed = False
+    for i, name in enumerate(headers):
+        if _find_col(current, name) is None:
+            while len(current) <= i:
+                current.append("")
+            current[i] = name
+            changed = True
+    if changed:
+        rng = f"A1:{chr(ord('A') + len(current) - 1)}1"
+        ws.update(rng, [current], value_input_option="USER_ENTERED")
+        values = ws.get_all_values()
+        return values[0]
+    return current
+
+
+def _append_announcement_to_sheet(payload: dict):
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    try:
+        ws = sh.worksheet("Anouncement")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Anouncement", rows=1000, cols=10)
+    headers = _ensure_announcement_sheet_headers(ws)
+    row = [""] * len(headers)
+    mapping = {
+        "Title": payload.get("title", ""),
+        "Announcement": payload.get("announcement", ""),
+        "Date": payload.get("announcement_date", ""),
+        "Area": payload.get("area", ""),
+        "SubArea": payload.get("sub_area", ""),
+        "Sub Area": payload.get("sub_area", ""),
+        "Author Username": payload.get("author_username", ""),
+        "Author Name": payload.get("author_name", ""),
+    }
+    for i, h in enumerate(headers):
+        if h in mapping:
+            row[i] = mapping[h]
+    ws.append_row(row, value_input_option="USER_ENTERED")
+
+
+def _get_announcement_row(sheet_row: int):
+    return get_db().execute("SELECT * FROM sheet_announcement_cache WHERE sheet_row = ?", (int(sheet_row),)).fetchone()
+
+
+def _update_announcement_in_sheet(sheet_row: int, payload: dict):
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Anouncement")
+    headers = _ensure_announcement_sheet_headers(ws)
+    row = [""] * len(headers)
+    mapping = {
+        "Title": payload.get("title", ""),
+        "Announcement": payload.get("announcement", ""),
+        "Date": payload.get("announcement_date", ""),
+        "Area": payload.get("area", ""),
+        "SubArea": payload.get("sub_area", ""),
+        "Sub Area": payload.get("sub_area", ""),
+        "Author Username": payload.get("author_username", ""),
+        "Author Name": payload.get("author_name", ""),
+    }
+    for i, h in enumerate(headers):
+        if h in mapping:
+            row[i] = mapping[h]
+    end_col = chr(ord('A') + len(headers) - 1)
+    ws.update(f"A{int(sheet_row)}:{end_col}{int(sheet_row)}", [row], value_input_option="USER_ENTERED")
+
+
+def _delete_announcement_in_sheet(sheet_row: int):
+    if int(sheet_row) <= 1:
+        return False
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Anouncement")
+    ws.delete_rows(int(sheet_row))
+    return True
+
+
+def _announcement_in_current_scope(row):
+    if not row:
+        return False
+    area = str(row["area"] or "").strip()
+    sub_area = str(row["sub_area"] or "").strip()
+    my_area = _current_user_area_number()
+    if area and my_area and area != my_area:
+        return False
+    current_sub = ""
+    if pastor_logged_in():
+        u = (session.get("pastor_username") or "").strip()
+        acc = get_db().execute("SELECT sub_area FROM sheet_accounts_cache WHERE username = ?", (u,)).fetchone()
+        current_sub = str(acc["sub_area"] or "").strip() if acc else ""
+    elif ao_logged_in():
+        current_sub = (session.get("ao_sub_area") or "").strip()
+    if sub_area and sub_area != current_sub:
+        return False
+    return True
+
+
+def get_announcements_for_current_user():
+    rows = get_db().execute(
+        "SELECT * FROM sheet_announcement_cache ORDER BY sheet_row DESC"
+    ).fetchall()
+    return [r for r in rows if _announcement_in_current_scope(r)]
 
 
 
@@ -5940,20 +6583,10 @@ def _update_account_in_sheet(original_username: str, payload: dict):
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet("Accounts")
-
-    row = [[
-        payload.get("full_name", ""),
-        payload.get("age", ""),
-        payload.get("sex", ""),
-        payload.get("church_address", ""),
-        payload.get("contact_number", ""),
-        payload.get("birthday", ""),
-        payload.get("username", ""),
-        payload.get("password", ""),
-        payload.get("position", "Pastor"),
-    ]]
-
-    ws.update(f"A{sheet_row}:I{sheet_row}", row, value_input_option="USER_ENTERED")
+    headers = _ensure_accounts_headers(ws)
+    row = [_build_account_row_from_headers(headers, payload)]
+    end_col = chr(ord('A') + len(headers) - 1)
+    ws.update(f"A{sheet_row}:{end_col}{sheet_row}", row, value_input_option="USER_ENTERED")
     return True
 
 
