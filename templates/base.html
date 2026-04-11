@@ -175,7 +175,12 @@
       };
 
       document.querySelectorAll('form').forEach(function (form) {
-        if (form.id === 'pastor-submit-form' || form.dataset.skipGlobalLoading === 'true') return;
+        if (
+          form.id === 'pastor-submit-form' ||
+          form.dataset.skipGlobalLoading === 'true' ||
+          form.hasAttribute('data-no-loading')
+        ) return;
+
         form.addEventListener('submit', function () {
           const text = inferLoadingText(form);
           window.showGlobalLoading(text);
