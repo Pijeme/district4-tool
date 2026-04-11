@@ -1,315 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Pastor's Tool - District 4 Tool{% endblock %}
 
 {% block content %}
-<section class="card">
-  <h2>Pastor's Tool</h2>
+<div class="card">
+  <h1>Pastor Login</h1>
 
-  <style>
-    .submit-progress-wrap {
-      margin-top: 12px;
-      display: none;
-    }
-    .submit-progress-wrap.show {
-      display: block;
-    }
-    .submit-progress-bar {
-      width: 100%;
-      height: 12px;
-      border-radius: 999px;
-      background: #e5e7eb;
-      overflow: hidden;
-      border: 1px solid rgba(0,0,0,0.12);
-    }
-    .submit-progress-fill {
-      width: 0%;
-      height: 100%;
-      background: linear-gradient(90deg, #60a5fa, #2563eb);
-      transition: width 0.35s ease;
-    }
-    .submit-progress-text {
-      margin-top: 8px;
-      font-size: 13px;
-      color: #4b5563;
-      font-weight: 700;
-    }
-  </style>
+  {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
 
-  <div style="display:flex; align-items:center; gap:12px; font-size:1rem; font-style:italic; margin-top:-5px; flex-wrap:wrap;">
-    <div>Hello Pastor {{ pastor_name }}</div>
+  <form method="post">
+    <input type="hidden" name="next" value="{{ next_url }}">
 
-    {% if ao_mode %}
-      <form method="get" action="{{ url_for('pastor_tool') }}" style="margin:0;">
-        <input type="hidden" name="year" value="{{ year }}">
-        <input type="hidden" name="month" value="{{ month }}">
-
-        <select name="church" onchange="this.form.submit()">
-          {% for c in ao_church_choices %}
-            {% if c is mapping %}
-              {% set u = c.username %}
-              {% set label = (ao_church_labels.get(u) if ao_church_labels is defined else c.church) %}
-            {% else %}
-              {% set u = c %}
-              {% set label = (ao_church_labels.get(u) if ao_church_labels is defined else u) %}
-            {% endif %}
-
-            <option value="{{ u }}" {% if u == selected_church %}selected{% endif %}>
-              {{ label }}
-            </option>
-          {% endfor %}
-        </select>
-      </form>
-    {% endif %}
-  </div>
-
-  <form method="get" class="month-picker">
-    {% if ao_mode %}
-      <input type="hidden" name="church" value="{{ selected_church }}">
-    {% endif %}
-
-    <div class="field-group">
-      <label for="month">Month</label>
-      <select id="month" name="month">
-        {% for name, value in month_names %}
-          <option value="{{ value }}" {% if value == month %}selected{% endif %}>
-            {{ name }}{% if submitted_map is defined and submitted_map.get((year, value)) %} ✓{% endif %}
-          </option>
-        {% endfor %}
-      </select>
+    <div class="form-row">
+      <label for="username">Username</label>
+      <input
+        type="text"
+        id="username"
+        name="username"
+        required
+      >
     </div>
 
-    <div class="field-group">
-      <label for="year">Year</label>
-      <select id="year" name="year">
-        {% for y in year_options %}
-          <option value="{{ y }}" {% if y == year %}selected{% endif %}>
-            {{ y }}
-          </option>
-        {% endfor %}
-      </select>
+    <div class="form-row">
+      <label for="password">Password</label>
+      <input
+        type="password"
+        id="password"
+        name="password"
+        required
+      >
     </div>
 
-    <button type="submit" class="btn-secondary">Go</button>
-  </form>
-
-  <div class="sunday-list">
-    {% if sunday_list %}
-      {% for s in sunday_list %}
-        <a href="{{ url_for('sunday_detail', year=s.year, month=s.month, day=s.day, church=(selected_church if ao_mode else None)) }}"
-           class="sunday-card {% if s.is_complete %}complete{% else %}incomplete{% endif %}">
-          <span>{{ s.display }}</span>
-          <span class="status-pill">
-            {% if s.is_complete %}Complete{% else %}Missing Data{% endif %}
-          </span>
-        </a>
-      {% endfor %}
-    {% else %}
-      <p>No Sundays found for this month.</p>
-    {% endif %}
-  </div>
-
-  <div class="progress-row">
-    <a href="{{ url_for('church_progress_view', year=year, month=month, church=(selected_church if ao_mode else None)) }}"
-       class="sunday-card progress-card {% if cp_complete %}complete{% else %}incomplete{% endif %}">
-      <span>Church Progress</span>
-      <span class="status-pill">
-        {% if cp_complete %}Complete{% else %}Missing Data{% endif %}
-      </span>
-    </a>
-  </div>
-
-  <div class="field-group">
-    <label for="monthly_total">Total Amount for This Month</label>
-    <div class="peso-box">
-      <span class="peso-symbol">₱</span>
-      <input type="text"
-             id="monthly_total"
-             class="readonly-input peso-input"
-             readonly
-             value="{{ '%.2f'|format(monthly_total) }}">
-    </div>
-  </div>
-
-  <form method="post" class="submit-row" id="pastor-submit-form" data-no-loading>
-    {% if ao_mode %}
-      <input type="hidden" name="church" value="{{ selected_church }}">
-    {% endif %}
-    <input type="hidden" name="year" value="{{ year }}">
-    <input type="hidden" name="month" value="{{ month }}">
-
-    {% if status_key != 'approved' %}
-      <button type="button"
-              id="pastor-submit-btn"
-              class="btn-primary {% if not can_submit %}btn-disabled{% endif %}"
-              {% if not can_submit %}disabled{% endif %}>
-        {% if status_key == 'not_submitted' %}Submit{% else %}Resubmit{% endif %}
-      </button>
-    {% endif %}
-
-    <div class="status-box
-        {% if status_key == 'not_submitted' %}status-neutral
-        {% elif status_key == 'pending' %}status-pending
-        {% elif status_key == 'approved' %}status-approved
-        {% endif %}">
-      {% if status_key == 'not_submitted' %}
-        Not submitted
-      {% elif status_key == 'pending' %}
-        Pending AO approval
-      {% elif status_key == 'approved' %}
-        Approved by AO
-      {% endif %}
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Login</button>
+      <a href="{{ url_for('splash') }}" class="btn-secondary">Back</a>
     </div>
   </form>
-
-  <div id="submit-progress-wrap" class="submit-progress-wrap {% if submit_job_id %}show{% endif %}">
-    <div class="submit-progress-bar">
-      <div id="submit-progress-fill" class="submit-progress-fill"></div>
-    </div>
-    <div id="submit-progress-text" class="submit-progress-text">Preparing submission...</div>
-  </div>
-
-  <p class="muted small">
-    Submit/Resubmit is enabled only when all Sunday reports for the month are complete (green)
-    <strong>and</strong> the Church Progress form is complete.
-  </p>
-</section>
-
-<script>
-(function () {
-  const submitBtn = document.getElementById('pastor-submit-btn');
-  const submitForm = document.getElementById('pastor-submit-form');
-  const progressWrap = document.getElementById('submit-progress-wrap');
-  const progressFill = document.getElementById('submit-progress-fill');
-  const progressText = document.getElementById('submit-progress-text');
-  const existingJobId = {{ submit_job_id|tojson }};
-  let fakeProgress = 0;
-  let fakeTimer = null;
-  let pollTimer = null;
-
-  function showProgress() {
-    progressWrap.classList.add('show');
-  }
-
-  function setProgress(value) {
-    progressFill.style.width = Math.max(0, Math.min(100, value)) + '%';
-  }
-
-  function startFakeProgress() {
-    clearInterval(fakeTimer);
-    fakeTimer = setInterval(function () {
-      if (fakeProgress < 85) {
-        fakeProgress += 7;
-        setProgress(fakeProgress);
-      }
-    }, 600);
-  }
-
-  function stopTimers() {
-    if (fakeTimer) clearInterval(fakeTimer);
-    if (pollTimer) clearTimeout(pollTimer);
-  }
-
-  function pollStatus(statusUrl) {
-    fetch(statusUrl, { credentials: 'same-origin' })
-      .then(function (response) { return response.json(); })
-      .then(function (data) {
-        if (!data.ok) {
-          throw new Error(data.error || 'Unable to check submission status.');
-        }
-
-        showProgress();
-        if (data.message) {
-          progressText.textContent = data.message;
-        }
-
-        if (data.status === 'queued') {
-          fakeProgress = Math.max(fakeProgress, 18);
-          setProgress(fakeProgress);
-          pollTimer = setTimeout(function () { pollStatus(statusUrl); }, 1200);
-          return;
-        }
-
-        if (data.status === 'processing') {
-          fakeProgress = Math.max(fakeProgress, 55);
-          setProgress(fakeProgress);
-          pollTimer = setTimeout(function () { pollStatus(statusUrl); }, 1200);
-          return;
-        }
-
-        if (data.status === 'done') {
-          fakeProgress = 100;
-          setProgress(fakeProgress);
-          stopTimers();
-          setTimeout(function () {
-            window.location.href = data.redirect_url;
-          }, 700);
-          return;
-        }
-
-        if (data.status === 'failed') {
-          stopTimers();
-          if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = '{{ "Submit" if status_key == "not_submitted" else "Resubmit" }}';
-          }
-          progressText.textContent = data.error || 'Submission failed.';
-          setProgress(100);
-        }
-      })
-      .catch(function (error) {
-        stopTimers();
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = '{{ "Submit" if status_key == "not_submitted" else "Resubmit" }}';
-        }
-        showProgress();
-        progressText.textContent = error.message || 'Submission failed.';
-      });
-  }
-
-  if (submitBtn) {
-    submitBtn.addEventListener('click', function () {
-      if (submitBtn.disabled) return;
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Submitting...';
-      fakeProgress = 8;
-      showProgress();
-      setProgress(fakeProgress);
-      progressText.textContent = 'Request received...';
-      startFakeProgress();
-
-      const formData = new FormData(submitForm);
-      fetch('{{ url_for("pastor_tool_submit_start") }}', {
-        method: 'POST',
-        body: formData,
-        credentials: 'same-origin'
-      })
-      .then(function (response) { return response.json(); })
-      .then(function (data) {
-        if (!data.ok) {
-          throw new Error(data.error || 'Unable to start submission.');
-        }
-        pollStatus(data.status_url);
-      })
-      .catch(function (error) {
-        stopTimers();
-        submitBtn.disabled = false;
-        submitBtn.textContent = '{{ "Submit" if status_key == "not_submitted" else "Resubmit" }}';
-        showProgress();
-        progressText.textContent = error.message || 'Unable to start submission.';
-      });
-    });
-  }
-
-  if (existingJobId) {
-    showProgress();
-    startFakeProgress();
-    pollStatus('{{ url_for("pastor_tool_submit_status", job_id=submit_job_id) if submit_job_id else "" }}');
-    if (submitBtn) {
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Submitting...';
-    }
-  }
-})();
-</script>
+</div>
 {% endblock %}
