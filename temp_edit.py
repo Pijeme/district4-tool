@@ -716,49 +716,11 @@ ADMIN_PAGE_HTML = """
     .list-card { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:16px; margin-bottom:14px; box-shadow:0 8px 30px rgba(15,23,42,.05); display:flex; justify-content:space-between; gap:14px; align-items:center; }
     .list-title { font-weight:800; color:#1f2937; margin-bottom:6px; }
     .list-meta { color:#475569; line-height:1.6; }
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(15,23,42,.55);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      z-index: 1000;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      overscroll-behavior: contain;
-    }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.55); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
     .modal-backdrop.open { display:flex; }
-    .modal-card {
-      width: min(980px,100%);
-      max-height: 90vh;
-      background: #fff;
-      border-radius: 18px;
-      box-shadow: 0 18px 50px rgba(15,23,42,.24);
-      border: 1px solid #e5e7eb;
-      overflow-x: hidden;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      overscroll-behavior: contain;
-    }
-    .modal-head {
-      padding: 18px 18px 10px;
-      border-bottom: 1px solid #e5e7eb;
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: flex-start;
-      position: sticky;
-      top: 0;
-      background: #fff;
-      z-index: 2;
-    }
-    .modal-body {
-      padding: 18px;
-      overflow-x: hidden;
-      overflow-y: visible;
-    }
+    .modal-card { width:min(980px,100%); max-height:90vh; overflow:auto; background:#fff; border-radius:18px; box-shadow:0 18px 50px rgba(15,23,42,.24); border:1px solid #e5e7eb; overflow:hidden; }
+    .modal-head { padding:18px 18px 10px; border-bottom:1px solid #e5e7eb; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .modal-body { padding:18px; }
     .item { border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin-top:12px; background:#f8fafc; }
     .title { font-weight:800; margin-bottom:10px; }
     .grid { display:grid; grid-template-columns:180px 1fr 1fr; gap:8px 12px; }
@@ -774,41 +736,10 @@ ADMIN_PAGE_HTML = """
     .muted { color:#6b7280; }
     img { width:96px; height:96px; object-fit:cover; border-radius:12px; border:1px solid #cbd5e1; background:#fff; }
     .head-grid { display:grid; grid-template-columns:96px 1fr; gap:16px; align-items:start; }
-
     @media (max-width:900px){
       .grid { grid-template-columns:1fr; }
       .head-grid { grid-template-columns:1fr; }
       .list-card { flex-direction:column; align-items:stretch; }
-    }
-
-    @media (max-width:640px){
-      body { padding: 12px; }
-      .modal-backdrop {
-        padding: 8px;
-        align-items: flex-start;
-      }
-      .modal-card {
-        width: 100%;
-        max-height: 92vh;
-        margin-top: 8px;
-        border-radius: 18px 18px 12px 12px;
-      }
-      .modal-head {
-        padding: 14px 14px 10px;
-      }
-      .modal-body {
-        padding: 14px;
-      }
-      .actions {
-        gap: 10px;
-      }
-      .actions label {
-        display: block;
-        width: 100%;
-      }
-      .actions input[type="radio"] {
-        transform: scale(1.1);
-      }
     }
   </style>
 </head>
@@ -913,25 +844,18 @@ ADMIN_PAGE_HTML = """
   <script>
     function openBatchModal(batchId) {
       const el = document.getElementById("batchModal_" + batchId);
-      if (el) {
-        el.classList.add("open");
-        document.body.style.overflow = "hidden";
-      }
+      if (el) el.classList.add("open");
     }
 
     function closeBatchModal(batchId) {
       const el = document.getElementById("batchModal_" + batchId);
-      if (el) {
-        el.classList.remove("open");
-        document.body.style.overflow = "";
-      }
+      if (el) el.classList.remove("open");
     }
 
     document.querySelectorAll(".modal-backdrop").forEach(el => {
       el.addEventListener("click", function(e) {
         if (e.target === el) {
           el.classList.remove("open");
-          document.body.style.overflow = "";
         }
       });
     });
