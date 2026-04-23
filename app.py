@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 import gspread
+
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from flask import (
@@ -24,7 +25,12 @@ from flask import (
     flash,
     jsonify,
     make_response,
+    send_file,
 )
+
+from area_progress_monitor import register_area_progress_monitor
+from schedule import register_schedule_routes
+from temp_edit import register_temp_edit_routes
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
 def init_db():
@@ -272,6 +278,7 @@ def init_db():
             birthday TEXT,
             position TEXT,
             sub_area TEXT,
+            google_pin_location TEXT,
             sheet_row INTEGER
         )
         """
@@ -290,6 +297,11 @@ def init_db():
             cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN sub_area TEXT")
         except Exception:
             pass
+    if "google_pin_location" not in _acc_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN google_pin_location TEXT")
+        except Exception:
+            pass
 
     cursor.execute("PRAGMA table_info(print_report_jobs)")
     _pr_cols=[row[1] for row in cursor.fetchall()]
@@ -301,6 +313,11 @@ def init_db():
     if "report_type" not in _pr_cols:
         try:
             cursor.execute("ALTER TABLE print_report_jobs ADD COLUMN report_type TEXT NOT NULL DEFAULT 'ao'")
+        except Exception:
+            pass
+    if "print_action" not in _pr_cols:
+        try:
+            cursor.execute("ALTER TABLE print_report_jobs ADD COLUMN print_action TEXT NOT NULL DEFAULT 'main'")
         except Exception:
             pass
 
@@ -335,7 +352,8 @@ def init_db():
             healed REAL,
 
             amount_to_send REAL,
-            status TEXT
+            status TEXT,
+            report_status TEXT
         )
         """
     )
@@ -451,6 +469,8 @@ def init_db():
             activity_type TEXT,
             note TEXT,
             joining TEXT,
+            theme TEXT,
+            text TEXT,
             sheet_row INTEGER
         )
         """
@@ -486,11 +506,29 @@ def init_db():
             cursor.execute("ALTER TABLE sheet_district_schedule_cache ADD COLUMN joining TEXT")
         except Exception:
             pass
+    if "theme" not in _ds_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_district_schedule_cache ADD COLUMN theme TEXT")
+        except Exception:
+            pass
+    if "text" not in _ds_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_district_schedule_cache ADD COLUMN text TEXT")
+        except Exception:
+            pass
 
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_district_schedule_start ON sheet_district_schedule_cache(activity_date_start)"
     )
     
+    cursor.execute("PRAGMA table_info(sheet_report_cache)")
+    _rep_cols = [row[1] for row in cursor.fetchall()]
+    if "report_status" not in _rep_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_report_cache ADD COLUMN report_status TEXT")
+        except Exception:
+            pass
+
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)"
     )
@@ -881,6 +919,7 @@ def sync_from_sheets_if_needed(force=False):
         i_sub = _find_col(headers, "Sub Area")
         if i_sub is None:
             i_sub = _find_col(headers, "SubArea")
+        i_pin = _find_col(headers, "GooglePinLocation")
 
         def cell(row, idx):
             if idx is None:
@@ -902,6 +941,7 @@ def sync_from_sheets_if_needed(force=False):
             birthday = str(cell(row, i_bday)).strip()
             position = str(cell(row, i_pos)).strip()
             sub_area = str(cell(row, i_sub)).strip()
+            google_pin_location = str(cell(row, i_pin)).strip()
 
             # keep rows that have the search essentials even if username/password are blank
             if not area_number and not church_id and not full_name and not church_address:
@@ -910,8 +950,8 @@ def sync_from_sheets_if_needed(force=False):
             cur.execute(
                 """
                 INSERT OR REPLACE INTO sheet_accounts_cache
-                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, sheet_row)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, google_pin_location, sheet_row)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -924,6 +964,7 @@ def sync_from_sheets_if_needed(force=False):
                     birthday,
                     position,
                     sub_area,
+                    google_pin_location,
                     r + 1,
                 ),
             )
@@ -944,7 +985,14 @@ def sync_from_sheets_if_needed(force=False):
         headers = rep_values[0]
 
         i_activity = _find_col(headers, "activity_date")
-        i_status = _find_col(headers, "status")
+
+        # Church approval status (Approved / Pending) for Church Status colors
+        i_status = _find_col(headers, "Status")
+        if i_status is None:
+            i_status = _find_col(headers, "status")
+
+        # Print workflow status (MainPrint / LatePrint / Received)
+        i_report_status = _find_col(headers, "ReportStatus")
 
         i_church = _find_col(headers, "church")
         i_pastor = _find_col(headers, "pastor")
@@ -994,7 +1042,7 @@ def sync_from_sheets_if_needed(force=False):
                     tithes, offering, personal_tithes, mission_offering,
                     received_jesus, existing_bible_study, new_bible_study,
                     water_baptized, holy_spirit_baptized, childrens_dedication, healed,
-                    amount_to_send, status
+                    amount_to_send, status, report_status
                 ) VALUES (
                     ?, ?, ?, ?,
                     ?, ?, ?,
@@ -1002,7 +1050,7 @@ def sync_from_sheets_if_needed(force=False):
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?
+                    ?, ?, ?
                 )
                 """,
                 (
@@ -1029,6 +1077,7 @@ def sync_from_sheets_if_needed(force=False):
                     parse_float(cell(row, i_healed)),
                     parse_float(cell(row, i_send)),
                     str(cell(row, i_status)).strip(),
+                    str(cell(row, i_report_status)).strip(),
                 ),
             )
 
@@ -1099,7 +1148,9 @@ def sync_from_sheets_if_needed(force=False):
         i_title = _find_col(headers, "Prayer Request Title")
         i_request_date = _find_col(headers, "Prayer Request Date")
         i_request_text = _find_col(headers, "Prayer Request")
-        i_status = _find_col(headers, "Status")
+        i_status = _find_col(headers, "status")
+        if i_status is None:
+            i_status = _find_col(headers, "status")
         i_praying = _find_col(headers, "Pastor's Praying")
         i_answered = _find_col(headers, "Answered Date")
 
@@ -1162,6 +1213,8 @@ def sync_from_sheets_if_needed(force=False):
         i_activity_type = _find_col(headers, "Activity Type")
         i_note = _find_col(headers, "Note")
         i_joining = _find_col(headers, "Joining")
+        i_theme = _find_col(headers, "Theme")
+        i_text = _find_col(headers, "Text")
 
         def ds_cell(row, idx):
             if idx is None:
@@ -1187,9 +1240,11 @@ def sync_from_sheets_if_needed(force=False):
                     activity_type,
                     note,
                     joining,
+                    theme,
+                    text,
                     sheet_row
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     church_name,
@@ -1201,6 +1256,8 @@ def sync_from_sheets_if_needed(force=False):
                     ds_cell(row, i_activity_type),
                     ds_cell(row, i_note),
                     ds_cell(row, i_joining),
+                    ds_cell(row, i_theme),
+                    ds_cell(row, i_text),
                     rnum,
                 ),
             )
@@ -1380,13 +1437,420 @@ def _ensure_aopt_headers(ws):
     return current
 
 
-def _get_report_print_sheet(report_type: str = "ao"):
+def _get_report_print_sheet(report_type: str = "ao", print_action: str = "main"):
     client = get_gs_client()
     sh = client.open("District4 Data")
-    ws = sh.worksheet("SubAreaPrint" if report_type == "sub_area" else "AO Report Print")
+    report_type = str(report_type or "ao").strip()
+    print_action = str(print_action or "main").strip().lower()
+
+    if report_type == "sub_area":
+        sheet_name = "Late SubAreaPrint" if print_action == "late" else "SubAreaPrint"
+    else:
+        sheet_name = "Late AO Report Print" if print_action == "late" else "AO Report Print"
+
+    ws = sh.worksheet(sheet_name)
     return client, sh, ws
 
 
+def _prepare_report_print_sheet_direct(area_number: str, year: int, month: int, report_type: str = "ao", sub_area: str = "", print_action: str = "main"):
+    """Fallback direct sheet preparation for main/late print tabs.
+    Keeps the existing Apps Script flow for main print, but also allows late sheets to receive the correct controls.
+    """
+    _, _, ws = _get_report_print_sheet(report_type=report_type, print_action=print_action)
+    month_name = calendar.month_name[int(month)]
+    ws.update("I1", [[str(area_number or "").strip()]])
+    if str(report_type or "").strip() == "sub_area":
+        ws.update("H2", [[str(sub_area or "").strip()]])
+    ws.update("K2", [[month_name]])
+    ws.update("M2", [[int(year)]])
+    return ws
+
+
+def _get_report_status_column(ws):
+    values = ws.get_all_values()
+    if not values:
+        return None, []
+    headers = values[0]
+    idx = _find_col(headers, "ReportStatus")
+    if idx is None:
+        idx = _find_col(headers, "status")
+    return idx, headers
+
+
+def _get_scope_church_keys(area_number: str, sub_area: str = ""):
+    db = get_db()
+    params = [str(area_number or "").strip()]
+    extra = ""
+    sub_area = str(sub_area or "").strip()
+    if sub_area:
+        extra = " AND TRIM(COALESCE(sub_area, '')) = TRIM(?)"
+        params.append(sub_area)
+    rows = db.execute(
+        f"""
+        SELECT DISTINCT TRIM(sex) AS church_key
+        FROM sheet_accounts_cache
+        WHERE TRIM(age) = TRIM(?)
+          AND LOWER(TRIM(COALESCE(position, ''))) = 'pastor'
+          AND TRIM(sex) != ''
+          {extra}
+        """,
+        tuple(params),
+    ).fetchall()
+    return {str(r["church_key"] or "").strip() for r in rows if str(r["church_key"] or "").strip()}
+
+
+
+def _get_report_scope_sheet_rows(year: int, month: int, area_number: str, sub_area: str = "", status_mode: str = "all"):
+    """
+    Returns actual Report sheet row numbers for the selected scope.
+
+    status_mode:
+      - "all": all submitted rows in scope
+      - "blank": only rows whose ReportStatus is blank
+      - "printed": only rows whose ReportStatus is non-blank
+    """
+    sync_from_sheets_if_needed(force=False)
+
+    db = get_db()
+    area_number = str(area_number or "").strip()
+    sub_area = str(sub_area or "").strip()
+    status_mode = str(status_mode or "all").strip().lower()
+
+    if not area_number:
+        return []
+
+    params = [int(year), int(month), area_number]
+    sub_sql = ""
+    if sub_area:
+        sub_sql = " AND TRIM(COALESCE(a.sub_area, '')) = TRIM(?) "
+        params.append(sub_area)
+
+    rows = db.execute(
+        f"""
+        SELECT DISTINCT
+            r.sheet_row,
+            TRIM(COALESCE(r.report_status, '')) AS report_status
+        FROM sheet_report_cache r
+        JOIN sheet_accounts_cache a
+          ON (
+               TRIM(COALESCE(a.sex, '')) = TRIM(COALESCE(r.address, ''))
+            OR TRIM(COALESCE(a.sex, '')) = TRIM(COALESCE(r.church, ''))
+            OR TRIM(COALESCE(a.church_address, '')) = TRIM(COALESCE(r.address, ''))
+            OR TRIM(COALESCE(a.church_address, '')) = TRIM(COALESCE(r.church, ''))
+          )
+        WHERE r.year = ?
+          AND r.month = ?
+          AND r.sheet_row IS NOT NULL
+          AND TRIM(COALESCE(a.age, '')) = TRIM(?)
+          AND LOWER(TRIM(COALESCE(a.position, ''))) = 'pastor'
+          {sub_sql}
+        ORDER BY r.sheet_row ASC
+        """,
+        tuple(params),
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        status_val = str(row["report_status"] or "").strip()
+        if status_mode == "blank" and status_val:
+            continue
+        if status_mode == "printed" and not status_val:
+            continue
+        out.append(int(row["sheet_row"] or 0))
+
+    return sorted(set(r for r in out if r))
+
+
+def _get_report_status_records_for_scope(year: int, month: int, area_number: str, sub_area: str = ""):
+    """
+    Uses LOCAL CACHE ONLY.
+    Returns latest cached ReportStatus rows for the selected area/sub-area scope.
+    """
+    sync_from_sheets_if_needed(force=False)
+
+    db = get_db()
+    area_number = str(area_number or "").strip()
+    sub_area = str(sub_area or "").strip()
+
+    if not area_number:
+        return []
+
+    params = [int(year), int(month), area_number]
+    sub_sql = ""
+    if sub_area:
+        sub_sql = " AND TRIM(COALESCE(a.sub_area, '')) = TRIM(?) "
+        params.append(sub_area)
+
+    rows = db.execute(
+        f"""
+        SELECT
+            TRIM(COALESCE(a.sex, '')) AS church_id,
+            TRIM(COALESCE(a.church_address, '')) AS church_address,
+            TRIM(COALESCE(r.report_status, '')) AS report_status,
+            r.sheet_row
+        FROM sheet_report_cache r
+        JOIN sheet_accounts_cache a
+          ON (
+               TRIM(COALESCE(a.sex, '')) = TRIM(COALESCE(r.address, ''))
+            OR TRIM(COALESCE(a.sex, '')) = TRIM(COALESCE(r.church, ''))
+            OR TRIM(COALESCE(a.church_address, '')) = TRIM(COALESCE(r.address, ''))
+            OR TRIM(COALESCE(a.church_address, '')) = TRIM(COALESCE(r.church, ''))
+          )
+        WHERE r.year = ?
+          AND r.month = ?
+          AND TRIM(COALESCE(a.age, '')) = TRIM(?)
+          AND LOWER(TRIM(COALESCE(a.position, ''))) = 'pastor'
+          {sub_sql}
+        ORDER BY r.sheet_row DESC
+        """,
+        tuple(params),
+    ).fetchall()
+
+    records = []
+    seen = set()
+    for row in rows:
+        church_key = (row["church_id"] or "").strip() or (row["church_address"] or "").strip()
+        if not church_key:
+            continue
+        if church_key in seen:
+            continue
+        seen.add(church_key)
+        records.append({
+            "church_key": church_key,
+            "status": (row["report_status"] or "").strip(),
+            "sheet_row": int(row["sheet_row"] or 0),
+        })
+    return records
+
+
+def _get_report_status_map_for_scope(year: int, month: int, area_number: str, sub_area: str = ""):
+    return {rec["church_key"]: rec["status"] for rec in _get_report_status_records_for_scope(year, month, area_number, sub_area)}
+
+
+def _sheet_batch_update_report_status_rows(sheet_rows, status_label: str):
+    if not sheet_rows:
+        return
+    client = get_gs_client()
+    sh = client.open("District4 Data")
+    ws = sh.worksheet("Report")
+    idx, headers = _get_report_status_column(ws)
+    if idx is None:
+        raise RuntimeError("Report sheet missing ReportStatus/status header")
+    col_letter = chr(ord('A') + idx)
+    requests_body = []
+    for r in sorted(set(int(x) for x in sheet_rows if x)):
+        requests_body.append({"range": f"{col_letter}{r}", "values": [[status_label]]})
+    if requests_body:
+        ws.batch_update(requests_body)
+
+
+
+def _sync_report_cache_only():
+    """
+    Refresh only the local Report cache from Google Sheets.
+    Keeps Church Status/print buttons in sync without reloading all sheets.
+    """
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws_report = sh.worksheet("Report")
+        rep_values = ws_report.get_all_values()
+    except Exception as e:
+        print("❌ Report-only sync failed:", e)
+        return
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("DELETE FROM sheet_report_cache")
+
+    if rep_values and len(rep_values) >= 2:
+        headers = rep_values[0]
+
+        i_activity = _find_col(headers, "activity_date")
+        i_status = _find_col(headers, "Status")
+        if i_status is None:
+            i_status = _find_col(headers, "status")
+        i_report_status = _find_col(headers, "ReportStatus")
+
+        i_church = _find_col(headers, "church")
+        i_pastor = _find_col(headers, "pastor")
+        i_address = _find_col(headers, "address")
+
+        i_adult = _find_col(headers, "adult")
+        i_youth = _find_col(headers, "youth")
+        i_children = _find_col(headers, "children")
+
+        i_tithes = _find_col(headers, "tithes")
+        i_offering = _find_col(headers, "offering")
+        i_personal = _find_col(headers, "personal tithes")
+        i_mission = _find_col(headers, "mission offering")
+
+        i_recv = _find_col(headers, "received jesus")
+        i_exist = _find_col(headers, "existing bible study")
+        i_new = _find_col(headers, "new bible study")
+        i_water = _find_col(headers, "water baptized")
+        i_holy = _find_col(headers, "holy spirit baptized")
+        i_ded = _find_col(headers, "childrens dedication")
+        i_healed = _find_col(headers, "healed")
+
+        i_send = _find_col(headers, "amount to send")
+
+        def cell(row, idx):
+            if idx is None:
+                return ""
+            return row[idx] if idx < len(row) else ""
+
+        for r in range(1, len(rep_values)):
+            row = rep_values[r]
+            activity = str(cell(row, i_activity)).strip()
+            if not activity:
+                continue
+            d = parse_sheet_date(activity)
+            if not d:
+                continue
+
+            cur.execute(
+                """
+                INSERT INTO sheet_report_cache (
+                    sheet_row, year, month, activity_date,
+                    church, pastor, address,
+                    adult, youth, children,
+                    tithes, offering, personal_tithes, mission_offering,
+                    received_jesus, existing_bible_study, new_bible_study,
+                    water_baptized, holy_spirit_baptized, childrens_dedication, healed,
+                    amount_to_send, status, report_status
+                ) VALUES (
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?
+                )
+                """,
+                (
+                    r + 1,
+                    d.year,
+                    d.month,
+                    d.isoformat(),
+                    str(cell(row, i_church)).strip(),
+                    str(cell(row, i_pastor)).strip(),
+                    str(cell(row, i_address)).strip(),
+                    parse_float(cell(row, i_adult)),
+                    parse_float(cell(row, i_youth)),
+                    parse_float(cell(row, i_children)),
+                    parse_float(cell(row, i_tithes)),
+                    parse_float(cell(row, i_offering)),
+                    parse_float(cell(row, i_personal)),
+                    parse_float(cell(row, i_mission)),
+                    parse_float(cell(row, i_recv)),
+                    parse_float(cell(row, i_exist)),
+                    parse_float(cell(row, i_new)),
+                    parse_float(cell(row, i_water)),
+                    parse_float(cell(row, i_holy)),
+                    parse_float(cell(row, i_ded)),
+                    parse_float(cell(row, i_healed)),
+                    parse_float(cell(row, i_send)),
+                    str(cell(row, i_status)).strip(),
+                    str(cell(row, i_report_status)).strip(),
+                ),
+            )
+
+    db.commit()
+    _update_sync_time()
+
+
+def _reset_report_status_for_scope(year: int, month: int, area_number: str, sub_area: str = ""):
+    records = _get_report_status_records_for_scope(year, month, area_number, sub_area)
+    if any(str(rec["status"]).strip().lower() == 'received' for rec in records):
+        raise RuntimeError("Cannot refresh print after status is Received.")
+
+    sheet_rows = _get_report_scope_sheet_rows(year, month, area_number, sub_area, status_mode="all")
+    if not sheet_rows:
+        return
+
+    _sheet_batch_update_report_status_rows(sheet_rows, "")
+
+    try:
+        _sync_report_cache_only()
+    except Exception:
+        pass
+
+
+
+def _mark_scope_rows_for_print(job, print_label: str):
+    year = int(job["year"])
+    month = int(job["month"])
+    area = job["user_area"]
+    sub_area = str(job["sub_area"] or "").strip()
+
+    # Only mark rows whose ReportStatus is still blank
+    pending_rows = _get_report_scope_sheet_rows(year, month, area, sub_area, status_mode="blank")
+    if not pending_rows:
+        return 0
+
+    _sheet_batch_update_report_status_rows(pending_rows, print_label)
+
+    try:
+        _sync_report_cache_only()
+    except Exception:
+        pass
+
+    return len(pending_rows)
+
+
+def _get_scope_submitted_count(year: int, month: int, area_number: str, sub_area: str = "") -> int:
+    db = get_db()
+    params = [int(year), int(month), str(area_number or "").strip()]
+    extra = ""
+    if str(sub_area or "").strip():
+        extra = " AND TRIM(COALESCE(sub_area, '')) = TRIM(?)"
+        params.append(str(sub_area or "").strip())
+    row = db.execute(
+        f"""
+        SELECT COUNT(DISTINCT TRIM(sex)) AS cnt
+        FROM sheet_accounts_cache
+        WHERE LOWER(TRIM(COALESCE(position, ''))) = 'pastor'
+          AND TRIM(age) = TRIM(?)
+          AND TRIM(sex) IN (
+              SELECT DISTINCT TRIM(COALESCE(address, church))
+              FROM sheet_report_cache
+              WHERE year = ? AND month = ?
+                AND TRIM(COALESCE(address, church)) != ''
+          )
+          {extra}
+        """,
+        tuple([params[2], params[0], params[1], *params[3:]])
+    ).fetchone()
+    return int((row["cnt"] or 0) if row else 0)
+
+
+def _get_print_button_state(year: int, month: int, area_number: str, sub_area: str = "", total_churches: int = 0):
+    """
+    Decides enable/disable state of Main / Late / Refresh buttons
+    using cached report statuses within the selected area/sub-area scope.
+    """
+    status_map = _get_report_status_map_for_scope(year, month, area_number, sub_area)
+
+    statuses = [str(v or "").strip() for v in status_map.values()]
+    has_main = any(s == "MainPrint" for s in statuses)
+    has_late = any(s == "LatePrint" for s in statuses)
+    has_received = any(s == "Received" for s in statuses)
+    has_blank = any(not s for s in statuses)
+    has_any_submitted = len(status_map) > 0
+    unresolved_no_report = max(int(total_churches or 0) - len(status_map), 0) > 0
+
+    main_enabled = (not has_received) and has_any_submitted and (not has_main)
+    late_enabled = (not has_received) and has_main and (has_blank or unresolved_no_report)
+    refresh_enabled = (not has_received) and (has_main or has_late)
+
+    return {
+        "main_enabled": main_enabled,
+        "late_enabled": late_enabled,
+        "refresh_enabled": refresh_enabled,
+        "has_received": has_received,
+    }
 
 
 def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
@@ -1431,14 +1895,14 @@ def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
 
 
 
-def _create_print_report_job(user_area: str, year: int, month: int, report_type: str = "ao", sub_area: str = ""):
+def _create_print_report_job(user_area: str, year: int, month: int, report_type: str = "ao", sub_area: str = "", print_action: str = "main"):
     job_id = str(uuid.uuid4())
     get_db().execute(
         """
-        INSERT INTO print_report_jobs (id, user_area, sub_area, report_type, year, month, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
+        INSERT INTO print_report_jobs (id, user_area, sub_area, report_type, print_action, year, month, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
         """,
-        (job_id, str(user_area or "").strip(), str(sub_area or "").strip(), str(report_type or "ao").strip(), int(year), int(month), utc_now_iso()),
+        (job_id, str(user_area or "").strip(), str(sub_area or "").strip(), str(report_type or "ao").strip(), str(print_action or "main").strip(), int(year), int(month), utc_now_iso()),
     )
     get_db().commit()
     return job_id
@@ -1511,22 +1975,53 @@ def _process_print_report_job(job_id: str):
     try:
         report_type = str(job["report_type"] or "ao").strip()
         sub_area = str(job["sub_area"] or "").strip()
-        _prepare_report_print_via_apps_script(
-            job["user_area"],
-            int(job["year"]),
-            int(job["month"]),
-            report_type=report_type,
-            sub_area=sub_area,
-        )
+        print_action = str(job["print_action"] or "main").strip().lower()
 
-        _, sh, ws = _get_report_print_sheet(report_type=report_type)
+        if print_action == "refresh":
+            _reset_report_status_for_scope(int(job["year"]), int(job["month"]), job["user_area"], sub_area)
+            try:
+                _sync_report_cache_only()
+            except Exception:
+                pass
+            get_db().execute(
+                """
+                UPDATE print_report_jobs
+                SET status = 'done', finished_at = ?, result_path = '', error_message = NULL
+                WHERE id = ?
+                """,
+                (utc_now_iso(), job_id),
+            )
+            get_db().commit()
+            return
+
+        # Keep existing Apps Script flow for main print. For late print, prepare the copied late tab directly.
+        if print_action == "main":
+            _prepare_report_print_via_apps_script(
+                job["user_area"],
+                int(job["year"]),
+                int(job["month"]),
+                report_type=report_type,
+                sub_area=sub_area,
+            )
+        else:
+            _prepare_report_print_sheet_direct(
+                job["user_area"],
+                int(job["year"]),
+                int(job["month"]),
+                report_type=report_type,
+                sub_area=sub_area,
+                print_action=print_action,
+            )
+
+        _, sh, ws = _get_report_print_sheet(report_type=report_type, print_action=print_action)
         pdf_bytes = _export_gsheet_worksheet_pdf(sh.id, str(ws.id))
 
         out_dir = os.path.join(os.path.dirname(__file__), "generated_reports")
         os.makedirs(out_dir, exist_ok=True)
+        action_prefix = "Late" if print_action == "late" else "Main"
         prefix = "SubAreaPrint" if str(job["report_type"] or "").strip() == "sub_area" else "AO_Report_Print"
         extra = f"_{str(job['sub_area'] or '').strip()}" if str(job["report_type"] or "").strip() == "sub_area" and str(job['sub_area'] or '').strip() else ""
-        filename = f"{prefix}_Area_{job['user_area']}{extra}_{calendar.month_name[int(job['month'])]}_{int(job['year'])}_{job_id}.pdf".replace(" ", "_")
+        filename = f"{action_prefix}_{prefix}_Area_{job['user_area']}{extra}_{calendar.month_name[int(job['month'])]}_{int(job['year'])}_{job_id}.pdf".replace(" ", "_")
         result_path = os.path.join(out_dir, filename)
 
         with open(result_path, "wb") as f:
@@ -2148,7 +2643,7 @@ def _delete_report_rows_for_month_in_sheet(year: int, month: int, church_key: st
 
 def _ensure_accounts_headers(ws):
     values = ws.get_all_values()
-    headers = ["Name", "Area Number", "Church ID", "Church Address", "Contact #", "Birth Day", "UserName", "Password", "Position", "Sub Area"]
+    headers = ["Name", "Area Number", "Church ID", "Church Address", "Contact #", "Birth Day", "UserName", "Password", "Position", "Sub Area", "GooglePinLocation"]
     if not values:
         ws.append_row(headers, value_input_option="USER_ENTERED")
         return headers
@@ -2184,23 +2679,35 @@ def _build_account_row_from_headers(headers, payload: dict):
         "Position": payload.get("position", "Pastor"),
         "Sub Area": payload.get("sub_area", ""),
         "SubArea": payload.get("sub_area", ""),
+        "GooglePinLocation": payload.get("google_pin_location", ""),
     }
     for i, h in enumerate(headers):
         if h in mapping:
             row[i] = mapping[h]
     return row
 
-
 def append_account_to_sheet(pastor_data: dict):
     client = get_gs_client()
     sh = client.open("District4 Data")
+
     try:
         worksheet = sh.worksheet("Accounts")
     except gspread.WorksheetNotFound:
         worksheet = sh.add_worksheet(title="Accounts", rows=100, cols=12)
+
+    # Ensure headers exist and start at Column A
     headers = _ensure_accounts_headers(worksheet)
+
+    # Build row aligned with headers
     row = _build_account_row_from_headers(headers, pastor_data)
-    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+    # ✅ FORCE WRITE FROM COLUMN A (FIX)
+    worksheet.append_rows(
+        [row],
+        value_input_option="USER_ENTERED",
+        table_range="A1"   # 🔥 THIS IS THE FIX
+    )
+
 
 def _ensure_report_sheet_headers(ws):
     """
@@ -3111,6 +3618,10 @@ def generate_pastor_credentials(full_name: str, age: int):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
+
+register_area_progress_monitor(app)
+register_schedule_routes(app)
+register_temp_edit_routes(app)
 
 @app.template_filter("phpeso")
 def phpeso_filter(value):
@@ -4932,6 +5443,8 @@ def ao_church_status():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
+    sync_from_sheets_if_needed(force=False)
+
     today = date.today()
     year = request.args.get("year", type=int) or today.year
 
@@ -4993,6 +5506,13 @@ def ao_church_status():
             )
 
         area_summary = get_area_summary_for_month_cache(year, m, church_items, aopt_amount or 0.0, is_sub_ao=ao_is_sub_area_overseer())
+        print_state = _get_print_button_state(
+            year,
+            m,
+            ao_area_number,
+            (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "",
+            total_churches=len(all_churches),
+        )
 
         months.append(
             {
@@ -5004,6 +5524,7 @@ def ao_church_status():
                 "all_reported": all_reported,
                 "churches": church_items,
                 "area_summary": area_summary,
+                "print_state": print_state,
             }
         )
 
@@ -5019,7 +5540,6 @@ def ao_church_status():
         ao_sub_area=(session.get("ao_sub_area") or "").strip(),
         ao_role=(session.get("ao_role") or "").strip(),
     )
-
 
 @app.route("/ao-tool/church-status/aopt", methods=["POST"])
 def ao_aopt_submit():
@@ -5124,18 +5644,32 @@ def ao_church_status_print_report_start():
     if not ao_logged_in():
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
-    year = int(request.form.get("year") or 0)
-    month = int(request.form.get("month") or 0)
+    payload = request.get_json(silent=True) or request.form
+    year = int((payload.get("year") if payload else 0) or 0)
+    month = int((payload.get("month") if payload else 0) or 0)
+    action = str((payload.get("action") if payload else "main") or "main").strip().lower()
+    if action not in {"main", "late", "refresh"}:
+        action = "main"
+
     area_number = (session.get("ao_area_number") or "").strip()
+    sub_area = (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else ""
     if not (year and month and area_number):
         return jsonify({"ok": False, "error": "Missing parameters"}), 400
 
     try:
         report_type = "sub_area" if ao_is_sub_area_overseer() else "ao"
-        job_id = _create_print_report_job(area_number, year, month, report_type=report_type, sub_area=(session.get("ao_sub_area") or "").strip())
+        job_id = _create_print_report_job(
+            area_number,
+            year,
+            month,
+            report_type=report_type,
+            sub_area=sub_area,
+            print_action=action,
+        )
         return jsonify({
             "ok": True,
             "job_id": job_id,
+            "action": action,
             "status_url": url_for("ao_church_status_print_report_status", job_id=job_id),
             "download_url": url_for("ao_church_status_print_report_download", job_id=job_id),
         })
@@ -5160,9 +5694,17 @@ def ao_church_status_print_report_status(job_id):
     if status == "queued":
         message = "Waiting in queue..." if queue_ahead > 0 else "Preparing report..."
     elif status == "processing":
-        message = "Generating PDF..."
+        action = str(job["print_action"] or "main").strip().lower() if "print_action" in job.keys() else "main"
+        if action == "refresh":
+            message = "Refreshing print history..."
+        else:
+            message = "Generating PDF..."
     elif status == "done":
-        message = "Download ready..."
+        action = str(job["print_action"] or "main").strip().lower() if "print_action" in job.keys() else "main"
+        if action == "refresh":
+            message = "Print history refreshed."
+        else:
+            message = "Download ready..."
     elif status == "downloaded":
         message = "Download already started."
     elif status == "failed":
@@ -5174,10 +5716,41 @@ def ao_church_status_print_report_status(job_id):
         "status": status,
         "queue_ahead": queue_ahead,
         "message": message,
-        "download_url": url_for("ao_church_status_print_report_download", job_id=job_id) if status == "done" else "",
+        "download_url": url_for("ao_church_status_print_report_download", job_id=job_id) if status == "done" and str(job["print_action"] or "main").strip().lower() != "refresh" else "",
         "error": job["error_message"] or "",
     })
-from flask import send_file, abort, make_response
+
+
+@app.route("/ao-tool/church-status/print-report/finalize/<job_id>", methods=["POST"])
+def ao_church_status_print_report_finalize(job_id):
+    if not ao_logged_in():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    job = _get_print_report_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+
+    print_action = str(job["print_action"] or "main").strip().lower()
+    if print_action == "refresh":
+        return jsonify({"ok": True, "finalized": True, "message": "Refresh completed."})
+
+    label = "LatePrint" if print_action == "late" else "MainPrint"
+    try:
+        marked = _mark_scope_rows_for_print(job, label)
+    except Exception as mark_err:
+        return jsonify({"ok": False, "error": str(mark_err)}), 500
+
+    try:
+        get_db().execute(
+            "UPDATE print_report_jobs SET status = 'downloaded' WHERE id = ? AND status = 'done'",
+            (job_id,),
+        )
+        get_db().commit()
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "finalized": True, "marked": marked, "message": "ReportStatus updated."})
+
 import threading
 
 download_locks = {}
@@ -5198,6 +5771,10 @@ def ao_church_status_print_report_download(job_id):
     if not job:
         abort(404)
 
+    print_action = str(job["print_action"] or "main").strip().lower()
+    if print_action == "refresh":
+        return redirect(url_for("ao_church_status", year=int(job["year"]), open_month=int(job["month"])))
+
     result_path = str(job["result_path"] or "").strip()
     if not result_path or not os.path.exists(result_path):
         abort(404)
@@ -5205,7 +5782,6 @@ def ao_church_status_print_report_download(job_id):
     lock = get_lock(job_id)
 
     with lock:
-        # prevent duplicate downloads
         if download_done.get(job_id):
             return ("", 204)
 
@@ -5672,897 +6248,6 @@ def get_announcements_for_current_user():
 def event_registration():
     return render_template("event_registration.html")
 
-# Changes starts here 11/03/2026 2:02 pm until @app.route("/schedules")
-
-
-DISTRICT_SCHEDULE_SHEET_NAME = "DistrictSchedule"
-DISTRICT_SECRETARY_CODE = "District_Secretary_444"
-CHAIN_PRAYER_SCHEDULE_SHEET_NAME = "ChainPrayerSchedules"
-
-
-def _ensure_district_schedule_headers():
-    client = get_gs_client()
-    sh = client.open("District4 Data")
-    try:
-        ws = sh.worksheet(DISTRICT_SCHEDULE_SHEET_NAME)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DISTRICT_SCHEDULE_SHEET_NAME, rows=1000, cols=12)
-
-    values = ws.get_all_values()
-    headers = [
-        "Church Name",
-        "Church Address",
-        "Pastor's Name",
-        "Contact Number",
-        "Activity Date Start",
-        "Activity Date End",
-        "Activity Type",
-        "Note",
-        "Joining",
-    ]
-    if not values:
-        ws.append_row(headers, value_input_option="USER_ENTERED")
-    return ws
-
-
-def _append_district_schedule_row(payload: dict):
-    ws = _ensure_district_schedule_headers()
-    ws.append_row(
-        [
-            payload.get("church_name", ""),
-            payload.get("church_address", ""),
-            payload.get("pastor_name", ""),
-            payload.get("contact_number", ""),
-            payload.get("activity_date_start", ""),
-            payload.get("activity_date_end", ""),
-            payload.get("activity_type", ""),
-            payload.get("note", ""),
-            payload.get("joining", ""),
-        ],
-        value_input_option="USER_ENTERED",
-    )
-
-
-def _update_district_schedule_row(sheet_row: int, payload: dict):
-    ws = _ensure_district_schedule_headers()
-    ws.update(
-        f"A{sheet_row}:I{sheet_row}",
-        [[
-            payload.get("church_name", ""),
-            payload.get("church_address", ""),
-            payload.get("pastor_name", ""),
-            payload.get("contact_number", ""),
-            payload.get("activity_date_start", ""),
-            payload.get("activity_date_end", ""),
-            payload.get("activity_type", ""),
-            payload.get("note", ""),
-            payload.get("joining", ""),
-        ]],
-        value_input_option="USER_ENTERED",
-    )
-
-
-def _delete_district_schedule_row(sheet_row: int):
-    ws = _ensure_district_schedule_headers()
-    if int(sheet_row) > 1:
-        ws.delete_rows(int(sheet_row))
-
-
-def _get_schedule_row_from_cache(sheet_row: int):
-    db = get_db()
-    return db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        WHERE sheet_row = ?
-        """,
-        (sheet_row,),
-    ).fetchone()
-def _join_schedule(sheet_row: int, join_name: str):
-    join_name = str(join_name or "").strip()
-    if not join_name:
-        return False
-
-    row = _get_schedule_row_from_cache(sheet_row)
-    if not row:
-        return False
-
-    existing = _unique_joining_names(_parse_joining_names(row["joining"]))
-    existing_keys = {x.lower() for x in existing}
-
-    if join_name.lower() not in existing_keys:
-        existing.append(join_name)
-
-    payload = {
-        "church_name": row["church_name"] or "",
-        "church_address": row["church_address"] or "",
-        "pastor_name": row["pastor_name"] or "",
-        "contact_number": row["contact_number"] or "",
-        "activity_date_start": row["activity_date_start"] or "",
-        "activity_date_end": row["activity_date_end"] or "",
-        "activity_type": row["activity_type"] or "",
-        "note": row["note"] or "",
-        "joining": ", ".join(existing),
-    }
-
-    _update_district_schedule_row(sheet_row, payload)
-    return True
-
-def _get_schedule_rows_for_month(year: int, month: int):
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        ORDER BY activity_date_start ASC, church_name ASC
-        """
-    ).fetchall()
-
-    filtered = []
-    for r in rows:
-        start_dt, end_dt = _safe_schedule_end_date(r["activity_date_start"], r["activity_date_end"])
-        if not start_dt:
-            continue
-        if start_dt.year == year and start_dt.month == month:
-            filtered.append(r)
-            continue
-        if end_dt and end_dt.year == year and end_dt.month == month:
-            filtered.append(r)
-
-    return filtered
-
-
-def _safe_schedule_end_date(start_raw: str, end_raw: str):
-    start_dt = parse_sheet_date(start_raw)
-    end_dt = parse_sheet_date(end_raw) if str(end_raw or "").strip() else None
-
-    if not start_dt:
-        return None, None
-
-    if not end_dt:
-        end_dt = start_dt
-
-    if end_dt < start_dt:
-        end_dt = start_dt
-
-    return start_dt, end_dt
-
-
-def _schedule_type_class(activity_type: str):
-    t = str(activity_type or "").strip().lower()
-    if t == "thanksgiving":
-        return "type-thanksgiving"
-    if t == "convention":
-        return "type-convention"
-    if t == "area activities":
-        return "type-area"
-    if t == "district prayer & fasting":
-        return "type-prayer"
-    return "type-other"
-
-def _parse_joining_names(raw_value: str):
-    return [x.strip() for x in str(raw_value or "").split(",") if x.strip()]
-
-
-def _unique_joining_names(names):
-    cleaned = []
-    seen = set()
-    for name in names:
-        key = str(name or "").strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            cleaned.append(str(name).strip())
-    return cleaned
-
-def build_schedule_month(year: int, month: int):
-    ensure_schedule_cache_loaded()
-
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        ORDER BY activity_date_start ASC, church_name ASC
-        """
-    ).fetchall()
-
-    cal = calendar.Calendar(firstweekday=6)
-    month_days = cal.monthdatescalendar(year, month)
-
-    event_lookup = {}
-    day_map = {}
-
-    for idx, r in enumerate(rows, start=1):
-        start_dt, end_dt = _safe_schedule_end_date(r["activity_date_start"], r["activity_date_end"])
-        if not start_dt:
-            continue
-
-        event_id = f"evt_{idx}"
-        event_obj = {
-            "id": event_id,
-            "sheet_row": r["sheet_row"],
-            "church_name": str(r["church_name"] or "").strip(),
-            "church_address": str(r["church_address"] or "").strip(),
-            "pastor_name": str(r["pastor_name"] or "").strip(),
-            "contact_number": str(r["contact_number"] or "").strip(),
-            "activity_date_start": str(r["activity_date_start"] or "").strip(),
-            "activity_date_end": str(r["activity_date_end"] or "").strip(),
-            "activity_type": str(r["activity_type"] or "").strip() or "Others",
-            "note": str(r["note"] or "").strip(),
-            "joining": str(r["joining"] or "").strip(),
-            "joining_count": len(_unique_joining_names(_parse_joining_names(r["joining"]))),
-            "type_class": _schedule_type_class(r["activity_type"]),
-        }
-        event_lookup[event_id] = event_obj
-
-        current = start_dt
-        while current <= end_dt:
-            key = current.isoformat()
-            day_map.setdefault(key, []).append(event_obj)
-            current = current.fromordinal(current.toordinal() + 1)
-
-    weeks = []
-    for week in month_days:
-        week_cells = []
-        for d in week:
-            key = d.isoformat()
-            items = day_map.get(key, [])
-            week_cells.append(
-                {
-                    "date": d,
-                    "iso": key,
-                    "in_month": d.month == month,
-                    "events": items,
-                    "visible_events": items[:2],
-                    "extra_count": max(0, len(items) - 2),
-                    "is_today": d == date.today(),
-                }
-            )
-        weeks.append(week_cells)
-
-    month_title = datetime(year, month, 1).strftime("%B %Y")
-    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
-    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
-
-    return {
-        "month_title": month_title,
-        "year": year,
-        "month": month,
-        "weeks": weeks,
-        "event_lookup": event_lookup,
-        "prev_year": prev_year,
-        "prev_month": prev_month,
-        "next_year": next_year,
-        "next_month": next_month,
-        
-    }
-def build_chain_prayer_month(year: int, month: int):
-    ensure_schedule_cache_loaded()
-
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT *
-        FROM sheet_chain_prayer_schedule_cache
-        ORDER BY prayer_date ASC, church_name_assigned ASC
-        """
-    ).fetchall()
-
-    cal = calendar.Calendar(firstweekday=6)
-    month_days = cal.monthdatescalendar(year, month)
-
-    day_map = {}
-    event_lookup = {}
-
-    for idx, r in enumerate(rows, start=1):
-        prayer_dt = parse_sheet_date(r["prayer_date"])
-        if not prayer_dt:
-            continue
-
-        event_id = f"cp_{idx}"
-        event_obj = {
-            "id": event_id,
-            "sheet_row": r["sheet_row"],
-            "church_name_assigned": str(r["church_name_assigned"] or "").strip(),
-            "pastor_name": str(r["pastor_name"] or "").strip(),
-            "prayer_date": str(r["prayer_date"] or "").strip(),
-            "type_class": "type-prayer",
-        }
-
-        event_lookup[event_id] = event_obj
-        day_map.setdefault(prayer_dt.isoformat(), []).append(event_obj)
-
-    weeks = []
-    for week in month_days:
-        week_cells = []
-        for d in week:
-            key = d.isoformat()
-            items = day_map.get(key, [])
-            week_cells.append(
-                {
-                    "date": d,
-                    "iso": key,
-                    "in_month": d.month == month,
-                    "events": items,
-                    "visible_events": items[:2],
-                    "extra_count": max(0, len(items) - 2),
-                    "is_today": d == date.today(),
-                }
-            )
-        weeks.append(week_cells)
-
-    month_title = datetime(year, month, 1).strftime("%B %Y")
-    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
-    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
-
-    return {
-        "month_title": month_title,
-        "year": year,
-        "month": month,
-        "weeks": weeks,
-        "event_lookup": event_lookup,
-        "prev_year": prev_year,
-        "prev_month": prev_month,
-        "next_year": next_year,
-        "next_month": next_month,
-    }
-
-def _normalize_schedule_search_value(value):
-    return " ".join(str(value or "").strip().lower().split())
-
-
-def get_schedule_search_accounts():
-    """
-    Build searchable options from Accounts cache.
-    Uses:
-    - age  -> Area Number
-    - sex  -> Church ID
-    - name -> Pastor Name
-    """
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            TRIM(age) AS area_number,
-            TRIM(sex) AS church_name,
-            TRIM(name) AS pastor_name,
-            TRIM(church_address) AS church_address,
-            TRIM(position) AS position
-        FROM sheet_accounts_cache
-        WHERE TRIM(COALESCE(age, '')) != ''
-          AND TRIM(COALESCE(name, '')) != ''
-          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
-        ORDER BY area_number, church_name, pastor_name
-        """
-    ).fetchall()
-
-    items = []
-    seen = set()
-
-    for r in rows:
-        area_number = str(r["area_number"] or "").strip()
-        church_name = str(r["church_name"] or "").strip()
-        pastor_name = str(r["pastor_name"] or "").strip()
-        church_address = str(r["church_address"] or "").strip()
-
-        # fallback in case church id/name is blank
-        display_church = church_name or church_address
-        if not area_number or not display_church or not pastor_name:
-            continue
-
-        key = (
-            _normalize_schedule_search_value(area_number),
-            _normalize_schedule_search_value(display_church),
-            _normalize_schedule_search_value(pastor_name),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-
-        items.append({
-            "area_number": area_number,
-            "church_name": display_church,
-            "pastor_name": pastor_name,
-            "church_address": church_address,
-        })
-
-    return items
-
-
-def search_schedule_rows(area_number="", church_name="", pastor_name=""):
-    """
-    Search both local schedule caches using Accounts cache as filter source.
-    """
-    db = get_db()
-
-    area_key = _normalize_schedule_search_value(area_number)
-    church_key = _normalize_schedule_search_value(church_name)
-    pastor_key = _normalize_schedule_search_value(pastor_name)
-
-    account_rows = get_schedule_search_accounts()
-
-    matched_accounts = []
-    for row in account_rows:
-        if area_key and _normalize_schedule_search_value(row["area_number"]) != area_key:
-            continue
-        if church_key and _normalize_schedule_search_value(row["church_name"]) != church_key:
-            continue
-        if pastor_key and _normalize_schedule_search_value(row["pastor_name"]) != pastor_key:
-            continue
-        matched_accounts.append(row)
-
-    allowed_churches = {
-        _normalize_schedule_search_value(r["church_name"])
-        for r in matched_accounts
-        if str(r.get("church_name") or "").strip()
-    }
-    allowed_pastors = {
-        _normalize_schedule_search_value(r["pastor_name"])
-        for r in matched_accounts
-        if str(r.get("pastor_name") or "").strip()
-    }
-
-    district_rows_all = db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        ORDER BY activity_date_start ASC, church_name ASC
-        """
-    ).fetchall()
-
-    chain_rows_all = db.execute(
-        """
-        SELECT *
-        FROM sheet_chain_prayer_schedule_cache
-        ORDER BY prayer_date ASC, church_name_assigned ASC
-        """
-    ).fetchall()
-
-    district_rows = []
-    for row in district_rows_all:
-        row_church = _normalize_schedule_search_value(row["church_name"])
-        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
-
-        if allowed_churches and row_church not in allowed_churches:
-            continue
-        if pastor_key and allowed_pastors and row_pastor not in allowed_pastors:
-            continue
-
-        district_rows.append(row)
-
-    chain_rows = []
-    for row in chain_rows_all:
-        row_church = _normalize_schedule_search_value(row["church_name_assigned"])
-
-        if allowed_churches and row_church not in allowed_churches:
-            continue
-
-        chain_rows.append(row)
-
-    return district_rows, chain_rows
-
-import re
-
-def _normalize_schedule_search_value(value):
-    text = str(value or "").strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    return text
-
-
-def get_schedule_search_accounts():
-    db = get_db()
-    rows = db.execute(
-        """
-        SELECT
-            TRIM(age) AS area_number,
-            TRIM(sex) AS church_name,
-            TRIM(name) AS pastor_name,
-            TRIM(position) AS position
-        FROM sheet_accounts_cache
-        WHERE TRIM(COALESCE(age, '')) != ''
-          AND TRIM(COALESCE(sex, '')) != ''
-          AND LOWER(TRIM(COALESCE(position, ''))) != 'area overseer'
-        ORDER BY age, sex, name
-        """
-    ).fetchall()
-
-    items = []
-    seen = set()
-
-    for r in rows:
-        area_number = str(r["area_number"] or "").strip()
-        church_name = str(r["church_name"] or "").strip()
-        pastor_name = str(r["pastor_name"] or "").strip()
-
-        if not area_number or not church_name:
-            continue
-
-        key = (
-            _normalize_schedule_search_value(area_number),
-            _normalize_schedule_search_value(church_name),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-
-        items.append({
-            "area_number": area_number,
-            "church_name": church_name,
-            "pastor_name": pastor_name,
-        })
-
-    return items
-
-
-def search_schedule_rows(area_number="", church_name="", pastor_name=""):
-    db = get_db()
-
-    area_key = _normalize_schedule_search_value(area_number)
-    church_key = _normalize_schedule_search_value(church_name)
-    pastor_key = _normalize_schedule_search_value(pastor_name)
-
-    account_rows = get_schedule_search_accounts()
-
-    matched_accounts = []
-    for row in account_rows:
-        row_area = _normalize_schedule_search_value(row["area_number"])
-        row_church = _normalize_schedule_search_value(row["church_name"])
-        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
-
-        if area_key and row_area != area_key:
-            continue
-        if church_key and row_church != church_key:
-            continue
-        if pastor_key and row_pastor and row_pastor != pastor_key:
-            continue
-
-        matched_accounts.append(row)
-
-    allowed_churches = {
-        _normalize_schedule_search_value(r["church_name"])
-        for r in matched_accounts
-        if str(r.get("church_name") or "").strip()
-    }
-
-    allowed_pastors = {
-        _normalize_schedule_search_value(r["pastor_name"])
-        for r in matched_accounts
-        if str(r.get("pastor_name") or "").strip()
-    }
-
-    district_rows_all = db.execute(
-        """
-        SELECT *
-        FROM sheet_district_schedule_cache
-        ORDER BY activity_date_start ASC, church_name ASC
-        """
-    ).fetchall()
-
-    chain_rows_all = db.execute(
-        """
-        SELECT *
-        FROM sheet_chain_prayer_schedule_cache
-        ORDER BY prayer_date ASC, church_name_assigned ASC
-        """
-    ).fetchall()
-
-    district_rows = []
-    chain_rows = []
-
-    for row in district_rows_all:
-        row_church = _normalize_schedule_search_value(row["church_name"])
-        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
-
-        if allowed_churches and row_church not in allowed_churches:
-            continue
-
-        if pastor_key and allowed_pastors:
-            # if the row has a pastor, require an exact pastor match too
-            if row_pastor and row_pastor not in allowed_pastors:
-                continue
-
-        district_rows.append(row)
-
-    for row in chain_rows_all:
-        row_church = _normalize_schedule_search_value(row["church_name_assigned"])
-        row_pastor = _normalize_schedule_search_value(row["pastor_name"])
-
-        if allowed_churches and row_church not in allowed_churches:
-            continue
-
-        if pastor_key and allowed_pastors:
-            if row_pastor and row_pastor not in allowed_pastors:
-                continue
-
-        chain_rows.append(row)
-
-    return district_rows, chain_rows
-
-
-@app.route("/schedules", methods=["GET", "POST"])
-def schedules():
-    if request.method == "POST":
-        action = (request.form.get("action") or "").strip()
-
-        if action == "district_secretary_access":
-            access_code = (request.form.get("access_code") or "").strip()
-            year = (request.form.get("year") or "").strip()
-            month = (request.form.get("month") or "").strip()
-
-            if access_code == DISTRICT_SECRETARY_CODE:
-                session["district_secretary_ok"] = True
-                flash("District Secretary access granted.", "success")
-            else:
-                flash("Invalid access code.", "error")
-
-            return redirect(url_for("schedules", year=year, month=month))
-
-        if action == "create_schedule":
-            if not session.get("district_secretary_ok"):
-                flash("District Secretary access is required.", "error")
-                return redirect(url_for("schedules"))
-
-            church_name = (request.form.get("church_name") or "").strip()
-            church_address = (request.form.get("church_address") or "").strip()
-            pastor_name = (request.form.get("pastor_name") or "").strip()
-            contact_number = (request.form.get("contact_number") or "").strip()
-            activity_date_start = (request.form.get("activity_date_start") or "").strip()
-            activity_date_end = (request.form.get("activity_date_end") or "").strip()
-            activity_type = (request.form.get("activity_type") or "").strip()
-            note = (request.form.get("note") or "").strip()
-            year = (request.form.get("year") or "").strip()
-            month = (request.form.get("month") or "").strip()
-
-            if not church_name or not activity_date_start or not activity_type:
-                flash("Please complete all required fields marked with *.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            start_dt, end_dt = _safe_schedule_end_date(activity_date_start, activity_date_end)
-            if not start_dt:
-                flash("Activity Date Start is invalid.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            payload = {
-                "church_name": church_name,
-                "church_address": church_address,
-                "pastor_name": pastor_name,
-                "contact_number": contact_number,
-                "activity_date_start": activity_date_start,
-                "activity_date_end": activity_date_end if end_dt and end_dt != start_dt else "",
-                "activity_type": activity_type,
-                "note": note,
-                "joining": "",
-            }
-
-            try:
-                _append_district_schedule_row(payload)
-                sync_from_sheets_if_needed(force=True)
-                flash("Schedule created successfully.", "success")
-            except Exception as e:
-                print("❌ Create schedule failed:", e)
-                flash("Failed to create schedule.", "error")
-
-            return redirect(url_for("schedules", year=year, month=month))
-
-        if action == "edit_schedule":
-            if not session.get("district_secretary_ok"):
-                flash("District Secretary access is required.", "error")
-                return redirect(url_for("schedules"))
-
-            sheet_row = int(request.form.get("sheet_row") or 0)
-            church_name = (request.form.get("church_name") or "").strip()
-            church_address = (request.form.get("church_address") or "").strip()
-            pastor_name = (request.form.get("pastor_name") or "").strip()
-            contact_number = (request.form.get("contact_number") or "").strip()
-            activity_date_start = (request.form.get("activity_date_start") or "").strip()
-            activity_date_end = (request.form.get("activity_date_end") or "").strip()
-            activity_type = (request.form.get("activity_type") or "").strip()
-            note = (request.form.get("note") or "").strip()
-            year = (request.form.get("year") or "").strip()
-            month = (request.form.get("month") or "").strip()
-
-            if not sheet_row or not church_name or not activity_date_start or not activity_type:
-                flash("Please complete all required fields marked with *.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            start_dt, end_dt = _safe_schedule_end_date(activity_date_start, activity_date_end)
-            if not start_dt:
-                flash("Activity Date Start is invalid.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            payload = {
-                "church_name": church_name,
-                "church_address": church_address,
-                "pastor_name": pastor_name,
-                "contact_number": contact_number,
-                "activity_date_start": activity_date_start,
-                "activity_date_end": activity_date_end if end_dt and end_dt != start_dt else "",
-                "activity_type": activity_type,
-                "note": note,
-                "joining": "",
-            }
-
-            try:
-                _update_district_schedule_row(sheet_row, payload)
-                sync_from_sheets_if_needed(force=True)
-                flash("Schedule updated successfully.", "success")
-            except Exception as e:
-                print("❌ Edit schedule failed:", e)
-                flash("Failed to update schedule.", "error")
-
-            return redirect(url_for("schedules", year=year, month=month))
-
-        if action == "delete_schedule":
-            if not session.get("district_secretary_ok"):
-                flash("District Secretary access is required.", "error")
-                return redirect(url_for("schedules"))
-
-            sheet_row = int(request.form.get("sheet_row") or 0)
-            year = (request.form.get("year") or "").strip()
-            month = (request.form.get("month") or "").strip()
-
-            if not sheet_row:
-                flash("Invalid schedule selected.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            try:
-                _delete_district_schedule_row(sheet_row)
-                sync_from_sheets_if_needed(force=True)
-                flash("Schedule deleted successfully.", "success")
-            except Exception as e:
-                print("❌ Delete schedule failed:", e)
-                flash("Failed to delete schedule.", "error")
-
-            return redirect(url_for("schedules", year=year, month=month))
-
-        if action == "join_schedule":
-            sheet_row = int(request.form.get("sheet_row") or 0)
-            join_name = (request.form.get("join_name") or "").strip()
-            year = (request.form.get("year") or "").strip()
-            month = (request.form.get("month") or "").strip()
-
-            remembered_name = (session.get("schedule_join_name") or "").strip()
-            effective_name = join_name or remembered_name
-
-            if not sheet_row:
-                flash("Invalid schedule selected.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            if not effective_name:
-                flash("Name is required to join this activity.", "error")
-                return redirect(url_for("schedules", year=year, month=month))
-
-            try:
-                _join_schedule(sheet_row, effective_name)
-                session["schedule_join_name"] = effective_name
-                sync_from_sheets_if_needed(force=True)
-                flash("You have been added as joining.", "success")
-            except Exception as e:
-                print("❌ Join schedule failed:", e)
-                flash("Failed to join this activity.", "error")
-
-            return redirect(url_for("schedules", year=year, month=month))
-
-    today = date.today()
-    try:
-        year = int(request.args.get("year", today.year))
-    except Exception:
-        year = today.year
-    try:
-        month = int(request.args.get("month", today.month))
-    except Exception:
-        month = today.month
-
-    if month < 1 or month > 12:
-        month = today.month
-
-        ensure_schedule_cache_loaded()
-
-    # keep Accounts cache refreshed too, using existing sync interval logic
-    sync_from_sheets_if_needed()
-
-    search_area_number = (request.args.get("search_area_number") or "").strip()
-    search_church_name = (request.args.get("search_church_name") or "").strip()
-    search_pastor_name = (request.args.get("search_pastor_name") or "").strip()
-
-    account_search_rows = get_schedule_search_accounts()
-    search_applied = any([search_area_number, search_church_name, search_pastor_name])
-
-    if search_applied:
-        district_search_rows, chain_search_rows = search_schedule_rows(
-            area_number=search_area_number,
-            church_name=search_church_name,
-            pastor_name=search_pastor_name,
-        )
-    else:
-        district_search_rows = []
-        chain_search_rows = []
-
-    schedule_view = (request.args.get("view") or "district").strip().lower()
-    if schedule_view not in ("district", "chain_prayer"):
-        schedule_view = "district"
-
-    if schedule_view == "chain_prayer":
-        calendar_data = build_chain_prayer_month(year, month)
-        month_rows = []
-    else:
-        calendar_data = build_schedule_month(year, month)
-        month_rows = _get_schedule_rows_for_month(year, month)
-
-    today = date.today()
-    try:
-        year = int(request.args.get("year", today.year))
-    except Exception:
-        year = today.year
-    try:
-        month = int(request.args.get("month", today.month))
-    except Exception:
-        month = today.month
-
-    if month < 1 or month > 12:
-        month = today.month
-
-    ensure_schedule_cache_loaded()
-    sync_from_sheets_if_needed()
-
-    view = (request.args.get("view") or "district").strip().lower()
-    if view not in ("district", "chain_prayer"):
-        view = "district"
-
-    search_area_number = (request.args.get("search_area_number") or "").strip()
-    search_church_name = (request.args.get("search_church_name") or "").strip()
-    search_pastor_name = (request.args.get("search_pastor_name") or "").strip()
-
-    account_search_rows = get_schedule_search_accounts()
-    search_applied = any([search_area_number, search_church_name, search_pastor_name])
-
-    if search_applied:
-        district_search_rows, chain_search_rows = search_schedule_rows(
-            area_number=search_area_number,
-            church_name=search_church_name,
-            pastor_name=search_pastor_name,
-        )
-    else:
-        district_search_rows = []
-        chain_search_rows = []
-
-    if view == "chain_prayer":
-        calendar_data = build_chain_prayer_month(year, month)
-        month_rows = []
-    else:
-        calendar_data = build_schedule_month(year, month)
-        month_rows = _get_schedule_rows_for_month(year, month)
-
-    return render_template(
-        "schedules.html",
-        month_title=calendar_data["month_title"],
-        view=view,
-        year=calendar_data["year"],
-        month=calendar_data["month"],
-        weeks=calendar_data["weeks"],
-        event_lookup=calendar_data["event_lookup"],
-        prev_year=calendar_data["prev_year"],
-        prev_month=calendar_data["prev_month"],
-        next_year=calendar_data["next_year"],
-        next_month=calendar_data["next_month"],
-        district_secretary_ok=session.get("district_secretary_ok", False),
-        user_logged_in=any_user_logged_in(),
-        month_rows=month_rows,
-        search_area_number=search_area_number,
-        search_church_name=search_church_name,
-        search_pastor_name=search_pastor_name,
-        account_search_rows=account_search_rows,
-        search_applied=search_applied,
-        district_search_rows=district_search_rows,
-        chain_search_rows=chain_search_rows,
-        activity_types=[
-            "Thanksgiving",
-            "Convention",
-            "Area Activities",
-            "District Prayer & Fasting",
-            "Others",
-        ],
-    )
 
 
 # ===============================
