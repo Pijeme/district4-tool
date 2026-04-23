@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+  <h1>Pastor Login</h1>
+
+  {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post">
+    <input type="hidden" name="next" value="{{ next_url }}">
+
+    <div class="form-row">
+      <label for="username">Username</label>
+      <input
+        type="text"
+        id="username"
+        name="username"
+        required
+      >
+    </div>
+
+    <div class="form-row">
+      <label for="password">Password</label>
+      <input
+        type="password"
+        id="password"
+        name="password"
+        required
+      >
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Login</button>
+      <a href="{{ url_for('splash') }}" class="btn-secondary">Back</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

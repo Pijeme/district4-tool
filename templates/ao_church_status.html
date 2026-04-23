@@ -1,0 +1,1026 @@
+{% extends "base.html" %}
+{% block title %}Church Status - District 4 Tool{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Church Status</h2>
+  <p class="muted small">
+    Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
+  </p>
+
+  <style>
+    .church-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .church-list-btn {
+      width: 100%;
+      text-align: left;
+      border: 2px solid #111;
+      border-radius: 18px;
+      padding: 14px 16px;
+      cursor: pointer;
+      background: #fff;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .church-list-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    }
+
+    .church-list-btn.status-approved {
+      background: #d7ffd7;
+    }
+
+    .church-list-btn.status-pending {
+      background: #fff4cc;
+    }
+
+    .church-list-btn.status-not-submitted {
+      background: #ffd7d7;
+    }
+
+    .church-list-btn-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .church-list-meta {
+      font-size: 13px;
+      color: #5b6472;
+      margin-top: 4px;
+    }
+
+    .status-pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .status-pill.approved {
+      border: 1px solid #1a7f1a;
+      background: #d7ffd7;
+    }
+
+    .status-pill.pending {
+      border: 1px solid #9a7b00;
+      background: #fff4cc;
+    }
+
+    .status-pill.not-submitted {
+      border: 1px solid #a11;
+      background: #ffd7d7;
+    }
+
+    .church-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 9999;
+    }
+
+    .church-modal-overlay.show {
+      display: flex;
+    }
+
+    .church-modal {
+      width: min(960px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      background: #fff;
+      border: 2px solid #111;
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 22px 60px rgba(0,0,0,0.18);
+    }
+
+    .church-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .church-modal-grid {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 14px;
+    }
+
+    .church-modal-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      align-items: center;
+    }
+
+    .approve-feedback {
+      display: none;
+      font-size: 13px;
+      font-weight: 700;
+      color: #1a7f1a;
+    }
+
+    .approve-feedback.show {
+      display: inline-block;
+    }
+
+    .ao-note {
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: #5b6472;
+      font-style: italic;
+    }
+
+    .approve-progress-wrap {
+      display: none;
+      width: 180px;
+      height: 10px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,0.12);
+    }
+
+    .approve-progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #60a5fa);
+      transition: width 0.2s ease;
+    }
+
+    .approve-progress-text {
+      display: none;
+      font-size: 12px;
+      font-weight: 700;
+      color: #475569;
+    }
+
+    .print-progress-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+      padding: 20px;
+    }
+
+    .print-progress-overlay.show {
+      display: flex;
+    }
+
+    .print-progress-card {
+      width: min(560px, 100%);
+      background: #fff;
+      border: 2px solid #111;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.18);
+    }
+
+    .print-progress-track {
+      width: 100%;
+      height: 16px;
+      background: #e5e7eb;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,0.10);
+      margin-top: 14px;
+    }
+
+    .print-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #60a5fa);
+      transition: width 0.25s ease;
+    }
+
+    .print-progress-meta {
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: #475569;
+    }
+
+    @media (max-width: 700px) {
+      .church-modal-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
+  <form method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
+    <label class="small"><b>Year:</b></label>
+    <select name="year" onchange="this.form.submit()">
+      {% for y in year_options %}
+        <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  <div class="form-vertical">
+    {% for m in months %}
+      <button type="button"
+              class="btn-secondary"
+              onclick="toggleMonth('{{ m.month }}')"
+              style="
+                width:100%;
+                border:2px solid #111;
+                {% if m.all_reported %}
+                  background:#d7ffd7;
+                {% else %}
+                  background:#dbeafe;
+                {% endif %}
+              ">
+        <span style="display:flex; justify-content:space-between; align-items:center;">
+          <span><b>{{ m.name }} {{ m.year }}</b></span>
+          <span style="font-size:18px;">▾</span>
+        </span>
+      </button>
+
+      <div id="month-{{ m.month }}" style="display:{% if open_month == m.month %}block{% else %}none{% endif %}; margin: 10px 0 16px 0;">
+
+        <div class="card" style="margin: 10px 0; border:2px solid #111;">
+          <div style="display:flex; gap:12px; align-items:center; justify-content:flex-start; flex-wrap:wrap;">
+            <form method="POST"
+                  action="{{ url_for('ao_aopt_submit') }}"
+                  data-loading-text="Updating area amount, please wait..."
+                  class="aopt-form"
+                  style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+
+              <input type="hidden" name="year" value="{{ m.year }}">
+              <input type="hidden" name="month" value="{{ m.month }}">
+
+              <label style="font-weight:900; font-size:16px; margin-right:10px;">
+                {% if ao_is_sub_area %}Sub AO Personal Tithes{% else %}AO Personal Tithes{% endif %}
+              </label>
+
+              <input
+                class="aopt-input"
+                type="number"
+                step="0.01"
+                name="amount"
+                value="{% if m.aopt_amount is not none %}{{ '%.2f'|format(m.aopt_amount) }}{% endif %}"
+                placeholder="Enter amount"
+                style="padding:10px 12px; border-radius:12px; min-width:260px; border:1px solid rgba(0,0,0,0.25);"
+                {% if m.aopt_amount is not none %}readonly{% endif %}
+                {% if m.aopt_amount is none %}required{% endif %}
+              >
+
+              <button type="button" class="btn-primary aopt-toggle" style="min-width:120px;">
+                {% if m.aopt_amount is not none %}Edit{% else %}Submit{% endif %}
+              </button>
+            </form>
+
+            <button type="button"
+                    class="btn-secondary print-report-btn"
+                    style="min-width:140px;"
+                    data-year="{{ m.year }}"
+                    data-month="{{ m.month }}"
+                    data-main-enabled="{{ '1' if m.print_state.main_enabled else '0' }}"
+                    data-late-enabled="{{ '1' if m.print_state.late_enabled else '0' }}"
+                    data-refresh-enabled="{{ '1' if m.print_state.refresh_enabled else '0' }}"
+                    onclick="openPrintOptions(this)">
+              Print Report
+            </button>
+          </div>
+
+          <div class="muted small" style="margin-top:8px;">
+            Month: <b>{{ m.name }} {{ m.year }}</b>
+          </div>
+        </div>
+
+        <div class="card" style="margin:10px 0; border:2px solid #111;">
+          <h3 style="margin-top:0; margin-bottom:12px;">{% if ao_is_sub_area %}Sub Area Summary{% else %}Area Summary{% endif %}</h3>
+
+          <div style="display:grid; gap:14px;">
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Attendance</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px 14px;">
+                <div><b>Adult:</b> {{ m.area_summary.attendance_adult|int }}</div>
+                <div><b>Youth:</b> {{ m.area_summary.attendance_youth|int }}</div>
+                <div><b>Children:</b> {{ m.area_summary.attendance_children|int }}</div>
+                <div><b>General / All:</b> {{ m.area_summary.attendance_general|int }}</div>
+              </div>
+            </div>
+
+            <hr style="border:none; border-top:1px solid #d1d5db; margin:0;">
+
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Financial</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap:8px 14px;">
+                <div><b>Total Church Tithes:</b> {{ m.area_summary.church_tithes|phpeso }}</div>
+                <div><b>Total Offering:</b> {{ m.area_summary.offering|phpeso }}</div>
+                <div><b>N.O Mission:</b> {{ m.area_summary.no_mission|phpeso }}</div>
+                <div><b>A.O Mission:</b> {{ m.area_summary.ao_mission|phpeso }}</div>
+                <div><b>Pastor's Personal Tithes:</b> {{ m.area_summary.pastor_personal_tithes|phpeso }}</div>
+
+                <div>
+                  <b>{% if ao_is_sub_area %}Sub AO Personal Tithes{% else %}AO Personal Tithes{% endif %}:</b>
+                  {{ m.area_summary.ao_personal_tithes|phpeso }}
+                  {% if not ao_is_sub_area %}
+  <span class="ao-note">
+    {% if m.area_summary.ao_personal_tithes_note is defined %}
+      {{ m.area_summary.ao_personal_tithes_note }}
+    {% else %}
+      (+300 for the tithes of the monthly lovegift received)
+    {% endif %}
+  </span>
+{% endif %}
+                </div>
+
+                <div><b>Total All Money Received:</b> {{ m.area_summary.total_all_money_received|phpeso }}</div>
+                <div><b>{% if ao_is_sub_area %}Total Money for A.O{% else %}Total Money for N.O{% endif %}:</b> {{ m.area_summary.total_money_no|phpeso }}</div>
+                <div><b>{% if ao_is_sub_area %}Total Money for Sub A.O{% else %}Total Money for A.O{% endif %}:</b> {{ m.area_summary.total_money_ao|phpeso }}</div>
+              </div>
+            </div>
+
+            <hr style="border:none; border-top:1px solid #d1d5db; margin:0;">
+
+            <div>
+              <div style="font-weight:900; margin-bottom:8px;">Activities / Ministry</div>
+              <div class="small" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:8px 14px;">
+                <div><b>Bible Study Old:</b> {{ m.area_summary.bible_old|int }}</div>
+                <div><b>Bible Study New:</b> {{ m.area_summary.bible_new|int }}</div>
+                <div><b>Total Bible Study:</b> {{ m.area_summary.bible_total|int }}</div>
+                <div><b>Received the Holy Spirit:</b> {{ m.area_summary.received_holy_spirit|int }}</div>
+                <div><b>Received Jesus:</b> {{ m.area_summary.received_jesus|int }}</div>
+                <div><b>Baptized by Water:</b> {{ m.area_summary.baptized_water|int }}</div>
+                <div><b>Healed:</b> {{ m.area_summary.healed|int }}</div>
+                <div><b>Children Dedicated:</b> {{ m.area_summary.children_dedicated|int }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin:10px 0; border:2px solid #111;">
+          <h3 style="margin-top:0; margin-bottom:10px;">Church List</h3>
+          <div class="church-list">
+            {% for c in m.churches %}
+              <button
+                type="button"
+                class="church-list-btn status-{{ c.status_key }}"
+                id="church-list-btn-{{ m.month }}-{{ loop.index }}"
+                onclick="openChurchModal('modal-{{ m.month }}-{{ loop.index }}')"
+              >
+                <div class="church-list-btn-inner">
+                  <div>
+                    <div><b>{{ c.church }}</b></div>
+                    <div class="church-list-meta">
+                      {% if c.rows > 0 %}
+                        Rows: {{ c.rows }}
+                        {% if c.attendance_change is not none %}
+                          • Attendance change: <b>{{ "%.1f"|format(c.attendance_change) }}%</b>
+                        {% endif %}
+                      {% else %}
+                        No report submitted for this month.
+                      {% endif %}
+                    </div>
+                  </div>
+
+                  {% if c.rows == 0 %}
+                    <span class="status-pill not-submitted" id="status-pill-{{ m.month }}-{{ loop.index }}">No Submission</span>
+                  {% elif c.status_key == "approved" %}
+                    <span class="status-pill approved" id="status-pill-{{ m.month }}-{{ loop.index }}">Approved</span>
+                  {% else %}
+                    <span class="status-pill pending" id="status-pill-{{ m.month }}-{{ loop.index }}">Submitted</span>
+                  {% endif %}
+                </div>
+              </button>
+
+              <div class="church-modal-overlay" id="modal-{{ m.month }}-{{ loop.index }}" onclick="overlayClose(event, 'modal-{{ m.month }}-{{ loop.index }}')">
+                <div class="church-modal" onclick="event.stopPropagation()">
+                  <div class="church-modal-header">
+                    <div>
+                      <div style="font-size:18px; font-weight:900;">{{ c.church }}</div>
+                      <div class="muted small">
+                        {% if c.rows > 0 %}
+                          Rows: {{ c.rows }}
+                          {% if c.attendance_change is not none %}
+                            • Attendance change: <b>{{ "%.1f"|format(c.attendance_change) }}%</b>
+                          {% endif %}
+                        {% else %}
+                          No report submitted for this month.
+                        {% endif %}
+                      </div>
+                    </div>
+
+                    <div style="display:flex; align-items:center; gap:10px;">
+                      {% if c.rows == 0 %}
+                        <span class="status-pill not-submitted" id="modal-status-pill-{{ m.month }}-{{ loop.index }}">No Submission</span>
+                      {% elif c.status_key == "approved" %}
+                        <span class="status-pill approved" id="modal-status-pill-{{ m.month }}-{{ loop.index }}">Approved</span>
+                      {% else %}
+                        <span class="status-pill pending" id="modal-status-pill-{{ m.month }}-{{ loop.index }}">Submitted</span>
+                      {% endif %}
+                      <button type="button" class="btn-secondary" onclick="closeChurchModal('modal-{{ m.month }}-{{ loop.index }}')">Close</button>
+                    </div>
+                  </div>
+
+                  {% if c.rows > 0 %}
+                    <div class="church-modal-grid small">
+                      <div><b>Total Amount to Send:</b> {{ c.totals.amount_to_send|phpeso }}</div>
+                      <div><b>Total Tithes:</b> {{ c.totals.tithes|phpeso }}</div>
+                      <div><b>Total Offering:</b> {{ c.totals.offering|phpeso }}</div>
+                      <div><b>Total Personal Tithes:</b> {{ c.totals.personal_tithes|phpeso }}</div>
+                      <div><b>Total Mission Offering:</b> {{ c.totals.mission_offering|phpeso }}</div>
+                      <div><b>Avg Attendance:</b> A {{ "%.1f"|format(c.avg.adult) }} / Y {{ "%.1f"|format(c.avg.youth) }} / C {{ "%.1f"|format(c.avg.children) }}</div>
+                      <div><b>Avg Received Jesus:</b> {{ "%.1f"|format(c.avg.received_jesus) }}</div>
+                      <div><b>Avg Bible Study:</b> Existing {{ "%.1f"|format(c.avg.existing_bible_study) }} / New {{ "%.1f"|format(c.avg.new_bible_study) }}</div>
+                      <div><b>Avg Baptism:</b> Water {{ "%.1f"|format(c.avg.water_baptized) }} / Holy Spirit {{ "%.1f"|format(c.avg.holy_spirit_baptized) }}</div>
+                      <div><b>Avg Others:</b> Dedication {{ "%.1f"|format(c.avg.childrens_dedication) }} / Healed {{ "%.1f"|format(c.avg.healed) }}</div>
+                    </div>
+
+                    <div class="church-modal-actions">
+                      {% if c.status_key != "approved" %}
+                        <form class="approve-form" data-no-loading
+                              data-month="{{ m.month }}"
+                              data-index="{{ loop.index }}"
+                              data-modal-id="modal-{{ m.month }}-{{ loop.index }}"
+                              method="POST"
+                              action="{{ url_for('ao_church_status_approve') }}"
+                              onsubmit="approveChurch(event, this)">
+                          <input type="hidden" name="year" value="{{ m.year }}">
+                          <input type="hidden" name="month" value="{{ m.month }}">
+                          <input type="hidden" name="church" value="{{ c.church }}">
+                          <button class="btn-primary approve-btn" type="submit" id="approve-btn-{{ m.month }}-{{ loop.index }}">
+                            Approve
+                          </button>
+                        </form>
+                      {% endif %}
+
+                      <div id="approve-progress-wrap-{{ m.month }}-{{ loop.index }}" class="approve-progress-wrap">
+                        <div class="approve-progress-bar" id="approve-progress-bar-{{ m.month }}-{{ loop.index }}"></div>
+                      </div>
+
+                      <span class="approve-progress-text" id="approve-progress-text-{{ m.month }}-{{ loop.index }}">
+                        Processing approval...
+                      </span>
+
+                      <span class="approve-feedback" id="approve-feedback-{{ m.month }}-{{ loop.index }}">
+                        Church approved successfully.
+                      </span>
+                    </div>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+
+      </div>
+    {% endfor %}
+  </div>
+
+  <div style="margin-top:14px;">
+    <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back to AO Tool</a>
+  </div>
+
+
+<div id="printOptionsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001;">
+  <div style="background:#fff; max-width:420px; margin:120px auto; padding:20px; border-radius:18px; border:2px solid #111;">
+    <h3 style="margin-top:0;">Print Options</h3>
+    <input type="hidden" id="po-year">
+    <input type="hidden" id="po-month">
+    <input type="hidden" id="po-sub-area" value="{{ (ao_sub_area or '') if ao_is_sub_area else '' }}">
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <button id="modalMainPrintBtn" class="btn-primary" type="button" onclick="confirmPrintAction('main')">Main Print</button>
+      <button id="modalLatePrintBtn" class="btn-primary" type="button" onclick="confirmPrintAction('late')">Late Print</button>
+      <button id="modalRefreshPrintBtn" class="btn-secondary" type="button" onclick="confirmPrintAction('refresh')">Refresh Print</button>
+      <button class="btn-secondary" type="button" onclick="closePrintOptions()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="printConfirmModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002;">
+  <div style="background:#fff; max-width:420px; margin:140px auto; padding:20px; border-radius:18px; border:2px solid #111;">
+    <h3 style="margin-top:0;">Confirm Action</h3>
+    <p id="printConfirmText" class="small"></p>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn-primary" type="button" onclick="executePrintAction()">Proceed</button>
+      <button class="btn-secondary" type="button" onclick="closePrintConfirm()">Go Back</button>
+    </div>
+  </div>
+</div>
+
+<div class="print-progress-overlay" id="printProgressOverlay">
+  <div class="print-progress-card" onclick="event.stopPropagation()">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+      <div>
+        <div style="font-size:22px; font-weight:900;" id="printProgressTitle">Preparing PDF Report</div>
+<div class="muted small" id="printProgressMonthLabel">Please wait...</div>
+      </div>
+    </div>
+
+    <div class="print-progress-track">
+      <div class="print-progress-fill" id="printProgressFill"></div>
+    </div>
+
+    <div class="print-progress-meta">
+      <span id="printProgressText">Request received...</span>
+      <span id="printProgressPercent">0%</span>
+    </div>
+  </div>
+</div>
+
+</section>
+
+<script>
+  function toggleMonth(m) {
+    const el = document.getElementById("month-" + m);
+    if (!el) return;
+    el.style.display = (el.style.display === "block") ? "none" : "block";
+  }
+
+  document.addEventListener("click", function(e) {
+    const btn = e.target.closest(".aopt-toggle");
+    if (!btn) return;
+
+    const form = btn.closest(".aopt-form");
+    const input = form.querySelector(".aopt-input");
+
+    if (input.hasAttribute("readonly")) {
+      input.removeAttribute("readonly");
+      input.focus();
+      btn.textContent = "Save";
+      input.setAttribute("required", "required");
+      return;
+    }
+
+    form.submit();
+  });
+
+  function openChurchModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    modal.classList.add("show");
+    document.body.style.overflow = "hidden";
+  }
+
+  function closeChurchModal(id) {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    modal.classList.remove("show");
+    document.body.style.overflow = "";
+  }
+
+  function overlayClose(event, id) {
+    if (event.target.id === id) {
+      closeChurchModal(id);
+    }
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") {
+      document.querySelectorAll(".church-modal-overlay.show").forEach(function(modal) {
+        modal.classList.remove("show");
+      });
+      document.body.style.overflow = "";
+    }
+  });
+
+  function approveChurch(event, form) {
+    event.preventDefault();
+
+    const submitBtn = form.querySelector(".approve-btn");
+    const month = form.dataset.month;
+    const index = form.dataset.index;
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Approving...";
+    }
+    showApproveProgress(month, index);
+
+    const body = new URLSearchParams(new FormData(form));
+
+    fetch(form.action, {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: body.toString()
+    })
+    .then(function(response) {
+      if (!response.ok) {
+        throw new Error("Approve request failed.");
+      }
+
+      const listBtn = document.getElementById("church-list-btn-" + month + "-" + index);
+      const listPill = document.getElementById("status-pill-" + month + "-" + index);
+      const modalPill = document.getElementById("modal-status-pill-" + month + "-" + index);
+      const feedback = document.getElementById("approve-feedback-" + month + "-" + index);
+
+      if (listBtn) {
+        listBtn.classList.remove("status-pending", "status-not-submitted");
+        listBtn.classList.add("status-approved");
+      }
+
+      if (listPill) {
+        listPill.textContent = "Approved";
+        listPill.className = "status-pill approved";
+      }
+
+      if (modalPill) {
+        modalPill.textContent = "Approved";
+        modalPill.className = "status-pill approved";
+      }
+
+      if (submitBtn) {
+        submitBtn.style.display = "none";
+      }
+
+      if (form) {
+        form.style.display = "none";
+      }
+
+      if (feedback) {
+        feedback.classList.add("show");
+      }
+      finishApproveProgress(month, index, false);
+    })
+    .catch(function(error) {
+      alert("Approval failed. Please try again.");
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Approve";
+      }
+      finishApproveProgress(month, index, true);
+      console.error(error);
+    });
+  }
+
+  const approveProgressIntervals = {};
+
+  function showApproveProgress(month, index) {
+    const wrap = document.getElementById("approve-progress-wrap-" + month + "-" + index);
+    const bar = document.getElementById("approve-progress-bar-" + month + "-" + index);
+    const text = document.getElementById("approve-progress-text-" + month + "-" + index);
+
+    if (wrap) wrap.style.display = "block";
+    if (text) text.style.display = "inline-block";
+    if (bar) bar.style.width = "8%";
+
+    const key = month + "-" + index;
+    clearInterval(approveProgressIntervals[key]);
+    approveProgressIntervals[key] = setInterval(function() {
+      if (!bar) return;
+      const current = parseFloat(bar.style.width || "0");
+      if (current < 85) {
+        bar.style.width = Math.min(85, current + Math.random() * 12).toFixed(0) + "%";
+      }
+    }, 220);
+  }
+
+  function finishApproveProgress(month, index, failed) {
+    const key = month + "-" + index;
+    clearInterval(approveProgressIntervals[key]);
+    const wrap = document.getElementById("approve-progress-wrap-" + month + "-" + index);
+    const bar = document.getElementById("approve-progress-bar-" + month + "-" + index);
+    const text = document.getElementById("approve-progress-text-" + month + "-" + index);
+
+    if (failed) {
+      if (wrap) wrap.style.display = "none";
+      if (text) text.style.display = "none";
+      if (bar) bar.style.width = "0%";
+      return;
+    }
+
+    if (bar) bar.style.width = "100%";
+    setTimeout(function() {
+      if (wrap) wrap.style.display = "none";
+      if (text) text.style.display = "none";
+      if (bar) bar.style.width = "0%";
+    }, 700);
+  }
+
+  let selectedPrintBtn = null;
+  let selectedPrintAction = "main";
+
+  function setPrintActionButtonState(id, enabled, disabledText) {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? "1" : "0.55";
+    btn.style.cursor = enabled ? "pointer" : "not-allowed";
+    if (!enabled && disabledText) {
+      btn.title = disabledText;
+    } else {
+      btn.title = "";
+    }
+  }
+
+  function openPrintOptions(button) {
+    selectedPrintBtn = button;
+    document.getElementById("po-year").value = button.dataset.year || "";
+    document.getElementById("po-month").value = button.dataset.month || "";
+
+    const mainEnabled = String(button.dataset.mainEnabled || "0") === "1";
+    const lateEnabled = String(button.dataset.lateEnabled || "0") === "1";
+    const refreshEnabled = String(button.dataset.refreshEnabled || "0") === "1";
+
+    setPrintActionButtonState("modalMainPrintBtn", mainEnabled, "Main Print is unavailable for this month.");
+    setPrintActionButtonState("modalLatePrintBtn", lateEnabled, "Late Print is unavailable for this month.");
+    setPrintActionButtonState("modalRefreshPrintBtn", refreshEnabled, "Refresh Print is unavailable for this month.");
+
+    document.getElementById("printOptionsModal").style.display = "block";
+  }
+
+  function closePrintOptions() {
+    document.getElementById("printOptionsModal").style.display = "none";
+  }
+
+  function confirmPrintAction(action) {
+    const idMap = {
+      main: "modalMainPrintBtn",
+      late: "modalLatePrintBtn",
+      refresh: "modalRefreshPrintBtn"
+    };
+    const selectedBtn = document.getElementById(idMap[action] || "");
+    if (selectedBtn && selectedBtn.disabled) {
+      return;
+    }
+
+    selectedPrintAction = action;
+    let msg = "";
+    if (action === "main") {
+      msg = "This will print all submitted reports for this month that are still blank in ReportStatus, then mark them as MainPrint.";
+    } else if (action === "late") {
+      msg = "This will print only the remaining submitted reports for this month that are still blank in ReportStatus, then mark them as LatePrint.";
+    } else {
+      msg = "This will clear ReportStatus for the selected month and current area/sub-area scope. Use this only before submitting paper/money to the DO.";
+    }
+    document.getElementById("printConfirmText").innerText = msg;
+    document.getElementById("printConfirmModal").style.display = "block";
+  }
+
+  function closePrintConfirm() {
+    document.getElementById("printConfirmModal").style.display = "none";
+  }
+
+  function executePrintAction() {
+    closePrintConfirm();
+    closePrintOptions();
+
+    if (!selectedPrintBtn) return;
+
+    const year = selectedPrintBtn.dataset.year;
+    const month = selectedPrintBtn.dataset.month;
+    const monthText = selectedPrintBtn.closest('.card').querySelector('.muted.small b')?.textContent || 'Selected month';
+
+    selectedPrintBtn.disabled = true;
+    openPrintProgress(monthText);
+
+    const body = new URLSearchParams();
+    body.append("year", year);
+    body.append("month", month);
+    body.append("action", selectedPrintAction);
+
+    fetch("{{ url_for('ao_church_status_print_report_start') }}", {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: body.toString()
+    })
+    .then(function(response) {
+      return response.json();
+    })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error || "Unable to start print request.");
+      printProgressState.currentJobId = data.job_id;
+      printProgressState.currentAction = selectedPrintAction;
+      pollPrintStatus(data.status_url, selectedPrintBtn);
+    })
+    .catch(function(error) {
+      closePrintProgress();
+      selectedPrintBtn.disabled = false;
+      alert(error.message || "Unable to start print request.");
+    });
+  }
+
+const printProgressState = {
+  pollTimer: null,
+  fakeTimer: null,
+  currentJobId: null,
+  currentProgress: 0,
+  downloadStarted: false,
+  checkingStatus: false,
+  currentAction: 'main'
+};
+  
+function openPrintProgress(monthLabel, actionType) {
+  const overlay = document.getElementById("printProgressOverlay");
+  const fill = document.getElementById("printProgressFill");
+  const text = document.getElementById("printProgressText");
+  const percent = document.getElementById("printProgressPercent");
+  const label = document.getElementById("printProgressMonthLabel");
+  const title = document.getElementById("printProgressTitle");
+
+  if (overlay) overlay.classList.add("show");
+  document.body.style.overflow = "hidden";
+
+  printProgressState.currentProgress = 0;
+  printProgressState.downloadStarted = false;
+  printProgressState.checkingStatus = false;
+
+  if (fill) fill.style.width = "0%";
+  if (percent) percent.textContent = "0%";
+  if (label) label.textContent = monthLabel;
+
+  if (actionType === "refresh") {
+    if (title) title.textContent = "Refreshing Print History";
+    if (text) text.textContent = "Resetting print status...";
+  } else if (actionType === "late") {
+    if (title) title.textContent = "Preparing Late Report";
+    if (text) text.textContent = "Request received...";
+  } else {
+    if (title) title.textContent = "Preparing PDF Report";
+    if (text) text.textContent = "Request received...";
+  }
+
+  clearInterval(printProgressState.fakeTimer);
+  printProgressState.fakeTimer = setInterval(function() {
+    const nextTarget = printProgressState.currentProgress < 70 ? 70 : 92;
+    if (printProgressState.currentProgress < nextTarget) {
+      printProgressState.currentProgress += Math.random() * 6;
+      if (printProgressState.currentProgress > nextTarget) {
+        printProgressState.currentProgress = nextTarget;
+      }
+      if (fill) fill.style.width = printProgressState.currentProgress.toFixed(0) + "%";
+      if (percent) percent.textContent = printProgressState.currentProgress.toFixed(0) + "%";
+    }
+  }, 300);
+}
+  function closePrintProgress() {
+    const overlay = document.getElementById("printProgressOverlay");
+    if (overlay) overlay.classList.remove("show");
+    document.body.style.overflow = "";
+    clearInterval(printProgressState.pollTimer);
+    clearInterval(printProgressState.fakeTimer);
+    printProgressState.downloadStarted = false;
+printProgressState.checkingStatus = false;
+printProgressState.currentJobId = null;
+  }
+
+  function startPrintReport(button) {
+    const year = button.dataset.year;
+    const month = button.dataset.month;
+    const monthText = button.closest('.card').querySelector('.muted.small b')?.textContent || 'Selected month';
+
+    button.disabled = true;
+    openPrintProgress(monthText, selectedAction || "main");
+
+    const body = new URLSearchParams();
+    body.append("year", year);
+    body.append("month", month);
+
+    fetch("{{ url_for('ao_church_status_print_report_start') }}", {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: body.toString()
+    })
+    .then(function(response) {
+      return response.json();
+    })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error || "Unable to start print request.");
+      printProgressState.currentJobId = data.job_id;
+      pollPrintStatus(data.status_url, button);
+    })
+    .catch(function(error) {
+      closePrintProgress();
+      button.disabled = false;
+      alert(error.message || "Unable to start print request.");
+    });
+  }
+
+  function pollPrintStatus(statusUrl, button) {
+  clearInterval(printProgressState.pollTimer);
+
+  function checkStatus() {
+    if (printProgressState.downloadStarted || printProgressState.checkingStatus) {
+      return;
+    }
+
+    printProgressState.checkingStatus = true;
+
+    fetch(statusUrl, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function(response) { return response.json(); })
+      .then(function(data) {
+        const text = document.getElementById("printProgressText");
+        const fill = document.getElementById("printProgressFill");
+        const percent = document.getElementById("printProgressPercent");
+
+        if (text) {
+          if (data.status === "queued" && data.queue_ahead > 0) {
+            text.textContent = data.message + " (" + data.queue_ahead + " ahead)";
+          } else {
+            text.textContent = data.message || "Preparing report...";
+          }
+        }
+
+        if (data.status === "processing" && printProgressState.currentProgress < 78) {
+          printProgressState.currentProgress = 78;
+        }
+
+        if (data.status === "done") {
+          if (printProgressState.downloadStarted) {
+            return;
+          }
+
+          printProgressState.downloadStarted = true;
+          clearInterval(printProgressState.pollTimer);
+          clearInterval(printProgressState.fakeTimer);
+
+          printProgressState.currentProgress = 100;
+          if (fill) fill.style.width = "100%";
+          if (percent) percent.textContent = "100%";
+
+          if (printProgressState.currentAction === "refresh") {
+            if (text) text.textContent = "Refresh completed...";
+            setTimeout(function() {
+              button.disabled = false;
+              closePrintProgress();
+              window.location.reload();
+            }, 700);
+            return;
+          }
+
+          if (text) text.textContent = "Download starting...";
+
+          const dlFrame = document.createElement("iframe");
+          dlFrame.style.display = "none";
+          dlFrame.src = data.download_url;
+          document.body.appendChild(dlFrame);
+
+          setTimeout(function() {
+            fetch(`/ao-tool/church-status/print-report/finalize/${printProgressState.currentJobId}`, {
+              method: "POST",
+              headers: { "X-Requested-With": "XMLHttpRequest" }
+            })
+            .catch(function() {})
+            .finally(function() {
+              button.disabled = false;
+              closePrintProgress();
+              setTimeout(function() { window.location.reload(); }, 300);
+            });
+          }, 900);
+          return;
+        }
+
+        if (data.status === "failed") {
+          clearInterval(printProgressState.pollTimer);
+          clearInterval(printProgressState.fakeTimer);
+          printProgressState.downloadStarted = false;
+          button.disabled = false;
+          alert(data.error || "Failed to generate report.");
+          closePrintProgress();
+        }
+      })
+      .catch(function() {
+        clearInterval(printProgressState.pollTimer);
+        clearInterval(printProgressState.fakeTimer);
+        printProgressState.downloadStarted = false;
+        button.disabled = false;
+        alert("Unable to check print status.");
+        closePrintProgress();
+      })
+      .finally(function() {
+        if (!printProgressState.downloadStarted) {
+          printProgressState.checkingStatus = false;
+        }
+      });
+  }
+
+  checkStatus();
+  printProgressState.pollTimer = setInterval(checkStatus, 1500);
+}
+</script>
+{% endblock %}

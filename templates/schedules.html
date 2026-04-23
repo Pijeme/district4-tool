@@ -1,0 +1,2153 @@
+{% extends "base.html" %}
+{% block title %}Schedules - District 4 Tool{% endblock %}
+
+{% block content %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap" rel="stylesheet">
+
+<style>
+  .schedule-wrap { display:flex; flex-direction:column; gap:16px; }
+  .schedule-top { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+  .schedule-subtitle { margin:4px 0 0; color:#6b7280; }
+  .schedule-secretary { text-align:right; }
+  .schedule-secretary-note { margin-top:8px; font-size:13px; color:#6b7280; max-width:260px; }
+
+  .search-result-section {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+
+  .search-result-heading {
+    margin:0 0 10px;
+    font-size:16px;
+    font-weight:800;
+    color:#1f2937;
+  }
+
+  .search-result-card {
+    border:1px solid #e5e7eb;
+    border-radius:14px;
+    padding:12px;
+    background:#fff;
+  }
+
+  .search-card-thanksgiving {
+    background:#fff7ed;
+    border-color:#fdba74;
+  }
+
+  .search-card-convention {
+    background:#f5f3ff;
+    border-color:#c4b5fd;
+  }
+
+  .search-card-area {
+    background:#eff6ff;
+    border-color:#93c5fd;
+  }
+
+  .search-card-prayer {
+    background:#fef2f2;
+    border-color:#fca5a5;
+  }
+
+  .search-card-other {
+    background:#f8fafc;
+    border-color:#cbd5e1;
+  }
+
+  .search-card-chain {
+    background:#f0fdf4;
+    border-color:#86efac;
+  }
+
+  .search-result-top {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+
+  .search-result-title {
+    font-weight:800;
+    color:#1f2937;
+    line-height:1.35;
+  }
+
+  .search-result-meta {
+    margin-top:6px;
+    font-size:13px;
+    color:#475569;
+    line-height:1.5;
+  }
+
+  .search-type-badge {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:110px;
+    padding:6px 10px;
+    border-radius:999px;
+    color:#fff;
+    font-size:12px;
+    font-weight:800;
+    line-height:1;
+    text-align:center;
+    white-space:nowrap;
+  }
+
+  .search-badge-thanksgiving { background:linear-gradient(135deg,#f97316,#fb923c); }
+  .search-badge-convention { background:linear-gradient(135deg,#8b5cf6,#a78bfa); }
+  .search-badge-area { background:linear-gradient(135deg,#2563eb,#60a5fa); }
+  .search-badge-prayer { background:linear-gradient(135deg,#dc2626,#ef4444); }
+  .search-badge-other { background:linear-gradient(135deg,#475569,#64748b); }
+  .search-badge-chain { background:linear-gradient(135deg,#15803d,#16a34a); }
+
+  .schedule-nav {
+    display:grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items:center;
+    gap:12px;
+    margin-top:8px;
+  }
+
+  .schedule-nav-side {
+    display:flex;
+    align-items:center;
+  }
+
+  .schedule-nav-side.left {
+    justify-content:flex-start;
+  }
+
+  .schedule-nav-side.right {
+    justify-content:flex-end;
+  }
+
+  .schedule-nav-center {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+    text-align:center;
+  }
+
+  .schedule-nav-title {
+    font-family: "Dancing Script", cursive;
+    font-size: 54px;
+    font-weight: 700;
+    color: #1f2937;
+    text-align: center;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .schedule-nav-title-btn {
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    color: inherit;
+    line-height: inherit;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .schedule-nav-title-btn:hover {
+    opacity: 0.88;
+  }
+
+  .schedule-nav-title-btn:focus {
+    outline: none;
+    text-decoration: underline;
+    text-underline-offset: 6px;
+  }
+
+  .schedule-legend {
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:12px 16px;
+    font-size:13px;
+    color:#475569;
+  }
+
+  .schedule-legend-item {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    white-space:nowrap;
+  }
+
+  .schedule-legend-dot {
+    width:10px;
+    height:10px;
+    border-radius:999px;
+    display:inline-block;
+  }
+
+  .legend-thanksgiving { background:#fb923c; }
+  .legend-convention { background:#a78bfa; }
+  .legend-area { background:#60a5fa; }
+  .legend-prayer { background:#ef4444; }
+  .legend-other { background:#64748b; }
+  .legend-chain-prayer { background:#16a34a; }
+
+  .schedule-nav-mobile-buttons {
+    display:none;
+  }
+
+  .calendar-scroll {
+    width:100%;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .calendar-grid {
+    display:grid;
+    grid-template-columns:repeat(7, minmax(0, 1fr));
+    gap:0;
+    border:1px solid #dbe3ef;
+    border-radius:16px;
+    overflow:hidden;
+    background:#ffffff;
+    width:100%;
+    min-width:100%;
+  }
+
+  .weekday {
+    background:#f8fafc;
+    border-bottom:1px solid #dbe3ef;
+    padding:14px 10px;
+    text-align:center;
+    font-weight:700;
+    color:#475569;
+  }
+
+  .day-cell {
+    min-height:155px;
+    height:155px;
+    border-right:1px solid #e5e7eb;
+    border-bottom:1px solid #e5e7eb;
+    padding:8px;
+    background:#fff;
+    position:relative;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+  }
+
+  .day-cell:nth-child(7n) { border-right:none; }
+  .day-muted { background:#fbfdff; color:#94a3b8; }
+  .day-today {
+    background: #eef6ff;
+    box-shadow: inset 0 0 0 2px #bfdbfe;
+  }
+
+  .day-today .day-number,
+  .day-today .day-date-btn {
+    color: #1d4ed8;
+  }
+
+  .day-number {
+    font-weight:800;
+    margin-bottom:6px;
+    color:#334155;
+    flex:0 0 auto;
+  }
+
+  .day-date-btn {
+    background:transparent;
+    border:none;
+    padding:0;
+    font:inherit;
+    font-weight:800;
+    color:inherit;
+    cursor:pointer;
+  }
+
+  .day-events {
+    flex:1 1 auto;
+    min-height:0;
+    overflow:hidden;
+  }
+
+  .event-chip {
+    width:100%;
+    border:none;
+    text-align:left;
+    border-radius:10px;
+    padding:5px 8px;
+    margin-bottom:5px;
+    color:#fff;
+    font-weight:700;
+    font-size:11px;
+    line-height:1.15;
+    cursor:pointer;
+    overflow:hidden;
+    display:block;
+  }
+
+  .event-chip-title {
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:6px;
+  }
+
+  .event-chip-label {
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    display:block;
+  }
+
+  .event-chip-badge {
+    flex:0 0 auto;
+    font-size:10px;
+    font-weight:800;
+    background:rgba(255,255,255,0.18);
+    padding:2px 6px;
+    border-radius:999px;
+    line-height:1;
+  }
+
+  .event-host {
+    display:block;
+    margin-top:3px;
+    font-size:10px;
+    font-weight:500;
+    opacity:.95;
+    line-height:1.15;
+    max-height:2.3em;
+    overflow:hidden;
+  }
+
+  .type-thanksgiving { background:linear-gradient(135deg,#f97316,#fb923c); }
+  .type-convention { background:linear-gradient(135deg,#8b5cf6,#a78bfa); }
+  .type-area { background:linear-gradient(135deg,#2563eb,#60a5fa); }
+  .type-prayer { background:linear-gradient(135deg,#dc2626,#ef4444); }
+  .chain-prayer-view .type-prayer {
+    background: linear-gradient(135deg,#15803d,#16a34a);
+  }
+  .type-other { background:linear-gradient(135deg,#475569,#64748b); }
+
+  .more-btn-wrap {
+    flex:0 0 auto;
+    margin-top:auto;
+    padding-top:2px;
+  }
+
+  .more-btn {
+    background:transparent;
+    border:none;
+    color:#2563eb;
+    font-size:13px;
+    font-weight:700;
+    cursor:pointer;
+    padding:0;
+  }
+
+  .flash-wrap { display:flex; flex-direction:column; gap:10px; }
+  .flash { padding:12px 14px; border-radius:12px; font-weight:600; }
+  .flash-success { background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }
+  .flash-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+
+  .modal-backdrop {
+    position:fixed;
+    inset:0;
+    background:rgba(15,23,42,.55);
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    z-index:1000;
+  }
+  .modal-backdrop.open { display:flex; }
+
+  .modal-card {
+    width:min(720px,100%);
+    max-height:90vh;
+    overflow:auto;
+    background:#fff;
+    border-radius:18px;
+    box-shadow:0 18px 50px rgba(15,23,42,.24);
+    border:1px solid #e5e7eb;
+  }
+  .modal-card.small { width:min(560px,100%); }
+
+  .modal-header {
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+    align-items:flex-start;
+    padding:18px 18px 12px;
+    border-bottom:1px solid #e5e7eb;
+  }
+
+  .modal-title { font-size:24px; font-weight:800; color:#1f2937; margin:0; }
+
+  .join-header-btn {
+    font-size:0.75em;
+    padding:4px 10px;
+    border-radius:999px;
+  }
+
+  .modal-subtitle { color:#6b7280; margin:4px 0 0; }
+  .modal-close {
+    border:none;
+    background:transparent;
+    font-size:30px;
+    line-height:1;
+    cursor:pointer;
+    color:#64748b;
+  }
+  .modal-body { padding:18px; }
+
+  .day-list { display:flex; flex-direction:column; gap:12px; }
+  .day-item {
+    border:1px solid #e5e7eb;
+    border-radius:14px;
+    padding:14px;
+    background:#fff;
+  }
+  .day-item-top {
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .day-item-title { font-size:18px; font-weight:800; color:#1f2937; margin:0; }
+  .day-item-host { margin-top:4px; color:#475569; font-weight:600; }
+  .day-item-open { margin-top:12px; }
+
+  .detail-grid {
+    display:grid;
+    grid-template-columns:180px 1fr;
+    gap:10px 14px;
+  }
+  .detail-label { font-weight:800; color:#334155; }
+  .detail-value { color:#111827; white-space:pre-wrap; }
+
+  .form-grid {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:14px;
+  }
+  .form-grid .full { grid-column:1 / -1; }
+
+  .field-label { display:block; font-weight:700; margin-bottom:6px; color:#334155; }
+  .field-required { color:#dc2626; }
+  .field-input, .field-select, .field-textarea {
+    width:100%;
+    border:1px solid #cbd5e1;
+    border-radius:10px;
+    padding:10px 12px;
+    font:inherit;
+    box-sizing:border-box;
+  }
+  .field-textarea { min-height:100px; resize:vertical; }
+  .readonly-display { width:100%; border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; box-sizing:border-box; background:#f8fafc; color:#334155; min-height:44px; display:flex; align-items:center; }
+  .field-help { margin-top:6px; font-size:12px; color:#6b7280; }
+  .btn-danger { background:#dc2626; color:#fff; border:none; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+  .btn-danger:hover { background:#b91c1c; }
+
+  .modal-actions {
+    display:flex;
+    justify-content:flex-end;
+    gap:10px;
+    margin-top:16px;
+    flex-wrap:wrap;
+  }
+
+  .secretary-menu { display:flex; flex-direction:column; gap:12px; }
+
+  .manage-list { display:flex; flex-direction:column; gap:10px; }
+  .manage-item {
+    border:1px solid #e5e7eb;
+    border-radius:12px;
+    padding:12px;
+    background:#fff;
+  }
+  .manage-item-title { font-weight:800; color:#1f2937; }
+  .manage-item-meta { font-size:13px; color:#6b7280; margin-top:4px; }
+  .manage-item-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+
+  .month-picker-year {
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:12px;
+    margin-bottom:16px;
+  }
+
+  .month-picker-year-label {
+    font-size:24px;
+    font-weight:800;
+    color:#1f2937;
+    min-width:120px;
+    text-align:center;
+  }
+
+  .month-picker-grid {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0, 1fr));
+    gap:10px;
+  }
+
+  .month-picker-btn {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:52px;
+    padding:10px 12px;
+    border:1px solid #cbd5e1;
+    border-radius:12px;
+    background:#fff;
+    color:#1f2937;
+    font-weight:700;
+    text-decoration:none;
+    transition:all .15s ease;
+  }
+
+  .month-picker-btn:hover {
+    background:#f8fafc;
+    border-color:#94a3b8;
+  }
+
+  .month-picker-btn.current {
+    background:#2563eb;
+    border-color:#2563eb;
+    color:#fff;
+  }
+
+  .month-picker-note {
+    margin-top:14px;
+    text-align:center;
+    font-size:13px;
+    color:#6b7280;
+  }
+
+  @media (max-width: 900px) {
+    .schedule-top {
+      flex-direction:column;
+      align-items:stretch;
+    }
+
+    .schedule-secretary {
+      text-align:left;
+    }
+
+    .schedule-secretary .btn-primary {
+      width:100%;
+    }
+
+    .schedule-secretary-note {
+      max-width:none;
+    }
+
+    .schedule-nav {
+      grid-template-columns:1fr;
+      gap:14px;
+      justify-items:center;
+    }
+
+    .schedule-nav-side.left,
+    .schedule-nav-side.right {
+      display:none;
+    }
+
+    .schedule-nav-center {
+      order:1;
+      width:100%;
+    }
+
+    .schedule-nav-title {
+      font-size:44px;
+    }
+
+    .schedule-legend {
+      gap:8px 14px;
+      font-size:12px;
+    }
+
+    .schedule-nav-mobile-buttons {
+      display:flex;
+      gap:12px;
+      justify-content:center;
+      flex-wrap:wrap;
+      margin-top:6px;
+    }
+
+    .calendar-grid {
+      min-width:720px;
+      width:720px;
+    }
+
+    .weekday {
+      padding:12px 8px;
+      font-size:13px;
+    }
+
+    .day-cell {
+      min-height:118px;
+      height:118px;
+      padding:6px;
+    }
+
+    .day-number {
+      font-size:14px;
+      margin-bottom:5px;
+    }
+
+    .event-chip {
+      padding:5px 6px;
+      margin-bottom:4px;
+      font-size:10px;
+      border-radius:9px;
+    }
+
+    .event-host {
+      font-size:9px;
+      margin-top:2px;
+      max-height:2.2em;
+    }
+
+    .event-chip-badge {
+      font-size:9px;
+      padding:2px 5px;
+    }
+
+    .more-btn {
+      font-size:12px;
+    }
+
+    .form-grid,
+    .detail-grid {
+      grid-template-columns:1fr;
+    }
+
+    .month-picker-grid {
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .search-type-badge {
+      min-width:auto;
+      width:100%;
+    }
+
+    .search-result-top {
+      flex-direction:column;
+      align-items:stretch;
+    }
+
+    .modal-backdrop {
+      padding:12px;
+      align-items:flex-end;
+    }
+
+    .modal-card,
+    .modal-card.small {
+      width:100%;
+      max-height:88vh;
+      border-radius:18px 18px 0 0;
+    }
+
+    .modal-header {
+      padding:16px 16px 10px;
+    }
+
+    .modal-body {
+      padding:16px;
+    }
+
+    .modal-title {
+      font-size:20px;
+    }
+
+    .modal-actions {
+      flex-direction:column;
+    }
+
+    .modal-actions .btn-primary,
+    .modal-actions .btn-secondary,
+    .modal-actions a {
+      width:100%;
+      justify-content:center;
+      text-align:center;
+    }
+
+    .manage-item {
+      padding:10px;
+    }
+
+    .manage-item-title {
+      font-size:15px;
+      line-height:1.3;
+    }
+
+    .manage-item-meta {
+      font-size:12px;
+      line-height:1.45;
+    }
+  }
+</style>
+
+<div class="schedule-wrap {% if view == 'chain_prayer' %}chain-prayer-view{% endif %}">
+  <section class="card">
+    <div class="schedule-top">
+      <div>
+        <h2 style="margin:0;">
+          {% if view == "chain_prayer" %}
+            District Chain Prayer Schedule
+          {% else %}
+            District 4 Schedule of Activities
+          {% endif %}
+        </h2>
+        <p class="schedule-subtitle">
+          {% if view == "chain_prayer" %}
+            Churches Daily Chain Prayer Schedule
+          {% else %}
+            Upcoming Events
+          {% endif %}
+        </p>
+      </div>
+
+      <div class="schedule-secretary">
+        <button type="button" class="btn-primary" onclick="openSecretaryFlow()">
+          District Secretary Tool
+        </button>
+
+        <div style="margin-top:10px;">
+          <a
+            class="btn-primary"
+            href="{{ url_for('schedules', year=year, month=month, view='chain_prayer' if view != 'chain_prayer' else 'district') }}"
+          >
+            {% if view == "chain_prayer" %}
+              District Schedule
+            {% else %}
+              Chain Prayer Schedule
+            {% endif %}
+          </a>
+        </div>
+
+        <div style="margin-top:10px;">
+          <button type="button" class="btn-primary" onclick="openSearchScheduleModal()">
+            Search Schedule
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="schedule-nav">
+      <div class="schedule-nav-side left">
+        <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month, view=view) }}">← Previous</a>
+      </div>
+
+      <div class="schedule-nav-center">
+        <div class="schedule-nav-title">
+          <button type="button" class="schedule-nav-title-btn" onclick="openMonthPickerModal()">
+            {{ month_title }}
+          </button>
+        </div>
+
+        <div class="schedule-legend">
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-thanksgiving"></span>
+            Thanksgiving
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-convention"></span>
+            Convention
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-area"></span>
+            Area Activities
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-prayer"></span>
+            District Prayer &amp; Fasting
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-chain-prayer"></span>
+            Chain Prayer
+          </span>
+          <span class="schedule-legend-item">
+            <span class="schedule-legend-dot legend-other"></span>
+            Others
+          </span>
+        </div>
+
+        <div class="schedule-nav-mobile-buttons">
+          <a class="btn-secondary" href="{{ url_for('schedules', year=prev_year, month=prev_month, view=view) }}">← Previous</a>
+          <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month, view=view) }}">Next →</a>
+        </div>
+      </div>
+
+      <div class="schedule-nav-side right">
+        <a class="btn-secondary" href="{{ url_for('schedules', year=next_year, month=next_month, view=view) }}">Next →</a>
+      </div>
+    </div>
+  </section>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-wrap">
+        {% for category, message in messages %}
+          <div class="flash {% if category == 'success' %}flash-success{% else %}flash-error{% endif %}">
+            {{ message }}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <section class="card" style="padding:0;">
+    <div class="calendar-scroll">
+      <div class="calendar-grid">
+        <div class="weekday">Sun</div>
+        <div class="weekday">Mon</div>
+        <div class="weekday">Tue</div>
+        <div class="weekday">Wed</div>
+        <div class="weekday">Thu</div>
+        <div class="weekday">Fri</div>
+        <div class="weekday">Sat</div>
+
+        {% for week in weeks %}
+          {% for cell in week %}
+            <div class="day-cell {% if not cell.in_month %}day-muted{% endif %} {% if cell.is_today %}day-today{% endif %}">
+              <div class="day-number">
+                <button type="button" class="day-date-btn" onclick="openDayModal('{{ cell.iso }}')">
+                  {{ cell.date.day }}
+                </button>
+              </div>
+
+              <div class="day-events">
+                {% for event in cell.visible_events %}
+                  <button
+                    type="button"
+                    class="event-chip {{ event.type_class }}"
+                    onclick="openEventModal('{{ event.id }}')"
+                  >
+                    <div class="event-chip-title">
+                      {% if view == "chain_prayer" %}
+                        <span class="event-chip-label">Chain Prayer</span>
+                      {% else %}
+                        <span class="event-chip-label">{{ event.activity_type }}</span>
+                        {% if event.joining_count > 0 %}
+                          <span class="event-chip-badge">🙋 {{ event.joining_count }}</span>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+
+                    {% if view == "chain_prayer" %}
+                      <span class="event-host">{{ event.church_name_assigned }}</span>
+                    {% else %}
+                      <span class="event-host">{{ event.church_name }}</span>
+                    {% endif %}
+                  </button>
+                {% endfor %}
+              </div>
+
+              {% if cell.extra_count > 0 %}
+                <div class="more-btn-wrap">
+                  <button type="button" class="more-btn" onclick="openDayModal('{{ cell.iso }}')">
+                    +{{ cell.extra_count }} more
+                  </button>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="monthPickerBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Choose Month</h3>
+        <p class="modal-subtitle">Quickly jump to any month while keeping the current design.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeMonthPickerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="month-picker-year">
+        <button type="button" class="btn-secondary" onclick="changeMonthPickerYear(-1)">←</button>
+        <div class="month-picker-year-label" id="monthPickerYearLabel">{{ year }}</div>
+        <button type="button" class="btn-secondary" onclick="changeMonthPickerYear(1)">→</button>
+      </div>
+
+      <div class="month-picker-grid" id="monthPickerGrid"></div>
+
+      <div class="month-picker-note">
+        You can still use the Previous and Next buttons anytime.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="dayModalBackdrop">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title" id="dayModalTitle">Scheduled Activities</h3>
+        <p class="modal-subtitle">Click an activity to view more details.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeDayModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="day-list" id="dayModalList"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="eventModalBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title" id="eventModalTitle">Schedule Details</h3>
+        <p class="modal-subtitle" id="eventModalSubtitle"></p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeEventModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="detail-grid" id="eventModalDetails"></div>
+      <div class="modal-actions" id="eventModalActions"></div>
+    </div>
+  </div>
+</div>
+
+
+<div class="modal-backdrop" id="publicEditModalBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Edit Theme / Text / Note</h3>
+        <p class="modal-subtitle">Please enter your name before saving changes.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closePublicEditModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form method="POST" action="{{ url_for('schedules') }}" data-loading-text="Saving schedule details, please wait...">
+        <input type="hidden" name="action" value="public_edit_schedule_details">
+        <input type="hidden" name="sheet_row" id="public_edit_sheet_row">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <input type="hidden" name="view" value="{{ view }}">
+
+        <label class="field-label" for="public_editor_name">Your Name <span class="field-required">*</span></label>
+        <input class="field-input" type="text" id="public_editor_name" name="editor_name" required>
+
+        <label class="field-label" for="public_theme" style="margin-top:12px;">Theme</label>
+        <input class="field-input" type="text" id="public_theme" name="theme">
+
+        <label class="field-label" for="public_text" style="margin-top:12px;">Text</label>
+        <input class="field-input" type="text" id="public_text" name="text">
+
+        <label class="field-label" for="public_note" style="margin-top:12px;">Note</label>
+        <textarea class="field-textarea" id="public_note" name="note"></textarea>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-danger" onclick="closePublicEditModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="joinModalBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">I’m Joining 🙋</h3>
+        <p class="modal-subtitle">Enter your name to join this activity.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeJoinModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form method="POST" action="{{ url_for('schedules') }}" data-loading-text="Joining schedule, please wait...">
+        <input type="hidden" name="action" value="join_schedule">
+        <input type="hidden" name="sheet_row" id="join_sheet_row">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+
+        <label class="field-label" for="join_name">Your Name</label>
+        <input class="field-input" type="text" id="join_name" name="join_name" value="{{ session.get('schedule_join_name', '') }}" required>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" onclick="closeJoinModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Join</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="codeModalBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">District Secretary Access</h3>
+        <p class="modal-subtitle">Please enter the access code to use the District Secretary Tool.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeCodeModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form method="POST" action="{{ url_for('schedules') }}" data-loading-text="Verifying access, please wait...">
+        <input type="hidden" name="action" value="district_secretary_access">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+
+        <label class="field-label" for="access_code">Access Code</label>
+        <input class="field-input" type="password" id="access_code" name="access_code" required>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" onclick="closeCodeModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Submit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="secretaryToolBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">District Secretary Tool</h3>
+        <p class="modal-subtitle">Choose an action below.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeSecretaryTool()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="secretary-menu">
+        <button type="button" class="btn-primary" onclick="openCreateModal()">Create Schedule</button>
+        <button type="button" class="btn-primary" onclick="openEditPickerModal()">Edit Schedule</button>
+        <button type="button" class="btn-primary" onclick="openDeletePickerModal()">Delete Schedule</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="searchScheduleBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Search Schedule</h3>
+        <p class="modal-subtitle">Search by area number, church, and pastor.</p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeSearchScheduleModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form method="GET" action="{{ url_for('schedules') }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <input type="hidden" name="view" value="{{ view }}">
+
+        <label class="field-label" for="search_area_number">Area Number</label>
+        <select class="field-select" id="search_area_number" name="search_area_number"></select>
+
+        <label class="field-label" for="search_church_name" style="margin-top:12px;">Church</label>
+        <select class="field-select" id="search_church_name" name="search_church_name"></select>
+
+        <label class="field-label" for="search_pastor_name" style="margin-top:12px;">Pastor</label>
+        <input
+          type="text"
+          class="field-input"
+          id="search_pastor_name"
+          name="search_pastor_name"
+          value="{{ search_pastor_name or '' }}"
+          readonly
+          placeholder="Pastor name will appear automatically"
+        />
+
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" onclick="clearSearchScheduleForm()">Clear</button>
+          <button type="button" class="btn-secondary" onclick="closeSearchScheduleModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Search</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="searchResultBackdrop">
+  <div class="modal-card small">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Search Results</h3>
+        <p class="modal-subtitle">
+          Area: {{ search_area_number or 'Any' }} |
+          Church: {{ search_church_name or 'Any' }} |
+          Pastor: {{ search_pastor_name or 'Any' }}
+        </p>
+      </div>
+      <button type="button" class="modal-close" onclick="closeSearchResultModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="manage-list" style="gap:18px;">
+
+        <div class="search-result-section">
+          <h4 class="search-result-heading">District Schedule</h4>
+          <div class="manage-list">
+            {% if district_search_rows %}
+              {% for row in district_search_rows %}
+                {% set row_type = (row.activity_type or 'Others') %}
+                {% set badge_class = 'search-badge-other' %}
+                {% set card_class = 'search-card-other' %}
+                {% if row_type == 'Thanksgiving' %}
+                  {% set badge_class = 'search-badge-thanksgiving' %}
+                  {% set card_class = 'search-card-thanksgiving' %}
+                {% elif row_type == 'Convention' %}
+                  {% set badge_class = 'search-badge-convention' %}
+                  {% set card_class = 'search-card-convention' %}
+                {% elif row_type == 'Area Activities' %}
+                  {% set badge_class = 'search-badge-area' %}
+                  {% set card_class = 'search-card-area' %}
+                {% elif row_type == 'District Prayer & Fasting' %}
+                  {% set badge_class = 'search-badge-prayer' %}
+                  {% set card_class = 'search-card-prayer' %}
+                {% endif %}
+
+                <div class="search-result-card {{ card_class }}">
+                  <div class="search-result-top">
+                    <div>
+                      <div class="search-result-title">{{ row.church_name }}</div>
+                      <div class="search-result-meta">
+                        Pastor: {{ row.pastor_name or '-' }}<br>
+                        Date:
+                        <span class="js-format-date" data-date="{{ row.activity_date_start }}"></span>
+                        {% if row.activity_date_end %}
+                          to <span class="js-format-date" data-date="{{ row.activity_date_end }}"></span>
+                        {% endif %}<br>
+                        Address: {{ row.church_address or '-' }}
+                      </div>
+                    </div>
+                    <span class="search-type-badge {{ badge_class }}">{{ row_type }}</span>
+                  </div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="manage-item">No matching District Schedule records found.</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="search-result-section">
+          <h4 class="search-result-heading">Chain Prayer Schedule</h4>
+          <div class="manage-list">
+            {% if chain_search_rows %}
+              {% for row in chain_search_rows %}
+                <div class="search-result-card search-card-chain">
+                  <div class="search-result-top">
+                    <div>
+                      <div class="search-result-title">{{ row.church_name_assigned }}</div>
+                      <div class="search-result-meta">
+                        Pastor: {{ row.pastor_name or '-' }}<br>
+                        Date: <span class="js-format-date" data-date="{{ row.prayer_date }}"></span>
+                      </div>
+                    </div>
+                    <span class="search-type-badge search-badge-chain">Chain Prayer</span>
+                  </div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="manage-item">No matching Chain Prayer Schedule records found.</div>
+            {% endif %}
+          </div>
+        </div>
+
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="searchAgainFromResults()">Search Again</button>
+        <a class="btn-primary" href="{{ url_for('schedules', year=year, month=month, view=view) }}">Exit</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="createModalBackdrop">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div style="width:100%;">
+        <h3 class="modal-title">Create Schedule</h3>
+        <div style="margin-top:12px; max-width:320px;">
+          <label class="field-label" for="schedule_mode" style="margin-bottom:4px;">Schedule Version</label>
+          <select class="field-select" id="schedule_mode" name="schedule_mode" form="createScheduleForm">
+            <option value="thanksgiving">Thanksgiving Schedule</option>
+            <option value="other">Other Schedule</option>
+          </select>
+          <div class="schedule-subtitle">Choose what type of schedule you are making.</div>
+        </div>
+      </div>
+      <button type="button" class="modal-close" onclick="closeCreateModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="createScheduleForm" method="POST" action="{{ url_for('schedules') }}" data-loading-text="Creating schedule, please wait...">
+        <input type="hidden" name="action" value="create_schedule">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <input type="hidden" name="view" value="{{ view }}">
+
+        <div class="form-grid" id="thanksgivingFields">
+          <div>
+            <label class="field-label">Area <span class="field-required">*</span></label>
+            <select class="field-select" id="tg_area_number" name="tg_area_number"></select>
+          </div>
+          <div>
+            <label class="field-label">Church <span class="field-required">*</span></label>
+            <select class="field-select" id="tg_church_name" name="tg_church_name" disabled><option value="">Choose area first</option></select>
+          </div>
+          <div class="full">
+            <label class="field-label">Church Address</label>
+            <div class="readonly-display" id="tg_church_address">-</div>
+          </div>
+          <div>
+            <label class="field-label">Pastor's Name</label>
+            <div class="readonly-display" id="tg_pastor_name">-</div>
+          </div>
+          <div>
+            <label class="field-label">Contact Number</label>
+            <div class="readonly-display" id="tg_contact_number">-</div>
+          </div>
+          <div>
+            <label class="field-label">Date <span class="field-required">*</span></label>
+            <input class="field-input" type="date" name="tg_activity_date">
+          </div>
+          <div>
+            <label class="field-label">📍 Google Maps Pin Location</label>
+            <input class="field-input map-pin-input" type="text" id="google_pin_location" name="google_pin_location" placeholder="Paste Google Maps link">
+            <div class="field-help" id="google_pin_location_help"></div>
+          </div>
+          <div class="full">
+            <label class="field-label">Theme</label>
+            <input class="field-input" type="text" name="theme">
+          </div>
+          <div class="full">
+            <label class="field-label">Text</label>
+            <input class="field-input" type="text" name="text">
+          </div>
+          <div class="full">
+            <label class="field-label">Note</label>
+            <textarea class="field-textarea" name="note"></textarea>
+          </div>
+        </div>
+
+        <div class="form-grid" id="otherScheduleFields" style="display:none;">
+          <div class="full">
+            <label class="field-label">Church Name <span class="field-required">*</span></label>
+            <input class="field-input" type="text" name="church_name">
+          </div>
+          <div class="full">
+            <label class="field-label">Church Address</label>
+            <input class="field-input" type="text" name="church_address">
+          </div>
+          <div>
+            <label class="field-label">Pastor's Name</label>
+            <input class="field-input" type="text" name="pastor_name">
+          </div>
+          <div>
+            <label class="field-label">Contact Number</label>
+            <input class="field-input" type="text" name="contact_number">
+          </div>
+          <div>
+            <label class="field-label">Activity Date Start <span class="field-required">*</span></label>
+            <input class="field-input" type="date" name="activity_date_start">
+          </div>
+          <div>
+            <label class="field-label">Activity Date End</label>
+            <input class="field-input" type="date" name="activity_date_end">
+          </div>
+          <div class="full">
+            <label class="field-label">Activity Type <span class="field-required">*</span></label>
+            <select class="field-select" name="activity_type">
+              <option value="">Select activity type</option>
+              {% for item in other_activity_types %}
+                <option value="{{ item }}">{{ item }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="full">
+            <label class="field-label">📍 Google Maps Pin Location</label>
+            <input class="field-input map-pin-input" type="text" id="google_pin_location_other" name="google_pin_location_other" placeholder="Paste Google Maps link">
+            <div class="field-help" id="google_pin_location_other_help"></div>
+          </div>
+          <div class="full">
+            <label class="field-label">Note</label>
+            <textarea class="field-textarea" name="note"></textarea>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-danger" onclick="closeCreateModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Save Schedule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="editPickerBackdrop">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Edit Schedule</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeEditPickerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="manage-list">
+        {% if month_rows %}
+          {% for row in month_rows %}
+            <div class="manage-item">
+              <div class="manage-item-title">{{ row.activity_type or 'Others' }} — {{ row.church_name }}</div>
+              <div class="manage-item-meta">
+                {{ row.activity_date_start }}{% if row.activity_date_end %} to {{ row.activity_date_end }}{% endif %}
+              </div>
+              <div class="manage-item-actions">
+                <button type="button" class="btn-primary" onclick="openEditModal({{ row.sheet_row }})">Edit</button>
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="manage-item">No schedules found for this month.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="deletePickerBackdrop">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Delete Schedule</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeDeletePickerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="manage-list">
+        {% if month_rows %}
+          {% for row in month_rows %}
+            <div class="manage-item">
+              <div class="manage-item-title">{{ row.activity_type or 'Others' }} — {{ row.church_name }}</div>
+              <div class="manage-item-meta">
+                {{ row.activity_date_start }}{% if row.activity_date_end %} to {{ row.activity_date_end }}{% endif %}
+              </div>
+              <div class="manage-item-actions">
+                <form method="POST" action="{{ url_for('schedules') }}" data-loading-text="Deleting schedule, please wait..." onsubmit="return confirm('Delete this schedule?');">
+                  <input type="hidden" name="action" value="delete_schedule">
+                  <input type="hidden" name="sheet_row" value="{{ row.sheet_row }}">
+                  <input type="hidden" name="year" value="{{ year }}">
+                  <input type="hidden" name="month" value="{{ month }}">
+                  <button type="submit" class="btn-danger">Delete</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="manage-item">No schedules found for this month.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% for row in month_rows %}
+<div class="modal-backdrop" id="editModalBackdrop_{{ row.sheet_row }}">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">Edit Schedule</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeEditModal({{ row.sheet_row }})">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form method="POST" action="{{ url_for('schedules') }}" data-loading-text="Updating schedule, please wait...">
+        <input type="hidden" name="action" value="edit_schedule">
+        <input type="hidden" name="sheet_row" value="{{ row.sheet_row }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+
+        <div class="form-grid">
+          <div class="full">
+            <label class="field-label">Church Name <span class="field-required">*</span></label>
+            <input class="field-input" type="text" name="church_name" value="{{ row.church_name or '' }}" required>
+          </div>
+
+          <div class="full">
+            <label class="field-label">Church Address</label>
+            <input class="field-input" type="text" name="church_address" value="{{ row.church_address or '' }}">
+          </div>
+
+          <div>
+            <label class="field-label">Pastor's Name</label>
+            <input class="field-input" type="text" name="pastor_name" value="{{ row.pastor_name or '' }}">
+          </div>
+
+          <div>
+            <label class="field-label">Contact Number</label>
+            <input class="field-input" type="text" name="contact_number" value="{{ row.contact_number or '' }}">
+          </div>
+
+          <div>
+            <label class="field-label">Activity Date Start <span class="field-required">*</span></label>
+            <input class="field-input" type="date" name="activity_date_start" value="{{ row.activity_date_start or '' }}" required>
+          </div>
+
+          <div>
+            <label class="field-label">Activity Date End</label>
+            <input class="field-input" type="date" name="activity_date_end" value="{{ row.activity_date_end or '' }}">
+          </div>
+
+          <div class="full">
+            <label class="field-label">Activity Type <span class="field-required">*</span></label>
+            <select class="field-select" name="activity_type" required>
+              <option value="">Select activity type</option>
+              {% for item in activity_types %}
+                <option value="{{ item }}" {% if (row.activity_type or '') == item %}selected{% endif %}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="full">
+            <label class="field-label">📍 Google Maps Pin Location</label>
+            <input class="field-input map-pin-input" type="text" id="edit_google_pin_location_{{ row.sheet_row }}" name="google_pin_location" value="">
+            <div class="field-help" id="edit_google_pin_location_help_{{ row.sheet_row }}"></div>
+          </div>
+
+          <div class="full">
+            <label class="field-label">Note</label>
+            <textarea class="field-textarea" name="note">{{ row.note or '' }}</textarea>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-danger" onclick="closeEditModal({{ row.sheet_row }})">Cancel</button>
+          <button type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<script>
+  function openSecretaryFlow() {
+    const hasAccess = {{ district_secretary_ok|tojson }};
+    if (hasAccess) {
+      document.getElementById("secretaryToolBackdrop").classList.add("open");
+    } else {
+      document.getElementById("codeModalBackdrop").classList.add("open");
+    }
+  }
+
+  const currentScheduleYear = {{ year|tojson }};
+  const currentScheduleMonth = {{ month|tojson }};
+  const currentScheduleView = {{ view|tojson }};
+  let monthPickerYear = currentScheduleYear;
+
+  const monthNames = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+
+  const accountSearchRows = {{ account_search_rows|tojson }};
+
+  const calendarDays = {
+    {% for week in weeks %}
+      {% for cell in week %}
+        "{{ cell.iso }}": [
+          {% for event in cell.events %}
+            {
+              id: {{ event.id|tojson }},
+              sheet_row: {{ event.sheet_row|default(0)|tojson }},
+              church_name: {{ event.church_name|default('', true)|tojson }},
+              church_address: {{ event.church_address|default('', true)|tojson }},
+              pastor_name: {{ event.pastor_name|default('', true)|tojson }},
+              contact_number: {{ event.contact_number|default('', true)|tojson }},
+              activity_date_start: {{ event.activity_date_start|default('', true)|tojson }},
+              activity_date_end: {{ event.activity_date_end|default('', true)|tojson }},
+              activity_type: {{ event.activity_type|default('', true)|tojson }},
+              note: {{ event.note|default('', true)|tojson }},
+              theme: {{ event.theme|default('', true)|tojson }},
+              text: {{ event.text|default('', true)|tojson }},
+              google_pin_location: {{ event.google_pin_location|default('', true)|tojson }},
+              joining: {{ event.joining|default('', true)|tojson }},
+              joining_count: {{ event.joining_count|default(0, true)|tojson }},
+              church_name_assigned: {{ event.church_name_assigned|default('', true)|tojson }},
+              prayer_date: {{ event.prayer_date|default('', true)|tojson }},
+              type_class: {{ event.type_class|default('type-prayer', true)|tojson }}
+            }{% if not loop.last %},{% endif %}
+          {% endfor %}
+        ],
+      {% endfor %}
+    {% endfor %}
+  };
+
+  const eventLookup = {
+    {% for event_id, event in event_lookup.items() %}
+      "{{ event_id }}": {
+        id: {{ event.id|tojson }},
+        sheet_row: {{ event.sheet_row|default(0)|tojson }},
+        church_name: {{ event.church_name|default('', true)|tojson }},
+        church_address: {{ event.church_address|default('', true)|tojson }},
+        pastor_name: {{ event.pastor_name|default('', true)|tojson }},
+        contact_number: {{ event.contact_number|default('', true)|tojson }},
+        activity_date_start: {{ event.activity_date_start|default('', true)|tojson }},
+        activity_date_end: {{ event.activity_date_end|default('', true)|tojson }},
+        activity_type: {{ event.activity_type|default('', true)|tojson }},
+        note: {{ event.note|default('', true)|tojson }},
+        theme: {{ event.theme|default('', true)|tojson }},
+        text: {{ event.text|default('', true)|tojson }},
+        google_pin_location: {{ event.google_pin_location|default('', true)|tojson }},
+        joining: {{ event.joining|default('', true)|tojson }},
+        joining_count: {{ event.joining_count|default(0, true)|tojson }},
+        church_name_assigned: {{ event.church_name_assigned|default('', true)|tojson }},
+        pastor_name: {{ event.pastor_name|default('', true)|tojson }},
+        prayer_date: {{ event.prayer_date|default('', true)|tojson }},
+        type_class: {{ event.type_class|default('type-prayer', true)|tojson }}
+      }{% if not loop.last %},{% endif %}
+    {% endfor %}
+  };
+
+  function renderMonthPicker() {
+    document.getElementById("monthPickerYearLabel").textContent = monthPickerYear;
+
+    const grid = document.getElementById("monthPickerGrid");
+    grid.innerHTML = monthNames.map((name, index) => {
+      const monthNumber = index + 1;
+      const isCurrent = monthPickerYear === currentScheduleYear && monthNumber === currentScheduleMonth;
+      const href = "{{ url_for('schedules') }}" + "?year=" + monthPickerYear + "&month=" + monthNumber + "&view=" + currentScheduleView;
+
+      return `
+        <a href="${href}" class="month-picker-btn ${isCurrent ? 'current' : ''}">
+          ${name}
+        </a>
+      `;
+    }).join("");
+  }
+
+  function openMonthPickerModal() {
+    monthPickerYear = currentScheduleYear;
+    renderMonthPicker();
+    document.getElementById("monthPickerBackdrop").classList.add("open");
+  }
+
+  function closeMonthPickerModal() {
+    document.getElementById("monthPickerBackdrop").classList.remove("open");
+  }
+
+  function changeMonthPickerYear(delta) {
+    monthPickerYear += delta;
+    renderMonthPicker();
+  }
+
+  function formatFullDate(isoDate) {
+    if (!isoDate) return "-";
+    const d = new Date(isoDate + "T00:00:00");
+    if (isNaN(d.getTime())) return isoDate;
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      weekday: "long"
+    });
+  }
+
+  function formatDateLabel(isoDate) {
+    const d = new Date(isoDate + "T00:00:00");
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function uniqueValues(items, key) {
+    const seen = new Set();
+    const out = [];
+    items.forEach(item => {
+      const value = String(item[key] || "").trim();
+      if (!value) return;
+      const norm = value.toLowerCase();
+      if (seen.has(norm)) return;
+      seen.add(norm);
+      out.push(value);
+    });
+    return out;
+  }
+
+  function fillSelectOptions(selectEl, values, placeholder, selectedValue) {
+    const current = String(selectedValue || "").trim().toLowerCase();
+    let html = `<option value="">${placeholder}</option>`;
+    values.forEach(value => {
+      const selected = value.trim().toLowerCase() === current ? "selected" : "";
+      html += `<option value="${escapeHtml(value)}" ${selected}>${escapeHtml(value)}</option>`;
+    });
+    selectEl.innerHTML = html;
+  }
+
+  function findAccountSelection(areaValue, churchValue) {
+    const areaNorm = String(areaValue || "").trim().toLowerCase();
+    const churchNorm = String(churchValue || "").trim().toLowerCase();
+    return accountSearchRows.find(row => {
+      return String(row.area_number || "").trim().toLowerCase() === areaNorm &&
+             String(row.church_name || "").trim().toLowerCase() === churchNorm;
+    }) || null;
+  }
+
+  function findPastorForSelection(areaValue, churchValue) {
+    const match = findAccountSelection(areaValue, churchValue);
+    return match ? String(match.pastor_name || "").trim() : "";
+  }
+
+  function setReadonlyDisplay(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = String(value || '').trim() || '-';
+  }
+
+  function setMapFieldState(inputId, helpId, value) {
+    const input = document.getElementById(inputId);
+    const help = document.getElementById(helpId);
+    if (!input) return;
+    const pin = String(value || '').trim();
+    input.value = pin;
+    input.dataset.existingPin = pin;
+    input.dataset.overrideUnlocked = pin ? 'false' : 'true';
+    input.readOnly = !!pin;
+    if (help) {
+      help.textContent = pin ? '📍 A map location is already saved for this church. Click the field if you want to replace it.' : '';
+    }
+  }
+
+  function attachMapOverwritePrompt(inputId, helpId) {
+    const input = document.getElementById(inputId);
+    if (!input || input.dataset.promptBound === 'true') return;
+    input.dataset.promptBound = 'true';
+    input.addEventListener('focus', function () {
+      const existing = String(input.dataset.existingPin || '').trim();
+      const unlocked = input.dataset.overrideUnlocked === 'true';
+      if (existing && !unlocked) {
+        const proceed = window.confirm('📍 A location is already saved for this church. Do you want to replace the existing map location?');
+        if (proceed) {
+          input.dataset.overrideUnlocked = 'true';
+          input.readOnly = false;
+        } else {
+          input.readOnly = true;
+          input.blur();
+        }
+      }
+    });
+  }
+
+  function isValidGoogleMapsLink(value) {
+    const v = String(value || '').trim().toLowerCase();
+    if (!v) return true;
+    return v.startsWith('https://maps.app.goo.gl/') ||
+           v.startsWith('http://maps.app.goo.gl/') ||
+           v.startsWith('https://www.google.com/maps') ||
+           v.startsWith('http://www.google.com/maps') ||
+           v.startsWith('https://google.com/maps') ||
+           v.startsWith('http://google.com/maps') ||
+           v.startsWith('https://maps.google.com/') ||
+           v.startsWith('http://maps.google.com/');
+  }
+
+  function refreshThanksgivingDropdowns(preserveChurch = false) {
+    const areaEl = document.getElementById("tg_area_number");
+    const churchEl = document.getElementById("tg_church_name");
+    if (!areaEl || !churchEl) return;
+    const selectedArea = areaEl.value || "";
+    const selectedChurch = preserveChurch ? (churchEl.value || "") : "";
+    const areaValues = uniqueValues(accountSearchRows, "area_number");
+    fillSelectOptions(areaEl, areaValues, "Select area", selectedArea);
+
+    if (!selectedArea) {
+      churchEl.innerHTML = `<option value="">Choose area first</option>`;
+      churchEl.disabled = true;
+      setReadonlyDisplay("tg_church_address", "");
+      setReadonlyDisplay("tg_pastor_name", "");
+      setReadonlyDisplay("tg_contact_number", "");
+      setMapFieldState("google_pin_location", "google_pin_location_help", "");
+      return;
+    }
+
+    churchEl.disabled = false;
+    const churchSource = accountSearchRows.filter(x => String(x.area_number || "").trim() === selectedArea);
+    const churchValues = uniqueValues(churchSource, "church_name");
+    fillSelectOptions(churchEl, churchValues, "Select church", selectedChurch);
+    const match = findAccountSelection(areaEl.value, churchEl.value);
+    setReadonlyDisplay("tg_church_address", match ? (match.church_address || "") : "");
+    setReadonlyDisplay("tg_pastor_name", match ? (match.pastor_name || "") : "");
+    setReadonlyDisplay("tg_contact_number", match ? (match.contact_number || "") : "");
+    setMapFieldState("google_pin_location", "google_pin_location_help", match ? (match.google_pin_location || "") : "");
+  }
+
+  function toggleCreateScheduleMode() {
+    const mode = (document.getElementById("schedule_mode") || {}).value || "thanksgiving";
+    document.getElementById("thanksgivingFields").style.display = mode === "thanksgiving" ? "grid" : "none";
+    document.getElementById("otherScheduleFields").style.display = mode === "other" ? "grid" : "none";
+  }
+
+  function refreshSearchScheduleDropdowns(preserveChurch = false) {
+    const areaEl = document.getElementById("search_area_number");
+    const churchEl = document.getElementById("search_church_name");
+    const pastorEl = document.getElementById("search_pastor_name");
+
+    if (!areaEl || !churchEl || !pastorEl) return;
+
+    const selectedArea = areaEl.value || "";
+    const selectedChurch = preserveChurch ? (churchEl.value || "") : "";
+
+    const areaValues = uniqueValues(accountSearchRows, "area_number");
+    fillSelectOptions(areaEl, areaValues, "All areas", selectedArea);
+
+    let churchSource = accountSearchRows;
+    if (selectedArea) {
+      churchSource = churchSource.filter(x => String(x.area_number || "").trim() === selectedArea);
+    }
+
+    const churchValues = uniqueValues(churchSource, "church_name");
+    fillSelectOptions(churchEl, churchValues, "All churches", selectedChurch);
+
+    const actualChurch = churchEl.value || "";
+    pastorEl.value = findPastorForSelection(selectedArea, actualChurch);
+  }
+
+  function openSearchScheduleModal() {
+    const areaEl = document.getElementById("search_area_number");
+    const churchEl = document.getElementById("search_church_name");
+    const pastorEl = document.getElementById("search_pastor_name");
+
+    if (!areaEl || !churchEl || !pastorEl) return;
+
+    closeSearchResultModal();
+
+    areaEl.innerHTML = "";
+    churchEl.innerHTML = "";
+    areaEl.value = "";
+    churchEl.value = "";
+    pastorEl.value = "";
+
+    refreshSearchScheduleDropdowns(false);
+
+    if ({{ search_area_number|tojson }}) {
+      areaEl.value = {{ search_area_number|tojson }};
+      refreshSearchScheduleDropdowns(false);
+
+      if ({{ search_church_name|tojson }}) {
+        churchEl.value = {{ search_church_name|tojson }};
+        pastorEl.value = findPastorForSelection(areaEl.value, churchEl.value);
+      }
+    }
+
+    document.getElementById("searchScheduleBackdrop").classList.add("open");
+  }
+
+  function clearSearchScheduleForm() {
+    const areaEl = document.getElementById("search_area_number");
+    const churchEl = document.getElementById("search_church_name");
+    const pastorEl = document.getElementById("search_pastor_name");
+
+    if (!areaEl || !churchEl || !pastorEl) return;
+
+    areaEl.value = "";
+    churchEl.innerHTML = "";
+    churchEl.value = "";
+    pastorEl.value = "";
+
+    refreshSearchScheduleDropdowns(false);
+  }
+
+  function closeSearchScheduleModal() {
+    document.getElementById("searchScheduleBackdrop").classList.remove("open");
+  }
+
+  function openSearchResultModal() {
+    document.getElementById("searchResultBackdrop").classList.add("open");
+  }
+
+  function closeSearchResultModal() {
+    document.getElementById("searchResultBackdrop").classList.remove("open");
+  }
+
+  function searchAgainFromResults() {
+    closeSearchResultModal();
+    openSearchScheduleModal();
+  }
+
+  function openDayModal(isoDate) {
+    const events = calendarDays[isoDate] || [];
+    const title = document.getElementById("dayModalTitle");
+    const list = document.getElementById("dayModalList");
+
+    title.textContent = formatDateLabel(isoDate);
+
+    if (!events.length) {
+      list.innerHTML = '<div class="day-item"><p style="margin:0;">No scheduled activities.</p></div>';
+    } else if (currentScheduleView === "chain_prayer") {
+      list.innerHTML = events.map(evt => `
+        <div class="day-item">
+          <div class="day-item-top">
+            <div>
+              <div class="day-item-title">Chain Prayer</div>
+              <div class="day-item-host">${escapeHtml(evt.church_name_assigned || "-")}</div>
+              <div class="day-item-host">Pastor: ${escapeHtml(evt.pastor_name || "-")}</div>
+            </div>
+            <span class="event-chip ${evt.type_class}" style="width:auto; cursor:default;">Chain Prayer</span>
+          </div>
+          <div class="day-item-open">
+            <button type="button" class="btn-secondary" onclick="openEventModal('${evt.id}')">View Details</button>
+          </div>
+        </div>
+      `).join("");
+    } else {
+      list.innerHTML = events.map(evt => `
+        <div class="day-item">
+          <div class="day-item-top">
+            <div>
+              <div class="day-item-title">${escapeHtml(evt.activity_type || "-")}</div>
+              <div class="day-item-host">${escapeHtml(evt.church_name || "-")}</div>
+            </div>
+            <span class="event-chip ${evt.type_class}" style="width:auto; cursor:default;">${escapeHtml(evt.activity_type || "-")}</span>
+          </div>
+          <div class="day-item-open">
+            <button type="button" class="btn-secondary" onclick="openEventModal('${evt.id}')">View Details</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    document.getElementById("dayModalBackdrop").classList.add("open");
+  }
+
+  function closeDayModal() {
+    document.getElementById("dayModalBackdrop").classList.remove("open");
+  }
+
+  function openEventModal(eventId) {
+    const evt = eventLookup[eventId];
+    if (!evt) return;
+
+    if (currentScheduleView === "chain_prayer") {
+      document.getElementById("eventModalTitle").textContent = "Chain Prayer";
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name_assigned || "";
+
+      document.getElementById("eventModalActions").innerHTML = "";
+      document.getElementById("eventModalDetails").innerHTML = `
+        <div class="detail-label">Church Name</div>
+        <div class="detail-value">${escapeHtml(evt.church_name_assigned || "-")}</div>
+
+        <div class="detail-label">Pastor</div>
+        <div class="detail-value">${escapeHtml(evt.pastor_name || "-")}</div>
+
+        <div class="detail-label">Date</div>
+        <div class="detail-value">${escapeHtml(formatFullDate(evt.prayer_date || ""))}</div>
+
+        <div class="detail-label">Note</div>
+        <div class="detail-value">
+          The District Overseer desires that every day one church will pray at the Convention Center, focusing on the great revival and God's power in District 4.
+          <br><br>
+          Please inform your area if you cannot fulfill your obligation so that he can substitute the assigned church.
+        </div>
+      `;
+    } else {
+      const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
+      let showJoinButton = true;
+
+      if (rememberedName && evt.joining) {
+        const names = evt.joining.split(",").map(x => x.trim().toLowerCase());
+        if (names.includes(rememberedName.trim().toLowerCase())) {
+          showJoinButton = false;
+        }
+      }
+
+      document.getElementById("eventModalTitle").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span>${escapeHtml(evt.activity_type || "Schedule Details")}</span>
+          ${
+            showJoinButton
+              ? `<button type="button" class="btn-primary join-header-btn" onclick="joinSchedule(${evt.sheet_row || 0})">I’m Joining 🙋</button>`
+              : ``
+          }
+        </div>
+      `;
+
+      document.getElementById("eventModalSubtitle").textContent = evt.church_name || "";
+
+      const dateLabel = evt.activity_date_end
+        ? `${formatFullDate(evt.activity_date_start || "")} to ${formatFullDate(evt.activity_date_end || "")}`
+        : formatFullDate(evt.activity_date_start || "");
+
+      document.getElementById("eventModalActions").innerHTML = "";
+      document.getElementById("eventModalDetails").innerHTML = `
+        <div class="detail-label">Church Name</div>
+        <div class="detail-value">${escapeHtml(evt.church_name || "-")}</div>
+
+        <div class="detail-label">Church Address</div>
+        <div class="detail-value">${escapeHtml(evt.church_address || "-")}</div>
+
+        <div class="detail-label"></div>
+        <div class="detail-value">${evt.google_pin_location ? `<a class="btn-primary" href="${escapeHtml(evt.google_pin_location)}" target="_blank" rel="noopener noreferrer">📍 View Location</a>` : "-"}</div>
+
+        <div class="detail-label">Pastor's Name</div>
+        <div class="detail-value">${escapeHtml(evt.pastor_name || "-")}</div>
+
+        <div class="detail-label">Contact Number</div>
+        <div class="detail-value">${escapeHtml(evt.contact_number || "-")}</div>
+
+        <div class="detail-label">Activity Date</div>
+        <div class="detail-value">${escapeHtml(dateLabel)}</div>
+
+        <div class="detail-label">Theme</div>
+        <div class="detail-value">${escapeHtml(evt.theme || "-")}</div>
+
+        <div class="detail-label">Text</div>
+        <div class="detail-value">${escapeHtml(evt.text || "-")}</div>
+
+        <div class="detail-label">Potential Attendees</div>
+        <div class="detail-value">${escapeHtml(String(evt.joining_count || 0))}</div>
+
+        <div class="detail-label">Note</div>
+        <div class="detail-value">${escapeHtml(evt.note || "-")}</div>
+      `;
+
+      document.getElementById("eventModalActions").innerHTML = `
+        <button type="button" class="btn-primary" onclick="openPublicEditModal('${evt.id}')">Edit Theme / Text / Note</button>
+      `;
+    }
+
+    document.getElementById("eventModalBackdrop").classList.add("open");
+  }
+
+  function openPublicEditModal(eventId) {
+    const evt = eventLookup[eventId];
+    if (!evt) return;
+    document.getElementById("public_edit_sheet_row").value = evt.sheet_row || 0;
+    document.getElementById("public_theme").value = evt.theme || "";
+    document.getElementById("public_text").value = evt.text || "";
+    document.getElementById("public_note").value = evt.note || "";
+    document.getElementById("publicEditModalBackdrop").classList.add("open");
+  }
+
+  function closePublicEditModal() {
+    document.getElementById("publicEditModalBackdrop").classList.remove("open");
+  }
+
+  function closeEventModal() {
+    document.getElementById("eventModalActions").innerHTML = "";
+    document.getElementById("eventModalBackdrop").classList.remove("open");
+  }
+
+  function joinSchedule(sheetRow) {
+    const rememberedName = {{ session.get('schedule_join_name', '')|tojson }};
+
+    if (rememberedName && rememberedName.trim()) {
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = {{ url_for('schedules')|tojson }};
+
+      const fields = {
+        action: "join_schedule",
+        sheet_row: String(sheetRow),
+        join_name: rememberedName,
+        year: {{ year|tojson }},
+        month: {{ month|tojson }}
+      };
+
+      for (const key in fields) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+      }
+
+      document.body.appendChild(form);
+      form.submit();
+      return;
+    }
+
+    document.getElementById("join_sheet_row").value = sheetRow;
+    document.getElementById("joinModalBackdrop").classList.add("open");
+  }
+
+  function closeJoinModal() {
+    document.getElementById("joinModalBackdrop").classList.remove("open");
+  }
+
+  function closeCodeModal() {
+    document.getElementById("codeModalBackdrop").classList.remove("open");
+  }
+
+  function closeSecretaryTool() {
+    document.getElementById("secretaryToolBackdrop").classList.remove("open");
+  }
+
+  function openCreateModal() {
+    closeSecretaryTool();
+    const form = document.getElementById("createScheduleForm");
+    if (form) form.reset();
+    const mode = document.getElementById("schedule_mode");
+    if (mode) mode.value = "thanksgiving";
+    refreshThanksgivingDropdowns(false);
+    toggleCreateScheduleMode();
+    document.getElementById("createModalBackdrop").classList.add("open");
+  }
+
+  function closeCreateModal() {
+    document.getElementById("createModalBackdrop").classList.remove("open");
+  }
+
+  function openEditPickerModal() {
+    closeSecretaryTool();
+    document.getElementById("editPickerBackdrop").classList.add("open");
+  }
+
+  function closeEditPickerModal() {
+    document.getElementById("editPickerBackdrop").classList.remove("open");
+  }
+
+  function openDeletePickerModal() {
+    closeSecretaryTool();
+    document.getElementById("deletePickerBackdrop").classList.add("open");
+  }
+
+  function closeDeletePickerModal() {
+    document.getElementById("deletePickerBackdrop").classList.remove("open");
+  }
+
+  function openEditModal(sheetRow) {
+    closeEditPickerModal();
+    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
+    if (el) {
+      const churchInput = el.querySelector('input[name="church_name"]');
+      const churchName = churchInput ? churchInput.value : '';
+      const match = accountSearchRows.find(row => String(row.church_name || '').trim().toLowerCase() === String(churchName || '').trim().toLowerCase()) || null;
+      setMapFieldState(`edit_google_pin_location_${sheetRow}`, `edit_google_pin_location_help_${sheetRow}`, match ? (match.google_pin_location || '') : '');
+      attachMapOverwritePrompt(`edit_google_pin_location_${sheetRow}`, `edit_google_pin_location_help_${sheetRow}`);
+      el.classList.add("open");
+    }
+  }
+
+  function closeEditModal(sheetRow) {
+    const el = document.getElementById(`editModalBackdrop_${sheetRow}`);
+    if (el) el.classList.remove("open");
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    const areaEl = document.getElementById("search_area_number");
+    const churchEl = document.getElementById("search_church_name");
+    const pastorEl = document.getElementById("search_pastor_name");
+
+    const scheduleModeEl = document.getElementById("schedule_mode");
+    if (scheduleModeEl) {
+      scheduleModeEl.addEventListener("change", toggleCreateScheduleMode);
+      toggleCreateScheduleMode();
+      refreshThanksgivingDropdowns(false);
+    }
+
+    const tgAreaEl = document.getElementById("tg_area_number");
+    const tgChurchEl = document.getElementById("tg_church_name");
+    if (tgAreaEl) {
+      tgAreaEl.addEventListener("change", function () { refreshThanksgivingDropdowns(false); });
+    }
+    if (tgChurchEl) {
+      tgChurchEl.addEventListener("change", function () { refreshThanksgivingDropdowns(true); });
+    }
+
+    if (areaEl) {
+      areaEl.addEventListener("change", function () {
+        if (churchEl) {
+          churchEl.innerHTML = "";
+          churchEl.value = "";
+        }
+        if (pastorEl) {
+          pastorEl.value = "";
+        }
+        refreshSearchScheduleDropdowns(false);
+      });
+    }
+
+    if (churchEl) {
+      churchEl.addEventListener("change", function () {
+        const actualArea = areaEl ? areaEl.value : "";
+        const actualChurch = churchEl.value || "";
+        if (pastorEl) {
+          pastorEl.value = findPastorForSelection(actualArea, actualChurch);
+        }
+      });
+    }
+
+    attachMapOverwritePrompt("google_pin_location", "google_pin_location_help");
+    attachMapOverwritePrompt("google_pin_location_other", "google_pin_location_other_help");
+
+    const createForm = document.getElementById("createScheduleForm");
+    if (createForm) {
+      createForm.addEventListener("submit", function (e) {
+        const mode = (document.getElementById("schedule_mode") || {}).value || "thanksgiving";
+        const pinValue = mode === "thanksgiving" ? ((document.getElementById("google_pin_location") || {}).value || "") : ((document.getElementById("google_pin_location_other") || {}).value || "");
+        if (!isValidGoogleMapsLink(pinValue)) {
+          e.preventDefault();
+          alert("Please enter a valid Google Maps link.");
+        }
+      });
+    }
+
+    document.querySelectorAll('form').forEach((form) => {
+      const pinInput = form.querySelector('input[name="google_pin_location"]');
+      if (pinInput) {
+        form.addEventListener('submit', function (e) {
+          if (!isValidGoogleMapsLink(pinInput.value || '')) {
+            e.preventDefault();
+            alert('Please enter a valid Google Maps link.');
+          }
+        });
+      }
+    });
+
+    refreshThanksgivingDropdowns(false);
+    toggleCreateScheduleMode();
+
+    const hasSearchResults = {{ search_applied|tojson }};
+    if (hasSearchResults) {
+      openSearchResultModal();
+    }
+
+    document.querySelectorAll(".js-format-date").forEach((el) => {
+      const raw = el.dataset.date || "";
+      el.textContent = formatFullDate(raw);
+    });
+
+    document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
+      backdrop.addEventListener("click", function (e) {
+        if (e.target === backdrop) {
+          backdrop.classList.remove("open");
+        }
+      });
+    });
+  });
+</script>
+
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}AO - Prayer Request Approval{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+    <div>
+      <h2 style="margin-bottom:6px;">Prayer Request Approval</h2>
+      <p class="muted small" style="margin:0;">
+        Approve or reject pending prayer requests.
+      </p>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <form method="POST" action="{{ url_for('ao_prayer_requests_approve_all') }}" data-loading-text="Approving prayer requests, please wait..." style="display:inline;">
+        <button class="btn-primary" type="submit"
+                onclick="return confirm('Approve ALL pending prayer requests?')">
+          Approve All
+        </button>
+      </form>
+      <a href="{{ url_for('ao_tool') }}" class="btn-secondary">← Back</a>
+    </div>
+  </div>
+
+  {% if items and items|length > 0 %}
+    <div style="margin-top:12px;">
+      {% for r in items %}
+        <div class="card" style="margin-top:12px; border:2px solid #111;">
+          <details>
+            <summary style="cursor:pointer; list-style:none;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                  <div style="font-weight:900;">{{ r.title }}</div>
+                  <div class="muted small">
+                    {{ r.request_date }}
+                    {% if r.church_name %} • {{ r.church_name }}{% endif %}
+                    {% if r.submitted_by %} • {{ r.submitted_by }}{% endif %}
+                  </div>
+                </div>
+
+                <div>
+                  <span style="padding:6px 10px; border-radius:999px; border:1px solid #9a7b00; background:#fff4cc; font-weight:800; font-size:12px;">
+                    Pending
+                  </span>
+                </div>
+              </div>
+            </summary>
+
+            <div style="margin-top:12px;">
+              <div class="small" style="white-space:pre-wrap;">{{ r.request_text }}</div>
+
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                <form method="POST" action="{{ url_for('ao_prayer_requests_approve', request_id=r.request_id) }}" data-loading-text="Approving prayer request, please wait..." style="display:inline;">
+                  <button class="btn-primary" type="submit">Approve</button>
+                </form>
+
+                <form method="POST" action="{{ url_for('ao_prayer_requests_reject', request_id=r.request_id) }}" data-loading-text="Rejecting prayer request, please wait..." style="display:inline;">
+                  <button class="btn-secondary" type="submit"
+                          onclick="return confirm('Reject (delete) this prayer request?')">
+                    Reject
+                  </button>
+                </form>
+              </div>
+            </div>
+          </details>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="card" style="margin-top:12px;">
+      <div class="muted">No pending prayer requests.</div>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
