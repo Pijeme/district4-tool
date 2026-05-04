@@ -27,7 +27,7 @@ from flask import (
     make_response,
     send_file,
 )
-
+from church_finder import register_church_finder_routes
 from area_progress_monitor import register_area_progress_monitor
 from schedule import register_schedule_routes
 from temp_edit import register_temp_edit_routes
@@ -279,6 +279,8 @@ def init_db():
             position TEXT,
             sub_area TEXT,
             google_pin_location TEXT,
+            latitude TEXT,
+            longitude TEXT,
             sheet_row INTEGER
         )
         """
@@ -300,6 +302,17 @@ def init_db():
     if "google_pin_location" not in _acc_cols:
         try:
             cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN google_pin_location TEXT")
+        except Exception:
+            pass
+    if "latitude" not in _acc_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN latitude TEXT")
+        except Exception:
+            pass
+
+    if "longitude" not in _acc_cols:
+        try:
+            cursor.execute("ALTER TABLE sheet_accounts_cache ADD COLUMN longitude TEXT")
         except Exception:
             pass
 
@@ -920,6 +933,8 @@ def sync_from_sheets_if_needed(force=False):
         if i_sub is None:
             i_sub = _find_col(headers, "SubArea")
         i_pin = _find_col(headers, "GooglePinLocation")
+        i_lat = _find_col(headers, "Latitude")
+        i_lng = _find_col(headers, "Longitude")
 
         def cell(row, idx):
             if idx is None:
@@ -942,6 +957,8 @@ def sync_from_sheets_if_needed(force=False):
             position = str(cell(row, i_pos)).strip()
             sub_area = str(cell(row, i_sub)).strip()
             google_pin_location = str(cell(row, i_pin)).strip()
+            latitude = str(cell(row, i_lat)).strip()
+            longitude = str(cell(row, i_lng)).strip()
 
             # keep rows that have the search essentials even if username/password are blank
             if not area_number and not church_id and not full_name and not church_address:
@@ -950,8 +967,8 @@ def sync_from_sheets_if_needed(force=False):
             cur.execute(
                 """
                 INSERT OR REPLACE INTO sheet_accounts_cache
-                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, google_pin_location, sheet_row)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, google_pin_location, latitude, longitude, sheet_row)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -965,6 +982,8 @@ def sync_from_sheets_if_needed(force=False):
                     position,
                     sub_area,
                     google_pin_location,
+                    latitude,
+                    longitude,
                     r + 1,
                 ),
             )
@@ -3622,6 +3641,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123"
 register_area_progress_monitor(app)
 register_schedule_routes(app)
 register_temp_edit_routes(app)
+register_church_finder_routes(app)
 
 @app.template_filter("phpeso")
 def phpeso_filter(value):
@@ -3709,70 +3729,177 @@ def close_connection(exception):
 
 @app.route("/", methods=["GET", "POST"])
 def splash():
-    """Splash page login with role selection."""
+    """Splash page login. Role is auto-detected from Accounts cache."""
 
-    logged_in = bool(session.get("pastor_logged_in")) or bool(session.get("ao_logged_in"))
+    logged_in = bool(session.get("pastor_logged_in")) or bool(session.get("ao_logged_in")) or bool(session.get("member_logged_in"))
     error = None
 
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
-        selected_role = (request.form.get("position") or "Pastor").strip().lower()
 
         if not username or not password:
             error = "Username and password are required."
         else:
+            # Force refresh on login so role/password changes in Accounts are honored.
             sync_from_sheets_if_needed(force=True)
             row = get_db().execute(
                 """
-                SELECT username, password, name, church_address, sex, age, position, sub_area
+                SELECT username, password, name, church_address, sex, age, position, sub_area, contact, birthday
                 FROM sheet_accounts_cache
-                WHERE username = ?
+                WHERE TRIM(username) = TRIM(?)
                 """,
                 (username,),
             ).fetchone()
-
-            stored_role = str((row["position"] if row and "position" in row.keys() else "") or "").strip().lower()
 
             if row and str(row["password"] or "").strip() == password:
                 session.clear()
                 session.permanent = True
 
-                # AO login flow now supports both Area Overseer and Sub Area Overseer
-                # as distinct session roles. For backward compatibility, if the UI still
-                # posts "area overseer" for a Sub Area Overseer account, we still allow
-                # login and store the real role from Accounts.
-                if selected_role in ("area overseer", "sub area overseer"):
-                    if stored_role == "area overseer" and selected_role == "sub area overseer":
-                        error = "This account is not registered as Sub Area Overseer."
-                    elif stored_role not in ("area overseer", "sub area overseer"):
-                        error = "This account is not registered as Area Overseer."
-                    else:
-                        real_role = (row["position"] or "").strip()
-                        session["selected_position"] = real_role.lower()
-                        session["ao_logged_in"] = True
-                        session["ao_username"] = username
-                        session["ao_name"] = row["name"] or ""
-                        session["ao_area_number"] = (row["age"] or "").strip()
-                        session["ao_church_id"] = (row["sex"] or "").strip()
-                        session["ao_role"] = real_role
-                        session["ao_sub_area"] = (row["sub_area"] or "").strip()
-                        return redirect(url_for("ao_tool"))
-                else:
-                    session["selected_position"] = selected_role
+                real_role = str(row["position"] or "").strip()
+                role_key = real_role.lower()
+
+                # Common session fields for all account types
+                session["username"] = username
+                session["name"] = row["name"] or ""
+                session["church_address"] = row["church_address"] or ""
+                session["church_id"] = (row["sex"] or "").strip()
+                session["area"] = (row["age"] or "").strip()
+                session["contact"] = row["contact"] if "contact" in row.keys() else ""
+                session["birthday"] = row["birthday"] if "birthday" in row.keys() else ""
+                session["selected_position"] = role_key
+
+                # Normalized role used by base.html menu filtering
+                if role_key == "pastor":
+                    session["role"] = "Pastor"
                     session["pastor_logged_in"] = True
                     session["pastor_username"] = username
                     session["pastor_name"] = row["name"] or ""
                     session["pastor_church_address"] = row["church_address"] or ""
                     session["pastor_church_id"] = (row["sex"] or "").strip()
                     session["pastor_area_number"] = (row["age"] or "").strip()
-                    if selected_role == "member":
-                        return redirect(url_for("bulletin"))
                     return redirect(url_for("pastor_tool"))
+
+                if role_key == "member":
+                    session["role"] = "Member"
+                    session["member_logged_in"] = True
+                    return redirect(url_for("bulletin"))
+
+                if role_key in ("area overseer", "ao", "sub area overseer", "district overseer", "do"):
+                    if role_key in ("district overseer", "do"):
+                        session["role"] = "DO"
+                    elif role_key == "sub area overseer":
+                        session["role"] = "Sub Area Overseer"
+                    else:
+                        session["role"] = "AO"
+
+                    session["ao_logged_in"] = True
+                    session["ao_username"] = username
+                    session["ao_name"] = row["name"] or ""
+                    session["ao_area_number"] = (row["age"] or "").strip()
+                    session["ao_church_id"] = (row["sex"] or "").strip()
+                    session["ao_role"] = real_role
+                    session["ao_sub_area"] = (row["sub_area"] or "").strip() if "sub_area" in row.keys() else ""
+                    return redirect(url_for("ao_tool"))
+
+                # Unknown/blank role: login but keep safest limited access.
+                session["role"] = real_role or "Member"
+                session["member_logged_in"] = True
+                return redirect(url_for("bulletin"))
+
             else:
                 error = "Invalid username or password."
 
     return render_template("splash.html", logged_in=logged_in, error=error)
+
+
+
+def pending_page(title):
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>{title}</title>
+
+      <style>
+        body {{
+          font-family: Arial, sans-serif;
+          background: #f8fafc;
+          margin: 0;
+          padding: 24px;
+          color: #1f2937;
+          text-align: center;
+        }}
+
+        .card {{
+          max-width: 520px;
+          margin: 80px auto;
+          background: #fff;
+          border: 1px solid #e5e7eb;
+          border-radius: 18px;
+          padding: 28px;
+          box-shadow: 0 10px 30px rgba(15,23,42,.08);
+        }}
+
+        h1 {{
+          margin-top: 0;
+        }}
+
+        p {{
+          color: #64748b;
+        }}
+
+        a {{
+          display: inline-block;
+          margin-top: 18px;
+          background: #2563eb;
+          color: white;
+          text-decoration: none;
+          padding: 12px 18px;
+          border-radius: 10px;
+          font-weight: 700;
+        }}
+      </style>
+    </head>
+
+    <body>
+      <div class="card">
+        <h1>{title}</h1>
+
+        <p>
+          This feature is still pending and will be available soon.
+        </p>
+
+        <a href="{url_for('bulletin')}">
+          Back to Bulletin Board
+        </a>
+      </div>
+    </body>
+    </html>
+    """
+
+
+@app.route('/church-progress')
+def church_progress():
+    return pending_page("Church Progress")
+
+
+@app.route('/do-tool')
+def do_tool():
+    return pending_page("DO Tool")
+
+
+@app.route('/download-resources')
+def download_resources():
+    return pending_page("Download Resources")
+
+
+
+
+@app.route('/about-developer')
+def about_developer():
+    return pending_page("About Developer")
 
 
 @app.route("/logout")
@@ -4693,6 +4820,20 @@ def pastor_tool():
     today = date.today()
     year = request.args.get("year", type=int) or today.year
     month = request.args.get("month", type=int) or today.month
+
+    # ✅ AO fallback: if AO opens Pastor's Tool without choosing a church yet,
+    # automatically select the first church in AO scope to avoid blank pastor_username.
+    if ao_logged_in() and not (session.get("pastor_username") or "").strip():
+        if ao_church_choices:
+            session["pastor_username"] = ao_church_choices[0]
+            selected_church = ao_church_choices[0]
+            refresh_pastor_from_cache()
+        else:
+            return "No churches found under your area for Pastor's Tool access.", 404
+
+    pastor_username = (session.get("pastor_username") or "").strip()
+    if not pastor_username:
+        return redirect(url_for("splash"))
 
     sync_local_month_from_cache_for_pastor(year, month)
 
