@@ -480,7 +480,7 @@ def init_db():
         )
         """
     )
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(logged_in_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username)")
 
