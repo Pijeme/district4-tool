@@ -29,6 +29,7 @@ from flask import (
 )
 from church_finder import register_church_finder_routes
 from area_progress_monitor import register_area_progress_monitor
+from church_progress import register_church_progress
 from schedule import register_schedule_routes
 from temp_edit import register_temp_edit_routes
 
@@ -461,6 +462,27 @@ def init_db():
         """
     )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_dev_logs_created_at ON developer_visit_logs(created_at)")
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_login_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL,
+            full_name TEXT,
+            role TEXT,
+            church_id TEXT,
+            church_address TEXT,
+            area_number TEXT,
+            sub_area TEXT,
+            ip_address TEXT,
+            user_agent TEXT
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username)")
 
     # -----------------------
     # ✅ PRAYER REQUEST CACHE (PrayerRequest sheet → local cache)
@@ -3639,6 +3661,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
 
 register_area_progress_monitor(app)
+register_church_progress(app)
 register_schedule_routes(app)
 register_temp_edit_routes(app)
 register_church_finder_routes(app)
@@ -3714,6 +3737,70 @@ def _log_visit_if_needed():
     _cleanup_old_visit_logs()
 
 
+def _record_pastor_login_event(row):
+    """Record ONLY real Pastor account logins.
+
+    This is intentionally separate from developer_visit_logs so AO actions,
+    opening Pastor Tool for a church, and normal page visits are not mistaken
+    as pastor login notifications.
+    """
+    if not row:
+        return
+
+    role = str((row["position"] if "position" in row.keys() else "Pastor") or "Pastor").strip()
+    role_key = role.lower()
+
+    # Only real Pastor accounts should create pastor-login notifications.
+    # Member, AO, Sub Area Overseer, DO, and AO-selected pastor tool views are ignored.
+    if role_key and role_key != "pastor":
+        return
+
+    username = str((row["username"] if "username" in row.keys() else "") or "").strip()
+    if not username:
+        return
+
+    now_iso = utc_now_iso()
+    ip_address = str(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
+    user_agent = str(request.headers.get("User-Agent") or "").strip()
+
+    # Prevent double inserts if the same browser resubmits/refreshes quickly.
+    recent = get_db().execute(
+        """
+        SELECT id
+        FROM user_login_events
+        WHERE username = ?
+          AND datetime(created_at) >= datetime(?, '-90 seconds')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (username, now_iso),
+    ).fetchone()
+    if recent:
+        return
+
+    get_db().execute(
+        """
+        INSERT INTO user_login_events (
+            created_at, username, full_name, role, church_id, church_address,
+            area_number, sub_area, ip_address, user_agent
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            now_iso,
+            username,
+            str((row["name"] if "name" in row.keys() else "") or "").strip(),
+            role or "Pastor",
+            str((row["sex"] if "sex" in row.keys() else "") or "").strip(),
+            str((row["church_address"] if "church_address" in row.keys() else "") or "").strip(),
+            str((row["age"] if "age" in row.keys() else "") or "").strip(),
+            str((row["sub_area"] if "sub_area" in row.keys() else "") or "").strip(),
+            ip_address,
+            user_agent,
+        ),
+    )
+    get_db().commit()
+
+
 @app.before_request
 def before_request():
     init_db()
@@ -3778,6 +3865,7 @@ def splash():
                     session["pastor_church_address"] = row["church_address"] or ""
                     session["pastor_church_id"] = (row["sex"] or "").strip()
                     session["pastor_area_number"] = (row["age"] or "").strip()
+                    _record_pastor_login_event(row)
                     return redirect(url_for("pastor_tool"))
 
                 if role_key == "member":
@@ -3881,7 +3969,21 @@ def pending_page(title):
 
 
 @app.route('/church-progress')
-def church_progress():
+def church_progress_redirect():
+    if session.get("pastor_logged_in"):
+        church_id = (session.get("pastor_church_id") or "").strip()
+        if not church_id:
+            refresh_pastor_from_cache()
+            church_id = (session.get("pastor_church_id") or "").strip()
+
+        if church_id:
+            return redirect(url_for("church_progress.church_progress", church_id=church_id))
+
+    if session.get("ao_logged_in"):
+        church_id = (session.get("ao_church_id") or "").strip()
+        if church_id:
+            return redirect(url_for("church_progress.church_progress", church_id=church_id))
+
     return pending_page("Church Progress")
 
 
@@ -4422,7 +4524,7 @@ def pastor_login():
             error = "Username and password are required."
         else:
             row = get_db().execute(
-                "SELECT username, password, name, church_address, sex FROM sheet_accounts_cache WHERE username = ?",
+                "SELECT username, password, name, church_address, sex, age, position, sub_area FROM sheet_accounts_cache WHERE username = ?",
                 (username,),
             ).fetchone()
 
@@ -4431,7 +4533,11 @@ def pastor_login():
                 session["pastor_username"] = username
                 session["pastor_name"] = row["name"] or ""
                 session["pastor_church_address"] = row["church_address"] or ""
+                session["pastor_church_id"] = (row["sex"] or "").strip()
+                session["pastor_area_number"] = (row["age"] or "").strip() if "age" in row.keys() else ""
+                session["selected_position"] = "pastor"
                 session.permanent = True
+                _record_pastor_login_event(row)
                 return redirect(request.form.get("next") or next_url)
 
             try:
@@ -4454,7 +4560,20 @@ def pastor_login():
                     session["pastor_name"] = matched.get("Name", "")
                     session["pastor_church_address"] = matched.get("Church Address", "")
                     session["pastor_church_id"] = matched.get("Church ID", "") or matched.get("Sex", "")
+                    session["pastor_area_number"] = str(matched.get("Area Number", "") or matched.get("Age", "")).strip()
+                    session["selected_position"] = "pastor"
                     session.permanent = True
+
+                    login_event_row = {
+                        "username": username,
+                        "name": matched.get("Name", ""),
+                        "church_address": matched.get("Church Address", ""),
+                        "sex": matched.get("Church ID", "") or matched.get("Sex", ""),
+                        "age": matched.get("Area Number", "") or matched.get("Age", ""),
+                        "position": matched.get("Position", "Pastor") or "Pastor",
+                        "sub_area": matched.get("Sub Area", "") or matched.get("SubArea", ""),
+                    }
+                    _record_pastor_login_event(login_event_row)
 
                     sync_from_sheets_if_needed(force=True)
                     return redirect(request.form.get("next") or next_url)
