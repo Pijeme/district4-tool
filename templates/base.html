@@ -86,7 +86,13 @@
       {% endif %}
 
       {% if is_pastor %}
-        <li><a href="{{ url_for('church_progress') }}">Church Progress (Pending)</a></li>
+        {% if session.get("pastor_logged_in") and session.get("pastor_church_id") %}
+<li>
+  <a href="{{ url_for('church_progress.church_progress', church_id=session.get('pastor_church_id')) }}">
+    Church Progress
+  </a>
+</li>
+{% endif %}
       {% endif %}
 
       {% if is_do %}
