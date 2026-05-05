@@ -175,9 +175,55 @@ def _latest_completed_month(today: date | None = None) -> date:
     return _subtract_months(_month_floor(today), 1)
 
 
-def _month_window(period: str, today: date | None = None) -> list[tuple[int, int]]:
+def _parse_selected_month(selected_month: str | None, today: date | None = None) -> date:
+    """Return a safe selected month. Format: YYYY-MM.
+
+    This is only used when period == this_month. Other rolling filters ignore it.
+    Future months are clamped to the latest completed month.
+    """
     latest_completed = _latest_completed_month(today)
-    count = {"this_month": 1, "3_months": 3, "6_months": 6, "1_year": 12}.get(period, 3)
+    raw = str(selected_month or "").strip()
+
+    if raw:
+        try:
+            year_text, month_text = raw.split("-", 1)
+            chosen = date(int(year_text), int(month_text), 1)
+            if chosen > latest_completed:
+                return latest_completed
+            return chosen
+        except Exception:
+            pass
+
+    return latest_completed
+
+
+def _month_options(today: date | None = None) -> list[dict[str, str]]:
+    latest_completed = _latest_completed_month(today)
+    start = date(2026, 1, 1)
+    options: list[dict[str, str]] = []
+
+    cursor = start
+    while cursor <= latest_completed:
+        options.append({
+            "value": f"{cursor.year:04d}-{cursor.month:02d}",
+            "label": f"{calendar.month_name[cursor.month]} {cursor.year}",
+        })
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+
+    return list(reversed(options))
+
+
+def _month_window(period: str, today: date | None = None, selected_month: str | None = None) -> list[tuple[int, int]]:
+    latest_completed = _latest_completed_month(today)
+
+    if period == "this_month":
+        chosen = _parse_selected_month(selected_month, today)
+        return [(chosen.year, chosen.month)]
+
+    count = {"3_months": 3, "6_months": 6, "1_year": 12}.get(period, 3)
     start = _subtract_months(latest_completed, count - 1)
     months = []
     cursor = start
@@ -268,6 +314,48 @@ def ensure_area_progress_monitor_tables() -> None:
     cur.execute("INSERT OR IGNORE INTO sync_state (id, last_sync) VALUES (1, NULL)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS area_monitor_seen_notifications (
+            user_key TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            notification_id TEXT NOT NULL,
+            seen_at TEXT NOT NULL,
+            PRIMARY KEY (user_key, scope_key, notification_id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_seen_notifications_user_scope ON area_monitor_seen_notifications(user_key, scope_key)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS area_monitor_member_snapshot (
+            scope_key TEXT NOT NULL,
+            member_key TEXT NOT NULL,
+            name TEXT,
+            birthday TEXT,
+            church_name TEXT,
+            username TEXT,
+            pastor TEXT,
+            signature TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (scope_key, member_key)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS area_monitor_member_events (
+            event_id TEXT PRIMARY KEY,
+            scope_key TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            church_name TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_member_events_scope ON area_monitor_member_events(scope_key, created_at)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS sheet_accounts_cache (
             username TEXT PRIMARY KEY,
             name TEXT,
@@ -325,6 +413,45 @@ def ensure_area_progress_monitor_tables() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sheet_prayer_request_cache (
+            request_id TEXT PRIMARY KEY,
+            church_name TEXT,
+            submitted_by TEXT,
+            title TEXT,
+            request_date TEXT,
+            request_text TEXT,
+            status TEXT,
+            pastors_praying TEXT,
+            answered_date TEXT,
+            sheet_row INTEGER
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_prayer_church ON sheet_prayer_request_cache(church_name)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_prayer_date ON sheet_prayer_request_cache(request_date)")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_login_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            name TEXT,
+            role TEXT,
+            church_id TEXT,
+            church_address TEXT,
+            area_number TEXT,
+            sub_area TEXT,
+            logged_in_at TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, logged_in_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username, logged_in_at)")
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS monthly_reports (
@@ -588,6 +715,58 @@ def sync_from_sheets_if_needed(force: bool = False):
                 "INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, sub_area, amount, sheet_row) VALUES (?, ?, ?, ?, ?)",
                 (month_label, str(cell(i_area)).strip(), str(cell(i_sub)).strip(), _safe_float(cell(i_amount)), r + 1),
             )
+
+    # PrayerRequest
+    try:
+        ws_pr = sh.worksheet("PrayerRequest")
+        values = ws_pr.get_all_values()
+    except Exception:
+        values = []
+    try:
+        cur.execute("DELETE FROM sheet_prayer_request_cache")
+        if values and len(values) >= 2:
+            headers = values[0]
+            i_church = _find_col(headers, "Church Name")
+            i_submitted_by = _find_col(headers, "Submitted By")
+            i_request_id = _find_col(headers, "Request ID")
+            i_title = _find_col(headers, "Prayer Request Title")
+            i_request_date = _find_col(headers, "Prayer Request Date")
+            i_request_text = _find_col(headers, "Prayer Request")
+            i_status = _find_col(headers, "Status")
+            if i_status is None:
+                i_status = _find_col(headers, "status")
+            i_praying = _find_col(headers, "Pastor's Praying")
+            i_answered = _find_col(headers, "Answered Date")
+
+            for r in range(1, len(values)):
+                row = values[r]
+                def cell(idx):
+                    return row[idx] if idx is not None and idx < len(row) else ""
+                req_id = str(cell(i_request_id)).strip()
+                if not req_id:
+                    req_id = f"row-{r+1}"
+                cur.execute(
+                    """
+                    INSERT OR REPLACE INTO sheet_prayer_request_cache (
+                        request_id, church_name, submitted_by, title, request_date,
+                        request_text, status, pastors_praying, answered_date, sheet_row
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        req_id,
+                        str(cell(i_church)).strip(),
+                        str(cell(i_submitted_by)).strip(),
+                        str(cell(i_title)).strip(),
+                        str(cell(i_request_date)).strip(),
+                        str(cell(i_request_text)).strip(),
+                        str(cell(i_status)).strip(),
+                        str(cell(i_praying)).strip(),
+                        str(cell(i_answered)).strip(),
+                        r + 1,
+                    ),
+                )
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -994,14 +1173,570 @@ def _top_ranked(
         "all": full_items,
     }
 
-def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_metric: str, attendance_category: str, ministry_metric: str) -> dict[str, Any]:
+
+def _parse_any_date(value: Any) -> date | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    for parser in (
+        lambda x: date.fromisoformat(x[:10]),
+        lambda x: datetime.strptime(x, "%Y-%m-%d").date(),
+        lambda x: datetime.strptime(x, "%m/%d/%Y").date(),
+        lambda x: datetime.strptime(x, "%m/%d/%y").date(),
+        lambda x: datetime.strptime(x, "%B %d, %Y").date(),
+        lambda x: datetime.strptime(x, "%b %d, %Y").date(),
+    ):
+        try:
+            return parser(s)
+        except Exception:
+            continue
+    return None
+
+
+def _birthday_days_until(bday: Any, today: date | None = None) -> int | None:
+    parsed = _parse_any_date(bday)
+    if not parsed:
+        return None
+    today = today or _now_ph().date()
+    this_year = date(today.year, parsed.month, parsed.day)
+    if this_year < today:
+        this_year = date(today.year + 1, parsed.month, parsed.day)
+    return (this_year - today).days
+
+
+def _notification_user_key() -> str:
+    return str(
+        session.get("ao_username")
+        or session.get("ao_name")
+        or session.get("username")
+        or "ao"
+    ).strip().lower() or "ao"
+
+
+def _notification_item(kind: str, title: str, message: str, church_name: str = "", priority: int = 5) -> dict[str, Any]:
+    import hashlib
+    raw_id = f"{kind}|{title}|{message}|{church_name}"
+    notification_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()[:24]
+    return {
+        "id": notification_id,
+        "kind": kind,
+        "title": title,
+        "message": message,
+        "church_name": church_name,
+        "priority": int(priority),
+    }
+
+
+def _seen_notification_ids(scope: Scope) -> set[str]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT notification_id
+            FROM area_monitor_seen_notifications
+            WHERE user_key = ? AND scope_key = ?
+            """,
+            (_notification_user_key(), scope.scope_key),
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+    return {str(row["notification_id"] or "") for row in rows if str(row["notification_id"] or "")}
+
+
+def _mark_notifications_seen(scope: Scope, notification_ids: list[str]) -> int:
+    clean_ids = []
+    for item in notification_ids or []:
+        item = str(item or "").strip()
+        if item and item not in clean_ids:
+            clean_ids.append(item)
+    if not clean_ids:
+        return 0
+
+    conn = _connect()
+    now_iso = _now_ph().isoformat()
+    try:
+        for notification_id in clean_ids:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO area_monitor_seen_notifications
+                (user_key, scope_key, notification_id, seen_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (_notification_user_key(), scope.scope_key, notification_id, now_iso),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(clean_ids)
+
+
+def _members_for_scope_from_sheet(scope: Scope, churches: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        client = get_gs_client()
+        sh = client.open("District4 Data")
+        ws = sh.worksheet("Members Account")
+        values = ws.get_all_values()
+    except Exception:
+        return []
+
+    if len(values) < 2:
+        return []
+
+    headers = values[0]
+    i_name = _find_col(headers, "Name")
+    i_bday = _find_col(headers, "BDay")
+    if i_bday is None:
+        i_bday = _find_col(headers, "Birthday")
+    i_church = _find_col(headers, "Church ID")
+    i_address = _find_col(headers, "Church Address")
+    i_area = _find_col(headers, "Area Number")
+    i_pastor = _find_col(headers, "Pastor")
+    i_user = _find_col(headers, "UserName")
+    i_pass = _find_col(headers, "Password")
+
+    members = []
+    for r, row in enumerate(values[1:], start=2):
+        def cell(idx):
+            return row[idx] if idx is not None and idx < len(row) else ""
+        church_name = str(cell(i_church)).strip()
+        church_address = str(cell(i_address)).strip()
+        church_key = _resolve_church_key(churches, church_name, church_address)
+        if not church_key:
+            continue
+        if str(cell(i_area)).strip() and str(cell(i_area)).strip() != str(scope.area).strip():
+            continue
+        members.append({
+            "name": str(cell(i_name)).strip(),
+            "birthday": str(cell(i_bday)).strip(),
+            "church_key": church_key,
+            "church_name": churches[church_key]["church_name"],
+            "pastor": str(cell(i_pastor)).strip(),
+            "username": str(cell(i_user)).strip(),
+            "password": str(cell(i_pass)).strip(),
+            "sheet_row": r,
+        })
+    return members
+
+
+def _member_event_item(event_id: str, kind: str, title: str, message: str, church_name: str = "", priority: int = 5) -> dict[str, Any]:
+    return {
+        "id": str(event_id or ""),
+        "kind": kind,
+        "title": title,
+        "message": message,
+        "church_name": church_name,
+        "priority": int(priority),
+    }
+
+
+def _member_account_key(member: dict[str, Any]) -> str:
+    username = _normalize_church_key(member.get("username"))
+    name = _normalize_church_key(member.get("name"))
+    church_key = str(member.get("church_key") or "").strip()
+    if username:
+        return f"{church_key}|user:{username}"
+    return f"{church_key}|name:{name}|row:{member.get('sheet_row', '')}"
+
+
+def _member_account_signature(member: dict[str, Any]) -> str:
+    parts = [
+        str(member.get("name") or "").strip(),
+        str(member.get("birthday") or "").strip(),
+        str(member.get("church_name") or "").strip(),
+        str(member.get("pastor") or "").strip(),
+        str(member.get("username") or "").strip(),
+        str(member.get("password") or "").strip(),
+    ]
+    return "|".join(parts)
+
+
+def _member_event_id(scope: Scope, event_type: str, member_key: str, signature: str) -> str:
+    import hashlib
+    raw = f"{scope.scope_key}|{event_type}|{member_key}|{signature}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _record_member_event(scope: Scope, event_type: str, member_key: str, signature: str, title: str, message: str, church_name: str) -> None:
+    event_id = _member_event_id(scope, event_type, member_key, signature)
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO area_monitor_member_events
+            (event_id, scope_key, event_type, title, message, church_name, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (event_id, scope.scope_key, event_type, title, message, church_name, _now_ph().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _detect_member_account_changes(scope: Scope, members: list[dict[str, Any]]) -> None:
+    """Detect create/edit/delete events for Members Account without breaking old data.
+
+    First run only creates a snapshot so existing accounts do not flood the bell.
+    Later changes become notification events.
+    """
+    now_iso = _now_ph().isoformat()
+    current: dict[str, dict[str, Any]] = {}
+    for member in members:
+        key = _member_account_key(member)
+        if key.strip():
+            current[key] = member
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT member_key, name, birthday, church_name, username, pastor, signature
+            FROM area_monitor_member_snapshot
+            WHERE scope_key = ?
+            """,
+            (scope.scope_key,),
+        ).fetchall()
+        previous = {str(row["member_key"] or ""): row for row in rows}
+
+        # First run: seed snapshot only. No notifications for old existing accounts.
+        if not previous:
+            for key, member in current.items():
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO area_monitor_member_snapshot
+                    (scope_key, member_key, name, birthday, church_name, username, pastor, signature, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scope.scope_key,
+                        key,
+                        str(member.get("name") or "").strip(),
+                        str(member.get("birthday") or "").strip(),
+                        str(member.get("church_name") or "").strip(),
+                        str(member.get("username") or "").strip(),
+                        str(member.get("pastor") or "").strip(),
+                        _member_account_signature(member),
+                        now_iso,
+                    ),
+                )
+            conn.commit()
+            return
+
+        for key, member in current.items():
+            signature = _member_account_signature(member)
+            old = previous.get(key)
+            church_name = str(member.get("church_name") or "").strip()
+            member_name = str(member.get("name") or member.get("username") or "Member").strip()
+            if not old:
+                title = "Member account created"
+                message = f"A member account was created for {member_name} under {church_name}."
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO area_monitor_member_events
+                    (event_id, scope_key, event_type, title, message, church_name, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (_member_event_id(scope, "member_created", key, signature), scope.scope_key, "member_created", title, message, church_name, now_iso),
+                )
+            elif str(old["signature"] or "") != signature:
+                title = "Member account edited"
+                message = f"The member account for {member_name} under {church_name} was edited."
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO area_monitor_member_events
+                    (event_id, scope_key, event_type, title, message, church_name, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (_member_event_id(scope, "member_edited", key, signature), scope.scope_key, "member_edited", title, message, church_name, now_iso),
+                )
+
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO area_monitor_member_snapshot
+                (scope_key, member_key, name, birthday, church_name, username, pastor, signature, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scope.scope_key,
+                    key,
+                    str(member.get("name") or "").strip(),
+                    str(member.get("birthday") or "").strip(),
+                    church_name,
+                    str(member.get("username") or "").strip(),
+                    str(member.get("pastor") or "").strip(),
+                    signature,
+                    now_iso,
+                ),
+            )
+
+        current_keys = set(current.keys())
+        for key, old in previous.items():
+            if key in current_keys:
+                continue
+            old_name = str(old["name"] or old["username"] or "Member").strip()
+            old_church = str(old["church_name"] or "").strip()
+            old_signature = str(old["signature"] or "")
+            title = "Member account deleted"
+            message = f"The member account for {old_name} under {old_church} was deleted."
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO area_monitor_member_events
+                (event_id, scope_key, event_type, title, message, church_name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (_member_event_id(scope, "member_deleted", key, old_signature), scope.scope_key, "member_deleted", title, message, old_church, now_iso),
+            )
+            conn.execute(
+                "DELETE FROM area_monitor_member_snapshot WHERE scope_key = ? AND member_key = ?",
+                (scope.scope_key, key),
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _member_account_event_notifications(scope: Scope) -> list[dict[str, Any]]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT event_id, event_type, title, message, church_name, created_at
+            FROM area_monitor_member_events
+            WHERE scope_key = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (scope.scope_key,),
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        event_type = str(row["event_type"] or "member").strip()
+        priority = 2 if event_type in {"member_created", "member_edited", "member_deleted"} else 5
+        items.append(_member_event_item(
+            str(row["event_id"] or ""),
+            "member",
+            str(row["title"] or "Member account"),
+            str(row["message"] or "Member account activity."),
+            str(row["church_name"] or ""),
+            priority,
+        ))
+    return items
+
+
+def _parse_login_datetime(value: Any) -> datetime | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+
+    for parser in (
+        lambda x: datetime.fromisoformat(x.replace("Z", "+00:00")),
+        lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S"),
+        lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M"),
+        lambda x: datetime.strptime(x, "%m/%d/%Y %H:%M:%S"),
+        lambda x: datetime.strptime(x, "%m/%d/%Y %H:%M"),
+    ):
+        try:
+            dt = parser(s)
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc).astimezone(PH_TZ)
+            return dt.astimezone(PH_TZ)
+        except Exception:
+            continue
+
+    return None
+
+
+def _format_login_time_ph(value: Any) -> str:
+    dt = _parse_login_datetime(value)
+    if not dt:
+        return str(value or "").strip() or "recently"
+    today = _now_ph().date()
+    if dt.date() == today:
+        return dt.strftime("today at %I:%M %p")
+    return dt.strftime("%b %d, %Y at %I:%M %p")
+
+
+def _pastor_login_notifications(scope: Scope, churches: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pastor login notifications from app.py's dedicated user_login_events table.
+
+    This reads only real login events, not page visit logs, so AO selecting a
+    pastor in Pastor Tool will not be counted as pastor login.
+    """
+    church_by_username = {
+        str(church.get("username") or "").strip().lower(): church
+        for church in churches.values()
+        if str(church.get("username") or "").strip()
+    }
+
+    if not church_by_username:
+        return []
+
+    conn = _connect()
+    params: list[Any] = [scope.area]
+    sub_sql = ""
+    if scope.is_sub_area:
+        sub_sql = " AND TRIM(COALESCE(sub_area,'')) = TRIM(?)"
+        params.append(scope.sub_area)
+
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, username, name, role, church_id, church_address,
+                   area_number, sub_area, logged_in_at
+            FROM user_login_events
+            WHERE LOWER(TRIM(COALESCE(role,''))) = 'pastor'
+              AND TRIM(COALESCE(area_number,'')) = TRIM(?)
+              {sub_sql}
+            ORDER BY datetime(logged_in_at) DESC, id DESC
+            LIMIT 40
+            """,
+            tuple(params),
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+
+    items: list[dict[str, Any]] = []
+    seen_usernames: set[str] = set()
+
+    for row in rows:
+        username = str(row["username"] or "").strip().lower()
+        if not username:
+            continue
+
+        # Avoid flooding: show latest login per pastor only.
+        if username in seen_usernames:
+            continue
+        seen_usernames.add(username)
+
+        church = church_by_username.get(username)
+        if not church:
+            continue
+
+        pastor_name = str(row["name"] or church.get("pastor_name") or username).strip()
+        church_name = str(church.get("church_name") or row["church_id"] or "").strip()
+        login_time = _format_login_time_ph(row["logged_in_at"])
+
+        # Stable per real login row; once seen it disappears.
+        notification_id = f"pastor-login-{row['id']}"
+
+        items.append(_member_event_item(
+            notification_id,
+            "login",
+            "Pastor logged in",
+            f"Pastor {pastor_name} of {church_name} logged in {login_time}.",
+            church_name,
+            2,
+        ))
+
+    return items
+
+
+def _notification_payload(scope: Scope, churches: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    today = _now_ph().date()
+    items: list[dict[str, Any]] = []
+
+    # Real pastor login notifications from app.py user_login_events.
+    items.extend(_pastor_login_notifications(scope, churches))
+
+    # Reporting notifications for the latest completed month.
+    latest = _latest_completed_month(today)
+    reporting = _compute_reporting_status(scope, churches, latest.year, latest.month)
+    for row in reporting.get("rows", []):
+        status = row.get("status")
+        church_name = row.get("church_name", "")
+        if status == "Late":
+            items.append(_notification_item("reporting", "Late report", f"{church_name} submitted late for {reporting['month_label']}.", church_name, 1))
+        elif status in {"Early", "On Time", "Reported"}:
+            items.append(_notification_item("reporting", "Report submitted", f"{church_name} has a report status of {status} for {reporting['month_label']}.", church_name, 4))
+
+    # Pastor birthdays from Accounts cache.
+    for church in churches.values():
+        days = None
+        bday = ""
+        conn = _connect()
+        try:
+            acc = conn.execute(
+                """
+                SELECT birthday FROM sheet_accounts_cache
+                WHERE TRIM(username)=TRIM(?)
+                LIMIT 1
+                """,
+                (church.get("username", ""),),
+            ).fetchone()
+            bday = str(acc["birthday"] or "").strip() if acc else ""
+        finally:
+            conn.close()
+        days = _birthday_days_until(bday, today)
+        if days is not None and days <= 7:
+            label = "today" if days == 0 else f"in {days} day(s)"
+            items.append(_notification_item("birthday", "Pastor birthday", f"Pastor {church['pastor_name']} of {church['church_name']} has a birthday {label}.", church["church_name"], 2))
+
+    # Member birthdays plus created/edited/deleted account notifications from Members Account sheet.
+    members = _members_for_scope_from_sheet(scope, churches)
+    _detect_member_account_changes(scope, members)
+    items.extend(_member_account_event_notifications(scope))
+    for member in members:
+        days = _birthday_days_until(member.get("birthday"), today)
+        if days is not None and days <= 7:
+            label = "today" if days == 0 else f"in {days} day(s)"
+            items.append(_notification_item("birthday", "Member birthday", f"{member.get('name')} of {member.get('church_name')} has a birthday {label}.", member.get("church_name", ""), 3))
+
+    # Prayer request notifications from local cache.
+    conn = _connect()
+    try:
+        prayer_rows = conn.execute(
+            """
+            SELECT * FROM sheet_prayer_request_cache
+            ORDER BY sheet_row DESC
+            LIMIT 200
+            """
+        ).fetchall()
+    except Exception:
+        prayer_rows = []
+    finally:
+        conn.close()
+
+    for row in prayer_rows:
+        church_name = str(row["church_name"] or "").strip()
+        church_key = _resolve_church_key(churches, church_name, "")
+        if not church_key:
+            continue
+        status = str(row["status"] or "").strip().lower()
+        if status in {"answered", "done", "closed"}:
+            continue
+        title = str(row["title"] or "Prayer Request").strip() or "Prayer Request"
+        submitted_by = str(row["submitted_by"] or "Someone").strip()
+        items.append(_notification_item("prayer", "Prayer request", f"{submitted_by} submitted: {title}", churches[church_key]["church_name"], 2))
+
+    seen_ids = _seen_notification_ids(scope)
+    items = [item for item in items if str(item.get("id") or "") not in seen_ids]
+    items.sort(key=lambda x: (x.get("priority", 9), x.get("kind", ""), x.get("church_name", "")))
+    visible = items[:30]
+    return {
+        "count": len(items),
+        "items": visible,
+        "has_more": len(items) > len(visible),
+    }
+
+def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_metric: str, attendance_category: str, ministry_metric: str, selected_month: str | None = None) -> dict[str, Any]:
     churches = _fetch_scope_churches(scope)
     if not churches:
-        return {"scope": {"area": scope.area, "sub_area": scope.sub_area, "role": scope.role}, "empty": True, "message": "No churches were found in this AO scope."}
+        return {"scope": {"area": scope.area, "sub_area": scope.sub_area, "role": scope.role}, "empty": True, "message": "No churches were found in this AO scope.", "selected_month": _parse_selected_month(selected_month).strftime("%Y-%m"), "month_options": _month_options(), "notifications": {"count": 0, "items": [], "has_more": False}}
     finance_metric = finance_metric if finance_metric in FINANCE_FIELDS else "amount_to_send"
     attendance_category = attendance_category if attendance_category in ATTENDANCE_FIELDS else "all"
     ministry_metric = ministry_metric if ministry_metric in MINISTRY_FIELDS else "received_jesus"
-    months = _month_window(period)
+    months = _month_window(period, selected_month=selected_month)
+    selected_month_value = f"{months[-1][0]:04d}-{months[-1][1]:02d}" if months else _parse_selected_month(selected_month).strftime("%Y-%m")
     month_labels = [_month_label(y, m) for y, m in months]
     report_rows = _fetch_report_rows(scope, months, churches)
     monthly = _rollup_monthly(report_rows, churches)
@@ -1009,6 +1744,7 @@ def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_me
     colors_map = {k: v["color"] for k, v in churches.items()}
 
     legend = [{"church_key": k, "church_name": v["church_name"], "color": v["color"]} for k, v in sorted(churches.items(), key=lambda item: item[1]["church_name"].lower())]
+    notifications = _notification_payload(scope, churches)
 
     if church_filter and church_filter != "all":
         church_key = _normalize_church_key(church_filter)
@@ -1021,7 +1757,10 @@ def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_me
             "churches": [{"church_key": k, "church_name": v["church_name"]} for k, v in churches.items()],
             "legend": legend,
             "last_sync_display": get_last_sync_display_ph(),
-            "church_detail": _church_detail_payload(scope, church_key, period, finance_metric, attendance_category, ministry_metric),
+            "selected_month": selected_month_value,
+            "month_options": _month_options(),
+            "notifications": notifications,
+            "church_detail": _church_detail_payload(scope, church_key, period, finance_metric, attendance_category, ministry_metric, selected_month),
             "server_time": _now_ph().isoformat(),
         }
 
@@ -1061,6 +1800,9 @@ def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_me
         "server_time": _now_ph().isoformat(),
         "last_sync_display": get_last_sync_display_ph(),
         "period": period,
+        "selected_month": selected_month_value,
+        "month_options": _month_options(),
+        "notifications": notifications,
         "churches": [{"church_key": k, "church_name": v["church_name"]} for k, v in churches.items()],
         "legend": legend,
         "month_labels": month_labels,
@@ -1073,11 +1815,11 @@ def _dashboard_payload(scope: Scope, period: str, church_filter: str, finance_me
     }
 
 
-def _church_detail_payload(scope: Scope, church_key: str, period: str = "3_months", finance_metric: str = "amount_to_send", attendance_category: str = "all", ministry_metric: str = "received_jesus") -> dict[str, Any]:
+def _church_detail_payload(scope: Scope, church_key: str, period: str = "3_months", finance_metric: str = "amount_to_send", attendance_category: str = "all", ministry_metric: str = "received_jesus", selected_month: str | None = None) -> dict[str, Any]:
     churches = _fetch_scope_churches(scope)
     if church_key not in churches:
         abort(404)
-    months = _month_window(period)
+    months = _month_window(period, selected_month=selected_month)
     report_rows = _fetch_report_rows(scope, months, churches)
     monthly = _rollup_monthly(report_rows, churches)
     church = churches[church_key]
@@ -1139,6 +1881,7 @@ def _church_detail_payload(scope: Scope, church_key: str, period: str = "3_month
     return {
         "church": church,
         "period": period,
+        "selected_month": f"{months[-1][0]:04d}-{months[-1][1]:02d}" if months else _parse_selected_month(selected_month).strftime("%Y-%m"),
         "month_labels": month_labels,
         "finance_metric": finance_metric,
         "attendance_category": attendance_category,
@@ -1154,26 +1897,16 @@ def _church_detail_payload(scope: Scope, church_key: str, period: str = "3_month
     }
 
 
-PAGE_HTML = r'''<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Area Progress Monitor</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+PAGE_HTML = r'''
+{% extends "base.html" %}
+
+{% block title %}Area Progress Monitor{% endblock %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    :root { --bg:#f3f6fb; --card:#fff; --line:#dbe3ee; --text:#142033; --muted:#5b6880; --brand:#2563eb; --brand2:#1d4ed8; --shadow:0 10px 24px rgba(15,23,42,.08); --radius:18px; }
+    :root { --bg:#eaf8ff; --card:#ffffff; --line:#b8e6ff; --text:#10324a; --muted:#52718b; --brand:#38bdf8; --brand2:#0ea5e9; --darkpink:#075985; --shadow:0 10px 24px rgba(15,23,42,.08); --radius:18px; }
     *{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
-    .topbar{position:sticky;top:0;z-index:40;background:linear-gradient(90deg,#01091f 0%,#04112f 100%);border-bottom:none;box-shadow:0 4px 18px rgba(15,23,42,.15)}
-    .topbar-inner{max-width:100%;margin:0;padding:0 12px;min-height:57px;display:flex;align-items:center;justify-content:space-between;gap:10px}
-    .brand{display:flex;align-items:center;gap:10px}.brand img{width:48px;height:48px;object-fit:contain}.brand-title{font-size:18px;font-weight:700;color:#fff;line-height:1.1;letter-spacing:.2px}.brand-sub{font-size:12px;color:#cfd8ea;font-weight:400}
-    .burger{border:none;background:transparent;border-radius:0;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:24px;color:#fff;box-shadow:none;padding:0}
-    .menu{position:fixed;inset:0;background:rgba(2,8,23,.35);display:none;z-index:60}.menu.open{display:block}.menu-panel{width:min(292px,86vw);height:100%;background:#000a2b;padding:0;box-shadow:8px 0 30px rgba(0,0,0,.25)}
-    .menu-header{display:flex;align-items:center;justify-content:space-between;color:#fff;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.08);font-size:13px;letter-spacing:.12em}
-    .menu-close{background:transparent;border:none;color:#fff;font-size:28px;cursor:pointer;padding:0;line-height:1}
-    .menu a{display:block;width:100%;text-align:left;text-decoration:none;color:#fff;padding:14px 16px;border:none;border-radius:0;margin:0;font-weight:500;background:transparent;cursor:pointer}
-    .menu a:hover{background:rgba(255,255,255,.06)}
-    .menu a.active{background:rgba(255,255,255,.08)}
     .wrap{max-width:1180px;margin:0 auto;padding:16px 12px 42px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}.section{padding:14px;margin-bottom:14px}
     .hero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}.hero h1{margin:0;font-size:26px}.subtitle{color:var(--muted);font-size:13px}
     .back-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}.toolbar{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}
@@ -1187,42 +1920,44 @@ PAGE_HTML = r'''<!doctype html>
     .remarks-grid{display:grid;grid-template-columns:1fr;gap:12px}textarea{min-height:88px;width:100%;padding:10px 12px;resize:vertical}.loader{padding:32px 0;text-align:center;color:var(--muted)}.hidden{display:none!important}
     .modal{position:fixed;inset:0;background:rgba(15,23,42,.58);display:none;align-items:stretch;justify-content:stretch;z-index:50}.modal.open{display:flex}.modal-panel{background:var(--bg);width:100%;height:100%;overflow:auto;padding:14px}
     .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.90);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.loading-box{width:min(420px,88vw);background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:22px;text-align:center}.loading-title{font-weight:800;margin-bottom:8px;font-size:18px}.progress-track{width:100%;height:10px;background:#e5edf8;border-radius:999px;overflow:hidden;margin-top:12px}.progress-bar{width:0%;height:100%;background:linear-gradient(90deg,var(--brand),var(--brand2));border-radius:999px;transition:width .25s ease}
+    .apm-hero-card{background:linear-gradient(180deg,#a7f3ff 0%,#38bdf8 55%,#0ea5e9 100%);color:#fff;border-radius:24px;padding:22px;margin-bottom:14px;box-shadow:0 18px 38px rgba(14,165,233,.20);position:relative;overflow:visible}.apm-hero-card:before{content:"";position:absolute;inset:-80px -80px auto auto;width:220px;height:220px;background:rgba(255,255,255,.18);border-radius:999px}.apm-hero-content{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.apm-hero-card h1{margin:0;font-size:30px;line-height:1.06;font-family:"Trebuchet MS","Segoe UI",Arial,sans-serif;letter-spacing:-.04em;text-shadow:0 3px 14px rgba(0,0,0,.14)}.apm-hero-card .subtitle{color:rgba(255,255,255,.95)}
+    .top-actions{display:flex;align-items:center;gap:8px}.notif-wrap{position:relative}.notif-btn{width:46px;height:46px;border-radius:16px;border:1px solid rgba(255,255,255,.28);background:#111827;color:#fff;font-size:21px;display:inline-flex;align-items:center;justify-content:center;position:relative;box-shadow:0 10px 24px rgba(15,23,42,.32)}.notif-badge{position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;border-radius:999px;background:#ef4444;color:#fff;border:2px solid #fff;font-size:11px;font-weight:900;display:none;align-items:center;justify-content:center;padding:0 5px}.notif-panel{position:absolute;right:0;top:50px;width:min(370px,92vw);background:#fff;border:1px solid #b8e6ff;border-radius:18px;box-shadow:0 18px 44px rgba(15,23,42,.22);display:none;overflow:hidden;z-index:80}.notif-panel.open{display:block}.notif-head{padding:12px 14px;background:linear-gradient(135deg,#e0f7ff,#ffffff);font-weight:900;color:#075985;border-bottom:1px solid #b8e6ff}.notif-list{max-height:430px;overflow:auto}.notif-item{padding:12px 14px;border-bottom:1px solid #f1f5f9}.notif-title{font-weight:900;color:#10324a;font-size:13px}.notif-msg{font-size:13px;color:#475569;line-height:1.4;margin-top:3px}.notif-kind{display:inline-flex;margin-top:7px;font-size:11px;border-radius:999px;padding:4px 8px;background:#e0f7ff;color:#075985;border:1px solid #b8e6ff}.notif-empty{padding:16px;color:#64748b;font-size:13px}
     @media (min-width:900px){.toolbar{grid-template-columns:1fr auto}.grid-2{grid-template-columns:1fr 1fr}.grid-4{grid-template-columns:repeat(4,1fr)}.insights{grid-template-columns:1fr 1fr}.remarks-grid{grid-template-columns:1fr 1fr}}
   </style>
-</head>
-<body>
 <div class="loading-overlay" id="loadingOverlay"><div class="loading-box"><div class="loading-title">Loading Area Progress Monitor</div><div class="subtitle">Please wait while the latest data is being prepared...</div><div class="progress-track"><div class="progress-bar" id="progressBar"></div></div></div></div>
-<div class="topbar"><div class="topbar-inner"><button class="burger" id="burgerBtn">☰</button><div class="brand"><img src="{{ logo_src }}" alt="Logo" onerror="this.style.display='none'"><div><div class="brand-title">District 4 Tool</div><div class="brand-sub">International One Way Outreach Foundation, Inc.</div></div></div><div style="width:40px;"></div></div></div>
-<div class="menu" id="sideMenu"><div class="menu-panel"><div class="menu-header"><span>MENU</span><button type="button" class="menu-close" id="closeMenuBtn">×</button></div><a href="{{ bulletin_board_url }}">Bulletin Board</a><a href="{{ pastor_tool_url }}">Pastor's Tool</a><a href="{{ ao_tool_url }}">AO Tool</a><a href="{{ prayer_request_url }}" class="active">Prayer Request</a><a href="{{ event_registration_url }}">Event Registration (Pending)</a><a href="{{ schedules_url }}">Schedules</a><a href="{{ logout_url }}">Log Out</a></div></div>
-<div class="wrap"><div class="back-row"><a href="{{ ao_tool_url }}" class="pill" style="text-decoration:none;">← Back to AO Tool</a><div class="muted-chip" id="lastSyncChip">Last sync: loading...</div></div><div class="hero"><div><h1>Area Progress Monitor</h1><div class="subtitle" id="scopeLabel">Loading scope...</div></div></div><div class="card section"><div class="toolbar"><select id="churchFilter"></select><div class="filters" id="timePills"></div></div><div class="legend" id="globalLegend"></div></div><div id="loader" class="loader card section">Loading Area Progress Monitor...</div><div id="content" class="hidden"></div></div>
+<div class="wrap"><div class="back-row"><a href="{{ ao_tool_url }}" class="pill" style="text-decoration:none;">← Back to AO Tool</a><div class="muted-chip" id="lastSyncChip">Last sync: loading...</div></div><div class="apm-hero-card"><div class="apm-hero-content"><div><h1>Area Progress Monitor</h1><div class="subtitle" id="scopeLabel">Loading scope...</div></div><div class="notif-wrap"><button type="button" class="notif-btn" id="notifBtn" aria-label="Notifications">🔔<span class="notif-badge" id="notifBadge">0</span></button><div class="notif-panel" id="notifPanel"><div class="notif-head">Notifications</div><div class="notif-list" id="notifList"><div class="notif-empty">Loading notifications...</div></div></div></div></div></div><div class="card section"><div class="toolbar"><select id="churchFilter"></select><div class="filters" id="timePills"></div></div><div class="legend" id="globalLegend"></div></div><div id="loader" class="loader card section">Loading Area Progress Monitor...</div><div id="content" class="hidden"></div></div>
 <div class="modal" id="chartModal"><div class="modal-panel"><div class="section card"><div class="section-head"><div><div class="section-title" id="modalTitle">All Churches</div><div class="subtitle" id="modalSubtitle"></div></div><button class="pill ghost" id="closeChartModal">Close</button></div><div class="inline-actions" id="modalFilterBar" style="margin-bottom:12px;"></div><div class="chart-box"><canvas id="modalChart"></canvas></div><div class="legend" id="modalLegend"></div></div></div></div>
 <div class="modal" id="churchModal"><div class="modal-panel" id="churchModalBody"></div></div>
 <script>
-const state={period:'3_months',churchFilter:'all',financeMetric:'amount_to_send',attendanceCategory:'all',ministryMetric:'received_jesus',payload:null,charts:{},modalChart:null,currentAnchor:null};
-const labels={periods:{this_month:'This Month','3_months':'3 Months','6_months':'6 Months','1_year':'1 Year'},finance:{{ finance_options|tojson }},ministry:{{ ministry_options|tojson }},attendance:{{ attendance_options|tojson }}};
+const state={period:'3_months',selectedMonth:'',churchFilter:'all',financeMetric:'amount_to_send',attendanceCategory:'all',ministryMetric:'received_jesus',payload:null,charts:{},modalChart:null,currentAnchor:null};
+const labels={periods:{'3_months':'3 Months','6_months':'6 Months','1_year':'1 Year'},finance:{{ finance_options|tojson }},ministry:{{ ministry_options|tojson }},attendance:{{ attendance_options|tojson }}};
 function esc(text){return String(text??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function peso(value){return new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP',maximumFractionDigits:2}).format(Number(value||0))}
 function setLoader(on){document.getElementById('loader').classList.toggle('hidden',!on);document.getElementById('content').classList.toggle('hidden',on)}
 function setOverlayProgress(pct){document.getElementById('progressBar').style.width=`${pct}%`} function hideOverlay(){const overlay=document.getElementById('loadingOverlay');if(overlay)overlay.style.display='none'}
 function rememberAnchor(id){state.currentAnchor=id||null} function restoreAnchor(){if(!state.currentAnchor)return;const el=document.getElementById(state.currentAnchor);if(el)setTimeout(()=>el.scrollIntoView({behavior:'smooth',block:'start'}),30)}
 function populateChurchFilter(payload){const el=document.getElementById('churchFilter');let html='<option value="all">All Churches</option>';(payload.churches||[]).slice().sort((a,b)=>a.church_name.localeCompare(b.church_name)).forEach(ch=>{html+=`<option value="${esc(ch.church_key)}" ${ch.church_key===state.churchFilter?'selected':''}>${esc(ch.church_name)}</option>`});el.innerHTML=html}
-function populateGlobalFilters(){const pillWrap=document.getElementById('timePills');pillWrap.innerHTML=Object.entries(labels.periods).map(([value,label])=>`<button class="pill ${value===state.period?'active':''}" data-period="${value}">${label}</button>`).join('')}
+function populateGlobalFilters(){const pillWrap=document.getElementById('timePills');const options=(state.payload&&state.payload.month_options)||[];if(!state.selectedMonth&&state.payload&&state.payload.selected_month)state.selectedMonth=state.payload.selected_month;const monthSelect=`<select id="singleMonthSelect" class="pill ${state.period==='this_month'?'active':''}" title="Select one report month">${options.map(opt=>`<option value="${esc(opt.value)}" ${opt.value===state.selectedMonth?'selected':''}>${esc(opt.label)}</option>`).join('')}</select>`;const periodButtons=Object.entries(labels.periods).map(([value,label])=>`<button class="pill ${value===state.period?'active':''}" data-period="${value}">${label}</button>`).join('');pillWrap.innerHTML=monthSelect+periodButtons}
+function renderNotifications(payload){const data=(payload&&payload.notifications)||{count:0,items:[]};const badge=document.getElementById('notifBadge');const list=document.getElementById('notifList');if(!badge||!list)return;const count=Number(data.count||0);badge.textContent=count>99?'99+':String(count);badge.style.display=count>0?'inline-flex':'none';const items=data.items||[];if(!items.length){list.innerHTML='<div class="notif-empty">No notifications for this area right now.</div>';return}list.innerHTML=items.map(item=>`<div class="notif-item" data-notif-id="${esc(item.id||'')}"><div class="notif-title">${esc(item.title||'Notification')}</div><div class="notif-msg">${esc(item.message||'')}</div><span class="notif-kind">${esc(item.kind||'notice')}</span></div>`).join('')+(data.has_more?'<div class="notif-empty">More notifications are available in the dashboard details.</div>':'')}
+async function markVisibleNotificationsSeen(){const ids=Array.from(document.querySelectorAll('#notifList .notif-item')).map(el=>el.getAttribute('data-notif-id')).filter(Boolean);if(!ids.length)return;try{await fetch('/api/ao-tool/area-progress-monitor/notifications/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});const badge=document.getElementById('notifBadge');const list=document.getElementById('notifList');if(badge){badge.textContent='0';badge.style.display='none'}if(list){list.innerHTML='<div class="notif-empty">No notifications for this area right now.</div>'}if(state.payload&&state.payload.notifications){state.payload.notifications.count=0;state.payload.notifications.items=[]}}catch(err){console.warn('Unable to mark notifications seen',err)}}
+function closeNotificationPanelAndMarkSeen(){const panel=document.getElementById('notifPanel');if(!panel||!panel.classList.contains('open'))return;panel.classList.remove('open');markVisibleNotificationsSeen()}
 function destroyCharts(){Object.values(state.charts).forEach(chart=>{if(chart&&chart.destroy)chart.destroy()});state.charts={}}
 function makeChart(canvasId,type,labelsArr,valuesArr,colorsArr,yMax,currency=false){const ctx=document.getElementById(canvasId);if(!ctx)return null;return new Chart(ctx,{type,data:{labels:labelsArr,datasets:[{data:valuesArr,borderColor:colorsArr[0]||'#2563eb',backgroundColor:type==='line'?colorsArr[0]||'#2563eb':colorsArr,pointBackgroundColor:colorsArr,fill:false,tension:.28}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(ctx)=>currency?peso(ctx.parsed.y??ctx.parsed):Number(ctx.parsed.y??ctx.parsed).toLocaleString('en-PH')}}},scales:{y:{beginAtZero:true,suggestedMax:Math.ceil(Number(yMax||10)),ticks:{callback:(value)=>currency?peso(value):Number(value).toLocaleString('en-PH')}}}}})}
 function legendHtml(items){return(items||[]).map(item=>`<span class="legend-item"><span class="swatch" style="background:${item.color}"></span>${esc(item.church_name)}</span>`).join('')}
-function filterButtonsHtml(kind,isDetail=false){if(kind==='finances'){return Object.entries(labels.finance).map(([key,label])=>`<button class="pill ${state.financeMetric===key?'active':''}" data-finance="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='attendance'){return Object.entries(labels.attendance).map(([key,label])=>`<button class="pill ${state.attendanceCategory===key?'active':''}" data-attendance="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='ministry'){return Object.entries(labels.ministry).map(([key,label])=>`<button class="pill ${state.ministryMetric===key?'active':''}" data-ministry="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='period'){return Object.entries(labels.periods).map(([key,label])=>`<button class="pill ${state.period===key?'active':''}" data-detail-period="${key}">${esc(label)}</button>`).join('')} return ''}
+function filterButtonsHtml(kind,isDetail=false){if(kind==='finances'){return Object.entries(labels.finance).map(([key,label])=>`<button class="pill ${state.financeMetric===key?'active':''}" data-finance="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='attendance'){return Object.entries(labels.attendance).map(([key,label])=>`<button class="pill ${state.attendanceCategory===key?'active':''}" data-attendance="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='ministry'){return Object.entries(labels.ministry).map(([key,label])=>`<button class="pill ${state.ministryMetric===key?'active':''}" data-ministry="${key}" ${isDetail?'data-detail="1"':''}>${esc(label)}</button>`).join('')} if(kind==='period'){const options=(state.payload&&state.payload.month_options)||[];const monthSelect=`<select class="pill ${state.period==='this_month'?'active':''}" data-detail-month="1">${options.map(opt=>`<option value="${esc(opt.value)}" ${opt.value===state.selectedMonth?'selected':''}>${esc(opt.label)}</option>`).join('')}</select>`;const buttons=Object.entries(labels.periods).map(([key,label])=>`<button class="pill ${state.period===key?'active':''}" data-detail-period="${key}">${esc(label)}</button>`).join('');return monthSelect+buttons} return ''}
 function renderDashboard(payload){const content=document.getElementById('content');if(payload.empty){content.innerHTML=`<div class="card section">${esc(payload.message||'No data.')}</div>`;document.getElementById('scopeLabel').textContent=`Area ${payload.scope?.area||''}`;document.getElementById('globalLegend').innerHTML='';return} document.getElementById('scopeLabel').textContent=payload.scope.sub_area?`Area ${payload.scope.area} • ${payload.scope.sub_area}`:`Area ${payload.scope.area}`;document.getElementById('globalLegend').innerHTML=legendHtml(payload.legend||[]);document.getElementById('lastSyncChip').textContent=`Last sync: ${payload.last_sync_display||'Unknown'}`;if(payload.detail_view){renderChurchDetailView(payload.church_detail,false);return} const financeTop=payload.finances.top||[]; const attendanceTop=payload.attendance.top||[]; const ministryTop=payload.ministry.top||[]; content.innerHTML=`<div class="insights">${(payload.insights||[]).map(text=>`<div class="insight">${esc(text)}</div>`).join('')}</div><div class="card section" id="financeSection"><div class="section-head"><div><div class="section-title">Financial Overview</div><div class="subtitle">Top 10 churches — ${esc(payload.finances.title)}</div></div><div class="inline-actions"><button class="pill" data-expand="finances">View All</button></div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('finances')}</div><div class="chart-box"><canvas id="financeChart"></canvas></div></div><div class="card section" id="attendanceSection"><div class="section-head"><div><div class="section-title">Attendance Overview</div><div class="subtitle">Top 10 churches — ${esc(payload.attendance.title)} average</div></div><div class="inline-actions"><button class="pill" data-expand="attendance">View All</button></div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('attendance')}</div><div class="chart-box"><canvas id="attendanceChart"></canvas></div></div><div class="grid-2"><div class="card section" id="ministrySection"><div class="section-head"><div><div class="section-title">Ministry Activity</div><div class="subtitle">Top 10 churches — ${esc(payload.ministry.title)}</div></div><div class="inline-actions"><button class="pill" data-expand="ministry">View All</button></div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('ministry')}</div><div class="chart-box"><canvas id="ministryChart"></canvas></div></div><div class="card section" id="reportingSection"><div class="section-head"><div><div class="section-title">Reporting Status</div><div class="subtitle">${esc(payload.reporting.month_label)} • Deadline ${esc(payload.reporting.deadline_label)}</div></div></div><div class="stat-grid"><div class="stat"><div class="stat-label">Early</div><div class="stat-value">${payload.reporting.counts['Early']||0}</div></div><div class="stat"><div class="stat-label">On Time</div><div class="stat-value">${payload.reporting.counts['On Time']||0}</div></div><div class="stat"><div class="stat-label">Late</div><div class="stat-value">${payload.reporting.counts['Late']||0}</div></div><div class="stat"><div class="stat-label">Reported</div><div class="stat-value">${payload.reporting.counts['Reported']||0}</div></div><div class="stat"><div class="stat-label">No Report</div><div class="stat-value">${payload.reporting.counts['No Report']||0}</div></div></div><div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Church</th><th>Status</th><th>Date Submitted</th><th>Time Submitted</th></tr></thead><tbody>${(payload.reporting.rows||[]).map(row=>`<tr><td><button class="pill ghost" data-church="${esc(row.church_key)}">${esc(row.church_name)}</button></td><td><span class="status-pill ${'status-'+String(row.status).replace(/\s+/g,'-')}">${esc(row.status)}</span></td><td>${esc(row.date_submitted||'--')}</td><td>${esc(row.time_submitted||'--')}</td></tr>`).join('')}</tbody></table></div></div></div>`; destroyCharts(); state.charts.finance=makeChart('financeChart','bar',financeTop.map(x=>x.church_name),financeTop.map(x=>x.value),financeTop.map(x=>x.color),payload.finances.y_max,true); state.charts.attendance=makeChart('attendanceChart','line',attendanceTop.map(x=>x.church_name),attendanceTop.map(x=>x.value),attendanceTop.map(x=>x.color),payload.attendance.y_max,false); state.charts.ministry=makeChart('ministryChart','bar',ministryTop.map(x=>x.church_name),ministryTop.map(x=>x.value),ministryTop.map(x=>x.color),payload.ministry.y_max,false)}
 function renderChurchDetailView(detail,modal=false){const target=modal?document.getElementById('churchModalBody'):document.getElementById('content');target.innerHTML=`<div class="card section"><div class="section-head"><div><div class="section-title">${esc(detail.church.church_name)}</div><div class="subtitle">${esc(detail.church.pastor_name||'')} • ${esc(detail.church.church_address||'')}</div></div><div class="inline-actions"><button class="pill ghost" ${modal?'id="closeChurchModal"':'id="closeDetailView"'}>Close</button></div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('period',true)}</div><div class="grid-2" style="margin-top:14px;"><div><div class="section-title" style="font-size:18px;margin-bottom:8px;">Automatic Insights</div><div class="insights">${(detail.insights||[]).map(text=>`<div class="insight">${esc(text)}</div>`).join('')||'<div class="insight">No insights yet.</div>'}</div></div><div><div class="section-title" style="font-size:18px;margin-bottom:8px;">Flags</div><div class="insights">${(detail.flags||[]).map(text=>`<div class="insight" style="background:#fff4e5;color:#8a4a03;">${esc(text)}</div>`).join('')||'<div class="insight">No flags in the current selection.</div>'}</div></div></div><div class="grid-2" style="margin-top:14px;"><div class="card section"><div class="section-head"><div class="section-title" style="font-size:18px;">Attendance Trend</div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('attendance',true)}</div><div class="chart-box"><canvas id="detailAttendanceChart"></canvas></div></div><div class="card section"><div class="section-head"><div class="section-title" style="font-size:18px;">Finance Trend</div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('finances',true)}</div><div class="chart-box"><canvas id="detailFinanceChart"></canvas></div></div></div><div class="card section" style="margin-top:14px;"><div class="section-head"><div class="section-title" style="font-size:18px;">Ministry Activity Trend</div></div><div class="filters" style="margin-bottom:12px;">${filterButtonsHtml('ministry',true)}</div><div class="chart-box"><canvas id="detailMinistryChart"></canvas></div></div><div class="card section" style="margin-top:14px;"><div class="section-title" style="font-size:18px;margin-bottom:8px;">Manual Remarks</div><div class="remarks-grid">${['general','finances','attendance','ministry','reporting'].map(category=>`<div><div class="subtitle" style="margin-bottom:6px;text-transform:capitalize;">${esc(category)}</div><textarea data-remark="${category}" placeholder="Write ${category} remark...">${esc((detail.manual_remarks&&detail.manual_remarks[category])||'')}</textarea><div class="subtitle" style="margin-top:6px;"><strong>Automatic note:</strong> ${esc((detail.automatic_remarks&&detail.automatic_remarks[category])||'--')}</div></div>`).join('')}</div><div class="inline-actions" style="margin-top:12px;"><button class="pill" id="saveRemarksBtn" data-church="${esc(detail.church.church_key)}">Save Remarks</button></div></div></div>`; if(modal){document.getElementById('churchModal').classList.add('open');document.getElementById('closeChurchModal')?.addEventListener('click',()=>document.getElementById('churchModal').classList.remove('open'))} else {document.getElementById('closeDetailView')?.addEventListener('click',()=>{state.churchFilter='all';rememberAnchor(null);refreshData(true)})} setTimeout(()=>{if(state.charts.detailAttendance)state.charts.detailAttendance.destroy();if(state.charts.detailFinance)state.charts.detailFinance.destroy();if(state.charts.detailMinistry)state.charts.detailMinistry.destroy();state.charts.detailAttendance=new Chart(document.getElementById('detailAttendanceChart'),{type:'line',data:{labels:detail.month_labels,datasets:[{data:detail.attendance_series[state.attendanceCategory]||[],borderColor:detail.church.color,backgroundColor:detail.church.color,tension:.28}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});state.charts.detailFinance=new Chart(document.getElementById('detailFinanceChart'),{type:'bar',data:{labels:detail.month_labels,datasets:[{data:detail.finance_series[state.financeMetric]||[],backgroundColor:detail.church.color}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});state.charts.detailMinistry=new Chart(document.getElementById('detailMinistryChart'),{type:'bar',data:{labels:detail.month_labels,datasets:[{data:detail.ministry_series[state.ministryMetric]||[],backgroundColor:detail.church.color}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}})},10)}
 async function bootSync(){const res=await fetch(`{{ api_base }}/boot`,{method:'POST',credentials:'same-origin'}); if(!res.ok) throw new Error('Failed to prepare latest data'); return await res.json()}
-async function fetchPayload(){const params=new URLSearchParams({period:state.period,church:state.churchFilter,finance_metric:state.financeMetric,attendance_category:state.attendanceCategory,ministry_metric:state.ministryMetric});const res=await fetch(`{{ api_base }}/snapshot?${params.toString()}`,{credentials:'same-origin'});if(!res.ok)throw new Error('Failed to load dashboard');return await res.json()}
-async function refreshData(showLoader=false){if(showLoader)setLoader(true);try{const payload=await fetchPayload();state.payload=payload;populateChurchFilter(payload);populateGlobalFilters();renderDashboard(payload);restoreAnchor()}catch(err){document.getElementById('content').innerHTML=`<div class="card section">${esc(err.message||'Something went wrong.')}</div>`}finally{setLoader(false)}}
+async function fetchPayload(){const params=new URLSearchParams({period:state.period,selected_month:state.selectedMonth,church:state.churchFilter,finance_metric:state.financeMetric,attendance_category:state.attendanceCategory,ministry_metric:state.ministryMetric});const res=await fetch(`{{ api_base }}/snapshot?${params.toString()}`,{credentials:'same-origin'});if(!res.ok)throw new Error('Failed to load dashboard');return await res.json()}
+async function refreshData(showLoader=false){if(showLoader)setLoader(true);try{const payload=await fetchPayload();state.payload=payload;if(payload.selected_month)state.selectedMonth=payload.selected_month;populateChurchFilter(payload);populateGlobalFilters();renderNotifications(payload);renderDashboard(payload);restoreAnchor()}catch(err){document.getElementById('content').innerHTML=`<div class="card section">${esc(err.message||'Something went wrong.')}</div>`}finally{setLoader(false)}}
 function openExpandModal(kind){if(!state.payload||!state.payload[kind])return;const block=state.payload[kind];const items=block.all||[];document.getElementById('chartModal').classList.add('open');document.getElementById('modalTitle').textContent=`${kind.charAt(0).toUpperCase()+kind.slice(1)} — All Churches`;document.getElementById('modalSubtitle').textContent=block.title||'';document.getElementById('modalLegend').innerHTML=legendHtml(items);const modalFilterBar=document.getElementById('modalFilterBar');if(kind==='finances'){modalFilterBar.innerHTML=filterButtonsHtml('finances')}else if(kind==='attendance'){modalFilterBar.innerHTML=filterButtonsHtml('attendance')}else if(kind==='ministry'){modalFilterBar.innerHTML=filterButtonsHtml('ministry')}else{modalFilterBar.innerHTML=''} if(state.modalChart)state.modalChart.destroy(); state.modalChart=new Chart(document.getElementById('modalChart'),{type:kind==='attendance'?'line':'bar',data:{labels:items.map(x=>x.church_name),datasets:[{data:items.map(x=>x.value),backgroundColor:items.map(x=>x.color),borderColor:items[0]?.color||'#2563eb',tension:.28}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}})}
-async function openChurchModal(churchKey){const params=new URLSearchParams({period:state.period,finance_metric:state.financeMetric,attendance_category:state.attendanceCategory,ministry_metric:state.ministryMetric});const res=await fetch(`{{ api_base }}/church/${encodeURIComponent(churchKey)}?${params.toString()}`,{credentials:'same-origin'});if(!res.ok)return;const detail=await res.json();renderChurchDetailView(detail,true)}
+async function openChurchModal(churchKey){const params=new URLSearchParams({period:state.period,selected_month:state.selectedMonth,finance_metric:state.financeMetric,attendance_category:state.attendanceCategory,ministry_metric:state.ministryMetric});const res=await fetch(`{{ api_base }}/church/${encodeURIComponent(churchKey)}?${params.toString()}`,{credentials:'same-origin'});if(!res.ok)return;const detail=await res.json();renderChurchDetailView(detail,true)}
 async function saveRemarks(churchKey){const body={};document.querySelectorAll('[data-remark]').forEach(el=>{body[el.getAttribute('data-remark')]=el.value});const res=await fetch(`{{ api_base }}/church/${encodeURIComponent(churchKey)}/remarks`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok)return alert('Failed to save remarks.');alert('Remarks saved.')}
-function wireEvents(){document.getElementById('burgerBtn').addEventListener('click',()=>document.getElementById('sideMenu').classList.add('open'));document.getElementById('closeMenuBtn').addEventListener('click',()=>document.getElementById('sideMenu').classList.remove('open'));document.getElementById('sideMenu').addEventListener('click',e=>{if(e.target.id==='sideMenu')e.currentTarget.classList.remove('open')});document.getElementById('timePills').addEventListener('click',e=>{const value=e.target.getAttribute('data-period');if(!value)return;state.period=value;rememberAnchor(null);refreshData(true)});document.getElementById('churchFilter').addEventListener('change',e=>{state.churchFilter=e.target.value;rememberAnchor(null);refreshData(true)});document.getElementById('content').addEventListener('click',e=>{const expand=e.target.getAttribute('data-expand');if(expand)return openExpandModal(expand);const church=e.target.getAttribute('data-church');if(church)return openChurchModal(church);if(e.target.id==='saveRemarksBtn')return saveRemarks(e.target.getAttribute('data-church'));const finance=e.target.getAttribute('data-finance');if(finance&&!e.target.getAttribute('data-detail')){state.financeMetric=finance;rememberAnchor('financeSection');refreshData(false);return}const attendance=e.target.getAttribute('data-attendance');if(attendance&&!e.target.getAttribute('data-detail')){state.attendanceCategory=attendance;rememberAnchor('attendanceSection');refreshData(false);return}const ministry=e.target.getAttribute('data-ministry');if(ministry&&!e.target.getAttribute('data-detail')){state.ministryMetric=ministry;rememberAnchor('ministrySection');refreshData(false);return}if(finance&&e.target.getAttribute('data-detail')){state.financeMetric=finance;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}if(attendance&&e.target.getAttribute('data-detail')){state.attendanceCategory=attendance;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}if(ministry&&e.target.getAttribute('data-detail')){state.ministryMetric=ministry;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}const detailPeriod=e.target.getAttribute('data-detail-period');if(detailPeriod){state.period=detailPeriod;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}});document.getElementById('chartModal').addEventListener('click',e=>{if(e.target.id==='chartModal')e.currentTarget.classList.remove('open')});document.getElementById('closeChartModal').addEventListener('click',()=>document.getElementById('chartModal').classList.remove('open'));document.getElementById('churchModal').addEventListener('click',e=>{if(e.target.id==='churchModal')e.currentTarget.classList.remove('open')});document.getElementById('modalFilterBar').addEventListener('click',e=>{const finance=e.target.getAttribute('data-finance');const attendance=e.target.getAttribute('data-attendance');const ministry=e.target.getAttribute('data-ministry');if(finance){state.financeMetric=finance;refreshData(false).then(()=>openExpandModal('finances'));return}if(attendance){state.attendanceCategory=attendance;refreshData(false).then(()=>openExpandModal('attendance'));return}if(ministry){state.ministryMetric=ministry;refreshData(false).then(()=>openExpandModal('ministry'));return}})}
+function wireEvents(){const notifBtn=document.getElementById('notifBtn');if(notifBtn)notifBtn.addEventListener('click',(e)=>{e.stopPropagation();const panel=document.getElementById('notifPanel');if(!panel)return;if(panel.classList.contains('open')){closeNotificationPanelAndMarkSeen()}else{panel.classList.add('open')}});document.addEventListener('click',(e)=>{const wrap=document.querySelector('.notif-wrap');if(wrap&&!wrap.contains(e.target)){closeNotificationPanelAndMarkSeen()}});document.getElementById('timePills').addEventListener('click',e=>{const value=e.target.getAttribute('data-period');if(!value)return;state.period=value;rememberAnchor(null);refreshData(true)});document.getElementById('timePills').addEventListener('change',e=>{if(e.target.id!=='singleMonthSelect')return;state.selectedMonth=e.target.value;state.period='this_month';rememberAnchor(null);refreshData(true)});document.getElementById('churchFilter').addEventListener('change',e=>{state.churchFilter=e.target.value;rememberAnchor(null);refreshData(true)});document.getElementById('content').addEventListener('click',e=>{const expand=e.target.getAttribute('data-expand');if(expand)return openExpandModal(expand);const church=e.target.getAttribute('data-church');if(church)return openChurchModal(church);if(e.target.id==='saveRemarksBtn')return saveRemarks(e.target.getAttribute('data-church'));const finance=e.target.getAttribute('data-finance');if(finance&&!e.target.getAttribute('data-detail')){state.financeMetric=finance;rememberAnchor('financeSection');refreshData(false);return}const attendance=e.target.getAttribute('data-attendance');if(attendance&&!e.target.getAttribute('data-detail')){state.attendanceCategory=attendance;rememberAnchor('attendanceSection');refreshData(false);return}const ministry=e.target.getAttribute('data-ministry');if(ministry&&!e.target.getAttribute('data-detail')){state.ministryMetric=ministry;rememberAnchor('ministrySection');refreshData(false);return}if(finance&&e.target.getAttribute('data-detail')){state.financeMetric=finance;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}if(attendance&&e.target.getAttribute('data-detail')){state.attendanceCategory=attendance;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}if(ministry&&e.target.getAttribute('data-detail')){state.ministryMetric=ministry;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}const detailPeriod=e.target.getAttribute('data-detail-period');if(detailPeriod){state.period=detailPeriod;if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}return}});document.getElementById('content').addEventListener('change',e=>{if(!e.target.getAttribute('data-detail-month'))return;state.selectedMonth=e.target.value;state.period='this_month';if(state.churchFilter&&state.churchFilter!=='all'){refreshData(false)}else{const openChurch=document.querySelector('#saveRemarksBtn')?.getAttribute('data-church');if(openChurch)openChurchModal(openChurch)}});document.getElementById('chartModal').addEventListener('click',e=>{if(e.target.id==='chartModal')e.currentTarget.classList.remove('open')});document.getElementById('closeChartModal').addEventListener('click',()=>document.getElementById('chartModal').classList.remove('open'));document.getElementById('churchModal').addEventListener('click',e=>{if(e.target.id==='churchModal')e.currentTarget.classList.remove('open')});document.getElementById('modalFilterBar').addEventListener('click',e=>{const finance=e.target.getAttribute('data-finance');const attendance=e.target.getAttribute('data-attendance');const ministry=e.target.getAttribute('data-ministry');if(finance){state.financeMetric=finance;refreshData(false).then(()=>openExpandModal('finances'));return}if(attendance){state.attendanceCategory=attendance;refreshData(false).then(()=>openExpandModal('attendance'));return}if(ministry){state.ministryMetric=ministry;refreshData(false).then(()=>openExpandModal('ministry'));return}})}
 (async function init(){wireEvents();populateGlobalFilters();setOverlayProgress(10);try{setOverlayProgress(35);await bootSync();setOverlayProgress(70);await refreshData(true);setOverlayProgress(100)}catch(e){console.error(e);await refreshData(true);setOverlayProgress(100)}setTimeout(()=>hideOverlay(),250)})();
 </script>
-</body></html>'''
+{% endblock %}
+'''
 
 
 @bp.before_app_request
@@ -1267,6 +2002,7 @@ def area_progress_monitor_snapshot():
     payload = _dashboard_payload(
         scope=scope,
         period=str(request.args.get("period") or "3_months"),
+        selected_month=str(request.args.get("selected_month") or ""),
         church_filter=str(request.args.get("church") or "all"),
         finance_metric=str(request.args.get("finance_metric") or "amount_to_send"),
         attendance_category=str(request.args.get("attendance_category") or "all"),
@@ -1282,6 +2018,7 @@ def area_progress_monitor_church_detail(church_key: str):
         scope,
         _normalize_church_key(church_key),
         period=str(request.args.get("period") or "3_months"),
+        selected_month=str(request.args.get("selected_month") or ""),
         finance_metric=str(request.args.get("finance_metric") or "amount_to_send"),
         attendance_category=str(request.args.get("attendance_category") or "all"),
         ministry_metric=str(request.args.get("ministry_metric") or "received_jesus"),
@@ -1301,6 +2038,17 @@ def area_progress_monitor_save_remarks(church_key: str):
 def area_progress_monitor_get_remarks(church_key: str):
     scope = _require_ao()
     return jsonify(_get_manual_remarks(scope, _normalize_church_key(church_key)))
+
+
+@bp.route("/api/ao-tool/area-progress-monitor/notifications/seen", methods=["POST"])
+def area_progress_monitor_notifications_seen():
+    scope = _require_ao()
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    saved = _mark_notifications_seen(scope, ids)
+    return jsonify({"ok": True, "saved": saved})
 
 
 def register_area_progress_monitor(app) -> None:
