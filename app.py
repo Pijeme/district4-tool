@@ -844,7 +844,7 @@ def _find_col(headers, wanted):
 # ✅ Sheets → DB cache sync
 # ==========================
 
-SYNC_INTERVAL_SECONDS = 120  # 2 minutes
+SYNC_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 def _last_sync_time_utc():
@@ -3821,6 +3821,10 @@ def splash():
     logged_in = bool(session.get("pastor_logged_in")) or bool(session.get("ao_logged_in")) or bool(session.get("member_logged_in"))
     error = None
 
+    # If a user is already logged in and opens the main website, show Bulletin Board first.
+    if request.method == "GET" and logged_in:
+        return redirect(url_for("bulletin"))
+
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
@@ -3866,7 +3870,7 @@ def splash():
                     session["pastor_church_id"] = (row["sex"] or "").strip()
                     session["pastor_area_number"] = (row["age"] or "").strip()
                     _record_pastor_login_event(row)
-                    return redirect(url_for("pastor_tool"))
+                    return redirect(url_for("bulletin"))
 
                 if role_key == "member":
                     session["role"] = "Member"
@@ -3888,7 +3892,7 @@ def splash():
                     session["ao_church_id"] = (row["sex"] or "").strip()
                     session["ao_role"] = real_role
                     session["ao_sub_area"] = (row["sub_area"] or "").strip() if "sub_area" in row.keys() else ""
-                    return redirect(url_for("ao_tool"))
+                    return redirect(url_for("bulletin"))
 
                 # Unknown/blank role: login but keep safest limited access.
                 session["role"] = real_role or "Member"
@@ -4429,7 +4433,7 @@ def bulletin():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    sync_from_sheets_if_needed(force=True)
+    sync_from_sheets_if_needed(force=False)
 
     reference, text = get_verse_of_the_day()
     today_str = date.today().strftime("%B %d, %Y")
@@ -4514,7 +4518,7 @@ def bulletin_pray(request_id):
 @app.route("/pastor-login", methods=["GET", "POST"])
 def pastor_login():
     error = None
-    next_url = request.args.get("next") or url_for("pastor_tool")
+    next_url = request.args.get("next") or url_for("bulletin")
 
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
@@ -4538,7 +4542,7 @@ def pastor_login():
                 session["selected_position"] = "pastor"
                 session.permanent = True
                 _record_pastor_login_event(row)
-                return redirect(request.form.get("next") or next_url)
+                return redirect(url_for("bulletin"))
 
             try:
                 client = get_gs_client()
@@ -4576,7 +4580,7 @@ def pastor_login():
                     _record_pastor_login_event(login_event_row)
 
                     sync_from_sheets_if_needed(force=True)
-                    return redirect(request.form.get("next") or next_url)
+                    return redirect(url_for("bulletin"))
 
                 error = "Invalid username or password."
             except Exception as e:
@@ -5340,7 +5344,7 @@ def church_progress_view(year, month):
 @app.route("/ao-login", methods=["GET", "POST"])
 def ao_login():
     error = None
-    next_url = request.args.get("next") or url_for("ao_tool")
+    next_url = request.args.get("next") or url_for("bulletin")
 
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
@@ -5369,7 +5373,7 @@ def ao_login():
                 session["ao_role"] = (row["position"] or "").strip()
                 session["ao_sub_area"] = (row["sub_area"] or "").strip()
                 session.permanent = True
-                return redirect(request.form.get("next") or next_url)
+                return redirect(url_for("bulletin"))
 
         error = "Invalid username or password."
 
