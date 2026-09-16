@@ -3,3 +3,4 @@ gunicorn
 requests
 gspread
 google-auth
+pypdf
