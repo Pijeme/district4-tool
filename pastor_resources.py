@@ -56,6 +56,47 @@ THUMBNAIL_CACHE_DIR = os.path.join(
 
 SYNC_LOCK = threading.Lock()
 
+# Live synchronization status for the Pastor's Resources page.
+# This is intentionally kept in memory only; the final sync summary
+# continues to be stored in pastor_library_sync as before.
+RESOURCE_SYNC_STATE_LOCK = threading.Lock()
+RESOURCE_SYNC_STATE = {
+    "running": False,
+    "stage": "idle",
+    "message": "",
+    "total": 0,
+    "processed": 0,
+    "new_files": 0,
+    "changed_files": 0,
+    "unchanged_files": 0,
+    "duplicates": 0,
+    "current_file": "",
+    "last_error": "",
+    "started_at": "",
+    "finished_at": "",
+    "stats": {},
+}
+
+
+def update_resource_sync_state(**changes):
+    with RESOURCE_SYNC_STATE_LOCK:
+        RESOURCE_SYNC_STATE.update(changes)
+        state = dict(RESOURCE_SYNC_STATE)
+        state["stats"] = dict(
+            RESOURCE_SYNC_STATE.get("stats") or {}
+        )
+        return state
+
+
+def get_resource_sync_state():
+    with RESOURCE_SYNC_STATE_LOCK:
+        state = dict(RESOURCE_SYNC_STATE)
+        state["stats"] = dict(
+            RESOURCE_SYNC_STATE.get("stats") or {}
+        )
+        return state
+
+
 THUMBNAIL_LOCKS = {}
 THUMBNAIL_LOCKS_GUARD = threading.Lock()
 
@@ -1327,16 +1368,63 @@ def save_thumbnail_bytes(
 # SYNC GOOGLE DRIVE → DATABASE
 # =========================================================
 
-def sync_library_to_database():
+def sync_library_to_database(progress_callback=None):
     ensure_resource_tables()
 
     # -----------------------------------------------------
     # This is the intentionally slow operation.
     # It is run ONLY from the private Sync Books button.
+    #
+    # progress_callback is optional. The normal database logic
+    # remains the same, but the live Pastor's Resources sync UI
+    # can now see which file is being processed.
     # -----------------------------------------------------
+
+    def progress(**values):
+        if progress_callback:
+            progress_callback(**values)
+
+    progress(
+        stage="scanning",
+        message="Scanning Google Drive folders for PDF and EPUB books...",
+        total=0,
+        processed=0,
+        new_files=0,
+        changed_files=0,
+        unchanged_files=0,
+        duplicates=0,
+        current_file="",
+        last_error="",
+    )
 
     scan_result = (
         scan_drive_library()
+    )
+
+    total_supported = int(
+        scan_result.get(
+            "supported_files"
+        )
+        or len(
+            scan_result.get(
+                "files",
+                [],
+            )
+        )
+    )
+
+    progress(
+        stage="syncing",
+        message=(
+            "Google Drive scan complete. "
+            + str(total_supported)
+            + " supported ebook file"
+            + ("" if total_supported == 1 else "s")
+            + " found."
+        ),
+        total=total_supported,
+        processed=0,
+        current_file="",
     )
 
     now_iso = (
@@ -1371,6 +1459,8 @@ def sync_library_to_database():
 
         # Everything becomes inactive temporarily.
         # Anything found during this scan is reactivated.
+        # This remains one transaction exactly as in the
+        # previously working Pastor's Resources sync.
         db.execute(
             """
             UPDATE pastor_library_books
@@ -1394,11 +1484,40 @@ def sync_library_to_database():
         exact_duplicates = 0
         new_books = 0
 
-        for item in scan_result[
-            "files"
-        ]:
+        # Live-only counters. They do not alter the existing
+        # pastor_library_sync schema.
+        new_files = 0
+        changed_files = 0
+        unchanged_files = 0
+
+        for position, item in enumerate(
+            scan_result["files"],
+            start=1,
+        ):
             drive_file_id = str(
                 item["drive_file_id"]
+            )
+
+            current_name = str(
+                item.get("name")
+                or "Unnamed ebook"
+            )
+
+            progress(
+                stage="syncing",
+                message=(
+                    "Processing "
+                    + str(position)
+                    + " of "
+                    + str(total_supported)
+                ),
+                total=total_supported,
+                processed=position - 1,
+                new_files=new_files,
+                changed_files=changed_files,
+                unchanged_files=unchanged_files,
+                duplicates=exact_duplicates,
+                current_file=current_name,
             )
 
             scanned_drive_ids.add(
@@ -1417,6 +1536,19 @@ def sync_library_to_database():
                     drive_file_id,
                 ),
             ).fetchone()
+
+            if old_file is None:
+                new_files += 1
+            elif str(
+                old_file["modified_time"]
+                or ""
+            ) != str(
+                item["modified_time"]
+                or ""
+            ):
+                changed_files += 1
+            else:
+                unchanged_files += 1
 
             checksum_key = (
                 get_file_checksum_key(
@@ -1641,6 +1773,35 @@ def sync_library_to_database():
                     book_id
                 )
 
+            progress(
+                stage="syncing",
+                message=(
+                    "Processed "
+                    + str(position)
+                    + " of "
+                    + str(total_supported)
+                ),
+                total=total_supported,
+                processed=position,
+                new_files=new_files,
+                changed_files=changed_files,
+                unchanged_files=unchanged_files,
+                duplicates=exact_duplicates,
+                current_file=current_name,
+            )
+
+        progress(
+            stage="finalizing",
+            message="Finalizing the Pastor's Resources library...",
+            total=total_supported,
+            processed=total_supported,
+            new_files=new_files,
+            changed_files=changed_files,
+            unchanged_files=unchanged_files,
+            duplicates=exact_duplicates,
+            current_file="",
+        )
+
         # ---------------------------------------------
         # Recalculate logical-book active status.
         # ---------------------------------------------
@@ -1738,7 +1899,7 @@ def sync_library_to_database():
 
         db.commit()
 
-        return {
+        result = {
             "last_sync_at":
                 now_iso,
 
@@ -1783,10 +1944,47 @@ def sync_library_to_database():
 
             "removed_files":
                 removed_files,
+
+            # Live UI details; safe extras for existing callers.
+            "new_files":
+                new_files,
+
+            "changed_files":
+                changed_files,
+
+            "unchanged_files":
+                unchanged_files,
         }
 
-    except Exception:
+        progress(
+            stage="complete",
+            message=(
+                "Library synchronization completed. "
+                + str(unique_books)
+                + " unique books cataloged."
+            ),
+            total=total_supported,
+            processed=total_supported,
+            new_files=new_files,
+            changed_files=changed_files,
+            unchanged_files=unchanged_files,
+            duplicates=exact_duplicates,
+            current_file="",
+            stats=result,
+        )
+
+        return result
+
+    except Exception as error:
         db.rollback()
+
+        progress(
+            stage="error",
+            message="Library synchronization stopped because of an error.",
+            last_error=str(error),
+            current_file="",
+        )
+
         raise
 
     finally:
@@ -8173,6 +8371,85 @@ Pastor's Resources - District 4 Tool
 .pr-modal-cancel { background:#eef2f8; color:#5b6a81; }
 .pr-modal-save { background:#355fbb; color:#fff; }
 
+/* Live Sync Books progress overlay */
+.pr-sync-overlay {
+    position:fixed;
+    inset:0;
+    z-index:12000;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:rgba(15,23,42,.48);
+    backdrop-filter:blur(2px);
+}
+.pr-sync-overlay.show { display:flex; }
+
+.pr-sync-card {
+    width:min(560px,100%);
+    border-radius:22px;
+    background:#fff;
+    padding:25px 25px 23px;
+    box-shadow:0 24px 70px rgba(15,23,42,.28);
+    text-align:center;
+}
+
+.pr-sync-title {
+    margin:0;
+    color:#17233c;
+    font:700 22px/1.2 "Lora",Georgia,serif;
+}
+
+.pr-sync-current {
+    margin-top:10px;
+    min-height:19px;
+    color:#65738a;
+    font-size:13px;
+    line-height:1.4;
+    overflow-wrap:anywhere;
+}
+
+.pr-sync-track {
+    height:12px;
+    margin-top:17px;
+    border-radius:999px;
+    overflow:hidden;
+    background:#e9edf5;
+}
+
+.pr-sync-bar {
+    width:0%;
+    height:100%;
+    border-radius:999px;
+    background:linear-gradient(90deg,#c47eb7,#7398df);
+    transition:width .28s ease;
+}
+
+.pr-sync-bar.indeterminate {
+    width:32%;
+    animation:prSyncIndeterminate 1.25s ease-in-out infinite alternate;
+}
+
+@keyframes prSyncIndeterminate {
+    from { transform:translateX(-45%); }
+    to { transform:translateX(220%); }
+}
+
+.pr-sync-stats {
+    margin-top:14px;
+    color:#34425b;
+    font-size:12px;
+    font-weight:850;
+    line-height:1.45;
+}
+
+.pr-sync-stage {
+    margin-top:6px;
+    color:#8a96a9;
+    font-size:11px;
+    line-height:1.4;
+}
+
 @media (min-width:600px) {
     .pr-page { padding:20px 18px 55px; }
     .pr-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
@@ -8288,6 +8565,32 @@ Pastor's Resources - District 4 Tool
 </div>
 
 <div class="pr-toast" id="prToast"></div>
+
+{% if is_admin %}
+<div class="pr-sync-overlay" id="resourceSyncOverlay" aria-live="polite" aria-busy="true">
+    <div class="pr-sync-card">
+        <h3 class="pr-sync-title" id="resourceSyncTitle">
+            Syncing Pastor's Resources...
+        </h3>
+
+        <div class="pr-sync-current" id="resourceSyncCurrent">
+            Preparing synchronization...
+        </div>
+
+        <div class="pr-sync-track">
+            <div class="pr-sync-bar indeterminate" id="resourceSyncBar"></div>
+        </div>
+
+        <div class="pr-sync-stats" id="resourceSyncStats">
+            Starting...
+        </div>
+
+        <div class="pr-sync-stage" id="resourceSyncStage">
+            Please keep this page open while the library is being updated.
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if is_admin %}
 <div class="pr-modal-backdrop" id="editModalBackdrop" onclick="modalBackdropClick(event)">
@@ -8667,32 +8970,308 @@ async function toggleFavorite(bookId, button) {
     }
 }
 
-async function syncBooks() {
-    const button = document.getElementById("syncButton");
-    if (!button) return;
+let resourceSyncPollTimer = null;
 
-    const oldText = button.textContent;
-    button.disabled = true;
-    button.textContent = "⏳ Syncing...";
-    document.getElementById("statusDot").className = "pr-status-dot waiting";
-    document.getElementById("statusText").textContent = "Scanning Google Drive and updating the library database...";
-    document.getElementById("syncDetail").textContent = "This can take several minutes.";
-    showToast("Sync started. Keep this page open until it finishes.");
+function setResourceSyncUiRunning(running) {
+    const button = document.getElementById("syncButton");
+    const overlay = document.getElementById("resourceSyncOverlay");
+
+    if (button) {
+        button.disabled = Boolean(running);
+        button.textContent = running
+            ? "⏳ Syncing Books..."
+            : "🔄 Sync Books";
+    }
+
+    if (overlay) {
+        overlay.classList.toggle("show", Boolean(running));
+    }
+}
+
+function renderResourceSyncProgress(state) {
+    const overlay = document.getElementById("resourceSyncOverlay");
+    const bar = document.getElementById("resourceSyncBar");
+    const current = document.getElementById("resourceSyncCurrent");
+    const stats = document.getElementById("resourceSyncStats");
+    const stage = document.getElementById("resourceSyncStage");
+
+    if (!overlay || !bar || !current || !stats || !stage) {
+        return;
+    }
+
+    const total = Math.max(0, safeNumber(state.total));
+    const processed = Math.max(0, safeNumber(state.processed));
+    const newFiles = Math.max(0, safeNumber(state.new_files));
+    const changedFiles = Math.max(0, safeNumber(state.changed_files));
+    const unchangedFiles = Math.max(0, safeNumber(state.unchanged_files));
+    const duplicates = Math.max(0, safeNumber(state.duplicates));
+
+    const currentFile = String(state.current_file || "").trim();
+    const message = String(state.message || "").trim();
+    const stateStage = String(state.stage || "").trim().toLowerCase();
+
+    current.textContent = currentFile || message || "Working...";
+
+    if (total > 0) {
+        const percent = Math.min(
+            100,
+            Math.max(
+                0,
+                Math.round(
+                    (processed / total) * 100
+                )
+            )
+        );
+
+        bar.classList.remove("indeterminate");
+        bar.style.width = percent + "%";
+
+        stats.textContent =
+            processed.toLocaleString()
+            + " / "
+            + total.toLocaleString()
+            + " processed"
+            + " · "
+            + newFiles.toLocaleString()
+            + " new"
+            + " · "
+            + changedFiles.toLocaleString()
+            + " changed"
+            + " · "
+            + unchangedFiles.toLocaleString()
+            + " unchanged"
+            + " · "
+            + duplicates.toLocaleString()
+            + " duplicates";
+    } else {
+        bar.style.width = "";
+        bar.classList.add("indeterminate");
+        stats.textContent =
+            stateStage === "scanning"
+                ? "Scanning Google Drive folders..."
+                : "Starting synchronization...";
+    }
+
+    if (stateStage === "finalizing") {
+        stage.textContent =
+            "Finalizing the local database and visible book count...";
+    } else if (stateStage === "scanning") {
+        stage.textContent =
+            "Finding PDF and EPUB files in Google Drive...";
+    } else {
+        stage.textContent =
+            message
+            || "Updating Pastor's Resources...";
+    }
+}
+
+async function fetchResourceSyncStatus() {
+    const response = await fetch(
+        "/pastor-resources/sync-books-status",
+        {
+            cache:"no-store"
+        }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+        throw new Error(
+            data.error
+            || "Unable to read synchronization status."
+        );
+    }
+
+    return data.state || {};
+}
+
+async function pollResourceSyncProgress() {
+    clearTimeout(resourceSyncPollTimer);
 
     try {
-        const response = await fetch("/pastor-resources/sync-books", {method:"POST"});
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.error || "Synchronization failed.");
-        showToast("Sync complete: " + safeNumber(data.stats.unique_books).toLocaleString() + " unique books.");
-        await Promise.all([loadBooks(1), loadContinueReading()]);
+        const state = await fetchResourceSyncStatus();
+
+        renderResourceSyncProgress(state);
+
+        if (state.running) {
+            setResourceSyncUiRunning(true);
+
+            resourceSyncPollTimer = setTimeout(
+                pollResourceSyncProgress,
+                700
+            );
+
+            return;
+        }
+
+        setResourceSyncUiRunning(false);
+
+        if (state.stage === "complete") {
+            const finalStats = state.stats || {};
+
+            showToast(
+                "Sync complete: "
+                + safeNumber(
+                    finalStats.unique_books
+                ).toLocaleString()
+                + " unique books."
+            );
+
+            await Promise.all([
+                loadBooks(1),
+                loadContinueReading()
+            ]);
+
+        } else if (state.stage === "error") {
+            document.getElementById(
+                "statusDot"
+            ).className = "pr-status-dot error";
+
+            document.getElementById(
+                "statusText"
+            ).textContent = "Sync failed.";
+
+            document.getElementById(
+                "syncDetail"
+            ).textContent = (
+                state.last_error
+                || "Unknown synchronization error."
+            );
+
+            showToast(
+                "Sync failed: "
+                + (
+                    state.last_error
+                    || "Unknown synchronization error."
+                )
+            );
+        }
+
     } catch (error) {
-        document.getElementById("statusDot").className = "pr-status-dot error";
-        document.getElementById("statusText").textContent = "Sync failed.";
-        document.getElementById("syncDetail").textContent = error.message;
-        showToast("Sync failed: " + error.message);
-    } finally {
-        button.disabled = false;
-        button.textContent = oldText;
+        setResourceSyncUiRunning(false);
+
+        document.getElementById(
+            "statusDot"
+        ).className = "pr-status-dot error";
+
+        document.getElementById(
+            "statusText"
+        ).textContent = "Unable to read sync progress.";
+
+        document.getElementById(
+            "syncDetail"
+        ).textContent = error.message;
+
+        showToast(
+            "Sync status error: "
+            + error.message
+        );
+    }
+}
+
+async function syncBooks() {
+    const button = document.getElementById("syncButton");
+
+    if (!button) {
+        return;
+    }
+
+    if (!confirm(
+        "Sync the Pastor's Resources Google Drive folder now?"
+    )) {
+        return;
+    }
+
+    setResourceSyncUiRunning(true);
+
+    renderResourceSyncProgress({
+        running:true,
+        stage:"starting",
+        message:"Starting Pastor's Resources synchronization...",
+        total:0,
+        processed:0,
+        new_files:0,
+        changed_files:0,
+        unchanged_files:0,
+        duplicates:0,
+        current_file:""
+    });
+
+    document.getElementById(
+        "statusDot"
+    ).className = "pr-status-dot waiting";
+
+    document.getElementById(
+        "statusText"
+    ).textContent =
+        "Synchronizing Google Drive with Pastor's Resources...";
+
+    document.getElementById(
+        "syncDetail"
+    ).textContent =
+        "Live progress is shown on screen.";
+
+    try {
+        const response = await fetch(
+            "/pastor-resources/sync-books-live",
+            {
+                method:"POST"
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(
+                data.error
+                || "Unable to start synchronization."
+            );
+        }
+
+        renderResourceSyncProgress(
+            data.state || {}
+        );
+
+        pollResourceSyncProgress();
+
+    } catch (error) {
+        setResourceSyncUiRunning(false);
+
+        document.getElementById(
+            "statusDot"
+        ).className = "pr-status-dot error";
+
+        document.getElementById(
+            "statusText"
+        ).textContent = "Sync failed to start.";
+
+        document.getElementById(
+            "syncDetail"
+        ).textContent = error.message;
+
+        showToast(
+            "Sync failed: "
+            + error.message
+        );
+    }
+}
+
+async function resumeResourceSyncIfRunning() {
+    if (!IS_RESOURCE_ADMIN) {
+        return;
+    }
+
+    try {
+        const state = await fetchResourceSyncStatus();
+
+        if (state.running) {
+            setResourceSyncUiRunning(true);
+            renderResourceSyncProgress(state);
+            pollResourceSyncProgress();
+        }
+    } catch (_error) {
+        // Normal page loading should not fail only because
+        // live sync status could not be checked.
     }
 }
 
@@ -8786,6 +9365,7 @@ document.getElementById("bookGrid").addEventListener("click", event => {
 {% endif %}
 
 initializeLibraryPage();
+resumeResourceSyncIfRunning();
 
 </script>
 
@@ -10547,13 +11127,22 @@ def decorate_annotation_payload(item):
     return value
 
 
-def sync_library_to_database_v3():
+def sync_library_to_database_v3(progress_callback=None):
     """
     Reuse the tested Drive scanner/sync, then report the
     visible book count after private hidden books are removed.
     """
 
-    result = sync_library_to_database()
+    result = sync_library_to_database(
+        progress_callback=progress_callback
+    )
+
+    if progress_callback:
+        progress_callback(
+            stage="finalizing",
+            message="Updating the visible Pastor's Resources count...",
+            current_file="",
+        )
 
     db = get_resource_db()
 
@@ -10594,6 +11183,92 @@ def sync_library_to_database_v3():
         db.close()
 
     return result
+
+
+def start_resource_library_sync(app):
+    """
+    Start one live Pastor's Resources synchronization in a background
+    thread so the browser can poll real progress without waiting for one
+    long POST request.
+    """
+
+    if not SYNC_LOCK.acquire(
+        blocking=False
+    ):
+        return False, get_resource_sync_state()
+
+    update_resource_sync_state(
+        running=True,
+        stage="starting",
+        message="Starting Pastor's Resources synchronization...",
+        total=0,
+        processed=0,
+        new_files=0,
+        changed_files=0,
+        unchanged_files=0,
+        duplicates=0,
+        current_file="",
+        last_error="",
+        started_at=utc_now_iso(),
+        finished_at="",
+        stats={},
+    )
+
+    def worker():
+        try:
+            with app.app_context():
+                stats = sync_library_to_database_v3(
+                    progress_callback=update_resource_sync_state
+                )
+
+            update_resource_sync_state(
+                running=False,
+                stage="complete",
+                message=(
+                    "Sync complete. "
+                    + str(
+                        stats.get(
+                            "unique_books",
+                            0,
+                        )
+                    )
+                    + " unique books cataloged."
+                ),
+                current_file="",
+                finished_at=utc_now_iso(),
+                stats=stats,
+            )
+
+        except Exception as error:
+            error_text = str(error)
+
+            print(
+                "[Pastor Resources Sync ERROR] "
+                + error_text,
+                flush=True,
+            )
+
+            update_resource_sync_state(
+                running=False,
+                stage="error",
+                message="Pastor's Resources synchronization stopped because of an error.",
+                current_file="",
+                last_error=error_text,
+                finished_at=utc_now_iso(),
+            )
+
+        finally:
+            SYNC_LOCK.release()
+
+    thread = threading.Thread(
+        target=worker,
+        name="pastor-resources-sync",
+        daemon=True,
+    )
+
+    thread.start()
+
+    return True, get_resource_sync_state()
 
 
 
@@ -12974,6 +13649,86 @@ def register_pastor_resources_routes(app):
 
         finally:
             SYNC_LOCK.release()
+
+    # -----------------------------------------------------
+    # LIVE BACKGROUND SYNC + STATUS
+    #
+    # The original /sync-books route above is intentionally
+    # preserved for the Database Details page. The main
+    # Pastor's Resources page uses these two routes so it can
+    # display real-time progress without changing the existing
+    # working synchronous route.
+    # -----------------------------------------------------
+
+    @app.route(
+        "/pastor-resources/sync-books-live",
+        methods=["POST"],
+    )
+    def pastor_resources_sync_books_live():
+        if not any_user_logged_in():
+            return jsonify(
+                ok=False,
+                error="Unauthorized",
+            ), 401
+
+        if not is_resource_admin():
+            return jsonify(
+                ok=False,
+                error=(
+                    "Administrator access required."
+                ),
+            ), 403
+
+        started, state = (
+            start_resource_library_sync(
+                app
+            )
+        )
+
+        if not started:
+            if state.get("running"):
+                return jsonify(
+                    ok=True,
+                    started=False,
+                    state=state,
+                )
+
+            return jsonify(
+                ok=False,
+                error=(
+                    "A book synchronization is already running."
+                ),
+                state=state,
+            ), 409
+
+        return jsonify(
+            ok=True,
+            started=True,
+            state=state,
+        )
+
+    @app.route(
+        "/pastor-resources/sync-books-status"
+    )
+    def pastor_resources_sync_books_status():
+        if not any_user_logged_in():
+            return jsonify(
+                ok=False,
+                error="Unauthorized",
+            ), 401
+
+        if not is_resource_admin():
+            return jsonify(
+                ok=False,
+                error=(
+                    "Administrator access required."
+                ),
+            ), 403
+
+        return jsonify(
+            ok=True,
+            state=get_resource_sync_state(),
+        )
 
     # -----------------------------------------------------
     # THUMBNAIL
