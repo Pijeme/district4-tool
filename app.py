@@ -32,6 +32,8 @@ from area_progress_monitor import register_area_progress_monitor
 from church_progress import register_church_progress
 from schedule import register_schedule_routes
 from temp_edit import register_temp_edit_routes
+from pastor_resources import register_pastor_resources_routes
+from sermon_ebooks import register_sermon_ebooks_routes
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
 def init_db():
@@ -3665,6 +3667,8 @@ register_church_progress(app)
 register_schedule_routes(app)
 register_temp_edit_routes(app)
 register_church_finder_routes(app)
+register_pastor_resources_routes(app)
+register_sermon_ebooks_routes(app)
 
 @app.template_filter("phpeso")
 def phpeso_filter(value):
@@ -3994,12 +3998,6 @@ def church_progress_redirect():
 @app.route('/do-tool')
 def do_tool():
     return pending_page("DO Tool")
-
-
-@app.route('/download-resources')
-def download_resources():
-    return pending_page("Download Resources")
-
 
 
 
