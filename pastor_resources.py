@@ -9726,167 +9726,1108 @@ PASTOR_READER_HTML = r"""
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Lora:wght@500;600;700&family=Nunito+Sans:wght@400;600;700;800;900&display=swap');
+
+html, body { overflow:hidden !important; }
 .app-main { max-width:none; padding:0; }
-.reader-root { --reader-bg:#eef2f7; --reader-panel:#fff; --reader-text:#17233c; min-height:calc(100vh - 76px); background:var(--reader-bg); color:var(--reader-text); font-family:"Nunito Sans",Arial,sans-serif; }
-.reader-root.theme-sepia { --reader-bg:#eee4cf; --reader-panel:#fbf4e5; --reader-text:#4b3b29; }
-.reader-root.theme-dark { --reader-bg:#171b24; --reader-panel:#242a36; --reader-text:#ecf0f7; }
-.reader-toolbar { position:sticky; top:0; z-index:120; display:flex; flex-direction:column; gap:8px; padding:9px 10px; background:rgba(255,255,255,.96); border-bottom:1px solid rgba(15,23,42,.10); box-shadow:0 5px 18px rgba(15,23,42,.08); backdrop-filter:blur(12px); }
-.theme-dark .reader-toolbar { background:rgba(28,33,44,.97); border-color:rgba(255,255,255,.08); }
-.theme-sepia .reader-toolbar { background:rgba(251,244,229,.97); }
-.reader-topline { display:flex; align-items:center; gap:7px; min-width:0; }
-.reader-book-info { min-width:0; flex:1; }
-.reader-book-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:700 14px "Lora",Georgia,serif; }
-.reader-book-author { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#758197; font-size:10px; margin-top:2px; }
-.theme-dark .reader-book-author { color:#a9b2c1; }
-.reader-controls { display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; }
-.reader-btn,.reader-select,.reader-search { flex:0 0 auto; min-height:36px; border:1px solid #d8e0eb; border-radius:9px; padding:7px 9px; background:#fff; color:#4e5f78; font:800 10px "Nunito Sans",Arial,sans-serif; cursor:pointer; }
-.reader-btn.primary { border:0; color:white; background:linear-gradient(135deg,#c98cc0,#789be0); }
-.reader-btn.favorite.on { color:#d94677; }
-.reader-select { max-width:145px; }
-.reader-search { width:150px; font-weight:500; cursor:text; }
-.theme-dark .reader-btn,.theme-dark .reader-select,.theme-dark .reader-search { background:#303747; color:#e8edf5; border-color:#465065; }
-.reader-main { position:relative; display:flex; min-height:calc(100vh - 170px); }
-.reader-canvas-area { flex:1; min-width:0; overflow:auto; padding:14px 10px 30px; display:flex; justify-content:center; align-items:flex-start; }
-.reader-message { margin:30px auto; padding:18px; border-radius:14px; background:var(--reader-panel); color:var(--reader-text); box-shadow:0 8px 24px rgba(15,23,42,.08); }
+
+.reader-root {
+    --reader-bg:#f6f1e9;
+    --reader-panel:#fffdfa;
+    --reader-text:#1f1c18;
+    --reader-muted:#80786e;
+    --reader-line:rgba(56,47,39,.12);
+    position:fixed;
+    inset:0;
+    z-index:20000;
+    width:100%;
+    height:100vh;
+    height:100dvh;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    background:var(--reader-bg);
+    color:var(--reader-text);
+    font-family:"Nunito Sans",Arial,sans-serif;
+    overscroll-behavior:none;
+}
+
+.reader-root.theme-sepia {
+    --reader-bg:#eee3d1;
+    --reader-panel:#fbf3e4;
+    --reader-text:#4b3b29;
+    --reader-muted:#7b6a56;
+    --reader-line:rgba(75,59,41,.14);
+}
+
+.reader-root.theme-dark {
+    --reader-bg:#171b24;
+    --reader-panel:#242a36;
+    --reader-text:#ecf0f7;
+    --reader-muted:#a9b2c1;
+    --reader-line:rgba(255,255,255,.10);
+}
+
+.reader-toolbar {
+    position:relative;
+    z-index:160;
+    flex:0 0 auto;
+    background:rgba(255,253,250,.985);
+    border-bottom:1px solid var(--reader-line);
+    box-shadow:none;
+    backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);
+}
+
+.theme-sepia .reader-toolbar { background:rgba(251,243,228,.985); }
+.theme-dark .reader-toolbar { background:rgba(36,42,54,.985); }
+
+.reader-topline {
+    min-height:48px;
+    display:grid;
+    grid-template-columns:minmax(72px,auto) minmax(0,1fr) auto auto;
+    align-items:center;
+    gap:4px;
+    padding:4px 7px;
+    min-width:0;
+}
+
+.reader-back-btn,
+.reader-icon-btn {
+    flex:0 0 auto;
+    min-height:36px;
+    border:0;
+    border-radius:9px;
+    background:transparent;
+    color:var(--reader-text);
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.reader-back-btn {
+    padding:5px 5px 5px 0;
+    white-space:nowrap;
+    text-align:left;
+    font:500 12px Georgia,"Times New Roman",serif;
+}
+
+.reader-back-btn .reader-chevron {
+    display:inline-block;
+    margin-right:2px;
+    font:400 20px/1 Arial,sans-serif;
+    vertical-align:-2px;
+}
+
+.reader-icon-btn {
+    width:34px;
+    padding:0;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    font:400 20px/1 Arial,sans-serif;
+}
+
+.reader-icon-btn:hover,
+.reader-back-btn:hover {
+    background:rgba(78,69,60,.06);
+}
+
+.theme-dark .reader-back-btn,
+.theme-dark .reader-icon-btn,
+.theme-sepia .reader-back-btn,
+.theme-sepia .reader-icon-btn {
+    background:transparent;
+    color:var(--reader-text);
+}
+
+.reader-book-info {
+    min-width:0;
+    text-align:center;
+    padding:0 4px;
+}
+
+.reader-book-title {
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font:600 12px Georgia,"Times New Roman",serif;
+    color:var(--reader-text);
+}
+
+.reader-book-author {
+    display:none;
+}
+
+.reader-search-panel {
+    position:absolute;
+    z-index:210;
+    top:0;
+    left:0;
+    right:0;
+    display:none;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+    gap:8px;
+    padding:8px 10px 7px;
+    background:rgba(255,255,255,.985);
+    border-bottom:1px solid rgba(60,50,40,.08);
+    box-shadow:0 7px 22px rgba(40,32,24,.08);
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+}
+
+.reader-search-panel.open { display:grid; }
+
+.reader-search-box {
+    min-width:0;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    min-height:36px;
+    padding:0 8px 0 10px;
+    border:0;
+    border-radius:11px;
+    background:#f1f1f4;
+    box-shadow:inset 0 0 0 1px rgba(30,30,30,.025);
+}
+
+.reader-search-symbol {
+    flex:0 0 auto;
+    width:15px;
+    height:15px;
+    color:#7b7b80;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.reader-search-symbol svg,
+.reader-top-svg {
+    width:18px;
+    height:18px;
+    fill:none;
+    stroke:currentColor;
+    stroke-width:1.8;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+}
+
+.reader-search {
+    width:100%;
+    min-width:0;
+    border:0;
+    outline:0;
+    padding:0;
+    background:transparent;
+    color:#1f1f22;
+    font:400 14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+    -webkit-appearance:none;
+    appearance:none;
+}
+
+.reader-search::-webkit-search-cancel-button {
+    -webkit-appearance:none;
+    appearance:none;
+}
+
+.reader-search::placeholder { color:#8d8d93; }
+
+.reader-search-clear {
+    flex:0 0 auto;
+    width:18px;
+    height:18px;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    border:0;
+    border-radius:50%;
+    padding:0 0 1px;
+    background:#9a9aa0;
+    color:#fff;
+    font:700 12px/1 Arial,sans-serif;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.reader-search-clear.show { display:inline-flex; }
+
+.reader-search-action {
+    flex:0 0 auto;
+    min-height:36px;
+    border:0;
+    border-radius:8px;
+    padding:0 2px;
+    background:transparent;
+    color:#007aff;
+    font:500 14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.reader-search-action.primary { display:none; }
+
+.reader-search-results {
+    grid-column:1 / -1;
+    display:none;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    min-height:29px;
+    padding:3px 2px 0;
+    color:#77777d;
+    font:500 11px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+}
+
+.reader-search-result-nav {
+    display:flex;
+    align-items:center;
+    gap:4px;
+}
+
+.reader-search-step {
+    width:28px;
+    height:26px;
+    border:0;
+    border-radius:8px;
+    background:transparent;
+    color:#007aff;
+    font:400 20px/1 Arial,sans-serif;
+    cursor:pointer;
+}
+
+.theme-sepia .reader-search-panel { background:rgba(251,244,229,.985); }
+.theme-sepia .reader-search-box { background:#eee7da; }
+.theme-sepia .reader-search { color:#4b3b29; }
+
+.theme-dark .reader-search-panel {
+    background:rgba(36,42,54,.985);
+    border-bottom-color:rgba(255,255,255,.08);
+}
+.theme-dark .reader-search-box { background:#343b49; }
+.theme-dark .reader-search,
+.theme-dark .reader-search-symbol { color:#edf1f7; }
+.theme-dark .reader-search::placeholder { color:#a5adba; }
+.theme-dark .reader-search-action,
+.theme-dark .reader-search-step { color:#69a7ff; }
+.theme-dark .reader-search-results { color:#b2bac6; }
+
+.reader-progress {
+    height:3px;
+    background:rgba(148,163,184,.22);
+    overflow:hidden;
+}
+
+.reader-progress > div {
+    height:100%;
+    background:linear-gradient(90deg,#cc8fc1,#6f97dd);
+}
+
+.reader-main {
+    position:relative;
+    flex:1 1 auto;
+    min-height:0;
+    display:flex;
+    overflow:hidden;
+}
+
+.reader-canvas-area {
+    flex:1;
+    min-width:0;
+    min-height:0;
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    padding:10px 8px 12px;
+    display:flex;
+    justify-content:center;
+    align-items:flex-start;
+    touch-action:pan-y pinch-zoom;
+    overscroll-behavior-x:contain;
+    background:var(--reader-bg);
+}
+
+.reader-message {
+    margin:30px auto;
+    padding:18px;
+    border-radius:14px;
+    background:var(--reader-panel);
+    color:var(--reader-text);
+    box-shadow:0 8px 24px rgba(15,23,42,.08);
+}
 
 /* PDF */
-#pdfStage { position:relative; flex:0 0 auto; background:#fff; box-shadow:0 10px 35px rgba(15,23,42,.18); }
+#pdfStage {
+    position:relative;
+    flex:0 0 auto;
+    background:#fff;
+    box-shadow:0 4px 18px rgba(54,43,32,.10);
+}
+
 #pdfCanvas { display:block; }
-.textLayer { position:absolute; inset:0; overflow:hidden; opacity:1; line-height:1; text-size-adjust:none; transform-origin:0 0; z-index:2; }
-.textLayer span,.textLayer br { color:transparent; position:absolute; white-space:pre; cursor:text; transform-origin:0% 0%; }
+
+.textLayer {
+    position:absolute;
+    inset:0;
+    overflow:hidden;
+    opacity:1;
+    line-height:1;
+    text-size-adjust:none;
+    -webkit-text-size-adjust:none;
+    transform-origin:0 0;
+    z-index:2;
+    -webkit-user-select:text;
+    user-select:text;
+}
+
+.textLayer span,
+.textLayer br {
+    color:transparent;
+    position:absolute;
+    white-space:pre;
+    cursor:text;
+    transform-origin:0% 0%;
+    -webkit-user-select:text;
+    user-select:text;
+}
+
 .textLayer ::selection { background:rgba(70,115,220,.32); }
-.pdf-link-layer { position:absolute; inset:0; z-index:3; pointer-events:none; }
-.pdf-link-hit { position:absolute; pointer-events:auto; cursor:pointer; border:0; padding:0; margin:0; background:rgba(52,105,190,.035); border-bottom:1px solid rgba(52,105,190,.28); }
+
+.pdf-link-layer {
+    position:absolute;
+    inset:0;
+    z-index:3;
+    pointer-events:none;
+}
+
+.pdf-link-hit {
+    position:absolute;
+    pointer-events:auto;
+    cursor:pointer;
+    border:0;
+    padding:0;
+    margin:0;
+    background:rgba(52,105,190,.035);
+    border-bottom:1px solid rgba(52,105,190,.28);
+}
+
 .pdf-link-hit:hover { background:rgba(52,105,190,.12); }
-.pdf-annotation-layer { position:absolute; inset:0; z-index:1; pointer-events:none; }
-.pdf-annotation { position:absolute; border-radius:2px; pointer-events:auto; cursor:pointer; }
+
+.pdf-annotation-layer {
+    position:absolute;
+    inset:0;
+    z-index:1;
+    pointer-events:none;
+}
+
+.pdf-annotation {
+    position:absolute;
+    border-radius:2px;
+    pointer-events:auto;
+    cursor:pointer;
+}
+
 .theme-dark #pdfStage { filter:invert(.88) hue-rotate(180deg); }
 .theme-sepia #pdfStage { filter:sepia(.25) saturate(.9); }
 
 /* EPUB */
-#epubViewer { width:min(100%,980px); height:calc(100vh - 205px); min-height:520px; background:var(--reader-panel); border-radius:12px; overflow:hidden; box-shadow:0 9px 30px rgba(15,23,42,.10); }
+#epubViewer {
+    width:min(100%,980px);
+    height:100%;
+    min-height:0;
+    background:var(--reader-panel);
+    border-radius:0;
+    overflow:hidden;
+    box-shadow:0 4px 18px rgba(54,43,32,.08);
+}
 
-/* Drawer */
-.reader-side { position:fixed; z-index:500; top:76px; right:0; bottom:0; width:min(390px,90vw); transform:translateX(105%); transition:transform .22s ease; background:var(--reader-panel); color:var(--reader-text); box-shadow:-12px 0 36px rgba(15,23,42,.18); display:flex; flex-direction:column; }
+/* Bottom reading navigation - mirrors the approved reader mockup. */
+.reader-bottom-bar {
+    position:relative;
+    z-index:240;
+    flex:0 0 auto;
+    min-height:38px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:3px 64px 4px 64px;
+    border-top:1px solid var(--reader-line);
+    background:var(--reader-panel);
+    color:#777068;
+    box-sizing:border-box;
+}
+
+.reader-turn-hint {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:4px;
+    min-width:0;
+    font:500 9px Georgia,"Times New Roman",serif;
+    white-space:nowrap;
+}
+
+.reader-page-arrow {
+    width:34px;
+    height:30px;
+    border:0;
+    border-radius:9px;
+    padding:0;
+    background:transparent;
+    color:#7c756e;
+    font:400 20px/1 Arial,sans-serif;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.reader-page-arrow:hover {
+    background:rgba(80,70,60,.07);
+    color:#302a24;
+}
+
+.reader-page-indicator {
+    position:absolute;
+    right:14px;
+    top:50%;
+    transform:translateY(-50%);
+    min-width:48px;
+    padding:0;
+    background:transparent;
+    color:#37312c;
+    text-align:right;
+    font:600 9px Georgia,"Times New Roman",serif;
+    line-height:1;
+    pointer-events:none;
+    box-shadow:none;
+}
+
+.theme-dark .reader-bottom-bar {
+    background:var(--reader-panel);
+    color:#b7b0a7;
+}
+
+.theme-dark .reader-page-arrow,
+.theme-dark .reader-page-indicator {
+    color:#e7e1d8;
+}
+
+/* Reading notes drawer */
+.reader-side {
+    position:fixed;
+    z-index:20600;
+    top:0;
+    right:0;
+    bottom:0;
+    width:min(390px,92vw);
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    transform:translateX(105%);
+    transition:transform .22s ease;
+    background:var(--reader-panel);
+    color:var(--reader-text);
+    box-shadow:-12px 0 36px rgba(15,23,42,.18);
+    display:flex;
+    flex-direction:column;
+}
+
 .reader-side.open { transform:translateX(0); }
-.reader-side-head { display:flex; align-items:center; justify-content:space-between; padding:13px; border-bottom:1px solid rgba(100,116,139,.18); }
-.reader-side-head h3 { margin:0; font:700 19px "Lora",Georgia,serif; }
-.reader-side-tabs { display:flex; gap:6px; padding:10px; border-bottom:1px solid rgba(100,116,139,.14); }
-.reader-side-tab { flex:1; border:0; border-radius:9px; padding:8px; background:#edf2f8; color:#53637b; font-size:10px; font-weight:850; cursor:pointer; }
-.reader-side-tab.active { color:white; background:linear-gradient(135deg,#c98cc0,#789be0); }
-.reader-side-body { flex:1; overflow:auto; padding:10px; }
+
+.reader-side-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:13px;
+    border-bottom:1px solid rgba(100,116,139,.18);
+}
+
+.reader-side-head h3 {
+    margin:0;
+    font:700 19px "Lora",Georgia,serif;
+}
+
+.reader-side-tabs {
+    display:flex;
+    gap:6px;
+    padding:10px;
+    border-bottom:1px solid rgba(100,116,139,.14);
+}
+
+.reader-side-tab {
+    flex:1;
+    border:0;
+    border-radius:9px;
+    padding:8px;
+    background:#edf2f8;
+    color:#53637b;
+    font-size:10px;
+    font-weight:850;
+    cursor:pointer;
+}
+
+.reader-side-tab.active {
+    color:white;
+    background:linear-gradient(135deg,#c98cc0,#789be0);
+}
+
+.reader-side-body {
+    flex:1;
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    padding:10px;
+}
+
 .reader-side-panel { display:none; }
 .reader-side-panel.active { display:block; }
-.reader-item { padding:10px; border-radius:12px; margin-bottom:8px; background:rgba(148,163,184,.10); font-size:11px; line-height:1.45; }
-.reader-item-quote { margin-top:6px; padding-left:8px; border-left:3px solid #d7a0c8; }
-.reader-item-actions { display:flex; gap:5px; margin-top:8px; }
-.reader-item-actions button { border:0; border-radius:8px; padding:6px 7px; font-size:9px; font-weight:850; cursor:pointer; }
-.reader-side-backdrop { position:fixed; inset:0; z-index:480; display:none; background:rgba(15,23,42,.38); }
-.reader-side-backdrop.show { display:block; }
 
-/* Selection action bar */
-.selection-bar { position:fixed; z-index:900; left:8px; right:8px; bottom:10px; display:none; gap:5px; flex-wrap:wrap; justify-content:center; padding:8px; border-radius:13px; background:#101827; color:white; box-shadow:0 15px 35px rgba(0,0,0,.28); }
+.reader-item {
+    padding:10px;
+    border-radius:12px;
+    margin-bottom:8px;
+    background:rgba(148,163,184,.10);
+    font-size:11px;
+    line-height:1.45;
+}
+
+.reader-item-quote {
+    margin-top:6px;
+    padding-left:8px;
+    border-left:3px solid #d7a0c8;
+}
+
+.reader-item-actions {
+    display:flex;
+    gap:5px;
+    margin-top:8px;
+    flex-wrap:wrap;
+}
+
+.reader-item-actions button {
+    border:0;
+    border-radius:8px;
+    padding:6px 7px;
+    font-size:9px;
+    font-weight:850;
+    cursor:pointer;
+}
+
+.reader-side-backdrop,
+.reader-tools-backdrop {
+    position:fixed;
+    inset:0;
+    display:none;
+    background:rgba(15,23,42,.38);
+}
+
+.reader-side-backdrop { z-index:20500; }
+.reader-tools-backdrop { z-index:20300; }
+
+.reader-side-backdrop.show,
+.reader-tools-backdrop.show { display:block; }
+
+/* Bottom tools sheet - iOS-style panel from the approved mockup. */
+.reader-tools-sheet {
+    position:fixed;
+    z-index:20400;
+    left:0;
+    right:0;
+    bottom:0;
+    max-height:min(78vh,650px);
+    max-height:min(78dvh,650px);
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    transform:translateY(105%);
+    transition:transform .22s ease;
+    padding:7px 14px calc(16px + env(safe-area-inset-bottom,0px));
+    border-radius:24px 24px 0 0;
+    background:#fffdfa;
+    color:#1f1c18;
+    box-shadow:0 -18px 48px rgba(54,43,32,.18);
+}
+
+.theme-sepia .reader-tools-sheet { background:#fbf3e4; color:#4b3b29; }
+.theme-dark .reader-tools-sheet { background:#242a36; color:#ecf0f7; }
+
+.reader-tools-sheet.open { transform:translateY(0); }
+
+.reader-tools-handle {
+    width:42px;
+    height:4px;
+    margin:0 auto 8px;
+    border-radius:999px;
+    background:#8f8a84;
+}
+
+.reader-tools-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin:0 0 4px;
+}
+
+.reader-tools-head h3 {
+    margin:0;
+    font:600 15px Georgia,"Times New Roman",serif;
+}
+
+.reader-tools-grid {
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:10px 5px;
+    padding:4px 0 8px;
+}
+
+.reader-tool-btn {
+    min-height:72px;
+    border:0;
+    border-radius:12px;
+    padding:5px 2px;
+    background:transparent;
+    color:inherit;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:5px;
+    text-align:center;
+    font:600 10px "Nunito Sans",Arial,sans-serif;
+    cursor:pointer;
+    text-decoration:none;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.reader-tool-icon-circle {
+    width:48px;
+    height:48px;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#f6f1e9;
+    color:#211e1a;
+    font:500 17px/1 Arial,sans-serif;
+}
+
+.reader-tool-icon-circle svg {
+    width:22px;
+    height:22px;
+    stroke:currentColor;
+    fill:none;
+    stroke-width:1.7;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+}
+
+.reader-tool-btn.highlight-tool .reader-tool-icon-circle {
+    background:#fff0c8;
+}
+
+.theme-sepia .reader-tool-icon-circle { background:#f2e6d1; color:#4b3b29; }
+.theme-dark .reader-tool-icon-circle { background:#303747; color:#edf1f7; }
+.theme-dark .reader-tool-btn.highlight-tool .reader-tool-icon-circle { background:#5c5133; }
+
+.reader-tool-btn.favorite.on {
+    color:#d94677;
+}
+
+.reader-tool-detail {
+    display:none;
+    margin-top:7px;
+    padding:11px 0 2px;
+    border-top:1px solid rgba(100,116,139,.16);
+}
+
+.reader-tool-detail.open { display:block; }
+
+.reader-more-options {
+    margin-top:6px;
+    border-top:1px solid rgba(100,116,139,.14);
+    padding-top:7px;
+}
+
+.reader-more-options summary {
+    cursor:pointer;
+    color:var(--reader-muted);
+    text-align:center;
+    font-size:9px;
+    font-weight:800;
+    list-style:none;
+}
+
+.reader-more-options summary::-webkit-details-marker { display:none; }
+
+.reader-more-grid {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:6px;
+    margin-top:8px;
+}
+
+.reader-tool-section {
+    margin-top:12px;
+    padding-top:11px;
+    border-top:1px solid rgba(100,116,139,.16);
+}
+
+.reader-tool-section-title {
+    margin:0 0 7px;
+    color:var(--reader-muted);
+    font-size:9px;
+    font-weight:900;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+}
+
+.reader-control-row {
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+}
+
+.reader-btn,
+.reader-select,
+.reader-small-input {
+    min-height:38px;
+    border:1px solid #d8e0eb;
+    border-radius:9px;
+    padding:7px 9px;
+    background:#fff;
+    color:#4e5f78;
+    font:800 10px "Nunito Sans",Arial,sans-serif;
+}
+
+.reader-btn { cursor:pointer; }
+
+.reader-select {
+    flex:1 1 135px;
+    min-width:110px;
+}
+
+.reader-small-input {
+    width:74px;
+    font-weight:700;
+}
+
+.theme-dark .reader-btn,
+.theme-dark .reader-select,
+.theme-dark .reader-small-input {
+    background:#303747;
+    color:#e8edf5;
+    border-color:#465065;
+}
+
+.theme-sepia .reader-btn,
+.theme-sepia .reader-select,
+.theme-sepia .reader-small-input {
+    background:#fffaf0;
+    color:#5f4c37;
+    border-color:#ddd0b9;
+}
+
+/* Custom annotation popover. iPhone's native selection UI is left untouched. */
+.selection-bar {
+    position:fixed;
+    z-index:20900;
+    display:none;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:0;
+    max-width:calc(100vw - 12px);
+    padding:0;
+    background:transparent;
+    color:white;
+    box-shadow:none;
+}
+
 .selection-bar.show { display:flex; }
-.selection-btn { border:0; border-radius:8px; padding:8px 9px; font-size:9px; font-weight:850; cursor:pointer; background:#fff; color:#334155; }
-.color-dot { width:28px; padding:0; }
 
-.reader-toast { position:fixed; z-index:1200; left:10px; right:10px; bottom:64px; display:none; padding:12px 13px; border-radius:12px; background:#111827; color:white; font-size:11px; box-shadow:0 12px 30px rgba(0,0,0,.24); }
-.reader-progress { height:4px; background:rgba(148,163,184,.25); overflow:hidden; }
-.reader-progress > div { height:100%; background:linear-gradient(90deg,#cc8fc1,#6f97dd); }
+.selection-actions {
+    display:flex;
+    align-items:center;
+    overflow:hidden;
+    border-radius:8px;
+    background:rgba(26,26,26,.97);
+    box-shadow:0 9px 28px rgba(0,0,0,.26);
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+}
 
-.reader-load-overlay { position:fixed; inset:0; z-index:30000; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(244,247,252,.94); backdrop-filter:blur(6px); }
+.selection-btn {
+    flex:0 0 auto;
+    min-height:34px;
+    border:0;
+    border-right:1px solid rgba(255,255,255,.14);
+    border-radius:0;
+    padding:7px 11px;
+    font:500 10px Arial,sans-serif;
+    cursor:pointer;
+    background:transparent;
+    color:#fff;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.selection-actions .selection-btn:last-child {
+    border-right:0;
+}
+
+.selection-colors {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:9px;
+    margin-top:0;
+    padding:5px 12px 6px;
+    border-radius:0 0 9px 9px;
+    background:rgba(255,255,255,.98);
+    box-shadow:0 5px 16px rgba(0,0,0,.12);
+}
+
+.selection-btn.color-dot {
+    width:16px;
+    height:16px;
+    min-height:16px;
+    padding:0;
+    border:0;
+    border-radius:50%;
+    box-shadow:0 0 0 1px rgba(0,0,0,.06);
+}
+
+.reader-toast {
+    position:fixed;
+    z-index:21200;
+    left:10px;
+    right:10px;
+    bottom:calc(58px + env(safe-area-inset-bottom,0px));
+    display:none;
+    padding:12px 13px;
+    border-radius:12px;
+    background:#111827;
+    color:white;
+    font-size:11px;
+    box-shadow:0 12px 30px rgba(0,0,0,.24);
+}
+
+/* Loading / busy */
+.reader-load-overlay {
+    position:fixed;
+    inset:0;
+    z-index:22000;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:rgba(244,247,252,.94);
+    backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
+}
+
 .theme-dark .reader-load-overlay { background:rgba(17,22,31,.95); }
 .reader-load-overlay.hidden { display:none; }
-.reader-load-card { width:min(520px,100%); padding:22px; border-radius:20px; background:var(--reader-panel); color:var(--reader-text); box-shadow:0 24px 70px rgba(15,23,42,.20); border:1px solid rgba(100,116,139,.15); }
-.reader-load-title { font:700 22px/1.2 "Lora",Georgia,serif; }
-.reader-load-detail { margin-top:7px; color:#738097; font-size:12px; line-height:1.5; }
+
+.reader-load-card {
+    width:min(520px,100%);
+    padding:22px;
+    border-radius:20px;
+    background:var(--reader-panel);
+    color:var(--reader-text);
+    box-shadow:0 24px 70px rgba(15,23,42,.20);
+    border:1px solid rgba(100,116,139,.15);
+}
+
+.reader-load-title {
+    font:700 22px/1.2 "Lora",Georgia,serif;
+}
+
+.reader-load-detail {
+    margin-top:7px;
+    color:#738097;
+    font-size:12px;
+    line-height:1.5;
+}
+
 .theme-dark .reader-load-detail { color:#b3bdcc; }
-.reader-load-track { height:13px; margin-top:15px; border-radius:999px; overflow:hidden; background:rgba(148,163,184,.24); }
-.reader-load-fill { width:0%; height:100%; border-radius:999px; background:linear-gradient(90deg,#c98fc2,#789ee3); transition:width .18s ease; }
-.reader-load-fill.indeterminate { width:34%; animation:reader-load-slide 1.15s ease-in-out infinite; }
-@keyframes reader-load-slide { 0%{transform:translateX(-120%)} 100%{transform:translateX(310%)} }
-.reader-load-meta { margin-top:8px; display:flex; justify-content:space-between; gap:10px; color:#8490a3; font-size:10px; }
-.reader-load-actions { display:none; gap:8px; flex-wrap:wrap; margin-top:15px; }
+
+.reader-load-track {
+    height:13px;
+    margin-top:15px;
+    border-radius:999px;
+    overflow:hidden;
+    background:rgba(148,163,184,.24);
+}
+
+.reader-load-fill {
+    width:0%;
+    height:100%;
+    border-radius:999px;
+    background:linear-gradient(90deg,#c98fc2,#789ee3);
+    transition:width .18s ease;
+}
+
+.reader-load-fill.indeterminate {
+    width:34%;
+    animation:reader-load-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes reader-load-slide {
+    0% { transform:translateX(-120%); }
+    100% { transform:translateX(310%); }
+}
+
+.reader-load-meta {
+    margin-top:8px;
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    color:#8490a3;
+    font-size:10px;
+}
+
+.reader-load-actions {
+    display:none;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-top:15px;
+}
+
 .reader-load-actions.show { display:flex; }
-.reader-load-actions button,.reader-load-actions a { border:0; border-radius:10px; padding:9px 11px; text-decoration:none; background:#eef2f8; color:#52627d; font:800 10px "Nunito Sans",Arial,sans-serif; cursor:pointer; }
-.reader-load-actions .primary { color:#fff; background:linear-gradient(135deg,#c98cc0,#789be0); }
-.reader-page-busy { position:absolute; z-index:80; top:12px; left:50%; transform:translateX(-50%); display:none; padding:7px 11px; border-radius:999px; background:rgba(17,24,39,.86); color:#fff; font-size:10px; font-weight:800; box-shadow:0 6px 18px rgba(0,0,0,.15); pointer-events:none; }
+
+.reader-load-actions button,
+.reader-load-actions a {
+    border:0;
+    border-radius:10px;
+    padding:9px 11px;
+    text-decoration:none;
+    background:#eef2f8;
+    color:#52627d;
+    font:800 10px "Nunito Sans",Arial,sans-serif;
+    cursor:pointer;
+}
+
+.reader-load-actions .primary {
+    color:#fff;
+    background:linear-gradient(135deg,#c98cc0,#789be0);
+}
+
+.reader-page-busy {
+    position:absolute;
+    z-index:80;
+    top:10px;
+    left:50%;
+    transform:translateX(-50%);
+    display:none;
+    padding:7px 11px;
+    border-radius:999px;
+    background:rgba(17,24,39,.86);
+    color:#fff;
+    font-size:10px;
+    font-weight:800;
+    box-shadow:0 6px 18px rgba(0,0,0,.15);
+    pointer-events:none;
+}
+
 .reader-page-busy.show { display:block; }
 
-@media(min-width:800px) {
-    .reader-toolbar { padding:9px 14px; }
-    .reader-controls { flex-wrap:wrap; overflow:visible; }
-    .reader-canvas-area { padding:18px 18px 38px; }
-    .selection-bar { left:50%; right:auto; transform:translateX(-50%); width:auto; bottom:16px; }
-    .reader-toast { left:auto; right:20px; width:360px; bottom:20px; }
+@media (min-width:800px) {
+    .reader-topline {
+        min-height:50px;
+        padding:5px 16px;
+        grid-template-columns:minmax(100px,auto) minmax(0,1fr) auto auto;
+    }
+    .reader-back-btn { font-size:13px; }
+    .reader-book-title { font-size:13px; }
+    .reader-canvas-area { padding:14px 18px 14px; }
+    .reader-bottom-bar { min-height:42px; }
+    .reader-turn-hint { font-size:11px; gap:6px; }
+    .reader-page-arrow { width:42px; font-size:24px; }
+    .reader-page-indicator { right:22px; font-size:10px; }
+    .reader-tools-sheet {
+        left:auto;
+        right:18px;
+        bottom:18px;
+        width:min(390px,calc(100vw - 36px));
+        border-radius:22px;
+        padding-bottom:14px;
+    }
+    .reader-tools-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .reader-toast {
+        left:auto;
+        right:20px;
+        width:360px;
+        bottom:20px;
+    }
+}
+
+@media (max-width:420px) {
+    .reader-topline {
+        grid-template-columns:minmax(64px,auto) minmax(0,1fr) 32px 32px;
+        gap:2px;
+        padding-left:5px;
+        padding-right:5px;
+    }
+    .reader-back-btn { font-size:11px; }
+    .reader-book-title { font-size:11px; }
+    .reader-icon-btn { width:32px; min-height:34px; font-size:18px; }
+    .selection-btn { padding:7px 9px; font-size:9px; }
+    .reader-bottom-bar { padding-left:54px; padding-right:56px; }
+    .reader-page-indicator { right:9px; }
 }
 </style>
 
 <div class="reader-root theme-{{ state.theme or 'light' }}" id="readerRoot">
     <div class="reader-toolbar">
         <div class="reader-topline">
-            <button class="reader-btn" type="button" onclick="returnToLibrary()">← Library</button>
+            <button class="reader-back-btn" type="button" onclick="returnToLibrary()"><span class="reader-chevron">‹</span>Library</button>
+
             <div class="reader-book-info">
                 <div class="reader-book-title">{{ book.title }}</div>
                 <div class="reader-book-author">{{ book.author }}</div>
             </div>
-            <button class="reader-btn favorite {{ 'on' if state.favorite else '' }}" id="readerFavorite" onclick="toggleReaderFavorite()">{{ '♥' if state.favorite else '♡' }}</button>
-            <button class="reader-btn" onclick="toggleSidePanel()">📝 Notes</button>
+
+            <button class="reader-icon-btn" type="button" title="Search" aria-label="Search in book" onclick="toggleReaderSearch()">
+                <svg class="reader-top-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg>
+            </button>
+            <button class="reader-icon-btn" type="button" title="Reader tools" aria-label="Reader tools" onclick="toggleToolsPanel()">•••</button>
         </div>
 
-        <div class="reader-controls">
-            <button class="reader-btn" onclick="goPrevious()">← Prev</button>
-            <button class="reader-btn" onclick="goNext()">Next →</button>
-
-            {% if reader_format == 'PDF' %}
-            <input class="reader-search" id="pageInput" type="number" min="1" value="{{ state.pdf_page or 1 }}" title="Page">
-            <button class="reader-btn" onclick="jumpPdfPage()">Go</button>
-            <button class="reader-btn" onclick="zoomPdf(-0.15)">−</button>
-            <button class="reader-btn" onclick="zoomPdf(0.15)">+</button>
-            <button class="reader-btn" onclick="fitPdfWidth()">Fit Width</button>
-            <button class="reader-btn" onclick="fitPdfPage()">Fit Page</button>
-            {% else %}
-            <select class="reader-select" id="tocSelect" onchange="jumpToc(this.value)"><option value="">Table of Contents</option></select>
-            <button class="reader-btn" onclick="changeEpubFont(-10)">A−</button>
-            <button class="reader-btn" onclick="changeEpubFont(10)">A+</button>
-            <select class="reader-select" id="fontFamilySelect" onchange="setEpubFontFamily(this.value)">
-                <option value="Georgia, serif">Serif</option>
-                <option value="Arial, sans-serif">Sans Serif</option>
-                <option value="Verdana, sans-serif">Verdana</option>
-                <option value="Trebuchet MS, sans-serif">Trebuchet</option>
-            </select>
-            <select class="reader-select" id="lineHeightSelect" onchange="setEpubLineHeight(this.value)">
-                <option value="1.3">Tight Lines</option>
-                <option value="1.6">Normal Lines</option>
-                <option value="2.0">Wide Lines</option>
-            </select>
-            {% endif %}
-
-            <select class="reader-select" id="themeSelect" onchange="setReaderTheme(this.value)">
-                <option value="light">Light</option>
-                <option value="sepia">Sepia</option>
-                <option value="dark">Dark</option>
-            </select>
-
-            {% if formats|length > 1 %}
-            <select class="reader-select" id="formatSelect" onchange="switchFormat(this.value)">
-                {% for fmt in formats %}<option value="{{ fmt }}" {{ 'selected' if fmt == reader_format else '' }}>{{ fmt }}</option>{% endfor %}
-            </select>
-            {% endif %}
-
-            <input class="reader-search" id="readerSearchInput" type="search" placeholder="Search in book...">
-            <button class="reader-btn" onclick="findInBook()">Find</button>
-            <button class="reader-btn" onclick="addCurrentBookmark()">🔖 Bookmark</button>
-            <button class="reader-btn" id="finishButton" onclick="toggleFinished()">{{ '↩ Reopen' if state.completed_at else '✓ Mark Finished' }}</button>
-            <a class="reader-btn" href="{{ download_url }}">Download</a>
-            <button class="reader-btn" onclick="toggleFullscreen()">⛶ Full Screen</button>
+        <div class="reader-search-panel" id="readerSearchPanel" role="search">
+            <div class="reader-search-box">
+                <span class="reader-search-symbol" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg>
+                </span>
+                <input
+                    class="reader-search"
+                    id="readerSearchInput"
+                    type="search"
+                    placeholder="Search"
+                    autocomplete="off"
+                    enterkeyhint="search"
+                    oninput="handleReaderSearchInput(this.value)"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();findInBook();}"
+                >
+                <button class="reader-search-clear" id="readerSearchClear" type="button" aria-label="Clear search" onclick="clearReaderSearchInput()">×</button>
+            </div>
+            <button class="reader-search-action" type="button" onclick="toggleReaderSearch(false)">Cancel</button>
+            <div class="reader-search-results" id="readerSearchResults">
+                <span id="readerSearchResultsText">0 results</span>
+                <span class="reader-search-result-nav">
+                    <button class="reader-search-step" type="button" onclick="stepSearchMatch(-1)" aria-label="Previous search result">‹</button>
+                    <span id="readerSearchPosition">0 of 0</span>
+                    <button class="reader-search-step" type="button" onclick="stepSearchMatch(1)" aria-label="Next search result">›</button>
+                </span>
+            </div>
         </div>
 
-        <div class="reader-progress"><div id="readerProgressFill" style="width:{{ state.progress_percent or 0 }}%"></div></div>
+        <div class="reader-progress">
+            <div id="readerProgressFill" style="width:{{ state.progress_percent or 0 }}%"></div>
+        </div>
     </div>
 
     <main class="reader-main">
         <div class="reader-page-busy" id="readerPageBusy">Loading page…</div>
+
         <div class="reader-canvas-area" id="readerCanvasArea">
             {% if reader_format == 'PDF' %}
             <div id="pdfStage">
@@ -9901,38 +10842,196 @@ PASTOR_READER_HTML = r"""
         </div>
     </main>
 
+    <footer class="reader-bottom-bar">
+        <div class="reader-turn-hint">
+            <button class="reader-page-arrow" id="readerPreviousButton" type="button" onclick="goPrevious()" title="Previous page" aria-label="Previous page">‹</button>
+            <span>Swipe to turn page</span>
+            <button class="reader-page-arrow" id="readerNextButton" type="button" onclick="goNext()" title="Next page" aria-label="Next page">›</button>
+        </div>
+        <div class="reader-page-indicator" id="readerPageIndicator">Loading…</div>
+    </footer>
+
     <aside class="reader-side" id="readerSide">
         <div class="reader-side-head">
             <h3>Reading Notes</h3>
-            <button class="reader-btn" onclick="toggleSidePanel(false)">✕</button>
+            <button class="reader-btn" type="button" onclick="toggleSidePanel(false)">✕</button>
         </div>
+
         <div class="reader-side-tabs">
-            <button class="reader-side-tab active" onclick="openReaderTab('annotations',this)">Highlights</button>
-            <button class="reader-side-tab" onclick="openReaderTab('bookmarks',this)">Bookmarks</button>
+            <button class="reader-side-tab active" type="button" onclick="openReaderTab('annotations',this)">Highlights</button>
+            <button class="reader-side-tab" type="button" onclick="openReaderTab('bookmarks',this)">Bookmarks</button>
         </div>
+
         <div class="reader-side-body">
             <div class="reader-side-panel active" id="side-annotations"></div>
             <div class="reader-side-panel" id="side-bookmarks"></div>
         </div>
     </aside>
+
     <div class="reader-side-backdrop" id="readerSideBackdrop" onclick="toggleSidePanel(false)"></div>
 
-    <div class="selection-bar" id="selectionBar">
-        <button class="selection-btn" onclick="copySelectedText()">Copy Quote</button>
-        <button class="selection-btn color-dot" style="background:#ffe66d" onclick="savePendingAnnotation('highlight','#ffe66d',false,false)" title="Yellow Highlight"></button>
-        <button class="selection-btn color-dot" style="background:#9ee6b8" onclick="savePendingAnnotation('highlight','#9ee6b8',false,false)" title="Green Highlight"></button>
-        <button class="selection-btn color-dot" style="background:#9ed3ff" onclick="savePendingAnnotation('highlight','#9ed3ff',false,false)" title="Blue Highlight"></button>
-        <button class="selection-btn" onclick="savePendingAnnotation('underline','#e5962d',false,false)">Underline</button>
-        <button class="selection-btn" onclick="savePendingAnnotation('highlight','#ffe66d',true,false)">Add Note</button>
-        <button class="selection-btn" onclick="savePendingAnnotation('highlight','#ffd2df',true,true)">Save for Sermon</button>
-        <button class="selection-btn" onclick="clearPendingSelection()">✕</button>
+    <div class="reader-tools-sheet" id="readerToolsSheet">
+        <div class="reader-tools-handle"></div>
+
+        <div class="reader-tools-head">
+            <h3>Tools</h3>
+        </div>
+
+        <div class="reader-tools-grid">
+            <button class="reader-tool-btn" type="button" onclick="addCurrentBookmark();toggleToolsPanel(false)">
+                <span class="reader-tool-icon-circle" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M6 4.8A1.8 1.8 0 0 1 7.8 3h8.4A1.8 1.8 0 0 1 18 4.8V21l-6-3.7L6 21z"/></svg>
+                </span>
+                <span>Bookmark</span>
+            </button>
+
+            <button class="reader-tool-btn" type="button" onclick="toggleToolDetail('theme')">
+                <span class="reader-tool-icon-circle" aria-hidden="true" style="font-family:Georgia,serif;">Aa</span>
+                <span>Theme</span>
+            </button>
+
+            <button class="reader-tool-btn" type="button" onclick="toggleToolsPanel(false);toggleSidePanel(true)">
+                <span class="reader-tool-icon-circle" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M6 3h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-7l-5 3v-3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 8h8M8 12h6"/></svg>
+                </span>
+                <span>Notes</span>
+            </button>
+
+            <button class="reader-tool-btn highlight-tool" type="button" onclick="openHighlightsFromTools()">
+                <span class="reader-tool-icon-circle" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="m5 16 9.8-9.8 3 3L8 19H5z"/><path d="m13.8 7.2 3 3"/><path d="M4 21h7"/></svg>
+                </span>
+                <span>Highlights</span>
+            </button>
+
+            <a class="reader-tool-btn" href="{{ download_url }}">
+                <span class="reader-tool-icon-circle" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                </span>
+                <span>Download</span>
+            </a>
+
+            <button class="reader-tool-btn" type="button" onclick="toggleToolDetail('contents')">
+                <span class="reader-tool-icon-circle" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M9 6h10M9 12h10M9 18h10"/><path d="M5 6h.01M5 12h.01M5 18h.01"/></svg>
+                </span>
+                <span>Contents</span>
+            </button>
+        </div>
+
+        <div class="reader-tool-detail" id="readerToolDetailTheme">
+            <div class="reader-tool-section-title">Theme</div>
+            <div class="reader-control-row">
+                <select class="reader-select" id="themeSelect" onchange="setReaderTheme(this.value)">
+                    <option value="light">Light</option>
+                    <option value="sepia">Sepia</option>
+                    <option value="dark">Dark</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="reader-tool-detail" id="readerToolDetailContents">
+            {% if reader_format == 'PDF' %}
+            <div class="reader-tool-section-title">PDF Navigation</div>
+            <div class="reader-control-row">
+                <button class="reader-btn" type="button" onclick="goPrevious()">‹ Previous</button>
+                <button class="reader-btn" type="button" onclick="goNext()">Next ›</button>
+                <input class="reader-small-input" id="pageInput" type="number" min="1" value="{{ state.pdf_page or 1 }}" title="Page">
+                <button class="reader-btn" type="button" onclick="jumpPdfPage()">Go</button>
+            </div>
+
+            <div class="reader-tool-section-title" style="margin-top:10px;">PDF View</div>
+            <div class="reader-control-row">
+                <button class="reader-btn" type="button" onclick="zoomPdf(-0.15)">Zoom −</button>
+                <button class="reader-btn" type="button" onclick="zoomPdf(0.15)">Zoom +</button>
+                <button class="reader-btn" type="button" onclick="fitPdfWidth()">Fit Width</button>
+                <button class="reader-btn" type="button" onclick="fitPdfPage()">Fit Page</button>
+            </div>
+            {% else %}
+            <div class="reader-tool-section-title">Contents & Navigation</div>
+            <div class="reader-control-row">
+                <button class="reader-btn" type="button" onclick="goPrevious()">‹ Previous</button>
+                <button class="reader-btn" type="button" onclick="goNext()">Next ›</button>
+                <select class="reader-select" id="tocSelect" onchange="jumpToc(this.value)">
+                    <option value="">Table of Contents</option>
+                </select>
+            </div>
+
+            <div class="reader-tool-section-title" style="margin-top:10px;">Text</div>
+            <div class="reader-control-row">
+                <button class="reader-btn" type="button" onclick="changeEpubFont(-10)">A−</button>
+                <button class="reader-btn" type="button" onclick="changeEpubFont(10)">A+</button>
+                <select class="reader-select" id="fontFamilySelect" onchange="setEpubFontFamily(this.value)">
+                    <option value="Georgia, serif">Serif</option>
+                    <option value="Arial, sans-serif">Sans Serif</option>
+                    <option value="Verdana, sans-serif">Verdana</option>
+                    <option value="Trebuchet MS, sans-serif">Trebuchet</option>
+                </select>
+                <select class="reader-select" id="lineHeightSelect" onchange="setEpubLineHeight(this.value)">
+                    <option value="1.3">Tight Lines</option>
+                    <option value="1.6">Normal Lines</option>
+                    <option value="2.0">Wide Lines</option>
+                </select>
+            </div>
+            {% endif %}
+
+            {% if formats|length > 1 %}
+            <div class="reader-tool-section-title" style="margin-top:10px;">Format</div>
+            <div class="reader-control-row">
+                <select class="reader-select" id="formatSelect" onchange="switchFormat(this.value)">
+                    {% for fmt in formats %}
+                    <option value="{{ fmt }}" {{ 'selected' if fmt == reader_format else '' }}>{{ fmt }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+        </div>
+
+        <details class="reader-more-options">
+            <summary>More options</summary>
+            <div class="reader-more-grid">
+                <button
+                    class="reader-tool-btn favorite {{ 'on' if state.favorite else '' }}"
+                    id="readerFavorite"
+                    type="button"
+                    onclick="toggleReaderFavorite()"
+                >
+                    <span class="reader-tool-icon-circle" id="readerFavoriteIcon">{{ '♥' if state.favorite else '♡' }}</span>
+                    <span>Favorite</span>
+                </button>
+
+                <button class="reader-tool-btn" id="finishButton" type="button" onclick="toggleFinished()">
+                    <span class="reader-tool-icon-circle">✓</span>
+                    <span id="finishButtonLabel">{{ 'Reopen' if state.completed_at else 'Mark Finished' }}</span>
+                </button>
+            </div>
+        </details>
+    </div>
+
+    <div class="reader-tools-backdrop" id="readerToolsBackdrop" onclick="toggleToolsPanel(false)"></div>
+
+    <div class="selection-bar" id="selectionBar" aria-label="Selected text actions">
+        <div class="selection-actions">
+            <button class="selection-btn" type="button" onclick="copySelectedText()">Copy</button>
+            <button class="selection-btn" type="button" onclick="savePendingAnnotation('underline','#e5962d',false,false)">Underline</button>
+            <button class="selection-btn" type="button" onclick="savePendingAnnotation('highlight','#ffe66d',true,false)">Note</button>
+            <button class="selection-btn" type="button" onclick="savePendingAnnotation('highlight','#ffd2df',true,true)">Sermon</button>
+        </div>
+
+        <div class="selection-colors" aria-label="Highlight colors">
+            <button class="selection-btn color-dot" type="button" style="background:#ffd45a" onclick="savePendingAnnotation('highlight','#ffe66d',false,false)" title="Yellow Highlight" aria-label="Yellow Highlight"></button>
+            <button class="selection-btn color-dot" type="button" style="background:#79d991" onclick="savePendingAnnotation('highlight','#9ee6b8',false,false)" title="Green Highlight" aria-label="Green Highlight"></button>
+            <button class="selection-btn color-dot" type="button" style="background:#4e8ff0" onclick="savePendingAnnotation('highlight','#9ed3ff',false,false)" title="Blue Highlight" aria-label="Blue Highlight"></button>
+        </div>
     </div>
 
     <div class="reader-load-overlay" id="readerLoadOverlay">
         <div class="reader-load-card">
             <div class="reader-load-title" id="readerLoadTitle">Opening ebook…</div>
             <div class="reader-load-detail" id="readerLoadDetail">Preparing your reader.</div>
-            <div class="reader-load-track"><div class="reader-load-fill indeterminate" id="readerLoadFill"></div></div>
+            <div class="reader-load-track">
+                <div class="reader-load-fill indeterminate" id="readerLoadFill"></div>
+            </div>
             <div class="reader-load-meta">
                 <span id="readerLoadBytes">Please wait…</span>
                 <span id="readerLoadPercent"></span>
@@ -9969,6 +11068,12 @@ let readingSessionId = "";
 let lastActivityAt = Date.now();
 let currentTheme = STATE.theme || "light";
 let finished = Boolean(STATE.completed_at);
+let selectionCaptureTimer = null;
+let selectionToolbarInteracting = false;
+let lastEpubContents = null;
+let searchMatches = [];
+let searchMatchIndex = -1;
+const EPUB_CONTENT_HANDLERS = new WeakSet();
 
 function showReaderToast(message) {
     const toast = document.getElementById("readerToast");
@@ -10066,6 +11171,221 @@ function returnToLibrary() {
 
     try { sessionStorage.setItem(LIBRARY_RESTORE_KEY, "1"); } catch (error) {}
     window.location.href = PASTOR_RESOURCES_URL;
+}
+
+function updateReaderPageIndicator(text) {
+    const indicator = document.getElementById("readerPageIndicator");
+    if (!indicator) return;
+    indicator.textContent = String(text || "");
+    indicator.style.display = text ? "block" : "none";
+}
+
+function handleReaderSearchInput(value) {
+    const clearButton = document.getElementById("readerSearchClear");
+    const hasValue = Boolean(String(value || "").trim());
+    clearButton?.classList.toggle("show", hasValue);
+
+    if (!hasValue) {
+        searchMatches = [];
+        searchMatchIndex = -1;
+        updateSearchResultUI();
+    }
+}
+
+function clearReaderSearchInput() {
+    const input = document.getElementById("readerSearchInput");
+    if (!input) return;
+    input.value = "";
+    handleReaderSearchInput("");
+    try { input.focus({preventScroll:true}); } catch (error) { input.focus?.(); }
+}
+
+function toggleReaderSearch(force) {
+    const panel = document.getElementById("readerSearchPanel");
+    const input = document.getElementById("readerSearchInput");
+    if (!panel) return;
+
+    const open = typeof force === "boolean"
+        ? force
+        : !panel.classList.contains("open");
+
+    panel.classList.toggle("open", open);
+
+    if (open) {
+        toggleToolsPanel(false);
+        handleReaderSearchInput(input?.value || "");
+        setTimeout(() => {
+            try {
+                input?.focus({preventScroll:true});
+                input?.select?.();
+            } catch (error) {
+                input?.focus?.();
+            }
+        }, 60);
+    } else {
+        try { input?.blur?.(); } catch (error) {}
+    }
+
+    setTimeout(() => {
+        try { rendition?.resize?.(); } catch (error) {}
+    }, 90);
+}
+
+function toggleToolsPanel(force) {
+    const sheet = document.getElementById("readerToolsSheet");
+    const backdrop = document.getElementById("readerToolsBackdrop");
+    if (!sheet || !backdrop) return;
+
+    const open = typeof force === "boolean"
+        ? force
+        : !sheet.classList.contains("open");
+
+    sheet.classList.toggle("open", open);
+    backdrop.classList.toggle("show", open);
+
+    if (open) {
+        toggleReaderSearch(false);
+        toggleSidePanel(false);
+    } else {
+        document.getElementById("readerToolDetailTheme")?.classList.remove("open");
+        document.getElementById("readerToolDetailContents")?.classList.remove("open");
+    }
+}
+
+function openHighlightsFromTools() {
+    toggleToolsPanel(false);
+    const button = document.querySelector(".reader-side-tab");
+    openReaderTab("annotations", button);
+    toggleSidePanel(true);
+}
+
+function toggleToolDetail(name) {
+    const theme = document.getElementById("readerToolDetailTheme");
+    const contents = document.getElementById("readerToolDetailContents");
+    const target = name === "theme" ? theme : contents;
+
+    if (!target) return;
+
+    const shouldOpen = !target.classList.contains("open");
+    theme?.classList.remove("open");
+    contents?.classList.remove("open");
+
+    if (shouldOpen) {
+        target.classList.add("open");
+        setTimeout(() => {
+            try { target.scrollIntoView({block:"nearest",behavior:"smooth"}); } catch (error) {}
+        }, 30);
+    }
+}
+
+function selectionViewportRect(range, sourceWindow=window) {
+    if (!range) return null;
+
+    const rects = Array.from(range.getClientRects?.() || [])
+        .filter(rect => rect.width > 0.5 && rect.height > 0.5);
+
+    if (!rects.length) {
+        const single = range.getBoundingClientRect?.();
+        if (!single || (!single.width && !single.height)) return null;
+        rects.push(single);
+    }
+
+    let left = Math.min(...rects.map(rect => rect.left));
+    let top = Math.min(...rects.map(rect => rect.top));
+    let right = Math.max(...rects.map(rect => rect.right));
+    let bottom = Math.max(...rects.map(rect => rect.bottom));
+
+    if (sourceWindow && sourceWindow !== window) {
+        try {
+            const frame = sourceWindow.frameElement;
+            if (frame) {
+                const frameRect = frame.getBoundingClientRect();
+                left += frameRect.left;
+                right += frameRect.left;
+                top += frameRect.top;
+                bottom += frameRect.top;
+            }
+        } catch (error) {}
+    }
+
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width:Math.max(1,right-left),
+        height:Math.max(1,bottom-top)
+    };
+}
+
+function showSelectionBarAtRect(rect) {
+    const bar = document.getElementById("selectionBar");
+    if (!bar || !rect) return;
+
+    bar.classList.add("show");
+    bar.style.visibility = "hidden";
+    bar.style.left = "6px";
+    bar.style.right = "auto";
+    bar.style.top = "6px";
+    bar.style.bottom = "auto";
+
+    requestAnimationFrame(() => {
+        const barRect = bar.getBoundingClientRect();
+        const margin = 6;
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 360;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 640;
+
+        let left = rect.left + (rect.width / 2) - (barRect.width / 2);
+        left = Math.max(
+            margin,
+            Math.min(left, viewportWidth - barRect.width - margin)
+        );
+
+        // The desktop mockup places our tools above the selection.
+        // On phones we prefer below so iOS can keep its native menu above.
+        const desktopLike = window.matchMedia?.("(min-width:800px)")?.matches;
+        let top = desktopLike
+            ? rect.top - barRect.height - 8
+            : rect.bottom + 9;
+
+        if (desktopLike && top < margin) {
+            top = rect.bottom + 9;
+        }
+
+        if (!desktopLike && top + barRect.height > viewportHeight - margin) {
+            top = rect.top - barRect.height - 9;
+        }
+
+        if (top < margin) {
+            top = Math.max(
+                margin,
+                viewportHeight - barRect.height - 14
+            );
+        }
+
+        bar.style.left = Math.round(left) + "px";
+        bar.style.top = Math.round(top) + "px";
+        bar.style.visibility = "visible";
+    });
+}
+
+function hideSelectionBarOnly() {
+    const bar = document.getElementById("selectionBar");
+    if (!bar) return;
+    bar.classList.remove("show");
+    bar.style.visibility = "";
+    bar.style.left = "";
+    bar.style.top = "";
+    bar.style.right = "";
+    bar.style.bottom = "";
+}
+
+function schedulePdfSelectionCapture(delay=140) {
+    clearTimeout(selectionCaptureTimer);
+    selectionCaptureTimer = setTimeout(() => {
+        if (selectionToolbarInteracting) return;
+        capturePdfSelection();
+    }, delay);
 }
 
 async function fetchArrayBufferWithProgress(url, label="EPUB") {
@@ -10185,15 +11505,21 @@ function openReaderTab(name, button) {
 
 async function toggleReaderFavorite() {
     const button = document.getElementById("readerFavorite");
+    const icon = document.getElementById("readerFavoriteIcon");
+    if (!button) return;
+
     const favorite = !button.classList.contains("on");
+
     try {
         await apiJson("/pastor-resources/api/favorite/" + BOOK_ID, {
             method:"POST",
             headers:{"Content-Type":"application/json"},
             body:JSON.stringify({favorite})
         });
-        button.classList.toggle("on",favorite);
-        button.textContent = favorite ? "♥" : "♡";
+
+        button.classList.toggle("on", favorite);
+        if (icon) icon.textContent = favorite ? "♥" : "♡";
+        showReaderToast(favorite ? "Added to Favorites." : "Removed from Favorites.");
     } catch (error) {
         showReaderToast(error.message);
     }
@@ -10201,13 +11527,17 @@ async function toggleReaderFavorite() {
 
 async function toggleFinished() {
     finished = !finished;
+
     try {
         await apiJson("/pastor-resources/api/completed/" + BOOK_ID, {
             method:"POST",
             headers:{"Content-Type":"application/json"},
             body:JSON.stringify({completed:finished})
         });
-        document.getElementById("finishButton").textContent = finished ? "↩ Reopen" : "✓ Mark Finished";
+
+        const label = document.getElementById("finishButtonLabel");
+        if (label) label.textContent = finished ? "Reopen" : "Mark Finished";
+
         if (finished) setProgress(100);
         showReaderToast(finished ? "Book marked as completed." : "Book reopened.");
     } catch (error) {
@@ -10226,28 +11556,44 @@ function setReaderTheme(theme) {
     root.classList.remove("theme-light","theme-sepia","theme-dark");
     root.classList.add("theme-" + theme);
     applyEpubTheme();
+    if (READER_FORMAT === "EPUB") {
+        scheduleEpubLayoutRefresh("Updating theme…");
+    }
     saveState({theme});
 }
 
-function toggleFullscreen() {
-    const root = document.getElementById("readerRoot");
-    if (!document.fullscreenElement) {
-        root.requestFullscreen?.();
-    } else {
-        document.exitFullscreen?.();
-    }
-}
-
 function clearPendingSelection() {
+    const sourceWindow = pendingSelection?.sourceWindow || null;
     pendingSelection = null;
-    document.getElementById("selectionBar").classList.remove("show");
-    try { window.getSelection()?.removeAllRanges(); } catch(e) {}
+    hideSelectionBarOnly();
+
+    try { window.getSelection()?.removeAllRanges(); } catch (error) {}
+
+    if (sourceWindow && sourceWindow !== window) {
+        try { sourceWindow.getSelection()?.removeAllRanges(); } catch (error) {}
+    }
 }
 
 async function copySelectedText() {
     if (!pendingSelection || !pendingSelection.text) return;
+
+    const text = pendingSelection.text;
+
     try {
-        await navigator.clipboard.writeText(pendingSelection.text);
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const helper = document.createElement("textarea");
+            helper.value = text;
+            helper.setAttribute("readonly", "");
+            helper.style.position = "fixed";
+            helper.style.opacity = "0";
+            document.body.appendChild(helper);
+            helper.select();
+            document.execCommand("copy");
+            helper.remove();
+        }
+
         showReaderToast("Quote copied.");
     } catch (error) {
         showReaderToast("Unable to copy quote.");
@@ -10319,14 +11665,24 @@ async function editAnnotation(id) {
 
 async function deleteReaderAnnotation(id) {
     if (!confirm("Delete this highlight/note?")) return;
+
+    const item = annotations.find(a => Number(a.id) === Number(id)) || null;
+
     try {
         await apiJson("/pastor-resources/api/annotations/" + id, {method:"DELETE"});
+
+        if (READER_FORMAT === "EPUB" && item) {
+            removeEpubAnnotationVisual(item);
+        }
+
         annotations = annotations.filter(a => Number(a.id) !== Number(id));
         renderSidePanel();
+
         if (READER_FORMAT === "PDF") {
             renderPdfAnnotations();
         } else {
-            showReaderToast("Annotation deleted. Turn the page or reopen the book to clear the old mark from the EPUB view.");
+            await rebuildVisibleEpubAnnotations();
+            showReaderToast("Annotation deleted.");
         }
     } catch (error) {
         showReaderToast(error.message);
@@ -10509,6 +11865,7 @@ async function renderPdfPage() {
 
         const percent = (pdfPageNumber / pdfDoc.numPages) * 100;
         setProgress(percent);
+        updateReaderPageIndicator(pdfPageNumber + " / " + pdfDoc.numPages);
         saveState({last_format:"PDF",pdf_page:pdfPageNumber,pdf_scale:pdfScale,progress_percent:percent});
         renderPdfAnnotations();
     } catch (error) {
@@ -10621,25 +11978,59 @@ async function goToPdfDestination(destination) {
 
 function capturePdfSelection() {
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        if (!selectionToolbarInteracting) {
+            pendingSelection = null;
+            hideSelectionBarOnly();
+        }
+        return;
+    }
+
     const text = selection.toString().trim();
-    if (!text) return;
+    if (!text) {
+        if (!selectionToolbarInteracting) {
+            pendingSelection = null;
+            hideSelectionBarOnly();
+        }
+        return;
+    }
 
     const stage = document.getElementById("pdfStage");
     const range = selection.getRangeAt(0);
-    if (!stage.contains(range.commonAncestorContainer)) return;
+
+    if (!stage || !stage.contains(range.commonAncestorContainer)) {
+        if (!selectionToolbarInteracting) {
+            pendingSelection = null;
+            hideSelectionBarOnly();
+        }
+        return;
+    }
 
     const stageRect = stage.getBoundingClientRect();
-    const rects = Array.from(range.getClientRects()).filter(r => r.width > 1 && r.height > 1).map(r => ({
-        x:(r.left-stageRect.left)/stageRect.width,
-        y:(r.top-stageRect.top)/stageRect.height,
-        w:r.width/stageRect.width,
-        h:r.height/stageRect.height
-    }));
+
+    const rects = Array.from(range.getClientRects())
+        .filter(rect => rect.width > 1 && rect.height > 1)
+        .map(rect => ({
+            x:(rect.left-stageRect.left)/stageRect.width,
+            y:(rect.top-stageRect.top)/stageRect.height,
+            w:rect.width/stageRect.width,
+            h:rect.height/stageRect.height
+        }));
 
     if (!rects.length) return;
-    pendingSelection = {text,locator:JSON.stringify({rects}),page:pdfPageNumber};
-    document.getElementById("selectionBar").classList.add("show");
+
+    pendingSelection = {
+        text,
+        locator:JSON.stringify({rects}),
+        page:pdfPageNumber,
+        sourceWindow:window
+    };
+
+    const selectionRect = selectionViewportRect(range, window);
+    if (selectionRect) {
+        showSelectionBarAtRect(selectionRect);
+    }
 }
 
 function renderPdfAnnotations() {
@@ -10692,7 +12083,7 @@ async function fitPdfPage() {
     const base = page.getViewport({scale:1});
     const area = document.getElementById("readerCanvasArea");
     const widthScale = Math.max(.5,(area.clientWidth-24)/base.width);
-    const heightScale = Math.max(.5,(window.innerHeight-210)/base.height);
+    const heightScale = Math.max(.5,(area.clientHeight-24)/base.height);
     pdfScale = Math.min(4,widthScale,heightScale);
     await renderPdfPage();
 }
@@ -10716,6 +12107,121 @@ let epubLineHeight = Number(STATE.epub_line_height || 1.6);
 let epubFontFamily = STATE.epub_font_family || "Georgia, serif";
 let epubLocationsReady = false;
 let appliedEpubAnnotationIds = new Set();
+let epubLayoutRefreshTimer = null;
+let epubLayoutRefreshToken = 0;
+let epubLayoutRefreshing = false;
+let epubNavigationQueue = [];
+let epubNavigationRunning = false;
+
+function captureEpubSelection(contents, forcedCfi="") {
+    if (!contents?.window || !contents?.document) return;
+
+    const selection = contents.window.getSelection?.();
+
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        if (!selectionToolbarInteracting) {
+            pendingSelection = null;
+            hideSelectionBarOnly();
+        }
+        return;
+    }
+
+    const text = String(selection.toString() || "").trim();
+    if (!text) {
+        if (!selectionToolbarInteracting) {
+            pendingSelection = null;
+            hideSelectionBarOnly();
+        }
+        return;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    let locator = String(forcedCfi || "").trim();
+
+    if (!locator) {
+        try {
+            locator = String(contents.cfiFromRange?.(range) || "").trim();
+        } catch (error) {}
+    }
+
+    if (!locator) return;
+
+    pendingSelection = {
+        text,
+        locator,
+        page:null,
+        sourceWindow:contents.window
+    };
+
+    const selectionRect = selectionViewportRect(
+        range,
+        contents.window
+    );
+
+    if (selectionRect) {
+        showSelectionBarAtRect(selectionRect);
+    }
+}
+
+function installEpubContentHandlers(contents) {
+    if (!contents?.document || !contents?.window) return;
+
+    lastEpubContents = contents;
+
+    const doc = contents.document;
+    const win = contents.window;
+    const target = doc.body || doc.documentElement || doc;
+
+    try {
+        if (doc.documentElement) {
+            doc.documentElement.style.touchAction = "pan-y pinch-zoom";
+            doc.documentElement.style.overscrollBehaviorX = "contain";
+            doc.documentElement.style.webkitUserSelect = "text";
+            doc.documentElement.style.userSelect = "text";
+        }
+
+        if (doc.body) {
+            doc.body.style.touchAction = "pan-y pinch-zoom";
+            doc.body.style.overscrollBehaviorX = "contain";
+            doc.body.style.webkitUserSelect = "text";
+            doc.body.style.userSelect = "text";
+        }
+    } catch (error) {}
+
+    installSwipeHandlers(target, win);
+
+    if (EPUB_CONTENT_HANDLERS.has(doc)) return;
+    EPUB_CONTENT_HANDLERS.add(doc);
+
+    let localSelectionTimer = null;
+
+    const scheduleCapture = delay => {
+        clearTimeout(localSelectionTimer);
+        localSelectionTimer = setTimeout(() => {
+            if (selectionToolbarInteracting) return;
+            captureEpubSelection(contents);
+        }, delay);
+    };
+
+    doc.addEventListener(
+        "selectionchange",
+        () => scheduleCapture(150),
+        {passive:true}
+    );
+
+    target.addEventListener(
+        "touchend",
+        () => scheduleCapture(180),
+        {passive:true,capture:true}
+    );
+
+    target.addEventListener(
+        "mouseup",
+        () => scheduleCapture(0),
+        {passive:true,capture:true}
+    );
+}
 
 async function initEpubReader() {
     if (!window.ePub) {
@@ -10742,17 +12248,33 @@ async function initEpubReader() {
         document.getElementById("fontFamilySelect").value = epubFontFamily;
         document.getElementById("lineHeightSelect").value = String(epubLineHeight);
 
-        // Swipe must also be attached inside EPUB.js's iframe.
+        // Mobile gestures and text selection must be installed inside
+        // EPUB.js's iframe. This keeps native iPhone text selection while
+        // also giving the EPUB its own reliable left/right swipe handler.
         if (rendition.hooks?.content?.register) {
             rendition.hooks.content.register(contents => {
-                try { installSwipeHandlers(contents.document, contents.window); } catch (error) { console.warn(error); }
+                try {
+                    installEpubContentHandlers(contents);
+                } catch (error) {
+                    console.warn(error);
+                }
             });
         }
 
         rendition.on("rendered",(section,view) => {
             try {
-                if (view?.document) installSwipeHandlers(view.document, view.window || view.document.defaultView);
-            } catch (error) {}
+                if (view?.contents) {
+                    installEpubContentHandlers(view.contents);
+                } else if (view?.document) {
+                    const target = view.document.body || view.document.documentElement || view.document;
+                    installSwipeHandlers(
+                        target,
+                        view.window || view.document.defaultView || window
+                    );
+                }
+            } catch (error) {
+                console.warn(error);
+            }
         });
 
         const navigation = await epubBook.loaded.navigation;
@@ -10766,21 +12288,55 @@ async function initEpubReader() {
         });
 
         rendition.on("selected",(cfiRange,contents) => {
-            const text = (contents.window.getSelection()?.toString() || "").trim();
-            if (!text) return;
-            pendingSelection = {text,locator:cfiRange,page:null};
-            document.getElementById("selectionBar").classList.add("show");
+            try {
+                installEpubContentHandlers(contents);
+                captureEpubSelection(contents, cfiRange);
+            } catch (error) {
+                console.warn(error);
+            }
         });
 
         rendition.on("relocated",location => {
-            setPageBusy(false);
-            currentEpubCfi = location.start.cfi;
-            let percent = Number(location.start.percentage || 0) * 100;
-            if (epubLocationsReady && currentEpubCfi) {
-                try { percent = epubBook.locations.percentageFromCfi(currentEpubCfi) * 100; } catch(e) {}
+            if (!epubNavigationRunning && !epubLayoutRefreshing) {
+                setPageBusy(false);
             }
+            currentEpubCfi = location.start.cfi;
+
+            let percent = Number(location.start.percentage || 0) * 100;
+
+            if (epubLocationsReady && currentEpubCfi) {
+                try {
+                    percent = epubBook.locations.percentageFromCfi(currentEpubCfi) * 100;
+                } catch (error) {}
+            }
+
             setProgress(percent);
-            saveState({last_format:"EPUB",epub_cfi:currentEpubCfi,progress_percent:percent,epub_font_size:epubFontSize,epub_font_family:epubFontFamily,epub_line_height:epubLineHeight});
+
+            const displayed = location?.start?.displayed || null;
+            if (
+                displayed
+                && Number(displayed.page) > 0
+                && Number(displayed.total) > 0
+            ) {
+                updateReaderPageIndicator(
+                    Number(displayed.page)
+                    + " / "
+                    + Number(displayed.total)
+                );
+            } else {
+                updateReaderPageIndicator(
+                    Math.max(0,Math.min(100,Math.round(percent))) + "%"
+                );
+            }
+
+            saveState({
+                last_format:"EPUB",
+                epub_cfi:currentEpubCfi,
+                progress_percent:percent,
+                epub_font_size:epubFontSize,
+                epub_font_family:epubFontFamily,
+                epub_line_height:epubLineHeight
+            });
         });
 
         let initialLocation = currentEpubCfi || undefined;
@@ -10825,6 +12381,7 @@ function applyEpubTheme() {
 function changeEpubFont(delta) {
     epubFontSize = Math.min(220,Math.max(70,epubFontSize + delta));
     applyEpubTheme();
+    scheduleEpubLayoutRefresh("Updating text size…");
     saveState({epub_font_size:epubFontSize});
     showReaderToast("Font size: " + epubFontSize + "%");
 }
@@ -10832,17 +12389,131 @@ function changeEpubFont(delta) {
 function setEpubFontFamily(value) {
     epubFontFamily = value;
     applyEpubTheme();
+    scheduleEpubLayoutRefresh("Updating font…");
     saveState({epub_font_family:value});
 }
 
 function setEpubLineHeight(value) {
     epubLineHeight = Number(value || 1.6);
     applyEpubTheme();
+    scheduleEpubLayoutRefresh("Updating line spacing…");
     saveState({epub_line_height:epubLineHeight});
 }
 
 function jumpToc(value) {
-    if (rendition && value) rendition.display(value);
+    if (rendition && value) {
+        epubNavigationQueue = [];
+        setPageBusy(true,"Opening section…");
+        Promise.resolve(rendition.display(value))
+            .catch(error => console.warn(error))
+            .finally(() => setPageBusy(false));
+    }
+}
+
+function epubAnnotationKind(item) {
+    return item?.annotation_type === "underline" ? "underline" : "highlight";
+}
+
+function removeEpubAnnotationVisual(item) {
+    if (!item) return;
+
+    const id = Number(item.id);
+    const locator = String(item.locator || "");
+    const kind = epubAnnotationKind(item);
+
+    if (rendition && locator) {
+        try {
+            rendition.annotations.remove(locator, kind);
+        } catch (error) {
+            console.warn("EPUB annotation remove failed", error);
+        }
+    }
+
+    // Extra DOM cleanup for WebKit/iPhone. EPUB.js uses the class name
+    // supplied when the annotation was created; removing it here prevents
+    // a stale SVG mark from remaining on screen after Delete or reflow.
+    try {
+        const selectors = [".pr-hl-" + id, ".pr-ul-" + id].join(",");
+        const contents = rendition?.getContents?.() || [];
+        contents.forEach(content => {
+            content?.document?.querySelectorAll?.(selectors)?.forEach?.(node => node.remove());
+        });
+    } catch (error) {}
+
+    appliedEpubAnnotationIds.delete(id);
+}
+
+function clearVisibleEpubAnnotationVisuals(items=annotations) {
+    (items || [])
+        .filter(item => String(item.format || "").toUpperCase() === "EPUB")
+        .forEach(removeEpubAnnotationVisual);
+    appliedEpubAnnotationIds.clear();
+}
+
+function nextAnimationFrame() {
+    return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
+async function rebuildVisibleEpubAnnotations() {
+    if (READER_FORMAT !== "EPUB" || !rendition) return;
+
+    const currentItems = annotations.filter(
+        item => String(item.format || "").toUpperCase() === "EPUB"
+    );
+
+    clearVisibleEpubAnnotationVisuals(currentItems);
+    await nextAnimationFrame();
+    applyAllEpubAnnotations();
+}
+
+function scheduleEpubLayoutRefresh(message="Updating page…") {
+    if (READER_FORMAT !== "EPUB" || !rendition) return;
+
+    clearTimeout(epubLayoutRefreshTimer);
+    epubLayoutRefreshTimer = setTimeout(() => {
+        refreshEpubLayoutAndAnnotations(message);
+    }, 150);
+}
+
+async function refreshEpubLayoutAndAnnotations(message="Updating page…") {
+    if (READER_FORMAT !== "EPUB" || !rendition) return;
+
+    const token = ++epubLayoutRefreshToken;
+    const anchor = currentEpubCfi || "";
+    const oldItems = annotations.filter(
+        item => String(item.format || "").toUpperCase() === "EPUB"
+    );
+
+    epubLayoutRefreshing = true;
+    setPageBusy(true,message);
+
+    try {
+        clearVisibleEpubAnnotationVisuals(oldItems);
+
+        try { rendition.resize?.(); } catch (error) {}
+
+        // WebKit needs a moment to finish the EPUB reflow before the SVG
+        // annotation geometry is rebuilt. Keeping the CFI anchor preserves
+        // the reader's logical position even though line breaks changed.
+        await new Promise(resolve => setTimeout(resolve,140));
+        if (token !== epubLayoutRefreshToken) return;
+
+        if (anchor) {
+            try { await Promise.resolve(rendition.display(anchor)); } catch (error) { console.warn(error); }
+        }
+
+        await nextAnimationFrame();
+        await nextAnimationFrame();
+        if (token !== epubLayoutRefreshToken) return;
+
+        appliedEpubAnnotationIds.clear();
+        applyAllEpubAnnotations();
+    } finally {
+        if (token === epubLayoutRefreshToken) {
+            epubLayoutRefreshing = false;
+            setPageBusy(false);
+        }
+    }
 }
 
 function applyAnnotation(item) {
@@ -10894,94 +12565,247 @@ function installSwipeHandlers(target, win=window) {
     let startX = 0;
     let startY = 0;
     let startTime = 0;
+    let tracking = false;
 
     target.addEventListener("touchstart", event => {
+        tracking = false;
+
         if (!event.touches || event.touches.length !== 1) return;
-        startX = event.touches[0].clientX;
-        startY = event.touches[0].clientY;
+
+        const touch = event.touches[0];
+        const viewportWidth = Number(win?.innerWidth || window.innerWidth || 0);
+
+        // Leave the extreme screen edges to iOS/Safari so its own
+        // browser back/forward gestures are not hijacked.
+        if (
+            viewportWidth > 0
+            && (
+                touch.clientX < 24
+                || touch.clientX > viewportWidth - 24
+            )
+        ) {
+            return;
+        }
+
+        startX = touch.clientX;
+        startY = touch.clientY;
         startTime = Date.now();
-    }, {passive:true});
+        tracking = true;
+    }, {passive:true,capture:true});
+
+    target.addEventListener("touchcancel", () => {
+        tracking = false;
+    }, {passive:true,capture:true});
 
     target.addEventListener("touchend", event => {
+        if (!tracking) return;
+        tracking = false;
+
         if (!event.changedTouches || event.changedTouches.length !== 1) return;
         if (selectionIsActive(win)) return;
 
-        const dx = event.changedTouches[0].clientX - startX;
-        const dy = event.changedTouches[0].clientY - startY;
+        const touch = event.changedTouches[0];
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
         const elapsed = Date.now() - startTime;
 
-        if (elapsed > 1000) return;
-        if (Math.abs(dx) < 62) return;
-        if (Math.abs(dx) < Math.abs(dy) * 1.25) return;
+        if (elapsed > 900) return;
+        if (Math.abs(dx) < 56) return;
+        if (Math.abs(dx) < Math.abs(dy) * 1.20) return;
 
-        if (dx < 0) goNext();
-        else goPrevious();
-    }, {passive:true});
+        hideSelectionBarOnly();
+
+        if (dx < 0) {
+            goNext();
+        } else {
+            goPrevious();
+        }
+    }, {passive:true,capture:true});
 }
 
 /* =====================================================
    SHARED NAVIGATION / SEARCH
    ===================================================== */
 
+function queueEpubNavigation(direction) {
+    if (!rendition) return;
+
+    const normalized = direction < 0 ? -1 : 1;
+
+    // Keep short bursts of taps/swipes instead of silently dropping them,
+    // but cap the queue so an accidental rapid gesture cannot race through
+    // dozens of pages.
+    if (epubNavigationQueue.length < 5) {
+        epubNavigationQueue.push(normalized);
+    }
+
+    if (epubNavigationRunning) return;
+    runEpubNavigationQueue();
+}
+
+async function runEpubNavigationQueue() {
+    if (epubNavigationRunning || !rendition) return;
+
+    epubNavigationRunning = true;
+
+    try {
+        while (epubNavigationQueue.length && rendition) {
+            const direction = epubNavigationQueue.shift();
+            setPageBusy(true, direction < 0 ? "Loading previous page…" : "Loading next page…");
+
+            try {
+                if (direction < 0) {
+                    await Promise.resolve(rendition.prev());
+                } else {
+                    await Promise.resolve(rendition.next());
+                }
+            } catch (error) {
+                console.warn("EPUB page turn failed", error);
+                epubNavigationQueue = [];
+                break;
+            }
+
+            // Give WebKit one frame to settle the paginated iframe before
+            // executing another queued page turn.
+            await nextAnimationFrame();
+        }
+    } finally {
+        epubNavigationRunning = false;
+        if (!epubLayoutRefreshing) setPageBusy(false);
+    }
+}
+
 function goPrevious() {
+    if (pendingSelection) clearPendingSelection();
+
     if (READER_FORMAT === "PDF") {
-        if (pdfDoc && pdfPageNumber > 1) { pdfPageNumber--; renderPdfPage(); }
+        if (pdfDoc && pdfPageNumber > 1) {
+            pdfPageNumber--;
+            renderPdfPage();
+        }
     } else if (rendition) {
-        setPageBusy(true,"Loading previous page…");
-        Promise.resolve(rendition.prev()).catch(() => setPageBusy(false));
+        queueEpubNavigation(-1);
     }
 }
 
 function goNext() {
+    if (pendingSelection) clearPendingSelection();
+
     if (READER_FORMAT === "PDF") {
-        if (pdfDoc && pdfPageNumber < pdfDoc.numPages) { pdfPageNumber++; renderPdfPage(); }
+        if (pdfDoc && pdfPageNumber < pdfDoc.numPages) {
+            pdfPageNumber++;
+            renderPdfPage();
+        }
     } else if (rendition) {
-        setPageBusy(true,"Loading next page…");
-        Promise.resolve(rendition.next()).catch(() => setPageBusy(false));
+        queueEpubNavigation(1);
     }
+}
+
+function updateSearchResultUI() {
+    const row = document.getElementById("readerSearchResults");
+    const count = document.getElementById("readerSearchResultsText");
+    const position = document.getElementById("readerSearchPosition");
+
+    if (!row || !count || !position) return;
+
+    if (!searchMatches.length) {
+        row.style.display = "none";
+        count.textContent = "0 results";
+        position.textContent = "0 of 0";
+        return;
+    }
+
+    row.style.display = "flex";
+    count.textContent = searchMatches.length + (searchMatches.length === 1 ? " result" : " results");
+    position.textContent = (searchMatchIndex + 1) + " of " + searchMatches.length;
+}
+
+async function openSearchMatch(index) {
+    if (!searchMatches.length) return;
+
+    searchMatchIndex = (index + searchMatches.length) % searchMatches.length;
+    const match = searchMatches[searchMatchIndex];
+
+    if (READER_FORMAT === "PDF") {
+        pdfPageNumber = Number(match.page || 1);
+        await renderPdfPage();
+    } else if (rendition && match.cfi) {
+        epubNavigationQueue = [];
+        setPageBusy(true,"Opening search result…");
+        try {
+            await Promise.resolve(rendition.display(match.cfi));
+        } finally {
+            if (!epubLayoutRefreshing) setPageBusy(false);
+        }
+    }
+
+    updateSearchResultUI();
+}
+
+function stepSearchMatch(delta) {
+    if (!searchMatches.length) return;
+    openSearchMatch(searchMatchIndex + Number(delta || 0));
 }
 
 async function findInBook() {
     const query = document.getElementById("readerSearchInput").value.trim();
+
+    searchMatches = [];
+    searchMatchIndex = -1;
+    updateSearchResultUI();
+
     if (!query) return;
 
     showReaderToast("Searching book...");
 
     if (READER_FORMAT === "PDF") {
         if (!pdfDoc) return;
+
         const q = query.toLowerCase();
-        let first = 0;
-        let matchedPages = 0;
+
         for (let i=1;i<=pdfDoc.numPages;i++) {
             const page = await pdfDoc.getPage(i);
             const content = await page.getTextContent();
             const text = content.items.map(item => item.str || "").join(" ").toLowerCase();
+
             if (text.includes(q)) {
-                matchedPages++;
-                if (!first) first = i;
+                searchMatches.push({page:i});
             }
         }
-        if (first) {
-            pdfPageNumber = first;
-            await renderPdfPage();
-            showReaderToast("Found on " + matchedPages + " page(s). Showing the first match.");
-        } else showReaderToast("No match found.");
+
+        if (searchMatches.length) {
+            await openSearchMatch(0);
+        } else {
+            showReaderToast("No match found.");
+            updateSearchResultUI();
+        }
+
         return;
     }
 
     if (!epubBook || !rendition) return;
-    const matches = [];
+
     try {
         for (const section of epubBook.spine.spineItems) {
             await section.load(epubBook.load.bind(epubBook));
             const found = section.find(query) || [];
-            found.forEach(match => matches.push(match));
+
+            found.forEach(match => {
+                searchMatches.push({
+                    cfi:match.cfi,
+                    excerpt:match.excerpt || ""
+                });
+            });
+
             section.unload();
         }
-        if (matches.length) {
-            await rendition.display(matches[0].cfi);
-            showReaderToast("Found " + matches.length + " match(es). Showing the first.");
-        } else showReaderToast("No match found.");
+
+        if (searchMatches.length) {
+            await openSearchMatch(0);
+        } else {
+            showReaderToast("No match found.");
+            updateSearchResultUI();
+        }
     } catch (error) {
         showReaderToast("Search failed: " + error.message);
     }
@@ -11018,15 +12842,82 @@ function jumpToBookmark(id) {
 document.getElementById("themeSelect").value = currentTheme;
 
 (async function initReader() {
-    installSwipeHandlers(document.getElementById("readerCanvasArea"), window);
+    const canvasArea = document.getElementById("readerCanvasArea");
+    const selectionBar = document.getElementById("selectionBar");
+
+    installSwipeHandlers(canvasArea, window);
+
+    document.addEventListener("keydown", event => {
+        const target = event.target;
+        const tag = String(target?.tagName || "").toLowerCase();
+
+        if (
+            tag === "input"
+            || tag === "textarea"
+            || tag === "select"
+            || target?.isContentEditable
+            || selectionIsActive(window)
+        ) {
+            return;
+        }
+
+        if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            goPrevious();
+        } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            goNext();
+        }
+    });
+
+    if (selectionBar) {
+        const holdSelectionTools = () => {
+            selectionToolbarInteracting = true;
+            setTimeout(() => {
+                selectionToolbarInteracting = false;
+            }, 550);
+        };
+
+        selectionBar.addEventListener("touchstart", holdSelectionTools, {passive:true});
+        selectionBar.addEventListener("pointerdown", holdSelectionTools, {passive:true});
+        selectionBar.addEventListener("mousedown", holdSelectionTools, {passive:true});
+    }
+
     await loadNotesData();
     await startReadingTimer();
 
     if (READER_FORMAT === "PDF") {
-        document.getElementById("pdfTextLayer").addEventListener("mouseup",() => setTimeout(capturePdfSelection,0));
+        const textLayer = document.getElementById("pdfTextLayer");
+
+        textLayer.addEventListener(
+            "mouseup",
+            () => schedulePdfSelectionCapture(0),
+            {passive:true}
+        );
+
+        textLayer.addEventListener(
+            "touchend",
+            () => schedulePdfSelectionCapture(180),
+            {passive:true}
+        );
+
+        document.addEventListener(
+            "selectionchange",
+            () => schedulePdfSelectionCapture(150),
+            {passive:true}
+        );
+
         await initPdfReader();
     } else {
         await initEpubReader();
+    }
+
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", () => {
+            setTimeout(() => {
+                try { rendition?.resize?.(); } catch (error) {}
+            }, 80);
+        }, {passive:true});
     }
 
     if (JUMP_ANNOTATION_ID) {
