@@ -34,6 +34,7 @@ from schedule import register_schedule_routes
 from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
 from sermon_ebooks import register_sermon_ebooks_routes
+from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
 def init_db():
@@ -4594,12 +4595,99 @@ def pastor_login():
 def _get_cached_pastor_account(pastor_username: str):
     return get_db().execute(
         """
-        SELECT username, name, church_address, sex
+        SELECT username, name, church_address, sex, age
         FROM sheet_accounts_cache
         WHERE username = ?
         """,
         ((pastor_username or "").strip(),),
     ).fetchone()
+
+
+def _get_pastor_monthly_report_pdf_data(pastor_username: str, year: int, month: int):
+    """Collect only data that has successfully reached the Report sheet cache.
+
+    This keeps the PDF tied to a successful submission. If a pastor edits local
+    data after submitting but has not successfully resubmitted yet, the PDF
+    still represents the last successfully submitted report. Church Progress
+    stays monthly (Option B) and is placed only in the PDF MONTHLY TOTAL row.
+    """
+    pastor_username = (pastor_username or "").strip()
+    if not pastor_username:
+        return None
+
+    acc = _get_cached_pastor_account(pastor_username)
+    if not acc:
+        return None
+
+    pastor_name = str(acc["name"] or "").strip()
+    church_address = str(acc["church_address"] or "").strip()
+    church_id = str(acc["sex"] or "").strip()
+    church_key = church_id or church_address
+
+    db = get_db()
+    cached_rows = db.execute(
+        """
+        SELECT *
+        FROM sheet_report_cache
+        WHERE year = ? AND month = ?
+          AND (
+                TRIM(church) = TRIM(?)
+             OR TRIM(address) = TRIM(?)
+             OR TRIM(pastor) = TRIM(?)
+          )
+        ORDER BY activity_date
+        """,
+        (int(year), int(month), church_key, church_key, pastor_name),
+    ).fetchall()
+
+    if not cached_rows:
+        return None
+
+    sundays = []
+    for row in cached_rows:
+        report_date = parse_sheet_date(str(row["activity_date"] or "").strip())
+        if not report_date:
+            report_date = str(row["activity_date"] or "").strip()
+
+        sundays.append({
+            "date": report_date,
+            "attendance_adult": row["adult"] or 0,
+            "attendance_youth": row["youth"] or 0,
+            "attendance_children": row["children"] or 0,
+            "tithes_church": row["tithes"] or 0,
+            "offering": row["offering"] or 0,
+            "mission": row["mission_offering"] or 0,
+            "tithes_personal": row["personal_tithes"] or 0,
+            # Use the submitted Report-sheet remittance value so the PDF
+            # follows the app's official Amount to Send calculation.
+            "amount_to_send": row["amount_to_send"] or 0,
+        })
+
+    # Church Progress is repeated on each Google Sheets Sunday row by the
+    # current submission workflow. Read it once and place it in MONTHLY TOTAL.
+    cp_seed = cached_rows[0]
+    church_progress = {
+        "bible_new": cp_seed["new_bible_study"] or 0,
+        "bible_existing": cp_seed["existing_bible_study"] or 0,
+        "received_christ": cp_seed["received_jesus"] or 0,
+        "baptized_water": cp_seed["water_baptized"] or 0,
+        "child_dedication": cp_seed["childrens_dedication"] or 0,
+    }
+
+    month_name = calendar.month_name[int(month)]
+    church_name = church_id or church_address
+
+    return {
+        "district_no": "4",
+        "area_no": str(acc["age"] or "").strip(),
+        "month_name": month_name,
+        "year": int(year),
+        "church_name": church_name,
+        "church_address": church_address,
+        "pastor_name": pastor_name,
+        "sunday_rows": sundays,
+        "church_progress": church_progress,
+    }
 
 
 def _report_exists_for_pastor_month_from_cache(pastor_username: str, year: int, month: int) -> bool:
@@ -4886,6 +4974,51 @@ def pastor_tool_submit_status(job_id):
     })
 
 
+@app.route("/pastor-tool/report/<int:year>/<int:month>.pdf")
+def pastor_tool_monthly_report_pdf(year, month):
+    if not (pastor_logged_in() or ao_logged_in()):
+        return redirect(url_for("pastor_login", next=request.path))
+
+    if month < 1 or month > 12:
+        abort(404)
+
+    if ao_logged_in():
+        pastor_username = (
+            request.args.get("church")
+            or session.get("pastor_username")
+            or ""
+        ).strip()
+        if not pastor_username or not _pastor_username_in_current_ao_scope(pastor_username):
+            abort(403)
+    else:
+        pastor_username = (session.get("pastor_username") or "").strip()
+
+    report_data = _get_pastor_monthly_report_pdf_data(
+        pastor_username,
+        int(year),
+        int(month),
+    )
+    if not report_data:
+        abort(404)
+
+    pdf_bytes = build_monthly_activity_report_pdf(report_data)
+    filename = monthly_report_filename(
+        report_data.get("church_name"),
+        report_data.get("month_name"),
+        report_data.get("year"),
+    )
+
+    response = make_response(pdf_bytes)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Length"] = str(len(pdf_bytes))
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Content-Disposition"] = (
+        "attachment; filename*=UTF-8''"
+        + urllib.parse.quote(filename)
+    )
+    return response
+
+
 @app.route("/pastor-tool", methods=["GET", "POST"])
 
 def pastor_tool():
@@ -5040,6 +5173,10 @@ def pastor_tool():
     month_has_data = {int(r["month"]): (int(r["cnt"] or 0) > 0) for r in rows}
     submitted_map = {(year, m): bool(month_has_data.get(m)) for m in range(1, 13)}
 
+    # The PDF becomes available only after the submitted rows are confirmed
+    # in the Google Sheets cache, not merely when the local submitted flag flips.
+    report_available = bool(month_has_data.get(month))
+
     existing_submit_job = _get_existing_submit_report_job(pastor_username, year, month)
     submit_job_id = existing_submit_job["id"] if existing_submit_job else ""
 
@@ -5085,6 +5222,26 @@ def pastor_tool():
         ao_church_labels=ao_church_labels,
         selected_church=selected_church,
         submit_job_id=submit_job_id,
+        report_available=report_available,
+        report_pdf_url=(
+            url_for(
+                "pastor_tool_monthly_report_pdf",
+                year=year,
+                month=month,
+                church=(selected_church if ao_mode else None),
+            )
+            if report_available
+            else ""
+        ),
+        report_filename=(
+            monthly_report_filename(
+                church_id or church_address or pastor_name,
+                calendar.month_name[month],
+                year,
+            )
+            if report_available
+            else ""
+        ),
     )
 
 
