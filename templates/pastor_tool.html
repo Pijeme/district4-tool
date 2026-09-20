@@ -33,6 +33,169 @@
       color: #4b5563;
       font-weight: 700;
     }
+
+    .monthly-report-row {
+      margin-top: 12px;
+      display: flex;
+      justify-content: flex-start;
+    }
+    .monthly-report-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 10050;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(15, 23, 42, 0.48);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    .monthly-report-modal.show {
+      display: flex;
+    }
+    .monthly-report-card {
+      width: min(430px, 100%);
+      border-radius: 18px;
+      background: #ffffff;
+      box-shadow: 0 22px 60px rgba(15, 23, 42, 0.28);
+      padding: 20px;
+      color: #111827;
+    }
+    .monthly-report-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 8px;
+    }
+    .monthly-report-title {
+      margin: 0;
+      font-size: 1.16rem;
+    }
+    .monthly-report-close {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: 50%;
+      background: #f3f4f6;
+      color: #374151;
+      cursor: pointer;
+      font-size: 18px;
+    }
+    .monthly-report-subtitle {
+      margin: 0 0 14px;
+      color: #6b7280;
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+    .monthly-report-status {
+      margin: 0 0 14px;
+      padding: 9px 11px;
+      border-radius: 10px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      color: #4b5563;
+      font-size: 0.86rem;
+      font-weight: 700;
+    }
+
+    .monthly-report-progress {
+      display: none;
+      margin: 0 0 14px;
+    }
+    .monthly-report-progress.show {
+      display: block;
+    }
+    .monthly-report-progress-track {
+      width: 100%;
+      height: 12px;
+      overflow: hidden;
+      border: 1px solid #d1d5db;
+      border-radius: 999px;
+      background: #e5e7eb;
+    }
+    .monthly-report-progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #60a5fa, #2563eb);
+      transition: width 0.22s ease;
+    }
+    .monthly-report-progress-fill.indeterminate {
+      width: 36%;
+      animation: monthlyReportIndeterminate 1.05s ease-in-out infinite;
+    }
+    @keyframes monthlyReportIndeterminate {
+      0% { transform: translateX(-115%); }
+      100% { transform: translateX(320%); }
+    }
+    .monthly-report-progress-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 7px;
+      color: #6b7280;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    .monthly-report-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    .monthly-report-choice {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-height: 58px;
+      padding: 11px 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 12px;
+      background: #fff;
+      color: #111827;
+      text-align: left;
+      cursor: pointer;
+    }
+    .monthly-report-choice:hover {
+      background: #f8fafc;
+      border-color: #9ca3af;
+    }
+    .monthly-report-choice:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .monthly-report-choice-icon {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #f3f4f6;
+      font-size: 20px;
+    }
+    .monthly-report-choice strong,
+    .monthly-report-choice small {
+      display: block;
+    }
+    .monthly-report-choice small {
+      margin-top: 2px;
+      color: #6b7280;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .monthly-report-cancel {
+      width: 100%;
+      margin-top: 12px;
+      border: 0;
+      background: transparent;
+      color: #6b7280;
+      cursor: pointer;
+      font-weight: 700;
+    }
   </style>
 
   <div style="display:flex; align-items:center; gap:12px; font-size:1rem; font-style:italic; margin-top:-5px; flex-wrap:wrap;">
@@ -161,6 +324,12 @@
     </div>
   </form>
 
+  {% if report_available %}
+  <div class="monthly-report-row">
+    <button type="button" class="btn-secondary" id="monthly-report-open">📄 Download Report</button>
+  </div>
+  {% endif %}
+
   <div id="submit-progress-wrap" class="submit-progress-wrap {% if submit_job_id %}show{% endif %}">
     <div class="submit-progress-bar">
       <div id="submit-progress-fill" class="submit-progress-fill"></div>
@@ -173,6 +342,56 @@
     <strong>and</strong> the Church Progress form is complete.
   </p>
 </section>
+
+
+{% if report_available %}
+<div class="monthly-report-modal" id="monthly-report-modal" aria-hidden="true">
+  <div class="monthly-report-card" role="dialog" aria-modal="true" aria-labelledby="monthly-report-title">
+    <div class="monthly-report-head">
+      <div>
+        <h3 class="monthly-report-title" id="monthly-report-title">Monthly Report</h3>
+      </div>
+      <button type="button" class="monthly-report-close" id="monthly-report-close" aria-label="Close">×</button>
+    </div>
+
+    <p class="monthly-report-subtitle">
+      Church Monthly Activity Record Sheet - {{ month_names[month - 1][0] }} {{ year }}
+    </p>
+
+    <div class="monthly-report-status" id="monthly-report-status">Preparing PDF...</div>
+
+
+    <div class="monthly-report-progress" id="monthly-report-progress" aria-live="polite">
+      <div class="monthly-report-progress-track">
+        <div class="monthly-report-progress-fill" id="monthly-report-progress-fill"></div>
+      </div>
+      <div class="monthly-report-progress-meta">
+        <span id="monthly-report-progress-label">Preparing PDF...</span>
+        <span id="monthly-report-progress-percent"></span>
+      </div>
+    </div>
+    <div class="monthly-report-actions">
+      <button type="button" class="monthly-report-choice" id="monthly-report-download" disabled>
+        <span class="monthly-report-choice-icon">⬇</span>
+        <span>
+          <strong>Download PDF</strong>
+          <small>Save the traditional report sheet to this device.</small>
+        </span>
+      </button>
+
+      <button type="button" class="monthly-report-choice" id="monthly-report-share" disabled>
+        <span class="monthly-report-choice-icon">↗</span>
+        <span>
+          <strong>Share PDF</strong>
+          <small>Open your phone's share menu for Messenger or another app.</small>
+        </span>
+      </button>
+    </div>
+
+    <button type="button" class="monthly-report-cancel" id="monthly-report-cancel">Cancel</button>
+  </div>
+</div>
+{% endif %}
 
 <script>
 (function () {
@@ -312,4 +531,249 @@
   }
 })();
 </script>
+
+
+{% if report_available %}
+<script>
+(function () {
+  const openBtn = document.getElementById('monthly-report-open');
+  const modal = document.getElementById('monthly-report-modal');
+  const closeBtn = document.getElementById('monthly-report-close');
+  const cancelBtn = document.getElementById('monthly-report-cancel');
+  const downloadBtn = document.getElementById('monthly-report-download');
+  const shareBtn = document.getElementById('monthly-report-share');
+  const statusBox = document.getElementById('monthly-report-status');
+  const progressWrap = document.getElementById('monthly-report-progress');
+  const progressFill = document.getElementById('monthly-report-progress-fill');
+  const progressLabel = document.getElementById('monthly-report-progress-label');
+  const progressPercent = document.getElementById('monthly-report-progress-percent');
+
+  const reportUrl = {{ report_pdf_url|tojson }};
+  const reportFilename = {{ report_filename|tojson }};
+  let reportBlob = null;
+  let reportFile = null;
+  let objectUrl = '';
+  let preparePromise = null;
+
+  function setActionsReady(ready) {
+    downloadBtn.disabled = !ready;
+    shareBtn.disabled = !ready;
+  }
+
+  function setStatus(message) {
+    statusBox.textContent = message;
+  }
+
+  function formatBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    if (value < 1024) return Math.round(value) + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+    return (value / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function showProgress(label, percent, detail) {
+    progressWrap.classList.add('show');
+    progressLabel.textContent = label || 'Preparing PDF...';
+    progressPercent.textContent = detail || '';
+
+    if (percent === null || percent === undefined || !Number.isFinite(Number(percent))) {
+      progressFill.classList.add('indeterminate');
+      progressFill.style.width = '';
+      return;
+    }
+
+    const safePercent = Math.max(0, Math.min(100, Number(percent)));
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.transform = '';
+    progressFill.style.width = safePercent + '%';
+    if (!detail) {
+      progressPercent.textContent = Math.round(safePercent) + '%';
+    }
+  }
+
+  function hideProgress() {
+    progressWrap.classList.remove('show');
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.transform = '';
+    progressFill.style.width = '0%';
+    progressLabel.textContent = 'Preparing PDF...';
+    progressPercent.textContent = '';
+  }
+
+  function cleanupObjectUrl() {
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      objectUrl = '';
+    }
+  }
+
+  function resetPreparedPdf() {
+    cleanupObjectUrl();
+    reportBlob = null;
+    reportFile = null;
+    preparePromise = null;
+  }
+
+  async function responseToPdfBlob(response) {
+    const contentLength = Number(response.headers.get('Content-Length') || 0);
+
+    if (!response.body || !response.body.getReader) {
+      showProgress('Downloading PDF...', null, contentLength > 0 ? ('0 B / ' + formatBytes(contentLength)) : '');
+      const blob = await response.blob();
+      showProgress('PDF ready', 100, formatBytes(blob.size));
+      return blob;
+    }
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+
+    showProgress(
+      'Downloading PDF...',
+      contentLength > 0 ? 0 : null,
+      contentLength > 0 ? ('0 B / ' + formatBytes(contentLength)) : 'Starting...'
+    );
+
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      if (!result.value) continue;
+
+      chunks.push(result.value);
+      received += result.value.byteLength;
+
+      if (contentLength > 0) {
+        const percent = Math.min(100, (received / contentLength) * 100);
+        showProgress(
+          'Downloading PDF...',
+          percent,
+          formatBytes(received) + ' / ' + formatBytes(contentLength) + ' · ' + Math.round(percent) + '%'
+        );
+      } else {
+        showProgress('Downloading PDF...', null, formatBytes(received) + ' downloaded');
+      }
+    }
+
+    const blob = new Blob(chunks, { type: 'application/pdf' });
+    showProgress('PDF ready', 100, formatBytes(blob.size) + ' · 100%');
+    return blob;
+  }
+
+  async function preparePdf() {
+    if (reportBlob && reportFile) return reportFile;
+    if (preparePromise) return preparePromise;
+
+    setActionsReady(false);
+    setStatus('Preparing the monthly report PDF...');
+    showProgress('Preparing PDF...', null, 'Connecting...');
+
+    preparePromise = fetch(reportUrl, {
+      credentials: 'same-origin',
+      cache: 'no-store'
+    })
+      .then(async function (response) {
+        if (!response.ok) {
+          throw new Error('Unable to prepare the monthly report PDF.');
+        }
+
+        const contentType = String(response.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.includes('application/pdf')) {
+          throw new Error('The server did not return a PDF. Please sign in again and retry.');
+        }
+
+        reportBlob = await responseToPdfBlob(response);
+        reportFile = new File([reportBlob], reportFilename, { type: 'application/pdf' });
+        cleanupObjectUrl();
+        objectUrl = URL.createObjectURL(reportBlob);
+        setActionsReady(true);
+        setStatus('PDF is ready. Choose Download PDF or Share PDF.');
+        return reportFile;
+      })
+      .catch(function (error) {
+        preparePromise = null;
+        setActionsReady(false);
+        showProgress('Unable to prepare PDF', 0, '');
+        setStatus(error.message || 'Unable to prepare the PDF.');
+        throw error;
+      });
+
+    return preparePromise;
+  }
+
+  function openModal() {
+    resetPreparedPdf();
+    setActionsReady(false);
+    setStatus('Preparing the monthly report PDF...');
+    hideProgress();
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden', 'false');
+    preparePdf().catch(function () {});
+  }
+
+  function closeModal() {
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  openBtn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  cancelBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', function (event) {
+    if (event.target === modal) closeModal();
+  });
+
+  downloadBtn.addEventListener('click', function () {
+    if (!objectUrl) return;
+    showProgress('Saving PDF to this device...', 100, reportBlob ? formatBytes(reportBlob.size) + ' · 100%' : '100%');
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = reportFilename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setStatus('PDF download started.');
+  });
+
+  shareBtn.addEventListener('click', async function () {
+    try {
+      if (!reportFile) return;
+
+      const shareData = {
+        title: 'Church Monthly Activity Record Sheet',
+        text: '{{ month_names[month - 1][0] }} {{ year }} church monthly report',
+        files: [reportFile]
+      };
+
+      const canShareFile = Boolean(
+        navigator.share
+        && (!navigator.canShare || navigator.canShare({ files: [reportFile] }))
+      );
+
+      if (canShareFile) {
+        await navigator.share(shareData);
+        setStatus('Share menu opened successfully.');
+        return;
+      }
+
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = reportFilename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setStatus('Direct PDF sharing is not supported by this browser, so the PDF was downloaded instead.');
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        setStatus('Sharing cancelled.');
+        return;
+      }
+      setStatus((error && error.message) || 'Unable to share the PDF.');
+    }
+  });
+
+  window.addEventListener('beforeunload', cleanupObjectUrl);
+})();
+</script>
+{% endif %}
 {% endblock %}
