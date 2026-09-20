@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import mimetypes
 import os
@@ -54,11 +55,20 @@ THUMBNAIL_CACHE_DIR = os.path.join(
     "book_thumbnail_cache",
 )
 
+# Keep live sync progress in a tiny separate SQLite file. The main library
+# sync intentionally uses one long transaction in app_v2.db; storing live
+# progress separately avoids write-lock contention with that transaction.
+RESOURCE_SYNC_STATE_DB = os.path.join(
+    BASE_DIR,
+    "pastor_resource_sync_state.db",
+)
+
 SYNC_LOCK = threading.Lock()
 
 # Live synchronization status for the Pastor's Resources page.
-# This is intentionally kept in memory only; the final sync summary
-# continues to be stored in pastor_library_sync as before.
+# A memory copy is kept for speed, while every update is also persisted
+# to SQLite. This makes the progress dialog reliable across page refreshes
+# and across separate web workers on hosted deployments such as Render.
 RESOURCE_SYNC_STATE_LOCK = threading.Lock()
 RESOURCE_SYNC_STATE = {
     "running": False,
@@ -78,6 +88,144 @@ RESOURCE_SYNC_STATE = {
 }
 
 
+def _ensure_resource_sync_runtime_table(db):
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pastor_library_sync_runtime (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            running INTEGER NOT NULL DEFAULT 0,
+            stage TEXT NOT NULL DEFAULT 'idle',
+            message TEXT NOT NULL DEFAULT '',
+            total INTEGER NOT NULL DEFAULT 0,
+            processed INTEGER NOT NULL DEFAULT 0,
+            new_files INTEGER NOT NULL DEFAULT 0,
+            changed_files INTEGER NOT NULL DEFAULT 0,
+            unchanged_files INTEGER NOT NULL DEFAULT 0,
+            duplicates INTEGER NOT NULL DEFAULT 0,
+            current_file TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT '',
+            stats_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+
+    db.execute(
+        """
+        INSERT OR IGNORE INTO pastor_library_sync_runtime (id)
+        VALUES (1)
+        """
+    )
+
+
+def _open_resource_sync_state_db():
+    db = sqlite3.connect(
+        RESOURCE_SYNC_STATE_DB,
+        timeout=10,
+        check_same_thread=False,
+    )
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA busy_timeout = 10000")
+    return db
+
+
+def _persist_resource_sync_state(state):
+    db = _open_resource_sync_state_db()
+
+    try:
+        _ensure_resource_sync_runtime_table(db)
+
+        db.execute(
+            """
+            UPDATE pastor_library_sync_runtime
+            SET running = ?,
+                stage = ?,
+                message = ?,
+                total = ?,
+                processed = ?,
+                new_files = ?,
+                changed_files = ?,
+                unchanged_files = ?,
+                duplicates = ?,
+                current_file = ?,
+                last_error = ?,
+                started_at = ?,
+                finished_at = ?,
+                stats_json = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (
+                1 if state.get("running") else 0,
+                str(state.get("stage") or "idle"),
+                str(state.get("message") or ""),
+                int(state.get("total") or 0),
+                int(state.get("processed") or 0),
+                int(state.get("new_files") or 0),
+                int(state.get("changed_files") or 0),
+                int(state.get("unchanged_files") or 0),
+                int(state.get("duplicates") or 0),
+                str(state.get("current_file") or ""),
+                str(state.get("last_error") or ""),
+                str(state.get("started_at") or ""),
+                str(state.get("finished_at") or ""),
+                json.dumps(state.get("stats") or {}),
+                utc_now_iso(),
+            ),
+        )
+
+        db.commit()
+
+    finally:
+        db.close()
+
+
+def _read_persisted_resource_sync_state():
+    db = _open_resource_sync_state_db()
+
+    try:
+        _ensure_resource_sync_runtime_table(db)
+        db.commit()
+
+        row = db.execute(
+            """
+            SELECT *
+            FROM pastor_library_sync_runtime
+            WHERE id = 1
+            """
+        ).fetchone()
+
+        if not row:
+            return None
+
+        try:
+            stats = json.loads(str(row["stats_json"] or "{}"))
+        except Exception:
+            stats = {}
+
+        return {
+            "running": bool(row["running"]),
+            "stage": str(row["stage"] or "idle"),
+            "message": str(row["message"] or ""),
+            "total": int(row["total"] or 0),
+            "processed": int(row["processed"] or 0),
+            "new_files": int(row["new_files"] or 0),
+            "changed_files": int(row["changed_files"] or 0),
+            "unchanged_files": int(row["unchanged_files"] or 0),
+            "duplicates": int(row["duplicates"] or 0),
+            "current_file": str(row["current_file"] or ""),
+            "last_error": str(row["last_error"] or ""),
+            "started_at": str(row["started_at"] or ""),
+            "finished_at": str(row["finished_at"] or ""),
+            "stats": stats if isinstance(stats, dict) else {},
+        }
+
+    finally:
+        db.close()
+
+
 def update_resource_sync_state(**changes):
     with RESOURCE_SYNC_STATE_LOCK:
         RESOURCE_SYNC_STATE.update(changes)
@@ -85,11 +233,32 @@ def update_resource_sync_state(**changes):
         state["stats"] = dict(
             RESOURCE_SYNC_STATE.get("stats") or {}
         )
-        return state
+
+    try:
+        _persist_resource_sync_state(state)
+    except Exception as error:
+        # Do not stop a working Drive synchronization merely because the
+        # status mirror could not be written for one update. The next
+        # progress update will try again.
+        print(
+            "[Pastor Resources Sync State WARNING] "
+            + str(error),
+            flush=True,
+        )
+
+    return state
 
 
 def get_resource_sync_state():
+    try:
+        persisted = _read_persisted_resource_sync_state()
+    except Exception:
+        persisted = None
+
     with RESOURCE_SYNC_STATE_LOCK:
+        if persisted:
+            RESOURCE_SYNC_STATE.update(persisted)
+
         state = dict(RESOURCE_SYNC_STATE)
         state["stats"] = dict(
             RESOURCE_SYNC_STATE.get("stats") or {}
@@ -936,7 +1105,21 @@ def get_category(folder_path):
 # RECURSIVE DRIVE SCANNER
 # =========================================================
 
-def scan_drive_library():
+def scan_drive_library(progress_callback=None):
+    """
+    Recursively discover supported PDF/EPUB files in Google Drive.
+
+    When progress_callback is supplied, discovery progress is reported as
+    each supported ebook is found. At this stage the final number of ebooks
+    is not known yet, so total remains 0 and processed means "ebooks found
+    so far". The caller switches to a real processed/total percentage after
+    discovery is complete.
+    """
+
+    def progress(**values):
+        if progress_callback:
+            progress_callback(**values)
+
     if not drive_library_configured():
         raise RuntimeError(
             "Pastor's Resources Google Drive "
@@ -975,6 +1158,18 @@ def scan_drive_library():
         )
 
         folders_scanned += 1
+
+        progress(
+            stage="scanning",
+            message=(
+                "Scanning Google Drive folder "
+                + str(folders_scanned)
+                + (": " + folder_path if folder_path else "...")
+            ),
+            total=0,
+            processed=len(files),
+            current_file="",
+        )
 
         items = list_drive_folder(
             drive_session,
@@ -1133,6 +1328,23 @@ def scan_drive_library():
                         )
                         or "",
                 }
+            )
+
+            # During recursive discovery there is no truthful final
+            # denominator yet. Report the real filename and the number of
+            # supported ebooks discovered so far; the determinate percentage
+            # begins immediately after the scan completes.
+            progress(
+                stage="scanning",
+                message=(
+                    str(len(files))
+                    + " supported ebook"
+                    + ("" if len(files) == 1 else "s")
+                    + " found so far."
+                ),
+                total=0,
+                processed=len(files),
+                current_file=name,
             )
 
     scan_folder(
@@ -1398,7 +1610,9 @@ def sync_library_to_database(progress_callback=None):
     )
 
     scan_result = (
-        scan_drive_library()
+        scan_drive_library(
+            progress_callback=progress
+        )
     )
 
     total_supported = int(
@@ -1506,7 +1720,7 @@ def sync_library_to_database(progress_callback=None):
             progress(
                 stage="syncing",
                 message=(
-                    "Processing "
+                    "Checking "
                     + str(position)
                     + " of "
                     + str(total_supported)
@@ -1776,7 +1990,7 @@ def sync_library_to_database(progress_callback=None):
             progress(
                 stage="syncing",
                 message=(
-                    "Processed "
+                    "Checked "
                     + str(position)
                     + " of "
                     + str(total_supported)
@@ -5679,7 +5893,6 @@ def register_pastor_resources_routes(
 # - My Library + Reading Progress
 # ============================================================================
 
-import json
 import uuid
 from urllib.parse import quote
 
@@ -8450,6 +8663,122 @@ Pastor's Resources - District 4 Tool
     line-height:1.4;
 }
 
+.pr-sync-progress-line {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    margin-top:15px;
+    color:#65738a;
+    font-size:11px;
+    line-height:1.25;
+}
+
+.pr-sync-progress-line strong {
+    flex:0 0 auto;
+    color:#26344d;
+    font-size:12px;
+    font-weight:900;
+}
+
+/* Main-library real download progress overlay. */
+.pr-download-overlay {
+    position:fixed;
+    inset:0;
+    z-index:12500;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:rgba(15,23,42,.48);
+    backdrop-filter:blur(2px);
+}
+
+.pr-download-overlay.show { display:flex; }
+
+.pr-download-card {
+    width:min(520px,100%);
+    border-radius:22px;
+    background:#fff;
+    padding:24px;
+    box-shadow:0 24px 70px rgba(15,23,42,.28);
+}
+
+.pr-download-title {
+    margin:0;
+    color:#17233c;
+    font:700 21px/1.2 "Lora",Georgia,serif;
+}
+
+.pr-download-name {
+    margin-top:8px;
+    min-height:19px;
+    color:#65738a;
+    font-size:12px;
+    line-height:1.4;
+    overflow-wrap:anywhere;
+}
+
+.pr-download-track {
+    height:12px;
+    margin-top:16px;
+    border-radius:999px;
+    overflow:hidden;
+    background:#e9edf5;
+}
+
+.pr-download-bar {
+    width:0%;
+    height:100%;
+    border-radius:999px;
+    background:linear-gradient(90deg,#c47eb7,#7398df);
+    transition:width .18s linear;
+}
+
+.pr-download-bar.indeterminate {
+    width:32%;
+    animation:prSyncIndeterminate 1.25s ease-in-out infinite alternate;
+}
+
+.pr-download-meta {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    margin-top:10px;
+    color:#65738a;
+    font-size:11px;
+    font-weight:800;
+}
+
+.pr-download-actions {
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:flex-end;
+    gap:8px;
+    margin-top:16px;
+}
+
+.pr-download-actions button,
+.pr-download-actions a {
+    border:0;
+    border-radius:10px;
+    padding:9px 12px;
+    background:#eef2f8;
+    color:#576780;
+    font:800 11px/1 "Nunito Sans",Arial,sans-serif;
+    text-decoration:none;
+    cursor:pointer;
+}
+
+.pr-download-actions a {
+    display:none;
+    align-items:center;
+    justify-content:center;
+}
+
+.pr-download-actions a.show { display:inline-flex; }
+
 @media (min-width:600px) {
     .pr-page { padding:20px 18px 55px; }
     .pr-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
@@ -8577,6 +8906,11 @@ Pastor's Resources - District 4 Tool
             Preparing synchronization...
         </div>
 
+        <div class="pr-sync-progress-line">
+            <span id="resourceSyncCount">Preparing synchronization...</span>
+            <strong id="resourceSyncPercent">Starting...</strong>
+        </div>
+
         <div class="pr-sync-track">
             <div class="pr-sync-bar indeterminate" id="resourceSyncBar"></div>
         </div>
@@ -8591,6 +8925,27 @@ Pastor's Resources - District 4 Tool
     </div>
 </div>
 {% endif %}
+
+<div class="pr-download-overlay" id="libraryDownloadOverlay" aria-live="polite" aria-busy="true">
+    <div class="pr-download-card">
+        <h3 class="pr-download-title" id="libraryDownloadTitle">Downloading ebook…</h3>
+        <div class="pr-download-name" id="libraryDownloadName">Preparing download…</div>
+
+        <div class="pr-download-track">
+            <div class="pr-download-bar indeterminate" id="libraryDownloadBar"></div>
+        </div>
+
+        <div class="pr-download-meta">
+            <span id="libraryDownloadBytes">Preparing…</span>
+            <span id="libraryDownloadPercent"></span>
+        </div>
+
+        <div class="pr-download-actions">
+            <a id="libraryDownloadDirect" href="#">Direct download</a>
+            <button id="libraryDownloadCancel" type="button" onclick="cancelLibraryDownload()">Cancel</button>
+        </div>
+    </div>
+</div>
 
 {% if is_admin %}
 <div class="pr-modal-backdrop" id="editModalBackdrop" onclick="modalBackdropClick(event)">
@@ -8663,6 +9018,195 @@ function showToast(message) {
     toast.hideTimer = setTimeout(() => {
         toast.style.display = "none";
     }, 4800);
+}
+
+let activeLibraryDownloadController = null;
+
+function formatLibraryDownloadBytes(value) {
+    const bytes = Math.max(0, Number(value || 0));
+    if (!bytes) return "0 B";
+
+    const units = ["B","KB","MB","GB"];
+    const exponent = Math.min(
+        units.length - 1,
+        Math.floor(Math.log(bytes) / Math.log(1024))
+    );
+    const amount = bytes / Math.pow(1024, exponent);
+
+    return (
+        amount >= 100 || exponent === 0
+            ? Math.round(amount).toLocaleString()
+            : amount.toFixed(1)
+    ) + " " + units[exponent];
+}
+
+function parseLibraryDownloadFilename(headerValue, fallback="ebook") {
+    const header = String(headerValue || "");
+
+    const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utfMatch) {
+        try {
+            return decodeURIComponent(utfMatch[1].trim().replace(/^"|"$/g,""));
+        } catch (_error) {
+            return utfMatch[1].trim().replace(/^"|"$/g,"");
+        }
+    }
+
+    const normalMatch = header.match(/filename="?([^";]+)"?/i);
+    if (normalMatch) return normalMatch[1].trim();
+
+    return fallback || "ebook";
+}
+
+function updateLibraryDownloadProgress(loaded, total) {
+    const bar = document.getElementById("libraryDownloadBar");
+    const bytes = document.getElementById("libraryDownloadBytes");
+    const percent = document.getElementById("libraryDownloadPercent");
+
+    loaded = Math.max(0, Number(loaded || 0));
+    total = Math.max(0, Number(total || 0));
+
+    if (bytes) {
+        bytes.textContent = total > 0
+            ? formatLibraryDownloadBytes(loaded) + " / " + formatLibraryDownloadBytes(total)
+            : formatLibraryDownloadBytes(loaded) + " downloaded";
+    }
+
+    if (!bar || !percent) return;
+
+    if (total > 0) {
+        const value = Math.min(100, Math.max(0, Math.round((loaded / total) * 100)));
+        bar.classList.remove("indeterminate");
+        bar.style.width = value + "%";
+        percent.textContent = value + "%";
+    } else {
+        bar.style.width = "";
+        bar.classList.add("indeterminate");
+        percent.textContent = "Downloading…";
+    }
+}
+
+function closeLibraryDownloadOverlay() {
+    document.getElementById("libraryDownloadOverlay")?.classList.remove("show");
+}
+
+function cancelLibraryDownload() {
+    if (activeLibraryDownloadController) {
+        activeLibraryDownloadController.abort();
+        activeLibraryDownloadController = null;
+        return;
+    }
+
+    closeLibraryDownloadOverlay();
+}
+
+async function startLibraryDownload(bookId) {
+    if (activeLibraryDownloadController) return;
+
+    const book = currentBookMap.get(Number(bookId));
+    if (!book?.download_url) {
+        showToast("Download file is no longer available. Please refresh the library.");
+        return;
+    }
+
+    const overlay = document.getElementById("libraryDownloadOverlay");
+    const title = document.getElementById("libraryDownloadTitle");
+    const name = document.getElementById("libraryDownloadName");
+    const cancel = document.getElementById("libraryDownloadCancel");
+    const direct = document.getElementById("libraryDownloadDirect");
+
+    overlay?.classList.add("show");
+    if (title) title.textContent = "Downloading ebook…";
+    if (name) name.textContent = book.title || "Preparing download…";
+    if (cancel) cancel.textContent = "Cancel";
+    if (direct) {
+        direct.href = book.download_url;
+        direct.classList.remove("show");
+    }
+    updateLibraryDownloadProgress(0, 0);
+
+    const controller = new AbortController();
+    activeLibraryDownloadController = controller;
+
+    try {
+        const response = await fetch(book.download_url, {
+            method:"GET",
+            credentials:"same-origin",
+            cache:"no-store",
+            signal:controller.signal
+        });
+
+        if (!response.ok) {
+            throw new Error("Download request failed (HTTP " + response.status + ").");
+        }
+
+        const fallbackName = (book.title || "ebook").trim() || "ebook";
+        const filename = parseLibraryDownloadFilename(
+            response.headers.get("Content-Disposition"),
+            fallbackName
+        );
+        const total = Number(response.headers.get("Content-Length") || 0);
+        const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+
+        if (name) name.textContent = filename;
+
+        const chunks = [];
+        let loaded = 0;
+
+        if (response.body?.getReader) {
+            const reader = response.body.getReader();
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                if (!value) continue;
+
+                chunks.push(value);
+                loaded += value.byteLength;
+                updateLibraryDownloadProgress(loaded, total);
+            }
+        } else {
+            const blob = await response.blob();
+            chunks.push(blob);
+            loaded = blob.size;
+            updateLibraryDownloadProgress(loaded, total || loaded);
+        }
+
+        const blob = new Blob(chunks, {type:contentType});
+        updateLibraryDownloadProgress(blob.size, total || blob.size);
+
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename || fallbackName;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+
+        if (title) title.textContent = "Download complete";
+        if (cancel) cancel.textContent = "Close";
+        activeLibraryDownloadController = null;
+
+    } catch (error) {
+        const aborted = error?.name === "AbortError";
+        activeLibraryDownloadController = null;
+
+        if (aborted) {
+            if (title) title.textContent = "Download cancelled";
+            if (name) name.textContent = "The ebook download was cancelled.";
+            if (cancel) cancel.textContent = "Close";
+            return;
+        }
+
+        console.warn(error);
+        if (title) title.textContent = "Download interrupted";
+        if (name) name.textContent = error.message || "Unable to download this ebook.";
+        if (cancel) cancel.textContent = "Close";
+        if (direct) direct.classList.add("show");
+    }
 }
 
 function captureLibraryState() {
@@ -8860,7 +9404,7 @@ function renderBooks(books) {
                     <div class="pr-author">${escapeHtml(book.author || "Unknown Author")}</div>
                     <div class="pr-actions">
                         <a class="pr-btn read" data-reader-link="1" href="${escapeHtml(book.read_url)}">Read</a>
-                        <a class="pr-btn download" href="${escapeHtml(book.download_url)}">Download</a>
+                        <button class="pr-btn download" type="button" onclick="startLibraryDownload(${Number(book.id)})">Download</button>
                         ${adminButtons}
                     </div>
                 </div>
@@ -8994,6 +9538,8 @@ function renderResourceSyncProgress(state) {
     const current = document.getElementById("resourceSyncCurrent");
     const stats = document.getElementById("resourceSyncStats");
     const stage = document.getElementById("resourceSyncStage");
+    const count = document.getElementById("resourceSyncCount");
+    const percentLabel = document.getElementById("resourceSyncPercent");
 
     if (!overlay || !bar || !current || !stats || !stage) {
         return;
@@ -9010,29 +9556,54 @@ function renderResourceSyncProgress(state) {
     const message = String(state.message || "").trim();
     const stateStage = String(state.stage || "").trim().toLowerCase();
 
-    current.textContent = currentFile || message || "Working...";
+    if (stateStage === "scanning") {
+        current.textContent = currentFile
+            ? "Discovered: " + currentFile
+            : (message || "Scanning Google Drive folders...");
+
+        bar.style.width = "";
+        bar.classList.add("indeterminate");
+
+        if (count) {
+            count.textContent = processed.toLocaleString()
+                + (processed === 1 ? " supported ebook found" : " supported ebooks found")
+                + " so far";
+        }
+
+        if (percentLabel) percentLabel.textContent = "Discovering…";
+
+        stats.textContent = processed > 0
+            ? "Building the complete PDF / EPUB file list before percentage checking begins."
+            : "Scanning Google Drive folders for PDF and EPUB files...";
+
+        stage.textContent = message
+            || "Finding PDF and EPUB files in Google Drive...";
+        return;
+    }
 
     if (total > 0) {
         const percent = Math.min(
             100,
             Math.max(
                 0,
-                Math.round(
-                    (processed / total) * 100
-                )
+                Math.round((processed / total) * 100)
             )
         );
 
         bar.classList.remove("indeterminate");
         bar.style.width = percent + "%";
 
+        if (count) {
+            count.textContent = processed.toLocaleString()
+                + " / "
+                + total.toLocaleString()
+                + " ebooks checked";
+        }
+
+        if (percentLabel) percentLabel.textContent = percent + "%";
+
         stats.textContent =
-            processed.toLocaleString()
-            + " / "
-            + total.toLocaleString()
-            + " processed"
-            + " · "
-            + newFiles.toLocaleString()
+            newFiles.toLocaleString()
             + " new"
             + " · "
             + changedFiles.toLocaleString()
@@ -9046,22 +9617,43 @@ function renderResourceSyncProgress(state) {
     } else {
         bar.style.width = "";
         bar.classList.add("indeterminate");
-        stats.textContent =
-            stateStage === "scanning"
-                ? "Scanning Google Drive folders..."
-                : "Starting synchronization...";
+        if (count) count.textContent = "Preparing ebook list...";
+        if (percentLabel) percentLabel.textContent = "Starting…";
+        stats.textContent = "Starting synchronization...";
     }
 
-    if (stateStage === "finalizing") {
-        stage.textContent =
-            "Finalizing the local database and visible book count...";
-    } else if (stateStage === "scanning") {
-        stage.textContent =
-            "Finding PDF and EPUB files in Google Drive...";
+    if (stateStage === "syncing") {
+        current.textContent = currentFile
+            ? "Checking: " + currentFile
+            : (message || "Checking ebook metadata...");
+
+        stage.textContent = message
+            || "Comparing Google Drive files with the local library database...";
+
+    } else if (stateStage === "finalizing") {
+        current.textContent = "All ebook files checked.";
+        stage.textContent = "Finalizing the local database and visible book count...";
+
+    } else if (stateStage === "complete") {
+        current.textContent = "Synchronization complete.";
+        if (count && total > 0) {
+            count.textContent = total.toLocaleString()
+                + " / "
+                + total.toLocaleString()
+                + " ebooks checked";
+        }
+        if (percentLabel) percentLabel.textContent = "100%";
+        bar.classList.remove("indeterminate");
+        bar.style.width = "100%";
+        stage.textContent = message || "Pastor's Resources is up to date.";
+
+    } else if (stateStage === "error") {
+        current.textContent = currentFile || "Synchronization stopped.";
+        stage.textContent = message || "Synchronization stopped because of an error.";
+
     } else {
-        stage.textContent =
-            message
-            || "Updating Pastor's Resources...";
+        current.textContent = currentFile || message || "Working...";
+        stage.textContent = message || "Updating Pastor's Resources...";
     }
 }
 
@@ -9098,16 +9690,32 @@ async function pollResourceSyncProgress() {
 
             resourceSyncPollTimer = setTimeout(
                 pollResourceSyncProgress,
-                700
+                400
             );
 
             return;
         }
 
-        setResourceSyncUiRunning(false);
-
         if (state.stage === "complete") {
             const finalStats = state.stats || {};
+
+            // Keep the completed progress card visible briefly so the
+            // user can actually see that the synchronization reached 100%.
+            renderResourceSyncProgress({
+                ...state,
+                running:false,
+                total:Math.max(1, safeNumber(state.total)),
+                processed:Math.max(
+                    safeNumber(state.processed),
+                    safeNumber(state.total)
+                )
+            });
+
+            const bar = document.getElementById("resourceSyncBar");
+            if (bar) {
+                bar.classList.remove("indeterminate");
+                bar.style.width = "100%";
+            }
 
             showToast(
                 "Sync complete: "
@@ -9122,7 +9730,13 @@ async function pollResourceSyncProgress() {
                 loadContinueReading()
             ]);
 
+            setTimeout(() => {
+                setResourceSyncUiRunning(false);
+            }, 1600);
+
         } else if (state.stage === "error") {
+            setResourceSyncUiRunning(true);
+
             document.getElementById(
                 "statusDot"
             ).className = "pr-status-dot error";
@@ -9145,26 +9759,42 @@ async function pollResourceSyncProgress() {
                     || "Unknown synchronization error."
                 )
             );
+
+            setTimeout(() => {
+                setResourceSyncUiRunning(false);
+            }, 2400);
+
+        } else {
+            setResourceSyncUiRunning(false);
         }
 
     } catch (error) {
-        setResourceSyncUiRunning(false);
+        // A temporary poll failure must not make a running synchronization
+        // look as though it disappeared. Keep the progress card open and
+        // keep retrying the persistent status endpoint.
+        setResourceSyncUiRunning(true);
 
         document.getElementById(
             "statusDot"
-        ).className = "pr-status-dot error";
+        ).className = "pr-status-dot waiting";
 
         document.getElementById(
             "statusText"
-        ).textContent = "Unable to read sync progress.";
+        ).textContent = "Reconnecting to sync progress...";
 
         document.getElementById(
             "syncDetail"
-        ).textContent = error.message;
+        ).textContent =
+            "The synchronization may still be running. Retrying status automatically.";
 
-        showToast(
-            "Sync status error: "
-            + error.message
+        const stage = document.getElementById("resourceSyncStage");
+        if (stage) {
+            stage.textContent = "Connection interrupted. Rechecking synchronization status...";
+        }
+
+        resourceSyncPollTimer = setTimeout(
+            pollResourceSyncProgress,
+            1800
         );
     }
 }
@@ -9737,18 +10367,20 @@ html, body { overflow:hidden !important; }
     --reader-muted:#80786e;
     --reader-line:rgba(56,47,39,.12);
     position:fixed;
-    inset:0;
+    top:var(--reader-viewport-top,0px);
+    left:0;
+    right:0;
+    bottom:auto;
     z-index:20000;
     width:100%;
-    height:100vh;
-    height:100dvh;
-    min-height:100vh;
+    height:var(--reader-viewport-height,100dvh);
+    min-height:0;
     display:flex;
     flex-direction:column;
     overflow:hidden;
     box-sizing:border-box;
     padding-top:env(safe-area-inset-top,0px);
-    padding-bottom:env(safe-area-inset-bottom,0px);
+    padding-bottom:0;
     background:var(--reader-bg);
     color:var(--reader-text);
     font-family:"Nunito Sans",Arial,sans-serif;
@@ -10142,41 +10774,39 @@ html, body { overflow:hidden !important; }
     box-shadow:0 4px 18px rgba(54,43,32,.08);
 }
 
-/* Bottom reading navigation - mirrors the approved reader mockup. */
+/* Permanent page navigation for desktop and mobile. */
 .reader-bottom-bar {
     position:relative;
     z-index:240;
     flex:0 0 auto;
-    min-height:38px;
+    min-height:48px;
     display:flex;
     align-items:center;
     justify-content:center;
-    padding:3px 64px 4px 64px;
+    padding:5px 10px calc(5px + env(safe-area-inset-bottom,0px));
     border-top:1px solid var(--reader-line);
     background:var(--reader-panel);
     color:#777068;
     box-sizing:border-box;
 }
 
-.reader-turn-hint {
+.reader-page-nav {
     display:flex;
     align-items:center;
     justify-content:center;
-    gap:4px;
+    gap:9px;
     min-width:0;
-    font:500 9px Georgia,"Times New Roman",serif;
-    white-space:nowrap;
 }
 
 .reader-page-arrow {
-    width:34px;
-    height:30px;
+    width:38px;
+    height:34px;
     border:0;
-    border-radius:9px;
+    border-radius:10px;
     padding:0;
     background:transparent;
-    color:#7c756e;
-    font:400 20px/1 Arial,sans-serif;
+    color:#665e56;
+    font:400 23px/1 Arial,sans-serif;
     cursor:pointer;
     -webkit-tap-highlight-color:transparent;
 }
@@ -10186,20 +10816,47 @@ html, body { overflow:hidden !important; }
     color:#302a24;
 }
 
-.reader-page-indicator {
-    position:absolute;
-    right:14px;
-    top:50%;
-    transform:translateY(-50%);
+.reader-page-input {
+    width:76px;
+    height:34px;
+    box-sizing:border-box;
+    border:1px solid rgba(90,78,66,.25);
+    border-radius:9px;
+    background:#fffdfa;
+    color:#2f2924;
+    text-align:center;
+    font:600 14px Georgia,"Times New Roman",serif;
+    outline:none;
+    -moz-appearance:textfield;
+}
+
+.reader-page-input::-webkit-outer-spin-button,
+.reader-page-input::-webkit-inner-spin-button {
+    -webkit-appearance:none;
+    margin:0;
+}
+
+.reader-page-input:focus {
+    border-color:#9b7b56;
+    box-shadow:0 0 0 2px rgba(155,123,86,.12);
+}
+
+.reader-page-input:disabled {
+    opacity:.55;
+    cursor:wait;
+}
+
+.reader-page-total {
     min-width:48px;
-    padding:0;
-    background:transparent;
-    color:#37312c;
-    text-align:right;
-    font:600 9px Georgia,"Times New Roman",serif;
-    line-height:1;
-    pointer-events:none;
-    box-shadow:none;
+    color:#4e4740;
+    font:600 11px Georgia,"Times New Roman",serif;
+    white-space:nowrap;
+}
+
+.reader-page-kind {
+    display:none;
+    color:var(--reader-muted);
+    font-size:9px;
 }
 
 .theme-dark .reader-bottom-bar {
@@ -10208,8 +10865,14 @@ html, body { overflow:hidden !important; }
 }
 
 .theme-dark .reader-page-arrow,
-.theme-dark .reader-page-indicator {
+.theme-dark .reader-page-total {
     color:#e7e1d8;
+}
+
+.theme-dark .reader-page-input {
+    background:#303747;
+    color:#f4f0e9;
+    border-color:#465065;
 }
 
 /* Reading notes drawer */
@@ -10441,28 +11104,13 @@ html, body { overflow:hidden !important; }
 
 .reader-tool-detail.open { display:block; }
 
-.reader-more-options {
-    margin-top:6px;
-    border-top:1px solid rgba(100,116,139,.14);
-    padding-top:7px;
-}
-
-.reader-more-options summary {
-    cursor:pointer;
-    color:var(--reader-muted);
-    text-align:center;
-    font-size:9px;
-    font-weight:800;
-    list-style:none;
-}
-
-.reader-more-options summary::-webkit-details-marker { display:none; }
-
 .reader-more-grid {
     display:grid;
     grid-template-columns:repeat(2,minmax(0,1fr));
     gap:6px;
-    margin-top:8px;
+    margin-top:6px;
+    padding-top:8px;
+    border-top:1px solid rgba(100,116,139,.14);
 }
 
 .reader-tool-section {
@@ -10535,6 +11183,9 @@ html, body { overflow:hidden !important; }
     align-items:center;
     justify-content:center;
     gap:0;
+    left:50%;
+    top:calc(env(safe-area-inset-top,0px) + 54px);
+    transform:translateX(-50%);
     max-width:calc(100vw - 12px);
     padding:0;
     background:transparent;
@@ -10711,6 +11362,97 @@ html, body { overflow:hidden !important; }
     background:linear-gradient(135deg,#c98cc0,#789be0);
 }
 
+.reader-download-overlay {
+    position:fixed;
+    inset:0;
+    z-index:22100;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:rgba(24,22,19,.34);
+    backdrop-filter:blur(5px);
+    -webkit-backdrop-filter:blur(5px);
+}
+
+.reader-download-overlay.show { display:flex; }
+
+.reader-download-card {
+    width:min(430px,100%);
+    padding:18px;
+    border-radius:18px;
+    background:var(--reader-panel);
+    color:var(--reader-text);
+    box-shadow:0 22px 60px rgba(0,0,0,.22);
+    border:1px solid var(--reader-line);
+}
+
+.reader-download-title {
+    font:600 18px Georgia,"Times New Roman",serif;
+}
+
+.reader-download-name {
+    margin-top:5px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--reader-muted);
+    font-size:10px;
+}
+
+.reader-download-track {
+    height:10px;
+    margin-top:14px;
+    overflow:hidden;
+    border-radius:999px;
+    background:rgba(120,110,100,.16);
+}
+
+.reader-download-bar {
+    width:0%;
+    height:100%;
+    border-radius:999px;
+    background:#98785a;
+    transition:width .12s linear;
+}
+
+.reader-download-bar.indeterminate {
+    width:34%;
+    animation:reader-load-slide 1.15s ease-in-out infinite;
+}
+
+.reader-download-meta {
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+    margin-top:8px;
+    color:var(--reader-muted);
+    font-size:10px;
+}
+
+.reader-download-actions {
+    display:flex;
+    justify-content:flex-end;
+    gap:7px;
+    margin-top:13px;
+}
+
+.reader-download-actions button,
+.reader-download-actions a {
+    border:0;
+    border-radius:9px;
+    padding:8px 10px;
+    background:rgba(120,110,100,.10);
+    color:inherit;
+    text-decoration:none;
+    font-size:10px;
+    font-weight:800;
+    cursor:pointer;
+}
+
+.reader-download-direct { display:none; }
+.reader-download-direct.show { display:inline-flex; }
+
 .reader-page-busy {
     position:absolute;
     z-index:80;
@@ -10739,10 +11481,12 @@ html, body { overflow:hidden !important; }
     .reader-back-btn { font-size:13px; }
     .reader-book-title { font-size:13px; }
     .reader-canvas-area { padding:14px 18px 14px; }
-    .reader-bottom-bar { min-height:42px; }
-    .reader-turn-hint { font-size:11px; gap:6px; }
-    .reader-page-arrow { width:42px; font-size:24px; }
-    .reader-page-indicator { right:22px; font-size:10px; }
+    .reader-bottom-bar { min-height:48px; }
+    .reader-page-nav { gap:12px; }
+    .reader-page-arrow { width:44px; font-size:25px; }
+    .reader-page-input { width:88px; font-size:15px; }
+    .reader-page-total { min-width:58px; font-size:12px; }
+    .reader-page-kind { display:inline; }
     .reader-tools-sheet {
         left:auto;
         right:18px;
@@ -10771,8 +11515,11 @@ html, body { overflow:hidden !important; }
     .reader-book-title { font-size:11px; }
     .reader-icon-btn { width:32px; min-height:34px; font-size:18px; }
     .selection-btn { padding:7px 9px; font-size:9px; }
-    .reader-bottom-bar { padding-left:54px; padding-right:56px; }
-    .reader-page-indicator { right:9px; }
+    .reader-bottom-bar { padding-left:6px; padding-right:6px; }
+    .reader-page-nav { gap:5px; }
+    .reader-page-arrow { width:34px; }
+    .reader-page-input { width:66px; }
+    .reader-page-total { min-width:44px; font-size:10px; }
 }
 </style>
 
@@ -10843,12 +11590,24 @@ html, body { overflow:hidden !important; }
     </main>
 
     <footer class="reader-bottom-bar">
-        <div class="reader-turn-hint">
+        <div class="reader-page-nav">
             <button class="reader-page-arrow" id="readerPreviousButton" type="button" onclick="goPrevious()" title="Previous page" aria-label="Previous page">‹</button>
-            <span>Swipe to turn page</span>
+            <span class="reader-page-kind" id="readerPageKind">Page</span>
+            <input
+                class="reader-page-input"
+                id="readerPageInput"
+                type="number"
+                min="1"
+                value="{{ state.pdf_page or 1 }}"
+                inputmode="numeric"
+                aria-label="Go directly to page"
+                title="Type a page or location and press Enter"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+                onchange="jumpReaderPage()"
+            >
+            <span class="reader-page-total" id="readerPageTotal">/ …</span>
             <button class="reader-page-arrow" id="readerNextButton" type="button" onclick="goNext()" title="Next page" aria-label="Next page">›</button>
         </div>
-        <div class="reader-page-indicator" id="readerPageIndicator">Loading…</div>
     </footer>
 
     <aside class="reader-side" id="readerSide">
@@ -10904,12 +11663,12 @@ html, body { overflow:hidden !important; }
                 <span>Highlights</span>
             </button>
 
-            <a class="reader-tool-btn" href="{{ download_url }}">
+            <button class="reader-tool-btn" type="button" onclick="startReaderDownload()">
                 <span class="reader-tool-icon-circle" aria-hidden="true">
                     <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
                 </span>
                 <span>Download</span>
-            </a>
+            </button>
 
             <button class="reader-tool-btn" type="button" onclick="toggleToolDetail('contents')">
                 <span class="reader-tool-icon-circle" aria-hidden="true">
@@ -10932,15 +11691,7 @@ html, body { overflow:hidden !important; }
 
         <div class="reader-tool-detail" id="readerToolDetailContents">
             {% if reader_format == 'PDF' %}
-            <div class="reader-tool-section-title">PDF Navigation</div>
-            <div class="reader-control-row">
-                <button class="reader-btn" type="button" onclick="goPrevious()">‹ Previous</button>
-                <button class="reader-btn" type="button" onclick="goNext()">Next ›</button>
-                <input class="reader-small-input" id="pageInput" type="number" min="1" value="{{ state.pdf_page or 1 }}" title="Page">
-                <button class="reader-btn" type="button" onclick="jumpPdfPage()">Go</button>
-            </div>
-
-            <div class="reader-tool-section-title" style="margin-top:10px;">PDF View</div>
+            <div class="reader-tool-section-title">PDF View</div>
             <div class="reader-control-row">
                 <button class="reader-btn" type="button" onclick="zoomPdf(-0.15)">Zoom −</button>
                 <button class="reader-btn" type="button" onclick="zoomPdf(0.15)">Zoom +</button>
@@ -10948,10 +11699,8 @@ html, body { overflow:hidden !important; }
                 <button class="reader-btn" type="button" onclick="fitPdfPage()">Fit Page</button>
             </div>
             {% else %}
-            <div class="reader-tool-section-title">Contents & Navigation</div>
+            <div class="reader-tool-section-title">Table of Contents</div>
             <div class="reader-control-row">
-                <button class="reader-btn" type="button" onclick="goPrevious()">‹ Previous</button>
-                <button class="reader-btn" type="button" onclick="goNext()">Next ›</button>
                 <select class="reader-select" id="tocSelect" onchange="jumpToc(this.value)">
                     <option value="">Table of Contents</option>
                 </select>
@@ -10987,25 +11736,22 @@ html, body { overflow:hidden !important; }
             {% endif %}
         </div>
 
-        <details class="reader-more-options">
-            <summary>More options</summary>
-            <div class="reader-more-grid">
-                <button
-                    class="reader-tool-btn favorite {{ 'on' if state.favorite else '' }}"
-                    id="readerFavorite"
-                    type="button"
-                    onclick="toggleReaderFavorite()"
-                >
-                    <span class="reader-tool-icon-circle" id="readerFavoriteIcon">{{ '♥' if state.favorite else '♡' }}</span>
-                    <span>Favorite</span>
-                </button>
+        <div class="reader-more-grid">
+            <button
+                class="reader-tool-btn favorite {{ 'on' if state.favorite else '' }}"
+                id="readerFavorite"
+                type="button"
+                onclick="toggleReaderFavorite()"
+            >
+                <span class="reader-tool-icon-circle" id="readerFavoriteIcon">{{ '♥' if state.favorite else '♡' }}</span>
+                <span>Favorite</span>
+            </button>
 
-                <button class="reader-tool-btn" id="finishButton" type="button" onclick="toggleFinished()">
-                    <span class="reader-tool-icon-circle">✓</span>
-                    <span id="finishButtonLabel">{{ 'Reopen' if state.completed_at else 'Mark Finished' }}</span>
-                </button>
-            </div>
-        </details>
+            <button class="reader-tool-btn" id="finishButton" type="button" onclick="toggleFinished()">
+                <span class="reader-tool-icon-circle">✓</span>
+                <span id="finishButtonLabel">{{ 'Reopen' if state.completed_at else 'Mark Finished' }}</span>
+            </button>
+        </div>
     </div>
 
     <div class="reader-tools-backdrop" id="readerToolsBackdrop" onclick="toggleToolsPanel(false)"></div>
@@ -11044,6 +11790,24 @@ html, body { overflow:hidden !important; }
         </div>
     </div>
 
+    <div class="reader-download-overlay" id="readerDownloadOverlay" aria-live="polite">
+        <div class="reader-download-card">
+            <div class="reader-download-title" id="readerDownloadTitle">Downloading ebook…</div>
+            <div class="reader-download-name" id="readerDownloadName">Preparing download…</div>
+            <div class="reader-download-track">
+                <div class="reader-download-bar indeterminate" id="readerDownloadBar"></div>
+            </div>
+            <div class="reader-download-meta">
+                <span id="readerDownloadBytes">Connecting…</span>
+                <span id="readerDownloadPercent"></span>
+            </div>
+            <div class="reader-download-actions">
+                <button type="button" id="readerDownloadCancel" onclick="cancelReaderDownload()">Cancel</button>
+                <a class="reader-download-direct" id="readerDownloadDirect" href="{{ download_url }}">Direct download</a>
+            </div>
+        </div>
+    </div>
+
     <div class="reader-toast" id="readerToast"></div>
 </div>
 
@@ -11051,6 +11815,7 @@ html, body { overflow:hidden !important; }
 const BOOK_ID = {{ book.id }};
 const READER_FORMAT = {{ reader_format|tojson }};
 const MEDIA_URL = {{ media_url|tojson }};
+const DOWNLOAD_URL = {{ download_url|tojson }};
 const READ_BASE_URL = {{ read_base_url|tojson }};
 const STATE = {{ state|tojson }};
 const JUMP_ANNOTATION_ID = {{ jump_annotation_id|tojson }};
@@ -11073,6 +11838,9 @@ let selectionToolbarInteracting = false;
 let lastEpubContents = null;
 let searchMatches = [];
 let searchMatchIndex = -1;
+let activeDownloadController = null;
+let epubLocationTotal = 0;
+let epubLocationCurrent = 1;
 const EPUB_CONTENT_HANDLERS = new WeakSet();
 
 function showReaderToast(message) {
@@ -11148,6 +11916,156 @@ function showReaderLoadError(message) {
     alt.style.display = other ? "inline-flex" : "none";
 }
 
+function parseReaderDownloadFilename(disposition) {
+    const value = String(disposition || "");
+    let match = value.match(/filename\*=UTF-8''([^;]+)/i);
+    if (match && match[1]) {
+        try { return decodeURIComponent(match[1].trim()); } catch (error) { return match[1].trim(); }
+    }
+
+    match = value.match(/filename="?([^";]+)"?/i);
+    return match && match[1] ? match[1].trim() : "ebook";
+}
+
+function closeReaderDownloadProgress() {
+    document.getElementById("readerDownloadOverlay")?.classList.remove("show");
+    document.getElementById("readerDownloadDirect")?.classList.remove("show");
+}
+
+function cancelReaderDownload() {
+    if (activeDownloadController) {
+        activeDownloadController.abort();
+    } else {
+        closeReaderDownloadProgress();
+    }
+}
+
+function updateReaderDownloadProgress(loaded, total) {
+    const bar = document.getElementById("readerDownloadBar");
+    const bytes = document.getElementById("readerDownloadBytes");
+    const percent = document.getElementById("readerDownloadPercent");
+
+    if (!bar || !bytes || !percent) return;
+
+    if (total > 0) {
+        const pct = Math.max(0, Math.min(100, (loaded / total) * 100));
+        bar.classList.remove("indeterminate");
+        bar.style.transform = "none";
+        bar.style.width = pct.toFixed(1) + "%";
+        bytes.textContent = formatReaderBytes(loaded) + " / " + formatReaderBytes(total);
+        percent.textContent = Math.round(pct) + "%";
+    } else {
+        bar.classList.add("indeterminate");
+        bar.style.width = "34%";
+        bytes.textContent = loaded > 0 ? formatReaderBytes(loaded) + " downloaded" : "Connecting…";
+        percent.textContent = "";
+    }
+}
+
+async function startReaderDownload() {
+    if (activeDownloadController) return;
+
+    toggleToolsPanel(false);
+
+    const overlay = document.getElementById("readerDownloadOverlay");
+    const title = document.getElementById("readerDownloadTitle");
+    const name = document.getElementById("readerDownloadName");
+    const direct = document.getElementById("readerDownloadDirect");
+    const cancel = document.getElementById("readerDownloadCancel");
+
+    overlay?.classList.add("show");
+    direct?.classList.remove("show");
+    if (title) title.textContent = "Downloading ebook…";
+    if (name) name.textContent = "Preparing download…";
+    if (cancel) cancel.textContent = "Cancel";
+    updateReaderDownloadProgress(0, 0);
+
+    const controller = new AbortController();
+    activeDownloadController = controller;
+
+    try {
+        const response = await fetch(DOWNLOAD_URL, {
+            method:"GET",
+            credentials:"same-origin",
+            cache:"no-store",
+            signal:controller.signal
+        });
+
+        if (!response.ok) {
+            throw new Error("Download request failed (HTTP " + response.status + ").");
+        }
+
+        const filename = parseReaderDownloadFilename(
+            response.headers.get("Content-Disposition")
+        );
+        const total = Number(response.headers.get("Content-Length") || 0);
+        const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+
+        if (name) name.textContent = filename;
+
+        const chunks = [];
+        let loaded = 0;
+
+        if (response.body?.getReader) {
+            const reader = response.body.getReader();
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                if (!value) continue;
+
+                chunks.push(value);
+                loaded += value.byteLength;
+                updateReaderDownloadProgress(loaded, total);
+            }
+        } else {
+            const blob = await response.blob();
+            chunks.push(blob);
+            loaded = blob.size;
+            updateReaderDownloadProgress(loaded, total || loaded);
+        }
+
+        const blob = new Blob(chunks, {type:contentType});
+        updateReaderDownloadProgress(blob.size, total || blob.size);
+
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename || "ebook";
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+
+        if (title) title.textContent = "Download complete";
+        if (cancel) cancel.textContent = "Close";
+        activeDownloadController = null;
+        showReaderToast("Download complete.");
+
+        setTimeout(() => {
+            closeReaderDownloadProgress();
+        }, 1400);
+
+    } catch (error) {
+        const aborted = error?.name === "AbortError";
+        activeDownloadController = null;
+
+        if (aborted) {
+            closeReaderDownloadProgress();
+            showReaderToast("Download cancelled.");
+            return;
+        }
+
+        if (title) title.textContent = "Download interrupted";
+        if (name) name.textContent = error?.message || "Unable to download this ebook.";
+        if (cancel) cancel.textContent = "Close";
+        direct?.classList.add("show");
+        showReaderToast("Download interrupted. You can try the direct download.");
+    }
+}
+
 function setPageBusy(show, text="Loading page…") {
     const busy = document.getElementById("readerPageBusy");
     if (!busy) return;
@@ -11173,11 +12091,49 @@ function returnToLibrary() {
     window.location.href = PASTOR_RESOURCES_URL;
 }
 
-function updateReaderPageIndicator(text) {
-    const indicator = document.getElementById("readerPageIndicator");
-    if (!indicator) return;
-    indicator.textContent = String(text || "");
-    indicator.style.display = text ? "block" : "none";
+function updateReaderPageControls(current, total, kind="Page", enabled=true) {
+    const input = document.getElementById("readerPageInput");
+    const totalEl = document.getElementById("readerPageTotal");
+    const kindEl = document.getElementById("readerPageKind");
+
+    const currentNumber = Math.max(1, Number(current || 1));
+    const totalNumber = Math.max(0, Number(total || 0));
+
+    if (input) {
+        if (document.activeElement !== input) {
+            input.value = String(Math.round(currentNumber));
+        }
+        input.min = "1";
+        if (totalNumber > 0) input.max = String(Math.round(totalNumber));
+        else input.removeAttribute("max");
+        input.disabled = !enabled;
+        input.setAttribute(
+            "aria-label",
+            String(kind || "Page") + " number. Type a number and press Enter."
+        );
+    }
+
+    if (totalEl) {
+        totalEl.textContent = totalNumber > 0
+            ? "/ " + Math.round(totalNumber)
+            : "/ …";
+    }
+
+    if (kindEl) {
+        kindEl.textContent = String(kind || "Page");
+    }
+}
+
+function syncReaderViewport() {
+    const root = document.getElementById("readerRoot");
+    if (!root) return;
+
+    const viewport = window.visualViewport;
+    const height = Math.max(1, Math.round(viewport?.height || window.innerHeight || document.documentElement.clientHeight || 1));
+    const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
+
+    root.style.setProperty("--reader-viewport-height", height + "px");
+    root.style.setProperty("--reader-viewport-top", top + "px");
 }
 
 function handleReaderSearchInput(value) {
@@ -11318,52 +12274,38 @@ function selectionViewportRect(range, sourceWindow=window) {
     };
 }
 
-function showSelectionBarAtRect(rect) {
+function showSelectionBarAtRect(_rect) {
     const bar = document.getElementById("selectionBar");
-    if (!bar || !rect) return;
+    if (!bar) return;
+
+    // Keep our actions away from the native iPhone text-selection bubble.
+    // They now live at one predictable location directly below the reader
+    // toolbar and only appear while a real text selection exists.
+    toggleToolsPanel(false);
+    const searchPanel = document.getElementById("readerSearchPanel");
+    if (searchPanel?.classList.contains("open")) {
+        toggleReaderSearch(false);
+    }
 
     bar.classList.add("show");
     bar.style.visibility = "hidden";
-    bar.style.left = "6px";
+    bar.style.left = "50%";
     bar.style.right = "auto";
-    bar.style.top = "6px";
     bar.style.bottom = "auto";
+    bar.style.transform = "translateX(-50%)";
 
     requestAnimationFrame(() => {
-        const barRect = bar.getBoundingClientRect();
-        const margin = 6;
-        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 360;
-        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 640;
+        const toolbar = document.querySelector(".reader-toolbar");
+        const toolbarBottom = toolbar
+            ? toolbar.getBoundingClientRect().bottom
+            : Number(window.visualViewport?.offsetTop || 0) + 52;
 
-        let left = rect.left + (rect.width / 2) - (barRect.width / 2);
-        left = Math.max(
-            margin,
-            Math.min(left, viewportWidth - barRect.width - margin)
+        const viewportTop = Number(window.visualViewport?.offsetTop || 0);
+        const top = Math.max(
+            viewportTop + 4,
+            toolbarBottom + 5
         );
 
-        // The desktop mockup places our tools above the selection.
-        // On phones we prefer below so iOS can keep its native menu above.
-        const desktopLike = window.matchMedia?.("(min-width:800px)")?.matches;
-        let top = desktopLike
-            ? rect.top - barRect.height - 8
-            : rect.bottom + 9;
-
-        if (desktopLike && top < margin) {
-            top = rect.bottom + 9;
-        }
-
-        if (!desktopLike && top + barRect.height > viewportHeight - margin) {
-            top = rect.top - barRect.height - 9;
-        }
-
-        if (top < margin) {
-            top = Math.max(
-                margin,
-                viewportHeight - barRect.height - 14
-            );
-        }
-
-        bar.style.left = Math.round(left) + "px";
         bar.style.top = Math.round(top) + "px";
         bar.style.visibility = "visible";
     });
@@ -11378,6 +12320,7 @@ function hideSelectionBarOnly() {
     bar.style.top = "";
     bar.style.right = "";
     bar.style.bottom = "";
+    bar.style.transform = "";
 }
 
 function schedulePdfSelectionCapture(delay=140) {
@@ -11860,12 +12803,15 @@ async function renderPdfPage() {
 
         await renderPdfLinkLayer(page, viewport);
 
-        document.getElementById("pageInput").value = pdfPageNumber;
-        document.getElementById("pageInput").max = pdfDoc.numPages;
+        updateReaderPageControls(
+            pdfPageNumber,
+            pdfDoc.numPages,
+            "Page",
+            true
+        );
 
         const percent = (pdfPageNumber / pdfDoc.numPages) * 100;
         setProgress(percent);
-        updateReaderPageIndicator(pdfPageNumber + " / " + pdfDoc.numPages);
         saveState({last_format:"PDF",pdf_page:pdfPageNumber,pdf_scale:pdfScale,progress_percent:percent});
         renderPdfAnnotations();
     } catch (error) {
@@ -12088,11 +13034,46 @@ async function fitPdfPage() {
     await renderPdfPage();
 }
 
-function jumpPdfPage() {
-    if (!pdfDoc) return;
-    const value = Number(document.getElementById("pageInput").value || 1);
-    pdfPageNumber = Math.max(1,Math.min(pdfDoc.numPages,value));
-    renderPdfPage();
+function jumpReaderPage() {
+    const input = document.getElementById("readerPageInput");
+    if (!input) return;
+
+    const requested = Math.max(1, Math.round(Number(input.value || 1)));
+
+    if (READER_FORMAT === "PDF") {
+        if (!pdfDoc) return;
+        pdfPageNumber = Math.max(1, Math.min(pdfDoc.numPages, requested));
+        input.value = String(pdfPageNumber);
+        renderPdfPage();
+        return;
+    }
+
+    if (!epubBook || !rendition || !epubLocationsReady || epubLocationTotal <= 0) {
+        showReaderToast("EPUB locations are still being prepared.");
+        updateReaderPageControls(epubLocationCurrent, epubLocationTotal, "Location", false);
+        return;
+    }
+
+    const target = Math.max(1, Math.min(epubLocationTotal, requested));
+    const cfi = epubBook.locations.cfiFromLocation(target - 1);
+
+    if (!cfi) {
+        showReaderToast("That EPUB location could not be opened.");
+        return;
+    }
+
+    input.value = String(target);
+    epubNavigationQueue = [];
+    setPageBusy(true, "Opening location " + target + "…");
+
+    Promise.resolve(rendition.display(cfi))
+        .catch(error => {
+            console.warn(error);
+            showReaderToast("Unable to open that EPUB location.");
+        })
+        .finally(() => {
+            if (!epubLayoutRefreshing) setPageBusy(false);
+        });
 }
 
 /* =====================================================
@@ -12189,7 +13170,7 @@ function installEpubContentHandlers(contents) {
         }
     } catch (error) {}
 
-    installSwipeHandlers(target, win);
+    installEpubSwipeHandlers(doc, win);
 
     if (EPUB_CONTENT_HANDLERS.has(doc)) return;
     EPUB_CONTENT_HANDLERS.add(doc);
@@ -12230,6 +13211,7 @@ async function initEpubReader() {
     }
 
     try {
+        updateReaderPageControls(1, 0, "Location", false);
         const epubData = await fetchArrayBufferWithProgress(MEDIA_URL, "EPUB");
 
         showReaderLoading("Opening EPUB…", "Reading the table of contents and preparing the pages…", null, epubData.byteLength, epubData.byteLength);
@@ -12266,9 +13248,8 @@ async function initEpubReader() {
                 if (view?.contents) {
                     installEpubContentHandlers(view.contents);
                 } else if (view?.document) {
-                    const target = view.document.body || view.document.documentElement || view.document;
-                    installSwipeHandlers(
-                        target,
+                    installEpubSwipeHandlers(
+                        view.document,
                         view.window || view.document.defaultView || window
                     );
                 }
@@ -12312,20 +13293,32 @@ async function initEpubReader() {
 
             setProgress(percent);
 
-            const displayed = location?.start?.displayed || null;
-            if (
-                displayed
-                && Number(displayed.page) > 0
-                && Number(displayed.total) > 0
-            ) {
-                updateReaderPageIndicator(
-                    Number(displayed.page)
-                    + " / "
-                    + Number(displayed.total)
+            if (epubLocationsReady && currentEpubCfi && epubLocationTotal > 0) {
+                try {
+                    const locationIndex = Number(
+                        epubBook.locations.locationFromCfi(currentEpubCfi)
+                    );
+                    if (Number.isFinite(locationIndex) && locationIndex >= 0) {
+                        epubLocationCurrent = Math.min(
+                            epubLocationTotal,
+                            locationIndex + 1
+                        );
+                    }
+                } catch (error) {}
+
+                updateReaderPageControls(
+                    epubLocationCurrent,
+                    epubLocationTotal,
+                    "Location",
+                    true
                 );
             } else {
-                updateReaderPageIndicator(
-                    Math.max(0,Math.min(100,Math.round(percent))) + "%"
+                const displayed = location?.start?.displayed || null;
+                updateReaderPageControls(
+                    Number(displayed?.page || 1),
+                    Number(displayed?.total || 0),
+                    "Location",
+                    false
                 );
             }
 
@@ -12353,13 +13346,47 @@ async function initEpubReader() {
 
         epubBook.ready.then(async () => {
             try {
-                await epubBook.locations.generate(1600);
+                const generatedLocations = await epubBook.locations.generate(1600);
                 epubLocationsReady = true;
+
+                let totalLocations = 0;
+                if (Array.isArray(generatedLocations)) {
+                    totalLocations = generatedLocations.length;
+                }
+                if (!totalLocations) {
+                    try { totalLocations = Number(epubBook.locations.length?.() || 0); } catch (error) {}
+                }
+                if (!totalLocations) {
+                    totalLocations = Number(epubBook.locations.total || 0);
+                }
+
+                epubLocationTotal = Math.max(1, Math.round(totalLocations || 1));
+
                 if (currentEpubCfi) {
                     const pct = epubBook.locations.percentageFromCfi(currentEpubCfi) * 100;
                     setProgress(pct);
+
+                    try {
+                        const locationIndex = Number(
+                            epubBook.locations.locationFromCfi(currentEpubCfi)
+                        );
+                        if (Number.isFinite(locationIndex) && locationIndex >= 0) {
+                            epubLocationCurrent = Math.min(
+                                epubLocationTotal,
+                                locationIndex + 1
+                            );
+                        }
+                    } catch (error) {}
+
                     saveState({progress_percent:pct});
                 }
+
+                updateReaderPageControls(
+                    epubLocationCurrent,
+                    epubLocationTotal,
+                    "Location",
+                    true
+                );
             } catch(e) { console.warn(e); }
         });
 
@@ -12556,6 +13583,103 @@ function selectionIsActive(win) {
     } catch (error) {
         return false;
     }
+}
+
+function installEpubSwipeHandlers(doc, win=window) {
+    if (!doc || SWIPE_INSTALLED.has(doc)) return;
+    SWIPE_INSTALLED.add(doc);
+
+    let startX = 0;
+    let startY = 0;
+    let startTime = 0;
+    let tracking = false;
+    let horizontalGesture = false;
+
+    const reset = () => {
+        tracking = false;
+        horizontalGesture = false;
+    };
+
+    doc.addEventListener("touchstart", event => {
+        reset();
+        if (!event.touches || event.touches.length !== 1) return;
+        if (selectionIsActive(win)) return;
+
+        const touch = event.touches[0];
+        const viewportWidth = Number(win?.innerWidth || window.innerWidth || 0);
+
+        // Preserve Safari's system-level edge navigation gesture.
+        if (
+            viewportWidth > 0
+            && (touch.clientX < 24 || touch.clientX > viewportWidth - 24)
+        ) {
+            return;
+        }
+
+        startX = touch.clientX;
+        startY = touch.clientY;
+        startTime = Date.now();
+        tracking = true;
+    }, {passive:true,capture:true});
+
+    doc.addEventListener("touchmove", event => {
+        if (!tracking || !event.touches || event.touches.length !== 1) return;
+        if (selectionIsActive(win)) {
+            reset();
+            return;
+        }
+
+        const touch = event.touches[0];
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+
+        if (!horizontalGesture) {
+            if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
+
+            // A vertical gesture belongs to the document/native browser.
+            if (Math.abs(dy) >= Math.abs(dx) * .85) {
+                reset();
+                return;
+            }
+
+            if (Math.abs(dx) >= 18) {
+                horizontalGesture = true;
+            }
+        }
+
+        // Once the gesture is clearly horizontal, prevent WebKit's iframe
+        // from turning it into a scroll/overscroll gesture before touchend.
+        if (horizontalGesture && event.cancelable) {
+            event.preventDefault();
+        }
+    }, {passive:false,capture:true});
+
+    doc.addEventListener("touchcancel", reset, {passive:true,capture:true});
+
+    doc.addEventListener("touchend", event => {
+        if (!tracking) return;
+        const wasHorizontal = horizontalGesture;
+        tracking = false;
+        horizontalGesture = false;
+
+        if (!event.changedTouches || event.changedTouches.length !== 1) return;
+        if (selectionIsActive(win)) return;
+
+        const touch = event.changedTouches[0];
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        const elapsed = Date.now() - startTime;
+
+        if (elapsed > 1000) return;
+        if (!wasHorizontal && Math.abs(dx) < 48) return;
+        if (Math.abs(dx) < 48) return;
+        if (Math.abs(dx) < Math.abs(dy) * 1.12) return;
+
+        hideSelectionBarOnly();
+
+        if (dx < 0) queueEpubNavigation(1);
+        else queueEpubNavigation(-1);
+    }, {passive:true,capture:true});
 }
 
 function installSwipeHandlers(target, win=window) {
@@ -12845,7 +13969,11 @@ document.getElementById("themeSelect").value = currentTheme;
     const canvasArea = document.getElementById("readerCanvasArea");
     const selectionBar = document.getElementById("selectionBar");
 
-    installSwipeHandlers(canvasArea, window);
+    syncReaderViewport();
+
+    if (READER_FORMAT === "PDF") {
+        installSwipeHandlers(canvasArea, window);
+    }
 
     document.addEventListener("keydown", event => {
         const target = event.target;
@@ -12912,13 +14040,24 @@ document.getElementById("themeSelect").value = currentTheme;
         await initEpubReader();
     }
 
+    const refreshReaderViewport = () => {
+        syncReaderViewport();
+        setTimeout(() => {
+            try { rendition?.resize?.(); } catch (error) {}
+        }, 70);
+    };
+
+    syncReaderViewport();
+
     if (window.visualViewport) {
-        window.visualViewport.addEventListener("resize", () => {
-            setTimeout(() => {
-                try { rendition?.resize?.(); } catch (error) {}
-            }, 80);
-        }, {passive:true});
+        window.visualViewport.addEventListener("resize", refreshReaderViewport, {passive:true});
+        window.visualViewport.addEventListener("scroll", refreshReaderViewport, {passive:true});
     }
+
+    window.addEventListener("resize", refreshReaderViewport, {passive:true});
+    window.addEventListener("orientationchange", () => {
+        setTimeout(refreshReaderViewport, 120);
+    }, {passive:true});
 
     if (JUMP_ANNOTATION_ID) {
         setTimeout(() => jumpToAnnotation(JUMP_ANNOTATION_ID),600);
