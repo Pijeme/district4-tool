@@ -10774,6 +10774,117 @@ html, body { overflow:hidden !important; }
     box-shadow:0 4px 18px rgba(54,43,32,.08);
 }
 
+/* iOS direct-DOM EPUB reader.  This intentionally avoids EPUB.js/WKWebView
+   iframe interaction on iPhone/iPad while leaving Android/Desktop unchanged. */
+#iosEpubViewer {
+    display:none;
+    width:min(100%,980px);
+    min-height:100%;
+    box-sizing:border-box;
+    background:var(--reader-panel);
+    color:var(--reader-text);
+    border-radius:0;
+    box-shadow:0 4px 18px rgba(54,43,32,.08);
+    overflow:visible;
+    -webkit-user-select:text;
+    user-select:text;
+    -webkit-touch-callout:default;
+    touch-action:pan-y;
+}
+
+#iosEpubContent {
+    box-sizing:border-box;
+    width:100%;
+    max-width:820px;
+    margin:0 auto;
+    padding:22px 20px 44px;
+    font-family:Georgia,serif;
+    font-size:100%;
+    line-height:1.6;
+    overflow-wrap:anywhere;
+    -webkit-user-select:text;
+    user-select:text;
+    -webkit-touch-callout:default;
+}
+
+#iosEpubContent * {
+    max-width:100%;
+    box-sizing:border-box;
+}
+#iosEpubContent img,
+#iosEpubContent svg,
+#iosEpubContent video {
+    max-width:100% !important;
+    height:auto !important;
+}
+#iosEpubContent table {
+    width:100%;
+    max-width:100%;
+    border-collapse:collapse;
+}
+#iosEpubContent pre {
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+}
+#iosEpubContent p { margin:.72em 0; }
+#iosEpubContent h1,
+#iosEpubContent h2,
+#iosEpubContent h3,
+#iosEpubContent h4 {
+    line-height:1.25;
+    margin:1.15em 0 .55em;
+}
+#iosEpubContent blockquote {
+    margin:1em 1.1em;
+    padding-left:.9em;
+    border-left:3px solid var(--reader-line);
+}
+#iosEpubContent a { color:#3567b5; }
+.theme-sepia #iosEpubViewer { background:#fbf4e5; color:#4b3b29; }
+.theme-sepia #iosEpubContent a { color:#805a31; }
+.theme-dark #iosEpubViewer { background:#242a36; color:#edf1f7; }
+.theme-dark #iosEpubContent a { color:#9ec4ff; }
+.ios-epub-fallback-highlight {
+    border-radius:2px;
+}
+
+/* Search results are intentionally much stronger than saved highlights.
+   Saved annotations remain soft; search hits use yellow and the active
+   result uses orange so it is easy to find on a phone. */
+.reader-search-hit {
+    background:#ffe66d !important;
+    color:#15120f !important;
+    border-radius:2px;
+    box-shadow:0 0 0 1px rgba(160,118,0,.28);
+}
+.reader-search-hit-active {
+    background:#ff8a00 !important;
+    color:#111 !important;
+    outline:2px solid rgba(170,72,0,.72);
+    outline-offset:1px;
+    border-radius:2px;
+}
+#pdfTextLayer .reader-search-hit,
+#pdfTextLayer .reader-search-hit-active {
+    padding:0;
+    margin:0;
+}
+::highlight(pastor-ios-search-hit) {
+    background-color:#ffe66d;
+    color:#111;
+}
+::highlight(pastor-ios-search-active) {
+    background-color:#ff8a00;
+    color:#111;
+    text-decoration:underline 2px rgba(130,48,0,.85);
+}
+.reader-toolbar,
+.reader-bottom-bar,
+.reader-tools-sheet,
+.reader-side {
+    touch-action:manipulation;
+}
+
 /* Permanent page navigation for desktop and mobile. */
 .reader-bottom-bar {
     position:relative;
@@ -10874,6 +10985,98 @@ html, body { overflow:hidden !important; }
     color:#f4f0e9;
     border-color:#465065;
 }
+
+/* Keep browser page zoom away from the reader content. Two-finger gestures
+   inside the content are handled by the PDF/EPUB reader itself so the fixed
+   top and bottom controls stay the same size. */
+.format-pdf .reader-canvas-area { touch-action:pan-x pan-y; }
+.format-epub #epubViewer { touch-action:pan-y; }
+#pdfStage { transform-origin:top center; }
+
+.reader-chapter-button {
+    width:38px;
+    min-width:38px;
+    height:38px;
+    border:0;
+    border-radius:50%;
+    background:transparent;
+    color:var(--reader-text);
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+.reader-chapter-button:hover { background:rgba(148,163,184,.12); }
+.reader-chapter-button svg {
+    width:20px;
+    height:20px;
+    fill:none;
+    stroke:currentColor;
+    stroke-width:1.8;
+    stroke-linecap:round;
+}
+.reader-chapter-backdrop {
+    position:fixed;
+    inset:0;
+    z-index:20700;
+    display:none;
+    background:rgba(15,23,42,.38);
+}
+.reader-chapter-backdrop.show { display:block; }
+.reader-chapter-sheet {
+    position:fixed;
+    z-index:20800;
+    left:0;
+    right:0;
+    bottom:0;
+    max-height:min(72vh,620px);
+    max-height:min(72dvh,620px);
+    transform:translateY(105%);
+    transition:transform .22s ease;
+    border-radius:24px 24px 0 0;
+    background:#fffdfa;
+    color:#1f1c18;
+    box-shadow:0 -18px 48px rgba(54,43,32,.18);
+    padding:7px 12px calc(14px + env(safe-area-inset-bottom,0px));
+    display:flex;
+    flex-direction:column;
+}
+.theme-sepia .reader-chapter-sheet { background:#fbf3e4; color:#4b3b29; }
+.theme-dark .reader-chapter-sheet { background:#242a36; color:#ecf0f7; }
+.reader-chapter-sheet.open { transform:translateY(0); }
+.reader-chapter-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:0 2px 8px;
+}
+.reader-chapter-head h3 { margin:0; font:600 16px Georgia,"Times New Roman",serif; }
+.reader-chapter-list {
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    padding:2px 0 4px;
+}
+.reader-chapter-item {
+    width:100%;
+    min-height:42px;
+    border:0;
+    border-bottom:1px solid rgba(100,116,139,.12);
+    background:transparent;
+    color:inherit;
+    text-align:left;
+    padding:9px 10px;
+    border-radius:8px;
+    font:700 12px/1.35 "Nunito Sans",Arial,sans-serif;
+    cursor:pointer;
+}
+.reader-chapter-item.current {
+    background:rgba(87,132,204,.13);
+    color:#315f9f;
+}
+.theme-dark .reader-chapter-item.current { color:#b7d4ff; background:rgba(126,168,234,.16); }
+.reader-chapter-empty { padding:18px 10px; color:var(--reader-muted); text-align:center; font-size:11px; }
 
 /* Reading notes drawer */
 .reader-side {
@@ -11504,6 +11707,19 @@ html, body { overflow:hidden !important; }
     }
 }
 
+@media (max-width:799px) {
+    .reader-root.format-pdf .reader-canvas-area {
+        padding-left:0;
+        padding-right:0;
+        padding-top:4px;
+        padding-bottom:8px;
+    }
+
+    .reader-root.format-pdf #pdfStage {
+        box-shadow:0 2px 10px rgba(54,43,32,.10);
+    }
+}
+
 @media (max-width:420px) {
     .reader-topline {
         grid-template-columns:minmax(64px,auto) minmax(0,1fr) 32px 32px;
@@ -11523,7 +11739,7 @@ html, body { overflow:hidden !important; }
 }
 </style>
 
-<div class="reader-root theme-{{ state.theme or 'light' }}" id="readerRoot">
+<div class="reader-root theme-{{ state.theme or 'light' }} format-{{ reader_format|lower }}" id="readerRoot">
     <div class="reader-toolbar">
         <div class="reader-topline">
             <button class="reader-back-btn" type="button" onclick="returnToLibrary()"><span class="reader-chevron">‹</span>Library</button>
@@ -11536,7 +11752,12 @@ html, body { overflow:hidden !important; }
             <button class="reader-icon-btn" type="button" title="Search" aria-label="Search in book" onclick="toggleReaderSearch()">
                 <svg class="reader-top-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg>
             </button>
-            <button class="reader-icon-btn" type="button" title="Reader tools" aria-label="Reader tools" onclick="toggleToolsPanel()">•••</button>
+            <button class="reader-icon-btn" type="button" title="Reader settings" aria-label="Reader settings" onclick="toggleToolsPanel()">
+                <svg class="reader-top-svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.16.38.38.72.68 1 .3.27.68.4 1.09.4H21v4h-.09c-.41 0-.79.13-1.09.4-.3.28-.52.62-.68 1z"></path>
+                </svg>
+            </button>
         </div>
 
         <div class="reader-search-panel" id="readerSearchPanel" role="search">
@@ -11585,6 +11806,9 @@ html, body { overflow:hidden !important; }
             </div>
             {% else %}
             <div id="epubViewer"></div>
+            <div id="iosEpubViewer" aria-label="EPUB reading content">
+                <article id="iosEpubContent"></article>
+            </div>
             {% endif %}
         </div>
     </main>
@@ -11607,8 +11831,23 @@ html, body { overflow:hidden !important; }
             >
             <span class="reader-page-total" id="readerPageTotal">/ …</span>
             <button class="reader-page-arrow" id="readerNextButton" type="button" onclick="goNext()" title="Next page" aria-label="Next page">›</button>
+            <button class="reader-chapter-button" id="readerChapterButton" type="button" onclick="toggleChapterPanel()" title="Quick chapters" aria-label="Quick chapter navigation">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path></svg>
+            </button>
         </div>
     </footer>
+
+    <div class="reader-chapter-backdrop" id="readerChapterBackdrop" onclick="toggleChapterPanel(false)"></div>
+    <div class="reader-chapter-sheet" id="readerChapterSheet" role="dialog" aria-modal="true" aria-label="Quick chapter navigation">
+        <div class="reader-tools-handle"></div>
+        <div class="reader-chapter-head">
+            <h3 id="readerChapterHeading">Chapters</h3>
+            <button class="reader-btn" type="button" onclick="toggleChapterPanel(false)" aria-label="Close chapters">✕</button>
+        </div>
+        <div class="reader-chapter-list" id="readerChapterList">
+            <div class="reader-chapter-empty">Preparing chapter navigation…</div>
+        </div>
+    </div>
 
     <aside class="reader-side" id="readerSide">
         <div class="reader-side-head">
@@ -11824,6 +12063,12 @@ const AVAILABLE_FORMATS = {{ formats|tojson }};
 const PASTOR_RESOURCES_URL = {{ url_for('pastor_resources')|tojson }};
 const LIBRARY_RESTORE_KEY = "pastorResourcesRestoreRequestedV1";
 const READER_RETURN_URL_KEY = "pastorReaderReturnUrlV1";
+const IS_IOS_READER = (() => {
+    const ua = String(navigator.userAgent || "");
+    const platform = String(navigator.platform || "");
+    return /iPad|iPhone|iPod/i.test(ua)
+        || (platform === "MacIntel" && Number(navigator.maxTouchPoints || 0) > 1);
+})();
 
 let annotations = [];
 let bookmarks = [];
@@ -11838,6 +12083,9 @@ let selectionToolbarInteracting = false;
 let lastEpubContents = null;
 let searchMatches = [];
 let searchMatchIndex = -1;
+let activeSearchQuery = "";
+let classicEpubSearchMarkCfi = "";
+let iosEpubSearchFallbackMarks = [];
 let activeDownloadController = null;
 let epubLocationTotal = 0;
 let epubLocationCurrent = 1;
@@ -12136,12 +12384,83 @@ function syncReaderViewport() {
     root.style.setProperty("--reader-viewport-top", top + "px");
 }
 
+function installReaderBrowserZoomLock() {
+    if (document.__pastorReaderZoomLockInstalled) return;
+    document.__pastorReaderZoomLockInstalled = true;
+
+    // This route is a dedicated reader. Keep the browser shell at 1x and let
+    // the PDF/EPUB reader implement its own content zoom instead.
+    let viewportMeta = document.querySelector('meta[name="viewport"]');
+    if (!viewportMeta) {
+        viewportMeta = document.createElement("meta");
+        viewportMeta.name = "viewport";
+        document.head.appendChild(viewportMeta);
+    }
+    viewportMeta.setAttribute(
+        "content",
+        "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    );
+
+    const insideReader = event => {
+        const root = document.getElementById("readerRoot");
+        if (!root) return false;
+        const target = event?.target;
+        return !target || target === document || target === window || root.contains(target);
+    };
+
+    const blockBrowserGesture = event => {
+        if (!insideReader(event)) return;
+        if (event.cancelable) event.preventDefault();
+    };
+
+    // iOS/Safari's non-standard pinch events.
+    document.addEventListener("gesturestart", blockBrowserGesture, {
+        passive:false,
+        capture:true
+    });
+    document.addEventListener("gesturechange", blockBrowserGesture, {
+        passive:false,
+        capture:true
+    });
+    document.addEventListener("gestureend", blockBrowserGesture, {
+        passive:false,
+        capture:true
+    });
+
+    // Standard two-finger touch path. preventDefault stops page-level
+    // magnification but does not stop our own PDF/EPUB touch listeners from
+    // receiving the same event.
+    document.addEventListener("touchmove", event => {
+        if (!insideReader(event)) return;
+        if (event.touches && event.touches.length > 1 && event.cancelable) {
+            event.preventDefault();
+        }
+    }, {passive:false,capture:true});
+
+    // Avoid accidental double-tap page zoom on the reader chrome/content.
+    document.addEventListener("dblclick", event => {
+        if (!insideReader(event)) return;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+}
+
 function handleReaderSearchInput(value) {
     const clearButton = document.getElementById("readerSearchClear");
-    const hasValue = Boolean(String(value || "").trim());
+    const normalized = String(value || "").trim();
+    const hasValue = Boolean(normalized);
     clearButton?.classList.toggle("show", hasValue);
 
     if (!hasValue) {
+        activeSearchQuery = "";
+        searchMatches = [];
+        searchMatchIndex = -1;
+        clearReaderSearchHighlights();
+        updateSearchResultUI();
+        return;
+    }
+
+    if (activeSearchQuery && normalized !== activeSearchQuery) {
+        clearReaderSearchHighlights();
         searchMatches = [];
         searchMatchIndex = -1;
         updateSearchResultUI();
@@ -12499,7 +12818,7 @@ function setReaderTheme(theme) {
     root.classList.remove("theme-light","theme-sepia","theme-dark");
     root.classList.add("theme-" + theme);
     applyEpubTheme();
-    if (READER_FORMAT === "EPUB") {
+    if (READER_FORMAT === "EPUB" && !iosDirectEpubActive) {
         scheduleEpubLayoutRefresh("Updating theme…");
     }
     saveState({theme});
@@ -12537,6 +12856,7 @@ async function copySelectedText() {
             helper.remove();
         }
 
+        clearPendingSelection();
         showReaderToast("Quote copied.");
     } catch (error) {
         showReaderToast("Unable to copy quote.");
@@ -12647,9 +12967,12 @@ async function addCurrentBookmark() {
     let locator = "";
     let page = null;
     if (READER_FORMAT === "PDF") page = pdfPageNumber;
+    else if (iosDirectEpubActive) locator = iosEpubCurrentPositionLocator();
     else locator = currentEpubCfi || "";
 
-    const defaultLabel = READER_FORMAT === "PDF" ? "Page " + page : "Saved passage";
+    const defaultLabel = READER_FORMAT === "PDF"
+        ? "Page " + page
+        : (iosDirectEpubActive ? "Chapter " + (iosEpubSpineIndex + 1) : "Saved passage");
     const label = window.prompt("Bookmark label:", defaultLabel);
     if (label === null) return;
 
@@ -12704,6 +13027,7 @@ setInterval(async () => {
 }, 15000);
 
 window.addEventListener("beforeunload", () => {
+    try { iosEpubAssetUrls?.forEach?.(url => URL.revokeObjectURL(url)); } catch (error) {}
     if (!readingSessionId) return;
     try {
         const blob = new Blob([JSON.stringify({session_id:readingSessionId})], {type:"application/json"});
@@ -12719,6 +13043,25 @@ let pdfDoc = null;
 let pdfPageNumber = Math.max(1, Number(STATE.pdf_page || 1));
 let pdfScale = Math.max(.5, Number(STATE.pdf_scale || 1.15));
 let pdfRenderTask = null;
+let pdfOutlineFlat = [];
+let pdfAutoFitWidth = window.matchMedia?.("(max-width: 799px)")?.matches || false;
+
+function readerIsMobileWidth() {
+    return Boolean(window.matchMedia?.("(max-width: 799px)")?.matches);
+}
+
+function pdfFitWidthScaleForPage(page) {
+    if (!page) return pdfScale;
+
+    const area = document.getElementById("readerCanvasArea");
+    if (!area) return pdfScale;
+
+    const base = page.getViewport({scale:1});
+    const horizontalGutter = readerIsMobileWidth() ? 2 : 24;
+    const available = Math.max(120, area.clientWidth - horizontalGutter);
+
+    return Math.min(4, Math.max(.5, available / base.width));
+}
 
 async function initPdfReader() {
     if (!window.pdfjsLib) {
@@ -12741,6 +13084,10 @@ async function initPdfReader() {
 
         pdfDoc = await loadingTask.promise;
         pdfPageNumber = Math.min(pdfPageNumber,pdfDoc.numPages);
+        preparePdfQuickNavigation().catch(error => {
+            console.warn("PDF chapter navigation could not be prepared", error);
+            renderQuickChapterList();
+        });
 
         const jumpAnn = annotations.find(a => Number(a.id) === Number(JUMP_ANNOTATION_ID));
         const jumpBm = bookmarks.find(b => Number(b.id) === Number(JUMP_BOOKMARK_ID));
@@ -12764,6 +13111,14 @@ async function renderPdfPage() {
     try {
         pdfPageNumber = Math.max(1,Math.min(pdfDoc.numPages,pdfPageNumber));
         const page = await pdfDoc.getPage(pdfPageNumber);
+
+        // On phones, PDF reading defaults to Fit Width so the document uses
+        // the available screen instead of shrinking the whole page into a
+        // small centered rectangle. The same mode stays active across pages.
+        if (pdfAutoFitWidth) {
+            pdfScale = pdfFitWidthScaleForPage(page);
+        }
+
         const viewport = page.getViewport({scale:pdfScale});
         const canvas = document.getElementById("pdfCanvas");
         const stage = document.getElementById("pdfStage");
@@ -12809,11 +13164,15 @@ async function renderPdfPage() {
             "Page",
             true
         );
+        updateCurrentChapterHighlight();
 
         const percent = (pdfPageNumber / pdfDoc.numPages) * 100;
         setProgress(percent);
         saveState({last_format:"PDF",pdf_page:pdfPageNumber,pdf_scale:pdfScale,progress_percent:percent});
         renderPdfAnnotations();
+        if (activeSearchQuery) {
+            applyPdfSearchHighlights();
+        }
     } catch (error) {
         if (String(error?.name || "") !== "RenderingCancelledException") {
             showReaderToast("Unable to render this page: " + (error?.message || error));
@@ -13010,21 +13369,22 @@ function renderPdfAnnotations() {
 }
 
 async function zoomPdf(delta) {
+    pdfAutoFitWidth = false;
     pdfScale = Math.min(4,Math.max(.5,pdfScale + delta));
     await renderPdfPage();
 }
 
 async function fitPdfWidth() {
     if (!pdfDoc) return;
+    pdfAutoFitWidth = true;
     const page = await pdfDoc.getPage(pdfPageNumber);
-    const base = page.getViewport({scale:1});
-    const available = Math.max(280,document.getElementById("readerCanvasArea").clientWidth - 24);
-    pdfScale = Math.min(4,Math.max(.5,available/base.width));
+    pdfScale = pdfFitWidthScaleForPage(page);
     await renderPdfPage();
 }
 
 async function fitPdfPage() {
     if (!pdfDoc) return;
+    pdfAutoFitWidth = false;
     const page = await pdfDoc.getPage(pdfPageNumber);
     const base = page.getViewport({scale:1});
     const area = document.getElementById("readerCanvasArea");
@@ -13032,6 +13392,165 @@ async function fitPdfPage() {
     const heightScale = Math.max(.5,(area.clientHeight-24)/base.height);
     pdfScale = Math.min(4,widthScale,heightScale);
     await renderPdfPage();
+}
+
+
+function flattenPdfOutline(items, depth=0, output=[]) {
+    (items || []).forEach(item => {
+        output.push({
+            label:String(item?.title || "Untitled section").trim(),
+            dest:item?.dest ?? null,
+            depth:Number(depth || 0),
+            page:null
+        });
+        if (Array.isArray(item?.items) && item.items.length) {
+            flattenPdfOutline(item.items, depth + 1, output);
+        }
+    });
+    return output;
+}
+
+async function pdfOutlinePageFromDestination(destination) {
+    if (!pdfDoc || !destination) return null;
+    try {
+        let explicit = destination;
+        if (typeof explicit === "string") {
+            explicit = await pdfDoc.getDestination(explicit);
+        }
+        if (!Array.isArray(explicit) || !explicit.length) return null;
+        const target = explicit[0];
+        let pageIndex = null;
+        if (typeof target === "number") {
+            pageIndex = target;
+        } else if (target && typeof target === "object") {
+            pageIndex = await pdfDoc.getPageIndex(target);
+        }
+        if (pageIndex === null || pageIndex === undefined) return null;
+        return Math.max(1, Math.min(pdfDoc.numPages, Number(pageIndex) + 1));
+    } catch (error) {
+        return null;
+    }
+}
+
+async function preparePdfQuickNavigation() {
+    if (!pdfDoc) return;
+    const outline = await pdfDoc.getOutline();
+    const flat = flattenPdfOutline(outline || []);
+    for (const item of flat) {
+        item.page = await pdfOutlinePageFromDestination(item.dest);
+    }
+    pdfOutlineFlat = flat.filter(item => Number.isFinite(Number(item.page)) && Number(item.page) >= 1);
+    renderQuickChapterList();
+    updateCurrentChapterHighlight();
+}
+
+async function openPdfOutlineItem(index, closePanel=false) {
+    if (!pdfDoc) return;
+    const item = pdfOutlineFlat[Number(index)];
+    if (!item || !Number.isFinite(Number(item.page))) return;
+    hideSelectionBarOnly();
+    pdfAutoFitWidth = pdfAutoFitWidth && readerIsMobileWidth();
+    pdfPageNumber = Math.max(1, Math.min(pdfDoc.numPages, Number(item.page)));
+    await renderPdfPage();
+    if (closePanel) toggleChapterPanel(false);
+}
+
+function installPdfPinchZoom(target) {
+    if (!target || target.__pastorPdfPinchInstalled) return;
+    target.__pastorPdfPinchInstalled = true;
+
+    let pinching = false;
+    let startDistance = 0;
+    let startScale = pdfScale;
+    let targetScale = pdfScale;
+
+    const distance = touches => {
+        if (!touches || touches.length < 2) return 0;
+        return Math.hypot(
+            touches[0].clientX - touches[1].clientX,
+            touches[0].clientY - touches[1].clientY
+        );
+    };
+
+    const finish = async () => {
+        if (!pinching) return;
+        pinching = false;
+        const stage = document.getElementById("pdfStage");
+        if (stage) stage.style.transform = "";
+        pdfAutoFitWidth = false;
+        pdfScale = Math.min(4, Math.max(.5, targetScale));
+        await renderPdfPage();
+    };
+
+    target.addEventListener("touchstart", event => {
+        if (!event.touches || event.touches.length !== 2) return;
+        startDistance = distance(event.touches);
+        if (!startDistance) return;
+        startScale = pdfScale;
+        targetScale = pdfScale;
+        pinching = true;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+
+    target.addEventListener("touchmove", event => {
+        if (!pinching || !event.touches || event.touches.length !== 2) return;
+        const nextDistance = distance(event.touches);
+        if (!nextDistance || !startDistance) return;
+        targetScale = Math.min(4, Math.max(.5, startScale * (nextDistance / startDistance)));
+        const stage = document.getElementById("pdfStage");
+        if (stage) stage.style.transform = `scale(${targetScale / startScale})`;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+
+    target.addEventListener("touchend", event => {
+        if (pinching && (!event.touches || event.touches.length < 2)) finish();
+    }, {passive:true,capture:true});
+    target.addEventListener("touchcancel", finish, {passive:true,capture:true});
+
+    // Safari/iOS exposes non-standard gesture events for two-finger pinch.
+    // On iPhone these can be dispatched above the PDF element, so listen on
+    // document in capture phase and accept only gestures that began in the
+    // reader content. Single-finger PDF text selection remains untouched.
+    let gestureStartScale = pdfScale;
+    let iosGestureInsidePdf = false;
+    const gestureTarget = IS_IOS_READER ? document : target;
+    const eventInsidePdf = event => {
+        try {
+            const path = event.composedPath?.() || [];
+            if (path.includes(target)) return true;
+            if (event.target && target.contains(event.target)) return true;
+            const x = Number(event.clientX);
+            const y = Number(event.clientY);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                const hit = document.elementFromPoint(x,y);
+                if (hit && target.contains(hit)) return true;
+            }
+            return false;
+        } catch (error) {
+            return false;
+        }
+    };
+    gestureTarget.addEventListener("gesturestart", event => {
+        iosGestureInsidePdf = eventInsidePdf(event);
+        if (IS_IOS_READER && !iosGestureInsidePdf) return;
+        gestureStartScale = pdfScale;
+        startScale = pdfScale;
+        targetScale = pdfScale;
+        pinching = true;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+    gestureTarget.addEventListener("gesturechange", event => {
+        if (!pinching || (IS_IOS_READER && !iosGestureInsidePdf)) return;
+        targetScale = Math.min(4, Math.max(.5, gestureStartScale * Number(event.scale || 1)));
+        const stage = document.getElementById("pdfStage");
+        if (stage) stage.style.transform = `scale(${targetScale / gestureStartScale})`;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+    gestureTarget.addEventListener("gestureend", event => {
+        if (IS_IOS_READER && !iosGestureInsidePdf) return;
+        iosGestureInsidePdf = false;
+        finish();
+    }, {passive:true,capture:true});
 }
 
 function jumpReaderPage() {
@@ -13045,6 +13564,13 @@ function jumpReaderPage() {
         pdfPageNumber = Math.max(1, Math.min(pdfDoc.numPages, requested));
         input.value = String(pdfPageNumber);
         renderPdfPage();
+        return;
+    }
+
+    if (iosDirectEpubActive) {
+        const chapter = Math.max(1, Math.min(iosEpubSpine.length, requested));
+        input.value = String(chapter);
+        iosEpubRenderChapter(chapter - 1, "", 0);
         return;
     }
 
@@ -13093,32 +13619,66 @@ let epubLayoutRefreshToken = 0;
 let epubLayoutRefreshing = false;
 let epubNavigationQueue = [];
 let epubNavigationRunning = false;
+let epubLastSwipeAt = 0;
+let epubRenditionGestureInstalled = false;
+let epubTocFlat = [];
+let currentEpubHref = "";
+let epubPinchPendingSize = null;
+
+// iPhone/iPad compatibility reader. Android/Desktop continue using EPUB.js.
+let iosDirectEpubActive = false;
+let iosEpubZip = null;
+let iosEpubOpfPath = "";
+let iosEpubManifest = new Map();
+let iosEpubSpine = [];
+let iosEpubSpineIndex = 0;
+let iosEpubCurrentFragment = "";
+let iosEpubAssetUrls = new Map();
+let iosEpubSelectionTimer = null;
+let iosEpubSelectionHideTimer = null;
+let iosEpubProgressTimer = null;
+let iosEpubPinchStartDistance = 0;
+let iosEpubPinchStartSize = 100;
+let iosEpubPinching = false;
+const IOS_EPUB_POSITION_KEY = "pastorIosDirectEpubPositionV1:" + BOOK_ID;
+
+function epubRangeFromCfi(contents, cfiRange) {
+    if (!contents || !cfiRange) return null;
+    try {
+        if (typeof contents.range === "function") {
+            const range = contents.range(cfiRange);
+            if (range) return range;
+        }
+    } catch (error) {}
+    return null;
+}
 
 function captureEpubSelection(contents, forcedCfi="") {
-    if (!contents?.window || !contents?.document) return;
+    if (!contents?.window || !contents?.document) return false;
 
-    const selection = contents.window.getSelection?.();
-
-    if (!selection || selection.isCollapsed || !selection.rangeCount) {
-        if (!selectionToolbarInteracting) {
-            pendingSelection = null;
-            hideSelectionBarOnly();
-        }
-        return;
-    }
-
-    const text = String(selection.toString() || "").trim();
-    if (!text) {
-        if (!selectionToolbarInteracting) {
-            pendingSelection = null;
-            hideSelectionBarOnly();
-        }
-        return;
-    }
-
-    const range = selection.getRangeAt(0);
-
+    let selection = null;
+    let range = null;
+    let text = "";
     let locator = String(forcedCfi || "").trim();
+
+    // On iOS, EPUB.js may emit a valid CFI after the native selection object
+    // has already collapsed. Rebuild the Range from that CFI first so the
+    // selected text toolbar does not depend on Safari's selection timing.
+    if (locator) {
+        range = epubRangeFromCfi(contents, locator);
+        try { text = String(range?.toString?.() || "").trim(); } catch (error) {}
+    }
+
+    // Normal live-selection path for desktop/Android and iOS when available.
+    if (!text) {
+        try { selection = contents.window.getSelection?.(); } catch (error) {}
+        if (selection && !selection.isCollapsed && selection.rangeCount) {
+            range = selection.getRangeAt(0);
+            text = String(selection.toString() || "").trim();
+        }
+    }
+
+    if (!text || !range) return false;
 
     if (!locator) {
         try {
@@ -13126,7 +13686,7 @@ function captureEpubSelection(contents, forcedCfi="") {
         } catch (error) {}
     }
 
-    if (!locator) return;
+    if (!locator) return false;
 
     pendingSelection = {
         text,
@@ -13135,14 +13695,186 @@ function captureEpubSelection(contents, forcedCfi="") {
         sourceWindow:contents.window
     };
 
-    const selectionRect = selectionViewportRect(
-        range,
-        contents.window
-    );
+    let selectionRect = null;
+    try { selectionRect = selectionViewportRect(range, contents.window); } catch (error) {}
+    showSelectionBarAtRect(selectionRect);
+    return true;
+}
 
-    if (selectionRect) {
-        showSelectionBarAtRect(selectionRect);
-    }
+function applyEpubInteractionCss(doc) {
+    if (!doc) return;
+    try {
+        const marker = "pastor-epub-ios-interaction-style";
+        if (!doc.getElementById(marker)) {
+            const style = doc.createElement("style");
+            style.id = marker;
+            const epubTouchAction = IS_IOS_READER ? "auto" : "pan-y";
+            style.textContent = `
+                html, body {
+                    -webkit-user-select:text !important;
+                    user-select:text !important;
+                    -webkit-touch-callout:default !important;
+                    touch-action:${epubTouchAction} !important;
+                    overscroll-behavior-x:contain !important;
+                }
+                body *:not(input):not(textarea):not(select):not(button) {
+                    -webkit-user-select:text !important;
+                    user-select:text !important;
+                    -webkit-touch-callout:default !important;
+                }
+            `;
+            (doc.head || doc.documentElement)?.appendChild(style);
+        }
+    } catch (error) {}
+}
+
+function epubTouchDistance(touches) {
+    if (!touches || touches.length < 2) return 0;
+    const dx = Number(touches[0].clientX) - Number(touches[1].clientX);
+    const dy = Number(touches[0].clientY) - Number(touches[1].clientY);
+    return Math.hypot(dx, dy);
+}
+
+function installEpubPinchHandlers(target, contents) {
+    if (!target || target.__pastorEpubPinchInstalled) return;
+    target.__pastorEpubPinchInstalled = true;
+
+    let pinching = false;
+    let startDistance = 0;
+    let startSize = epubFontSize;
+
+    const finishPinch = () => {
+        if (!pinching) return;
+        pinching = false;
+        if (Number.isFinite(epubPinchPendingSize)) {
+            const nextSize = Math.min(220, Math.max(70, Math.round(epubPinchPendingSize / 5) * 5));
+            epubPinchPendingSize = null;
+            if (nextSize !== epubFontSize) {
+                epubFontSize = nextSize;
+                applyEpubTheme();
+                scheduleEpubLayoutRefresh("Updating text size…");
+                saveState({epub_font_size:epubFontSize});
+                showReaderToast("Font size: " + epubFontSize + "%");
+            }
+        }
+    };
+
+    target.addEventListener("touchstart", event => {
+        if (!event.touches || event.touches.length !== 2) return;
+        startDistance = epubTouchDistance(event.touches);
+        if (!startDistance) return;
+        startSize = epubFontSize;
+        epubPinchPendingSize = startSize;
+        pinching = true;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+
+    target.addEventListener("touchmove", event => {
+        if (!pinching || !event.touches || event.touches.length !== 2) return;
+        const distance = epubTouchDistance(event.touches);
+        if (!distance || !startDistance) return;
+        const ratio = distance / startDistance;
+        epubPinchPendingSize = Math.min(220, Math.max(70, startSize * ratio));
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+
+    target.addEventListener("touchend", event => {
+        if (pinching && (!event.touches || event.touches.length < 2)) finishPinch();
+    }, {passive:true,capture:true});
+    target.addEventListener("touchcancel", finishPinch, {passive:true,capture:true});
+
+    // Safari/WebKit legacy gesture events are a useful fallback on iPhone.
+    let gestureStartSize = epubFontSize;
+    target.addEventListener("gesturestart", event => {
+        gestureStartSize = epubFontSize;
+        epubPinchPendingSize = gestureStartSize;
+        pinching = true;
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+    target.addEventListener("gesturechange", event => {
+        if (!pinching) return;
+        const scale = Number(event.scale || 1);
+        epubPinchPendingSize = Math.min(220, Math.max(70, gestureStartSize * scale));
+        if (event.cancelable) event.preventDefault();
+    }, {passive:false,capture:true});
+    target.addEventListener("gestureend", finishPinch, {passive:true,capture:true});
+}
+
+
+function installEpubIosTapNavigation(contents) {
+    if (!IS_IOS_READER || !contents?.document || !contents?.window) return;
+    const doc = contents.document;
+    const win = contents.window;
+    if (doc.__pastorIosTapNavigationInstalled) return;
+    doc.__pastorIosTapNavigationInstalled = true;
+
+    doc.addEventListener("click", event => {
+        const target = event.target;
+        if (target?.closest?.("a,button,input,textarea,select,label,[role='button']")) return;
+
+        // A long press/selection must never become a page turn.
+        if (selectionIsActive(win)) return;
+
+        const width = Number(win.innerWidth || doc.documentElement?.clientWidth || 0);
+        const x = Number(event.clientX);
+        if (!width || !Number.isFinite(x)) return;
+
+        let direction = 0;
+        if (x <= width * 0.23) direction = -1;
+        else if (x >= width * 0.77) direction = 1;
+        if (!direction) return;
+
+        // iOS can finalize a native selection immediately after click. Give it
+        // a short moment, then navigate only if no text selection exists.
+        setTimeout(() => {
+            if (selectionIsActive(win)) return;
+            hideSelectionBarOnly();
+            queueEpubNavigation(direction);
+        }, 70);
+    }, {passive:true,capture:false});
+}
+
+function installEpubIosGesturePinch(contents) {
+    if (!IS_IOS_READER || !contents?.document || !contents?.window) return;
+    const doc = contents.document;
+    const win = contents.window;
+    if (doc.__pastorIosGesturePinchInstalled) return;
+    doc.__pastorIosGesturePinchInstalled = true;
+
+    let pinching = false;
+    let startSize = epubFontSize;
+    let pendingSize = epubFontSize;
+
+    const start = event => {
+        startSize = epubFontSize;
+        pendingSize = epubFontSize;
+        pinching = true;
+        if (event.cancelable) event.preventDefault();
+    };
+    const change = event => {
+        if (!pinching) return;
+        const scale = Number(event.scale || 1);
+        pendingSize = Math.min(220, Math.max(70, startSize * scale));
+        if (event.cancelable) event.preventDefault();
+    };
+    const end = event => {
+        if (!pinching) return;
+        pinching = false;
+        if (event?.cancelable) event.preventDefault();
+        const nextSize = Math.min(220, Math.max(70, Math.round(Number(pendingSize || epubFontSize) / 5) * 5));
+        if (nextSize === epubFontSize) return;
+        epubFontSize = nextSize;
+        applyEpubTheme();
+        scheduleEpubLayoutRefresh("Updating text size…");
+        saveState({epub_font_size:epubFontSize});
+        showReaderToast("Font size: " + epubFontSize + "%");
+    };
+
+    [win, doc, doc.body].filter(Boolean).forEach(target => {
+        target.addEventListener("gesturestart", start, {passive:false,capture:true});
+        target.addEventListener("gesturechange", change, {passive:false,capture:true});
+        target.addEventListener("gestureend", end, {passive:false,capture:true});
+    });
 }
 
 function installEpubContentHandlers(contents) {
@@ -13154,57 +13886,824 @@ function installEpubContentHandlers(contents) {
     const win = contents.window;
     const target = doc.body || doc.documentElement || doc;
 
+    applyEpubInteractionCss(doc);
+
     try {
+        const touchAction = IS_IOS_READER ? "auto" : "pan-y";
         if (doc.documentElement) {
-            doc.documentElement.style.touchAction = "pan-y pinch-zoom";
+            doc.documentElement.style.touchAction = touchAction;
             doc.documentElement.style.overscrollBehaviorX = "contain";
             doc.documentElement.style.webkitUserSelect = "text";
             doc.documentElement.style.userSelect = "text";
+            doc.documentElement.style.webkitTouchCallout = "default";
         }
 
         if (doc.body) {
-            doc.body.style.touchAction = "pan-y pinch-zoom";
+            doc.body.style.touchAction = touchAction;
             doc.body.style.overscrollBehaviorX = "contain";
             doc.body.style.webkitUserSelect = "text";
             doc.body.style.userSelect = "text";
+            doc.body.style.webkitTouchCallout = "default";
         }
     } catch (error) {}
 
-    installEpubSwipeHandlers(doc, win);
+    if (IS_IOS_READER) {
+        // iOS-safe mode: do not attach one-finger swipe recognizers. They can
+        // compete with WebKit's long-press text-selection machinery. Navigation
+        // uses edge taps + visible Previous/Next, while native selection stays
+        // in control. Two-finger pinch uses WebKit gesture events only.
+        installEpubIosTapNavigation(contents);
+        installEpubIosGesturePinch(contents);
+    } else {
+        installEpubSwipeHandlers(doc, win);
+        installEpubPinchHandlers(win, contents);
+        installEpubPinchHandlers(doc, contents);
+    }
 
     if (EPUB_CONTENT_HANDLERS.has(doc)) return;
     EPUB_CONTENT_HANDLERS.add(doc);
 
-    let localSelectionTimer = null;
+    let localSelectionTimers = [];
 
-    const scheduleCapture = delay => {
-        clearTimeout(localSelectionTimer);
-        localSelectionTimer = setTimeout(() => {
-            if (selectionToolbarInteracting) return;
-            captureEpubSelection(contents);
-        }, delay);
+    const clearSelectionTimers = () => {
+        localSelectionTimers.forEach(timer => clearTimeout(timer));
+        localSelectionTimers = [];
     };
 
-    doc.addEventListener(
-        "selectionchange",
-        () => scheduleCapture(150),
-        {passive:true}
-    );
+    const scheduleCaptureBurst = (forcedCfi="") => {
+        clearSelectionTimers();
+        [0, 80, 180, 350, 650, 1000].forEach(delay => {
+            localSelectionTimers.push(setTimeout(() => {
+                if (selectionToolbarInteracting) return;
+                const captured = captureEpubSelection(contents, forcedCfi);
+                if (captured) clearSelectionTimers();
+            }, delay));
+        });
+    };
 
-    target.addEventListener(
-        "touchend",
-        () => scheduleCapture(180),
-        {passive:true,capture:true}
-    );
+    doc.addEventListener("selectionchange", () => scheduleCaptureBurst(), {passive:true});
+    target.addEventListener("touchend", () => scheduleCaptureBurst(), {passive:true,capture:true});
+    target.addEventListener("mouseup", () => scheduleCaptureBurst(), {passive:true,capture:true});
+    target.addEventListener("contextmenu", () => scheduleCaptureBurst(), {passive:true,capture:true});
 
-    target.addEventListener(
-        "mouseup",
-        () => scheduleCapture(0),
-        {passive:true,capture:true}
-    );
+    try {
+        contents.__pastorScheduleSelectionCapture = scheduleCaptureBurst;
+    } catch (error) {}
+}
+
+
+function iosEpubXmlElements(parent, localName) {
+    if (!parent) return [];
+    try { return Array.from(parent.getElementsByTagNameNS("*", localName)); }
+    catch (error) { return Array.from(parent.getElementsByTagName(localName)); }
+}
+
+function iosEpubFirstXmlElement(parent, localName) {
+    return iosEpubXmlElements(parent, localName)[0] || null;
+}
+
+function iosEpubDecodePath(value) {
+    let text = String(value || "").replace(/^\/+/, "");
+    try { text = decodeURIComponent(text); } catch (error) {}
+    return text;
+}
+
+function iosEpubSplitReference(value) {
+    const raw = String(value || "").trim();
+    const hash = raw.indexOf("#");
+    if (hash < 0) return {path:raw, fragment:""};
+    return {path:raw.slice(0, hash), fragment:raw.slice(hash + 1)};
+}
+
+function iosEpubResolvePath(baseFile, reference) {
+    const parts = iosEpubSplitReference(reference);
+    const ref = String(parts.path || "").trim();
+    if (!ref) return {path:iosEpubDecodePath(baseFile), fragment:parts.fragment};
+    if (/^(?:https?:|data:|blob:|mailto:|tel:|javascript:)/i.test(ref)) {
+        return {path:ref, fragment:parts.fragment, external:true};
+    }
+    try {
+        const base = "https://epub.invalid/" + String(baseFile || "").replace(/^\/+/, "");
+        const resolved = new URL(ref, base);
+        return {
+            path:iosEpubDecodePath(resolved.pathname.slice(1)),
+            fragment:parts.fragment,
+            external:false
+        };
+    } catch (error) {
+        return {path:iosEpubDecodePath(ref), fragment:parts.fragment, external:false};
+    }
+}
+
+function iosEpubMimeForPath(path, declared="") {
+    if (declared) return declared;
+    const value = String(path || "").toLowerCase();
+    if (value.endsWith(".jpg") || value.endsWith(".jpeg")) return "image/jpeg";
+    if (value.endsWith(".png")) return "image/png";
+    if (value.endsWith(".gif")) return "image/gif";
+    if (value.endsWith(".webp")) return "image/webp";
+    if (value.endsWith(".svg")) return "image/svg+xml";
+    if (value.endsWith(".woff2")) return "font/woff2";
+    if (value.endsWith(".woff")) return "font/woff";
+    if (value.endsWith(".ttf")) return "font/ttf";
+    if (value.endsWith(".otf")) return "font/otf";
+    if (value.endsWith(".mp3")) return "audio/mpeg";
+    if (value.endsWith(".mp4")) return "video/mp4";
+    return "application/octet-stream";
+}
+
+async function iosEpubAssetUrl(path, declaredMime="") {
+    const normalized = iosEpubDecodePath(path);
+    if (!normalized || !iosEpubZip) return "";
+    if (iosEpubAssetUrls.has(normalized)) return iosEpubAssetUrls.get(normalized);
+    const file = iosEpubZip.file(normalized);
+    if (!file) return "";
+    try {
+        const bytes = await file.async("uint8array");
+        const blob = new Blob([bytes], {type:iosEpubMimeForPath(normalized, declaredMime)});
+        const url = URL.createObjectURL(blob);
+        iosEpubAssetUrls.set(normalized, url);
+        return url;
+    } catch (error) {
+        console.warn("EPUB asset could not be prepared", normalized, error);
+        return "";
+    }
+}
+
+function iosEpubSpineIndexForHref(href) {
+    const parts = iosEpubSplitReference(href);
+    const direct = iosEpubDecodePath(parts.path).toLowerCase();
+    const resolved = iosEpubResolvePath(iosEpubOpfPath, parts.path);
+    const relative = String(resolved.path || "").toLowerCase();
+    const candidates = [direct, relative].filter(Boolean);
+    if (!candidates.length) return -1;
+
+    let index = iosEpubSpine.findIndex(item => {
+        const path = String(item.path || "").toLowerCase();
+        return candidates.includes(path);
+    });
+    if (index >= 0) return index;
+
+    index = iosEpubSpine.findIndex(item => {
+        const path = String(item.path || "").toLowerCase();
+        return candidates.some(wanted =>
+            path.endsWith("/" + wanted) || wanted.endsWith("/" + path)
+        );
+    });
+    return index;
+}
+
+function iosEpubFlattenNavList(list, baseFile, depth=0, output=[]) {
+    if (!list) return output;
+    const children = Array.from(list.children || []);
+    children.forEach(li => {
+        if (String(li.tagName || "").toLowerCase() !== "li") return;
+        const anchor = Array.from(li.children || []).find(node => String(node.tagName || "").toLowerCase() === "a")
+            || li.querySelector?.("a[href]");
+        if (anchor) {
+            const rawHref = String(anchor.getAttribute("href") || "").trim();
+            const resolved = iosEpubResolvePath(baseFile, rawHref);
+            const fullHref = resolved.path + (resolved.fragment ? "#" + resolved.fragment : "");
+            output.push({
+                label:String(anchor.textContent || rawHref || "Untitled section").replace(/\s+/g," ").trim(),
+                href:fullHref,
+                depth:Number(depth || 0),
+                spineIndex:iosEpubSpineIndexForHref(fullHref)
+            });
+        }
+        const nested = Array.from(li.children || []).find(node => String(node.tagName || "").toLowerCase() === "ol");
+        if (nested) iosEpubFlattenNavList(nested, baseFile, depth + 1, output);
+    });
+    return output;
+}
+
+async function iosEpubBuildToc(opfDocument, manifestItems) {
+    let items = [];
+    const navItem = manifestItems.find(item => String(item.properties || "").split(/\s+/).includes("nav"));
+    if (navItem && iosEpubZip?.file(navItem.path)) {
+        try {
+            const navText = await iosEpubZip.file(navItem.path).async("text");
+            const navDoc = new DOMParser().parseFromString(navText, "text/html");
+            const navs = Array.from(navDoc.querySelectorAll("nav"));
+            const tocNav = navs.find(nav => {
+                const type = String(nav.getAttribute("epub:type") || nav.getAttribute("type") || "").toLowerCase();
+                const role = String(nav.getAttribute("role") || "").toLowerCase();
+                return type.includes("toc") || role.includes("doc-toc");
+            }) || navs[0];
+            const ol = tocNav?.querySelector?.("ol");
+            if (ol) items = iosEpubFlattenNavList(ol, navItem.path, 0, []);
+        } catch (error) {
+            console.warn("EPUB navigation document could not be read", error);
+        }
+    }
+
+    if (!items.length) {
+        const spine = iosEpubFirstXmlElement(opfDocument, "spine");
+        const tocId = String(spine?.getAttribute("toc") || "");
+        const ncx = manifestItems.find(item => item.id === tocId || item.mediaType === "application/x-dtbncx+xml");
+        if (ncx && iosEpubZip?.file(ncx.path)) {
+            try {
+                const ncxText = await iosEpubZip.file(ncx.path).async("text");
+                const ncxDoc = new DOMParser().parseFromString(ncxText, "application/xml");
+                const walk = (node, depth=0) => {
+                    Array.from(node.children || []).forEach(child => {
+                        if (String(child.localName || child.tagName || "").toLowerCase() !== "navpoint") return;
+                        const labelNode = iosEpubFirstXmlElement(child, "text");
+                        const contentNode = iosEpubFirstXmlElement(child, "content");
+                        const rawHref = String(contentNode?.getAttribute("src") || "");
+                        const resolved = iosEpubResolvePath(ncx.path, rawHref);
+                        const fullHref = resolved.path + (resolved.fragment ? "#" + resolved.fragment : "");
+                        items.push({
+                            label:String(labelNode?.textContent || rawHref || "Untitled section").replace(/\s+/g," ").trim(),
+                            href:fullHref,
+                            depth,
+                            spineIndex:iosEpubSpineIndexForHref(fullHref)
+                        });
+                        walk(child, depth + 1);
+                    });
+                };
+                const navMap = iosEpubFirstXmlElement(ncxDoc, "navMap");
+                if (navMap) walk(navMap, 0);
+            } catch (error) {
+                console.warn("EPUB NCX could not be read", error);
+            }
+        }
+    }
+
+    if (!items.length) {
+        items = iosEpubSpine.map((item,index) => ({
+            label:"Chapter " + (index + 1),
+            href:item.path,
+            depth:0,
+            spineIndex:index
+        }));
+    }
+    return items;
+}
+
+async function iosEpubPrepareBook(epubData) {
+    if (!window.JSZip) throw new Error("JSZip could not be loaded for the iPhone/iPad EPUB reader.");
+    iosEpubZip = await JSZip.loadAsync(epubData);
+
+    const containerFile = iosEpubZip.file("META-INF/container.xml");
+    if (!containerFile) throw new Error("This EPUB does not contain META-INF/container.xml.");
+    const containerText = await containerFile.async("text");
+    const containerDoc = new DOMParser().parseFromString(containerText, "application/xml");
+    const rootfile = iosEpubFirstXmlElement(containerDoc, "rootfile");
+    iosEpubOpfPath = iosEpubDecodePath(rootfile?.getAttribute("full-path") || "");
+    if (!iosEpubOpfPath || !iosEpubZip.file(iosEpubOpfPath)) throw new Error("The EPUB package document could not be found.");
+
+    const opfText = await iosEpubZip.file(iosEpubOpfPath).async("text");
+    const opfDoc = new DOMParser().parseFromString(opfText, "application/xml");
+    const manifestItems = iosEpubXmlElements(opfDoc, "item").map(node => {
+        const href = String(node.getAttribute("href") || "");
+        const resolved = iosEpubResolvePath(iosEpubOpfPath, href);
+        return {
+            id:String(node.getAttribute("id") || ""),
+            href,
+            path:resolved.path,
+            mediaType:String(node.getAttribute("media-type") || ""),
+            properties:String(node.getAttribute("properties") || "")
+        };
+    });
+    iosEpubManifest = new Map(manifestItems.map(item => [item.id,item]));
+
+    iosEpubSpine = iosEpubXmlElements(opfDoc, "itemref").map(node => {
+        const idref = String(node.getAttribute("idref") || "");
+        const item = iosEpubManifest.get(idref);
+        if (!item) return null;
+        return {...item, linear:String(node.getAttribute("linear") || "yes")};
+    }).filter(Boolean);
+
+    if (!iosEpubSpine.length) throw new Error("This EPUB does not contain a readable spine.");
+    epubTocFlat = await iosEpubBuildToc(opfDoc, manifestItems);
+    populateEpubTocControls();
+}
+
+function iosEpubCleanElementTree(root) {
+    if (!root) return;
+    root.querySelectorAll("script,iframe,object,embed,form,input,textarea,select,button,base").forEach(node => node.remove());
+    root.querySelectorAll("style,link[rel='stylesheet']").forEach(node => node.remove());
+    root.querySelectorAll("*").forEach(node => {
+        Array.from(node.attributes || []).forEach(attr => {
+            const name = String(attr.name || "").toLowerCase();
+            const value = String(attr.value || "");
+            if (name.startsWith("on") || /javascript:/i.test(value)) node.removeAttribute(attr.name);
+        });
+        // Publisher fixed-layout inline CSS is a frequent cause of tiny or
+        // non-selectable text in mobile WebKit. Preserve semantics, not layout.
+        node.removeAttribute("style");
+        node.removeAttribute("contenteditable");
+        node.removeAttribute("draggable");
+    });
+}
+
+async function iosEpubRewriteChapterAssets(root, chapterPath) {
+    if (!root) return;
+    const images = Array.from(root.querySelectorAll("img[src],source[src],video[poster]"));
+    for (const node of images) {
+        const attribute = node.hasAttribute("src") ? "src" : "poster";
+        const raw = String(node.getAttribute(attribute) || "");
+        if (!raw || /^(?:data:|blob:|https?:)/i.test(raw)) continue;
+        const resolved = iosEpubResolvePath(chapterPath, raw);
+        const manifest = Array.from(iosEpubManifest.values()).find(item => item.path === resolved.path);
+        const url = await iosEpubAssetUrl(resolved.path, manifest?.mediaType || "");
+        if (url) node.setAttribute(attribute, url);
+    }
+
+    const svgImages = Array.from(root.querySelectorAll("image"));
+    for (const node of svgImages) {
+        const attr = node.hasAttribute("href") ? "href" : (node.hasAttribute("xlink:href") ? "xlink:href" : "");
+        if (!attr) continue;
+        const raw = String(node.getAttribute(attr) || "");
+        if (!raw || /^(?:data:|blob:|https?:)/i.test(raw)) continue;
+        const resolved = iosEpubResolvePath(chapterPath, raw);
+        const url = await iosEpubAssetUrl(resolved.path);
+        if (url) node.setAttribute(attr, url);
+    }
+
+    root.querySelectorAll("a[href]").forEach(anchor => {
+        const raw = String(anchor.getAttribute("href") || "").trim();
+        if (!raw) return;
+        if (/^(?:https?:|mailto:|tel:)/i.test(raw)) {
+            anchor.target = "_blank";
+            anchor.rel = "noopener noreferrer";
+            return;
+        }
+        const resolved = iosEpubResolvePath(chapterPath, raw);
+        const full = resolved.path + (resolved.fragment ? "#" + resolved.fragment : "");
+        anchor.dataset.epubHref = full;
+        anchor.setAttribute("href", "#");
+    });
+}
+
+function iosEpubNodePath(node, root) {
+    const path = [];
+    let current = node;
+    while (current && current !== root) {
+        const parent = current.parentNode;
+        if (!parent) return null;
+        const index = Array.prototype.indexOf.call(parent.childNodes, current);
+        if (index < 0) return null;
+        path.unshift(index);
+        current = parent;
+    }
+    return current === root ? path : null;
+}
+
+function iosEpubNodeFromPath(root, path) {
+    let current = root;
+    for (const rawIndex of (path || [])) {
+        const index = Number(rawIndex);
+        if (!current?.childNodes || index < 0 || index >= current.childNodes.length) return null;
+        current = current.childNodes[index];
+    }
+    return current;
+}
+
+function iosEpubMakeRangeLocator(range, text) {
+    const root = document.getElementById("iosEpubContent");
+    if (!root || !range || !root.contains(range.commonAncestorContainer)) return "";
+    const payload = {
+        v:1,
+        s:iosEpubSpineIndex,
+        sp:iosEpubNodePath(range.startContainer, root),
+        so:Number(range.startOffset || 0),
+        ep:iosEpubNodePath(range.endContainer, root),
+        eo:Number(range.endOffset || 0),
+        q:String(text || "").slice(0,240)
+    };
+    if (!payload.sp || !payload.ep) return "";
+    return "iosdom:" + encodeURIComponent(JSON.stringify(payload));
+}
+
+function iosEpubParseRangeLocator(locator) {
+    const raw = String(locator || "");
+    if (!raw.startsWith("iosdom:")) return null;
+    try { return JSON.parse(decodeURIComponent(raw.slice(7))); }
+    catch (error) { return null; }
+}
+
+function iosEpubRangeFromLocator(locator, selectedText="") {
+    const payload = iosEpubParseRangeLocator(locator);
+    const root = document.getElementById("iosEpubContent");
+    if (!payload || !root || Number(payload.s) !== Number(iosEpubSpineIndex)) return null;
+    try {
+        const start = iosEpubNodeFromPath(root, payload.sp);
+        const end = iosEpubNodeFromPath(root, payload.ep);
+        if (start && end) {
+            const range = document.createRange();
+            range.setStart(start, Math.min(Number(payload.so || 0), start.length ?? start.childNodes?.length ?? 0));
+            range.setEnd(end, Math.min(Number(payload.eo || 0), end.length ?? end.childNodes?.length ?? 0));
+            if (String(range.toString() || "").trim()) return range;
+        }
+    } catch (error) {}
+
+    // Quote fallback makes saved annotations survive harmless DOM/path shifts.
+    const quote = String(selectedText || payload.q || "").trim();
+    if (!quote) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+        const index = String(node.nodeValue || "").indexOf(quote);
+        if (index >= 0) {
+            const range = document.createRange();
+            range.setStart(node, index);
+            range.setEnd(node, index + quote.length);
+            return range;
+        }
+    }
+    return null;
+}
+
+function iosEpubCurrentSelectionRange() {
+    if (!iosDirectEpubActive) return null;
+    const root = document.getElementById("iosEpubContent");
+    if (!root) return null;
+
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return null;
+
+    const text = String(selection.toString() || "").trim();
+    if (!text) return null;
+
+    return {selection, range, text};
+}
+
+function iosEpubCaptureSelection() {
+    if (!iosDirectEpubActive || selectionToolbarInteracting) return false;
+
+    const current = iosEpubCurrentSelectionRange();
+    if (!current) return false;
+
+    clearTimeout(iosEpubSelectionHideTimer);
+
+    const locator = iosEpubMakeRangeLocator(current.range, current.text);
+    if (!locator) return false;
+
+    pendingSelection = {
+        text:current.text,
+        locator,
+        page:null,
+        sourceWindow:window
+    };
+
+    showSelectionBarAtRect(current.range.getBoundingClientRect?.() || null);
+    return true;
+}
+
+function iosEpubHideSelectionToolbarIfCollapsed() {
+    clearTimeout(iosEpubSelectionHideTimer);
+
+    iosEpubSelectionHideTimer = setTimeout(() => {
+        if (!iosDirectEpubActive || selectionToolbarInteracting) return;
+        if (iosEpubCurrentSelectionRange()) return;
+
+        pendingSelection = null;
+        hideSelectionBarOnly();
+    }, 220);
+}
+
+function iosEpubScheduleSelectionCapture() {
+    clearTimeout(iosEpubSelectionTimer);
+
+    iosEpubSelectionTimer = setTimeout(() => {
+        if (selectionToolbarInteracting) return;
+
+        if (!iosEpubCaptureSelection()) {
+            iosEpubHideSelectionToolbarIfCollapsed();
+        }
+    }, 140);
+}
+
+function iosEpubAnnotationName(id) {
+    return "pr-ios-ann-" + String(id).replace(/[^a-zA-Z0-9_-]/g,"-");
+}
+
+function iosEpubApplyAnnotation(item) {
+    if (!iosDirectEpubActive || !item?.locator) return;
+    const range = iosEpubRangeFromLocator(item.locator, item.selected_text || "");
+    if (!range) return;
+    const id = Number(item.id);
+    const name = iosEpubAnnotationName(id);
+
+    if (window.CSS?.highlights && window.Highlight) {
+        try {
+            CSS.highlights.set(name, new Highlight(range));
+            let style = document.getElementById("iosEpubHighlightRules");
+            if (!style) {
+                style = document.createElement("style");
+                style.id = "iosEpubHighlightRules";
+                document.head.appendChild(style);
+            }
+            const color = String(item.color || (item.annotation_type === "underline" ? "#e5962d" : "#ffe66d"));
+            style.sheet?.insertRule?.(
+                item.annotation_type === "underline"
+                    ? `::highlight(${name}) { text-decoration: underline 2px ${color}; text-underline-offset: 2px; }`
+                    : `::highlight(${name}) { background-color: ${color}; }`,
+                style.sheet.cssRules.length
+            );
+            appliedEpubAnnotationIds.add(id);
+            return;
+        } catch (error) {
+            console.warn("CSS Highlight API fallback", error);
+        }
+    }
+
+    try {
+        const span = document.createElement("span");
+        span.className = "ios-epub-fallback-highlight";
+        span.dataset.annotationId = String(id);
+        if (item.annotation_type === "underline") {
+            span.style.textDecoration = "underline 2px " + (item.color || "#e5962d");
+            span.style.textUnderlineOffset = "2px";
+        } else {
+            span.style.background = item.color || "#ffe66d";
+        }
+        const fragment = range.extractContents();
+        span.appendChild(fragment);
+        range.insertNode(span);
+        appliedEpubAnnotationIds.add(id);
+    } catch (error) {
+        console.warn("Direct EPUB annotation could not be drawn", error);
+    }
+}
+
+function iosEpubRemoveAnnotationVisual(item) {
+    const id = Number(item?.id);
+    if (!Number.isFinite(id)) return;
+    const name = iosEpubAnnotationName(id);
+    try { window.CSS?.highlights?.delete?.(name); } catch (error) {}
+    document.querySelectorAll(`#iosEpubContent [data-annotation-id="${id}"]`).forEach(node => {
+        const parent = node.parentNode;
+        if (!parent) return;
+        while (node.firstChild) parent.insertBefore(node.firstChild, node);
+        node.remove();
+        parent.normalize?.();
+    });
+    appliedEpubAnnotationIds.delete(id);
+}
+
+function iosEpubApplyCurrentAnnotations() {
+    annotations
+        .filter(item => String(item.format || "").toUpperCase() === "EPUB")
+        .filter(item => String(item.locator || "").startsWith("iosdom:"))
+        .forEach(iosEpubApplyAnnotation);
+}
+
+function iosEpubCurrentPositionLocator() {
+    const area = document.getElementById("readerCanvasArea");
+    const max = Math.max(1, Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0));
+    const ratio = Math.max(0, Math.min(1, Number(area?.scrollTop || 0) / max));
+    return `iosdompos:${iosEpubSpineIndex}:${ratio.toFixed(5)}`;
+}
+
+function iosEpubParsePositionLocator(locator) {
+    const match = /^iosdompos:(\d+)(?::([0-9.]+))?/.exec(String(locator || ""));
+    if (!match) return null;
+    return {index:Number(match[1]), ratio:Number(match[2] || 0)};
+}
+
+function iosEpubSavePosition() {
+    if (!iosDirectEpubActive || !iosEpubSpine.length) return;
+    const area = document.getElementById("readerCanvasArea");
+    const max = Math.max(1, Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0));
+    const ratio = Math.max(0, Math.min(1, Number(area?.scrollTop || 0) / max));
+    const progress = Math.max(0, Math.min(100, ((iosEpubSpineIndex + ratio) / iosEpubSpine.length) * 100));
+    setProgress(progress);
+    try { localStorage.setItem(IOS_EPUB_POSITION_KEY, JSON.stringify({index:iosEpubSpineIndex, ratio})); } catch (error) {}
+    clearTimeout(iosEpubProgressTimer);
+    iosEpubProgressTimer = setTimeout(() => {
+        saveState({
+            last_format:"EPUB",
+            progress_percent:progress,
+            epub_font_size:epubFontSize,
+            epub_font_family:epubFontFamily,
+            epub_line_height:epubLineHeight
+        });
+    }, 260);
+}
+
+function iosEpubApplyReaderAppearance() {
+    const content = document.getElementById("iosEpubContent");
+    if (!content) return;
+    content.style.fontSize = epubFontSize + "%";
+    content.style.fontFamily = epubFontFamily;
+    content.style.lineHeight = String(epubLineHeight);
+}
+
+async function iosEpubRenderChapter(index, fragment="", restoreRatio=0) {
+    if (!iosDirectEpubActive || !iosEpubSpine.length) return false;
+    const targetIndex = Math.max(0, Math.min(iosEpubSpine.length - 1, Number(index || 0)));
+    const item = iosEpubSpine[targetIndex];
+    const file = iosEpubZip?.file(item.path);
+    if (!file) return false;
+
+    setPageBusy(true, "Opening chapter " + (targetIndex + 1) + "…");
+    try {
+        const xhtml = await file.async("text");
+        const parsed = new DOMParser().parseFromString(xhtml, "text/html");
+        const body = parsed.body || parsed.documentElement;
+        iosEpubCleanElementTree(body);
+        await iosEpubRewriteChapterAssets(body, item.path);
+
+        const content = document.getElementById("iosEpubContent");
+        content.replaceChildren(...Array.from(body.childNodes).map(node => document.importNode(node, true)));
+        iosEpubSpineIndex = targetIndex;
+        iosEpubCurrentFragment = String(fragment || "");
+        currentEpubHref = item.path + (fragment ? "#" + fragment : "");
+        iosEpubApplyReaderAppearance();
+        appliedEpubAnnotationIds.clear();
+        iosEpubApplyCurrentAnnotations();
+
+        if (activeSearchQuery) {
+            const activeMatch = searchMatches[searchMatchIndex] || null;
+            const activeOccurrence = Number(activeMatch?.iosSpineIndex) === targetIndex
+                ? Number(activeMatch?.iosOccurrence ?? 0)
+                : -1;
+            applyIosEpubSearchHighlights(
+                activeSearchQuery,
+                activeOccurrence
+            );
+        }
+
+        updateReaderPageControls(targetIndex + 1, iosEpubSpine.length, "Chapter", true);
+        updateCurrentChapterHighlight();
+
+        const area = document.getElementById("readerCanvasArea");
+        await nextAnimationFrame();
+        if (fragment) {
+            let target = null;
+            try { target = content.querySelector("#" + CSS.escape(fragment)); } catch (error) {}
+            if (target) target.scrollIntoView({block:"start"});
+            else if (area) area.scrollTop = 0;
+        } else if (area) {
+            const max = Math.max(0, area.scrollHeight - area.clientHeight);
+            area.scrollTop = max * Math.max(0, Math.min(1, Number(restoreRatio || 0)));
+        }
+        iosEpubSavePosition();
+        return true;
+    } finally {
+        setPageBusy(false);
+    }
+}
+
+async function iosEpubOpenHref(href) {
+    const parts = iosEpubSplitReference(href);
+    let index = iosEpubSpineIndexForHref(parts.path);
+    if (index < 0) {
+        const normalized = iosEpubDecodePath(parts.path).toLowerCase();
+        index = iosEpubSpine.findIndex(item => {
+            const path = String(item.path || "").toLowerCase();
+            return path === normalized || path.endsWith("/" + normalized) || normalized.endsWith("/" + path);
+        });
+    }
+    if (index < 0) return false;
+    return iosEpubRenderChapter(index, parts.fragment, 0);
+}
+
+async function iosEpubGo(direction) {
+    if (!iosDirectEpubActive) return;
+    const next = iosEpubSpineIndex + (direction < 0 ? -1 : 1);
+    if (next < 0 || next >= iosEpubSpine.length) return;
+    hideSelectionBarOnly();
+    await iosEpubRenderChapter(next, "", 0);
+}
+
+function iosEpubInstallInteractions() {
+    const viewer = document.getElementById("iosEpubViewer");
+    const content = document.getElementById("iosEpubContent");
+    const area = document.getElementById("readerCanvasArea");
+    if (!viewer || !content) return;
+
+    if (!viewer.__pastorDirectHandlers) {
+        viewer.__pastorDirectHandlers = true;
+        viewer.addEventListener("click", event => {
+            const link = event.target?.closest?.("a[data-epub-href]");
+            if (link) {
+                event.preventDefault();
+                iosEpubOpenHref(link.dataset.epubHref || "");
+                return;
+            }
+            if (event.target?.closest?.("a,button,input,textarea,select,label,[role='button']")) return;
+            if (selectionIsActive(window)) return;
+            const rect = viewer.getBoundingClientRect();
+            const x = Number(event.clientX) - rect.left;
+            if (!rect.width || !Number.isFinite(x)) return;
+            let direction = 0;
+            if (x <= rect.width * .18) direction = -1;
+            else if (x >= rect.width * .82) direction = 1;
+            if (!direction) return;
+            setTimeout(() => {
+                if (!selectionIsActive(window)) iosEpubGo(direction);
+            }, 90);
+        });
+
+        viewer.addEventListener("touchstart", event => {
+            if (!event.touches || event.touches.length !== 2) return;
+            iosEpubPinchStartDistance = epubTouchDistance(event.touches);
+            iosEpubPinchStartSize = epubFontSize;
+            iosEpubPinching = Boolean(iosEpubPinchStartDistance);
+            if (iosEpubPinching && event.cancelable) event.preventDefault();
+        }, {passive:false,capture:true});
+        viewer.addEventListener("touchmove", event => {
+            if (!iosEpubPinching || !event.touches || event.touches.length !== 2) return;
+            const distance = epubTouchDistance(event.touches);
+            if (!distance) return;
+            const nextSize = Math.min(220, Math.max(70, iosEpubPinchStartSize * (distance / iosEpubPinchStartDistance)));
+            content.style.fontSize = nextSize + "%";
+            epubPinchPendingSize = nextSize;
+            if (event.cancelable) event.preventDefault();
+        }, {passive:false,capture:true});
+        const finishPinch = () => {
+            if (!iosEpubPinching) return;
+            iosEpubPinching = false;
+            if (Number.isFinite(epubPinchPendingSize)) {
+                epubFontSize = Math.min(220, Math.max(70, Math.round(epubPinchPendingSize / 5) * 5));
+                epubPinchPendingSize = null;
+                iosEpubApplyReaderAppearance();
+                saveState({epub_font_size:epubFontSize});
+                showReaderToast("Font size: " + epubFontSize + "%");
+            }
+        };
+        viewer.addEventListener("touchend", event => {
+            iosEpubScheduleSelectionCapture();
+            if (!event.touches || event.touches.length < 2) finishPinch();
+        }, {passive:true,capture:true});
+        viewer.addEventListener("touchcancel", finishPinch, {passive:true,capture:true});
+        viewer.addEventListener("mouseup", iosEpubScheduleSelectionCapture, {passive:true});
+        viewer.addEventListener("contextmenu", iosEpubScheduleSelectionCapture, {passive:true});
+    }
+
+    if (area && !area.__pastorDirectEpubScroll) {
+        area.__pastorDirectEpubScroll = true;
+        area.addEventListener("scroll", () => iosEpubSavePosition(), {passive:true});
+    }
+    if (!document.__pastorDirectEpubSelection) {
+        document.__pastorDirectEpubSelection = true;
+        document.addEventListener("selectionchange", iosEpubScheduleSelectionCapture, {passive:true});
+    }
+}
+
+async function initIosDirectEpubReader() {
+    iosDirectEpubActive = true;
+    const classic = document.getElementById("epubViewer");
+    const direct = document.getElementById("iosEpubViewer");
+    if (classic) classic.style.display = "none";
+    if (direct) direct.style.display = "block";
+
+    try {
+        updateReaderPageControls(1, 0, "Chapter", false);
+        const epubData = await fetchArrayBufferWithProgress(MEDIA_URL, "EPUB");
+        showReaderLoading("Opening EPUB…", "Preparing the iPhone/iPad compatibility reader…", null, epubData.byteLength, epubData.byteLength);
+        await iosEpubPrepareBook(epubData);
+        document.getElementById("fontFamilySelect").value = epubFontFamily;
+        document.getElementById("lineHeightSelect").value = String(epubLineHeight);
+        iosEpubInstallInteractions();
+
+        let initialIndex = 0;
+        let initialRatio = 0;
+        try {
+            const saved = JSON.parse(localStorage.getItem(IOS_EPUB_POSITION_KEY) || "null");
+            if (saved && Number.isFinite(Number(saved.index))) {
+                initialIndex = Math.max(0, Math.min(iosEpubSpine.length - 1, Number(saved.index)));
+                initialRatio = Math.max(0, Math.min(1, Number(saved.ratio || 0)));
+            } else if (Number(STATE.progress_percent || 0) > 0) {
+                initialIndex = Math.max(0, Math.min(iosEpubSpine.length - 1, Math.floor((Number(STATE.progress_percent) / 100) * iosEpubSpine.length)));
+            }
+        } catch (error) {}
+
+        const jumpAnn = annotations.find(a => Number(a.id) === Number(JUMP_ANNOTATION_ID));
+        const jumpBm = bookmarks.find(b => Number(b.id) === Number(JUMP_BOOKMARK_ID));
+        const annLoc = iosEpubParseRangeLocator(jumpAnn?.locator || "");
+        const bmPos = iosEpubParsePositionLocator(jumpBm?.locator || "");
+        if (annLoc) { initialIndex = Math.max(0, Math.min(iosEpubSpine.length - 1, Number(annLoc.s || 0))); initialRatio = 0; }
+        else if (bmPos) { initialIndex = Math.max(0, Math.min(iosEpubSpine.length - 1, bmPos.index)); initialRatio = bmPos.ratio; }
+
+        await iosEpubRenderChapter(initialIndex, "", initialRatio);
+        hideReaderLoading();
+        showReaderToast("iPhone/iPad EPUB compatibility mode: select text normally; tap the far left/right edge for previous/next chapter.");
+
+        if (annLoc && jumpAnn?.locator) {
+            const range = iosEpubRangeFromLocator(jumpAnn.locator, jumpAnn.selected_text || "");
+            range?.startContainer?.parentElement?.scrollIntoView?.({block:"center"});
+        }
+    } catch (error) {
+        console.error(error);
+        iosDirectEpubActive = false;
+        showReaderLoadError(error?.message || "Unable to open this EPUB in iPhone/iPad compatibility mode.");
+    }
 }
 
 async function initEpubReader() {
+    if (IS_IOS_READER) {
+        await initIosDirectEpubReader();
+        return;
+    }
+
     if (!window.ePub) {
         showReaderLoadError("EPUB.js could not be loaded. Check the internet connection used to load the reader library.");
         return;
@@ -13221,6 +14720,7 @@ async function initEpubReader() {
         // URL problem and works reliably with authenticated Drive files.
         epubBook = ePub(epubData);
         rendition = epubBook.renderTo("epubViewer",{width:"100%",height:"100%",spread:"none",flow:"paginated"});
+        if (!IS_IOS_READER) installEpubRenditionGestureFallback();
 
         rendition.themes.register("light",{body:{background:"#ffffff",color:"#17233c"},a:{color:"#3567b5"}});
         rendition.themes.register("sepia",{body:{background:"#fbf4e5",color:"#4b3b29"},a:{color:"#805a31"}});
@@ -13247,7 +14747,7 @@ async function initEpubReader() {
             try {
                 if (view?.contents) {
                     installEpubContentHandlers(view.contents);
-                } else if (view?.document) {
+                } else if (view?.document && !IS_IOS_READER) {
                     installEpubSwipeHandlers(
                         view.document,
                         view.window || view.document.defaultView || window
@@ -13259,19 +14759,17 @@ async function initEpubReader() {
         });
 
         const navigation = await epubBook.loaded.navigation;
-        const toc = document.getElementById("tocSelect");
-        toc.innerHTML = '<option value="">Table of Contents</option>';
-        (navigation.toc || []).forEach(item => {
-            const option = document.createElement("option");
-            option.value = item.href;
-            option.textContent = item.label || item.href;
-            toc.appendChild(option);
-        });
+        epubTocFlat = flattenEpubToc(navigation.toc || []);
+        populateEpubTocControls();
 
         rendition.on("selected",(cfiRange,contents) => {
             try {
                 installEpubContentHandlers(contents);
-                captureEpubSelection(contents, cfiRange);
+
+                const captured = captureEpubSelection(contents, cfiRange);
+                if (!captured) {
+                    contents?.__pastorScheduleSelectionCapture?.(cfiRange);
+                }
             } catch (error) {
                 console.warn(error);
             }
@@ -13282,6 +14780,8 @@ async function initEpubReader() {
                 setPageBusy(false);
             }
             currentEpubCfi = location.start.cfi;
+            currentEpubHref = String(location?.start?.href || location?.end?.href || "");
+            updateCurrentChapterHighlight();
 
             let percent = Number(location.start.percentage || 0) * 100;
 
@@ -13344,6 +14844,16 @@ async function initEpubReader() {
         hideReaderLoading();
         setPageBusy(false);
 
+        if (IS_IOS_READER) {
+            try {
+                const hintKey = "pastorEpubIosTapHintV1";
+                if (!sessionStorage.getItem(hintKey)) {
+                    sessionStorage.setItem(hintKey, "1");
+                    showReaderToast("iPhone/iPad: tap the left or right edge to turn pages. Long-press text to select.", 4200);
+                }
+            } catch (error) {}
+        }
+
         epubBook.ready.then(async () => {
             try {
                 const generatedLocations = await epubBook.locations.generate(1600);
@@ -13398,6 +14908,10 @@ async function initEpubReader() {
 }
 
 function applyEpubTheme() {
+    if (iosDirectEpubActive) {
+        iosEpubApplyReaderAppearance();
+        return;
+    }
     if (!rendition) return;
     rendition.themes.select(currentTheme || "light");
     rendition.themes.fontSize(epubFontSize + "%");
@@ -13408,7 +14922,7 @@ function applyEpubTheme() {
 function changeEpubFont(delta) {
     epubFontSize = Math.min(220,Math.max(70,epubFontSize + delta));
     applyEpubTheme();
-    scheduleEpubLayoutRefresh("Updating text size…");
+    if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating text size…");
     saveState({epub_font_size:epubFontSize});
     showReaderToast("Font size: " + epubFontSize + "%");
 }
@@ -13416,25 +14930,246 @@ function changeEpubFont(delta) {
 function setEpubFontFamily(value) {
     epubFontFamily = value;
     applyEpubTheme();
-    scheduleEpubLayoutRefresh("Updating font…");
+    if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating font…");
     saveState({epub_font_family:value});
 }
 
 function setEpubLineHeight(value) {
     epubLineHeight = Number(value || 1.6);
     applyEpubTheme();
-    scheduleEpubLayoutRefresh("Updating line spacing…");
+    if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating line spacing…");
     saveState({epub_line_height:epubLineHeight});
 }
 
-function jumpToc(value) {
-    if (rendition && value) {
-        epubNavigationQueue = [];
-        setPageBusy(true,"Opening section…");
-        Promise.resolve(rendition.display(value))
-            .catch(error => console.warn(error))
-            .finally(() => setPageBusy(false));
+function normalizeEpubHref(value) {
+    let raw = String(value || "").trim();
+    try { raw = decodeURIComponent(raw); } catch (error) {}
+    raw = raw.replace(/\\/g, "/");
+    raw = raw.replace(/^\.\//, "");
+    while (raw.startsWith("../")) raw = raw.slice(3);
+    return raw;
+}
+
+function splitEpubHref(value) {
+    const raw = normalizeEpubHref(value);
+    const hashIndex = raw.indexOf("#");
+    if (hashIndex < 0) return {path:raw, fragment:""};
+    return {path:raw.slice(0,hashIndex), fragment:raw.slice(hashIndex + 1)};
+}
+
+function flattenEpubToc(items, depth=0, output=[]) {
+    (items || []).forEach(item => {
+        output.push({
+            label:String(item?.label || item?.href || "Untitled section").trim(),
+            href:String(item?.href || "").trim(),
+            depth:Number(depth || 0)
+        });
+        if (Array.isArray(item?.subitems) && item.subitems.length) {
+            flattenEpubToc(item.subitems, depth + 1, output);
+        }
+    });
+    return output;
+}
+
+function populateEpubTocControls() {
+    const toc = document.getElementById("tocSelect");
+    if (toc) {
+        toc.innerHTML = '<option value="">Table of Contents</option>';
+        epubTocFlat.forEach((item,index) => {
+            const option = document.createElement("option");
+            option.value = String(index);
+            option.textContent = (item.depth ? "— ".repeat(Math.min(3,item.depth)) : "") + item.label;
+            toc.appendChild(option);
+        });
     }
+    renderQuickChapterList();
+}
+
+function renderQuickChapterList() {
+    const list = document.getElementById("readerChapterList");
+    const heading = document.getElementById("readerChapterHeading");
+    if (!list) return;
+    list.innerHTML = "";
+
+    if (READER_FORMAT === "PDF") {
+        if (heading) heading.textContent = "Chapters";
+        if (!pdfOutlineFlat.length) {
+            list.innerHTML = '<div class="reader-chapter-empty">This PDF does not provide embedded chapter bookmarks.</div>';
+            return;
+        }
+        pdfOutlineFlat.forEach((item,index) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "reader-chapter-item";
+            button.dataset.index = String(index);
+            button.dataset.page = String(item.page || "");
+            button.style.paddingLeft = (10 + Math.min(4,item.depth) * 16) + "px";
+            button.textContent = item.label + (item.page ? "  ·  p. " + item.page : "");
+            button.onclick = () => openPdfOutlineItem(index, true);
+            list.appendChild(button);
+        });
+        updateCurrentChapterHighlight();
+        return;
+    }
+
+    if (heading) heading.textContent = "Chapters";
+    if (!epubTocFlat.length) {
+        list.innerHTML = '<div class="reader-chapter-empty">This EPUB does not provide a table of contents.</div>';
+        return;
+    }
+    epubTocFlat.forEach((item,index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "reader-chapter-item";
+        button.dataset.index = String(index);
+        button.dataset.href = item.href;
+        button.style.paddingLeft = (10 + Math.min(4,item.depth) * 16) + "px";
+        button.textContent = item.label;
+        button.onclick = () => openEpubTocItem(index, true);
+        list.appendChild(button);
+    });
+    updateCurrentChapterHighlight();
+}
+
+function epubHrefLooksSame(a,b) {
+    const left = splitEpubHref(a).path.toLowerCase();
+    const right = splitEpubHref(b).path.toLowerCase();
+    if (!left || !right) return false;
+    return left === right || left.endsWith("/" + right) || right.endsWith("/" + left);
+}
+
+function updateCurrentChapterHighlight() {
+    const buttons = document.querySelectorAll(".reader-chapter-item");
+    let best = -1;
+
+    if (READER_FORMAT === "PDF") {
+        pdfOutlineFlat.forEach((item,index) => {
+            if (Number(item.page || 0) <= Number(pdfPageNumber || 1)) best = index;
+        });
+    } else {
+        epubTocFlat.forEach((item,index) => {
+            if (epubHrefLooksSame(item.href, currentEpubHref)) best = index;
+        });
+    }
+
+    buttons.forEach(button => {
+        button.classList.toggle("current", Number(button.dataset.index) === best);
+    });
+}
+
+function toggleChapterPanel(force) {
+    const sheet = document.getElementById("readerChapterSheet");
+    const backdrop = document.getElementById("readerChapterBackdrop");
+    if (!sheet || !backdrop) return;
+    const open = typeof force === "boolean" ? force : !sheet.classList.contains("open");
+    if (open) toggleToolsPanel(false);
+    sheet.classList.toggle("open", open);
+    backdrop.classList.toggle("show", open);
+    if (open) {
+        renderQuickChapterList();
+        updateCurrentChapterHighlight();
+    }
+}
+
+function epubDisplayCandidates(rawHref) {
+    const candidates = [];
+    const push = value => {
+        if (value === null || value === undefined || value === "") return;
+        const key = String(value);
+        if (!candidates.some(existing => String(existing) === key)) candidates.push(value);
+    };
+
+    const raw = String(rawHref || "").trim();
+    const decoded = normalizeEpubHref(raw);
+    const parts = splitEpubHref(decoded);
+    const hash = parts.fragment ? "#" + parts.fragment : "";
+
+    push(raw);
+    push(decoded);
+
+    const spineItems = epubBook?.spine?.spineItems || [];
+    let matched = null;
+
+    // First let EPUB.js resolve the target using its own spine lookup.
+    for (const candidate of [raw, decoded, parts.path]) {
+        try {
+            const found = epubBook?.spine?.get?.(candidate);
+            if (found) { matched = found; break; }
+        } catch (error) {}
+    }
+
+    // Some EPUBs put OEBPS/Text/... in the spine while the nav document uses
+    // Text/... or ../Text/.... Match by normalized suffix as a fallback.
+    if (!matched && parts.path) {
+        const wanted = normalizeEpubHref(parts.path).toLowerCase();
+        matched = spineItems.find(item => {
+            const href = normalizeEpubHref(item?.href || item?.url || "").toLowerCase();
+            return href === wanted || href.endsWith("/" + wanted) || wanted.endsWith("/" + href);
+        }) || null;
+    }
+
+    if (matched) {
+        push(String(matched.href || matched.url || "") + hash);
+        if (Number.isFinite(Number(matched.index))) push(Number(matched.index));
+        try { if (matched.cfiBase) push(matched.cfiBase); } catch (error) {}
+    }
+
+    return candidates;
+}
+
+async function displayEpubHref(rawHref) {
+    if (!rendition || !rawHref) return false;
+    const candidates = epubDisplayCandidates(rawHref);
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            await Promise.resolve(rendition.display(candidate));
+            return true;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    if (lastError) console.warn("EPUB TOC navigation failed", lastError);
+    return false;
+}
+
+async function openEpubTocItem(indexOrHref, closePanel=false) {
+    let item = null;
+    const index = Number(indexOrHref);
+    if (Number.isInteger(index) && index >= 0 && index < epubTocFlat.length) {
+        item = epubTocFlat[index];
+    } else {
+        item = {label:"Section", href:String(indexOrHref || "")};
+    }
+    if (!item?.href) return;
+
+    if (iosDirectEpubActive) {
+        hideSelectionBarOnly();
+        const opened = item.spineIndex >= 0
+            ? await iosEpubRenderChapter(item.spineIndex, iosEpubSplitReference(item.href).fragment, 0)
+            : await iosEpubOpenHref(item.href);
+        if (!opened) showReaderToast("That chapter could not be opened in this EPUB.");
+        else if (closePanel) toggleChapterPanel(false);
+        return;
+    }
+
+    if (!rendition) return;
+    epubNavigationQueue = [];
+    hideSelectionBarOnly();
+    setPageBusy(true,"Opening " + (item.label || "section") + "…");
+    const opened = await displayEpubHref(item.href);
+    setPageBusy(false);
+
+    if (!opened) {
+        showReaderToast("That chapter could not be opened in this EPUB.");
+    } else if (closePanel) {
+        toggleChapterPanel(false);
+    }
+}
+
+function jumpToc(value) {
+    if (value === "" || value === null || value === undefined) return;
+    openEpubTocItem(value, false);
 }
 
 function epubAnnotationKind(item) {
@@ -13443,6 +15178,11 @@ function epubAnnotationKind(item) {
 
 function removeEpubAnnotationVisual(item) {
     if (!item) return;
+
+    if (iosDirectEpubActive && String(item.locator || "").startsWith("iosdom:")) {
+        iosEpubRemoveAnnotationVisual(item);
+        return;
+    }
 
     const id = Number(item.id);
     const locator = String(item.locator || "");
@@ -13482,7 +15222,25 @@ function nextAnimationFrame() {
 }
 
 async function rebuildVisibleEpubAnnotations() {
-    if (READER_FORMAT !== "EPUB" || !rendition) return;
+    if (READER_FORMAT !== "EPUB") return;
+    if (iosDirectEpubActive) {
+        // Rebuild the visible iOS chapter from the clean EPUB source. This is
+        // more reliable than trying to surgically unwrap a stale Safari
+        // highlight/span after deletion.
+        const area = document.getElementById("readerCanvasArea");
+        const max = Math.max(
+            1,
+            Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0)
+        );
+        const ratio = Math.max(
+            0,
+            Math.min(1, Number(area?.scrollTop || 0) / max)
+        );
+
+        await iosEpubRenderChapter(iosEpubSpineIndex, "", ratio);
+        return;
+    }
+    if (!rendition) return;
 
     const currentItems = annotations.filter(
         item => String(item.format || "").toUpperCase() === "EPUB"
@@ -13548,7 +15306,11 @@ function applyAnnotation(item) {
         renderPdfAnnotations();
         return;
     }
-    if (!rendition || !item.locator || appliedEpubAnnotationIds.has(Number(item.id))) return;
+    if (iosDirectEpubActive) {
+        if (String(item?.locator || "").startsWith("iosdom:")) iosEpubApplyAnnotation(item);
+        return;
+    }
+    if (!rendition || !item.locator || String(item.locator).startsWith("iosdom:") || appliedEpubAnnotationIds.has(Number(item.id))) return;
 
     const callback = () => {
         if (item.note) showReaderToast(item.note);
@@ -13585,101 +15347,175 @@ function selectionIsActive(win) {
     }
 }
 
+function queueEpubSwipeFromGesture(direction) {
+    if (!rendition) return;
+    if (selectionIsActive(lastEpubContents?.window || window)) return;
+
+    // Multiple iOS/EPUB.js event paths may report the same physical swipe.
+    // Keep one page turn while still allowing normal repeated swipes.
+    const now = Date.now();
+    if (now - epubLastSwipeAt < 360) return;
+    epubLastSwipeAt = now;
+
+    hideSelectionBarOnly();
+    queueEpubNavigation(direction);
+}
+
+function installEpubRenditionGestureFallback() {
+    if (!rendition || epubRenditionGestureInstalled) return;
+    epubRenditionGestureInstalled = true;
+
+    let startX = 0;
+    let startY = 0;
+    let startTime = 0;
+    let tracking = false;
+
+    const pointFromEvent = event => {
+        if (event?.touches?.length && event.touches.length !== 1) return null;
+        if (event?.changedTouches?.length && event.changedTouches.length !== 1) return null;
+        const touch = event?.changedTouches?.[0] || event?.touches?.[0] || event;
+        if (!touch) return null;
+        const x = Number(touch.clientX);
+        const y = Number(touch.clientY);
+        return Number.isFinite(x) && Number.isFinite(y) ? {x,y} : null;
+    };
+
+    rendition.on("touchstart", event => {
+        if (selectionIsActive(lastEpubContents?.window || window)) return;
+        const point = pointFromEvent(event);
+        if (!point) { tracking = false; return; }
+        startX = point.x;
+        startY = point.y;
+        startTime = Date.now();
+        tracking = true;
+    });
+
+    rendition.on("touchend", event => {
+        if (!tracking) return;
+        tracking = false;
+        const point = pointFromEvent(event);
+        if (!point || selectionIsActive(lastEpubContents?.window || window)) return;
+        const dx = point.x - startX;
+        const dy = point.y - startY;
+        const elapsed = Date.now() - startTime;
+        if (elapsed <= 1100 && Math.abs(dx) >= 44 && Math.abs(dx) >= Math.abs(dy) * 1.12) {
+            queueEpubSwipeFromGesture(dx < 0 ? 1 : -1);
+        }
+    });
+}
+
 function installEpubSwipeHandlers(doc, win=window) {
     if (!doc || SWIPE_INSTALLED.has(doc)) return;
     SWIPE_INSTALLED.add(doc);
 
     let startX = 0;
     let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
     let startTime = 0;
     let tracking = false;
-    let horizontalGesture = false;
+    let multiTouch = false;
 
     const reset = () => {
         tracking = false;
-        horizontalGesture = false;
+        multiTouch = false;
     };
 
-    doc.addEventListener("touchstart", event => {
-        reset();
-        if (!event.touches || event.touches.length !== 1) return;
+    const begin = event => {
+        if (!event?.touches) return;
+        if (event.touches.length !== 1) {
+            multiTouch = event.touches.length > 1;
+            tracking = false;
+            return;
+        }
         if (selectionIsActive(win)) return;
-
         const touch = event.touches[0];
         const viewportWidth = Number(win?.innerWidth || window.innerWidth || 0);
-
-        // Preserve Safari's system-level edge navigation gesture.
-        if (
-            viewportWidth > 0
-            && (touch.clientX < 24 || touch.clientX > viewportWidth - 24)
-        ) {
-            return;
-        }
-
-        startX = touch.clientX;
-        startY = touch.clientY;
+        if (viewportWidth > 0 && (touch.clientX < 18 || touch.clientX > viewportWidth - 18)) return;
+        startX = lastX = Number(touch.clientX || 0);
+        startY = lastY = Number(touch.clientY || 0);
         startTime = Date.now();
         tracking = true;
-    }, {passive:true,capture:true});
+        multiTouch = false;
+    };
 
-    doc.addEventListener("touchmove", event => {
-        if (!tracking || !event.touches || event.touches.length !== 1) return;
-        if (selectionIsActive(win)) {
-            reset();
-            return;
-        }
-
+    const move = event => {
+        if (!tracking || !event?.touches || event.touches.length !== 1) return;
         const touch = event.touches[0];
-        const dx = touch.clientX - startX;
-        const dy = touch.clientY - startY;
+        lastX = Number(touch.clientX || 0);
+        lastY = Number(touch.clientY || 0);
+        // Do not preventDefault here. iOS long-press selection needs the native
+        // touch stream to remain intact. We decide whether it was a swipe only
+        // after the finger is released.
+    };
 
-        if (!horizontalGesture) {
-            if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
-
-            // A vertical gesture belongs to the document/native browser.
-            if (Math.abs(dy) >= Math.abs(dx) * .85) {
-                reset();
-                return;
-            }
-
-            if (Math.abs(dx) >= 18) {
-                horizontalGesture = true;
-            }
-        }
-
-        // Once the gesture is clearly horizontal, prevent WebKit's iframe
-        // from turning it into a scroll/overscroll gesture before touchend.
-        if (horizontalGesture && event.cancelable) {
-            event.preventDefault();
-        }
-    }, {passive:false,capture:true});
-
-    doc.addEventListener("touchcancel", reset, {passive:true,capture:true});
-
-    doc.addEventListener("touchend", event => {
-        if (!tracking) return;
-        const wasHorizontal = horizontalGesture;
-        tracking = false;
-        horizontalGesture = false;
-
-        if (!event.changedTouches || event.changedTouches.length !== 1) return;
-        if (selectionIsActive(win)) return;
-
-        const touch = event.changedTouches[0];
-        const dx = touch.clientX - startX;
-        const dy = touch.clientY - startY;
+    const finishAt = (x,y) => {
+        if (!tracking || multiTouch) { reset(); return; }
+        const dx = Number(x || lastX) - startX;
+        const dy = Number(y || lastY) - startY;
         const elapsed = Date.now() - startTime;
-
-        if (elapsed > 1000) return;
-        if (!wasHorizontal && Math.abs(dx) < 48) return;
-        if (Math.abs(dx) < 48) return;
+        reset();
+        if (selectionIsActive(win)) return;
+        if (elapsed > 1100) return;
+        if (Math.abs(dx) < 44) return;
         if (Math.abs(dx) < Math.abs(dy) * 1.12) return;
+        queueEpubSwipeFromGesture(dx < 0 ? 1 : -1);
+    };
 
-        hideSelectionBarOnly();
+    const end = event => {
+        if (!tracking) return;
+        const touch = event?.changedTouches?.[0];
+        finishAt(touch?.clientX ?? lastX, touch?.clientY ?? lastY);
+    };
 
-        if (dx < 0) queueEpubNavigation(1);
-        else queueEpubNavigation(-1);
-    }, {passive:true,capture:true});
+    const cancel = () => {
+        // WebKit sometimes converts a completed iframe swipe into touchcancel.
+        if (tracking && !multiTouch) finishAt(lastX,lastY);
+        else reset();
+    };
+
+    [win, doc, doc.body].filter(Boolean).forEach(target => {
+        target.addEventListener("touchstart", begin, {passive:true,capture:true});
+        target.addEventListener("touchmove", move, {passive:true,capture:true});
+        target.addEventListener("touchend", end, {passive:true,capture:true});
+        target.addEventListener("touchcancel", cancel, {passive:true,capture:true});
+    });
+
+    // Pointer fallback remains useful on Android/desktop touch devices, but it
+    // never suppresses the iOS native text-selection path.
+    if (window.PointerEvent) {
+        let pointerId = null;
+        let pointerTracking = false;
+        let px = 0, py = 0, pLastX = 0, pLastY = 0, pStart = 0;
+        const pDown = event => {
+            if (event.pointerType === "mouse" || selectionIsActive(win)) return;
+            pointerId = event.pointerId;
+            px = pLastX = event.clientX;
+            py = pLastY = event.clientY;
+            pStart = Date.now();
+            pointerTracking = true;
+        };
+        const pMove = event => {
+            if (!pointerTracking || event.pointerId !== pointerId) return;
+            pLastX = event.clientX; pLastY = event.clientY;
+        };
+        const pUp = event => {
+            if (!pointerTracking || event.pointerId !== pointerId) return;
+            pointerTracking = false;
+            const dx = event.clientX - px;
+            const dy = event.clientY - py;
+            if (Date.now()-pStart <= 1100 && Math.abs(dx)>=44 && Math.abs(dx)>=Math.abs(dy)*1.12 && !selectionIsActive(win)) {
+                queueEpubSwipeFromGesture(dx < 0 ? 1 : -1);
+            }
+        };
+        const pCancel = () => { pointerTracking = false; pointerId = null; };
+        [win, doc].filter(Boolean).forEach(target => {
+            target.addEventListener("pointerdown", pDown, {passive:true,capture:true});
+            target.addEventListener("pointermove", pMove, {passive:true,capture:true});
+            target.addEventListener("pointerup", pUp, {passive:true,capture:true});
+            target.addEventListener("pointercancel", pCancel, {passive:true,capture:true});
+        });
+    }
 }
 
 function installSwipeHandlers(target, win=window) {
@@ -13807,6 +15643,8 @@ function goPrevious() {
             pdfPageNumber--;
             renderPdfPage();
         }
+    } else if (iosDirectEpubActive) {
+        iosEpubGo(-1);
     } else if (rendition) {
         queueEpubNavigation(-1);
     }
@@ -13820,9 +15658,283 @@ function goNext() {
             pdfPageNumber++;
             renderPdfPage();
         }
+    } else if (iosDirectEpubActive) {
+        iosEpubGo(1);
     } else if (rendition) {
         queueEpubNavigation(1);
     }
+}
+
+
+function countTextOccurrences(value, query) {
+    const textValue = String(value || "").toLowerCase();
+    const needle = String(query || "").toLowerCase();
+    if (!needle) return 0;
+
+    let count = 0;
+    let from = 0;
+    while (from <= textValue.length - needle.length) {
+        const at = textValue.indexOf(needle, from);
+        if (at < 0) break;
+        count += 1;
+        from = at + Math.max(1, needle.length);
+    }
+    return count;
+}
+
+function clearPdfSearchHighlights() {
+    const layer = document.getElementById("pdfTextLayer");
+    if (!layer) return;
+
+    layer.querySelectorAll("mark.reader-search-hit, mark.reader-search-hit-active").forEach(mark => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        parent.replaceChild(document.createTextNode(mark.textContent || ""), mark);
+        parent.normalize?.();
+    });
+}
+
+function applyPdfSearchHighlights() {
+    const layer = document.getElementById("pdfTextLayer");
+    const query = String(activeSearchQuery || "").trim();
+    if (!layer || !query) return;
+
+    clearPdfSearchHighlights();
+
+    const activeMatch = searchMatches[searchMatchIndex] || null;
+    const activeOccurrence = Number(activeMatch?.page) === Number(pdfPageNumber)
+        ? Number(activeMatch?.pdfOccurrence ?? -1)
+        : -1;
+
+    const nodes = [];
+    const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+        if (String(node.nodeValue || "").toLowerCase().includes(query.toLowerCase())) {
+            nodes.push(node);
+        }
+    }
+
+    let occurrence = 0;
+    let activeMark = null;
+    const needle = query.toLowerCase();
+
+    nodes.forEach(textNode => {
+        const original = String(textNode.nodeValue || "");
+        const lower = original.toLowerCase();
+        let from = 0;
+        let at = lower.indexOf(needle, from);
+        if (at < 0) return;
+
+        const fragment = document.createDocumentFragment();
+
+        while (at >= 0) {
+            if (at > from) {
+                fragment.appendChild(document.createTextNode(original.slice(from, at)));
+            }
+
+            const mark = document.createElement("mark");
+            const isActive = occurrence === activeOccurrence;
+            mark.className = isActive
+                ? "reader-search-hit reader-search-hit-active"
+                : "reader-search-hit";
+            mark.textContent = original.slice(at, at + query.length);
+            fragment.appendChild(mark);
+
+            if (isActive) activeMark = mark;
+
+            occurrence += 1;
+            from = at + query.length;
+            at = lower.indexOf(needle, from);
+        }
+
+        if (from < original.length) {
+            fragment.appendChild(document.createTextNode(original.slice(from)));
+        }
+
+        textNode.parentNode?.replaceChild(fragment, textNode);
+    });
+
+    if (activeMark) {
+        requestAnimationFrame(() => {
+            try {
+                activeMark.scrollIntoView({
+                    block:"center",
+                    inline:"center",
+                    behavior:"smooth"
+                });
+            } catch (error) {}
+        });
+    }
+}
+
+function clearIosEpubSearchHighlights() {
+    try { window.CSS?.highlights?.delete?.("pastor-ios-search-hit"); } catch (error) {}
+    try { window.CSS?.highlights?.delete?.("pastor-ios-search-active"); } catch (error) {}
+
+    document.querySelectorAll(
+        "#iosEpubContent mark.reader-search-hit, #iosEpubContent mark.reader-search-hit-active"
+    ).forEach(mark => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        parent.replaceChild(document.createTextNode(mark.textContent || ""), mark);
+        parent.normalize?.();
+    });
+
+    iosEpubSearchFallbackMarks = [];
+}
+
+function iosEpubCollectSearchRanges(query) {
+    const root = document.getElementById("iosEpubContent");
+    const needle = String(query || "").trim().toLowerCase();
+    if (!root || !needle) return [];
+
+    const ranges = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+
+    while ((node = walker.nextNode())) {
+        const parent = node.parentElement;
+        if (
+            parent?.closest?.("script,style,noscript,template")
+            || parent?.closest?.("mark.reader-search-hit,mark.reader-search-hit-active")
+        ) {
+            continue;
+        }
+
+        const original = String(node.nodeValue || "");
+        const lower = original.toLowerCase();
+        let from = 0;
+
+        while (from <= lower.length - needle.length) {
+            const at = lower.indexOf(needle, from);
+            if (at < 0) break;
+
+            try {
+                const range = document.createRange();
+                range.setStart(node, at);
+                range.setEnd(node, at + query.length);
+                ranges.push(range);
+            } catch (error) {}
+
+            from = at + Math.max(1, needle.length);
+        }
+    }
+
+    return ranges;
+}
+
+function applyIosEpubSearchHighlights(query, activeOccurrence=-1) {
+    if (!iosDirectEpubActive) return;
+
+    clearIosEpubSearchHighlights();
+
+    const ranges = iosEpubCollectSearchRanges(query);
+    if (!ranges.length) return;
+
+    const requestedOccurrence = Number(activeOccurrence);
+    const activeIndex = Number.isFinite(requestedOccurrence) && requestedOccurrence >= 0
+        ? Math.max(0, Math.min(ranges.length - 1, requestedOccurrence))
+        : -1;
+    const activeRange = activeIndex >= 0 ? ranges[activeIndex] : null;
+
+    if (window.CSS?.highlights && window.Highlight) {
+        try {
+            CSS.highlights.set(
+                "pastor-ios-search-hit",
+                new Highlight(...ranges)
+            );
+            if (activeRange) {
+                CSS.highlights.set(
+                    "pastor-ios-search-active",
+                    new Highlight(activeRange)
+                );
+            }
+
+            if (activeRange) requestAnimationFrame(() => {
+                try {
+                    const target = activeRange.startContainer?.parentElement;
+                    target?.scrollIntoView?.({
+                        block:"center",
+                        inline:"nearest",
+                        behavior:"smooth"
+                    });
+                } catch (error) {}
+            });
+            return;
+        } catch (error) {
+            console.warn("iOS EPUB search CSS Highlight fallback", error);
+        }
+    }
+
+    // Fallback for browsers without the CSS Highlight API. Work from the end
+    // of the document so wrapping one match cannot invalidate later ranges.
+    const ordered = ranges
+        .map((range, index) => ({range,index}))
+        .reverse();
+
+    ordered.forEach(({range,index}) => {
+        try {
+            const mark = document.createElement("mark");
+            mark.className = index === activeIndex
+                ? "reader-search-hit reader-search-hit-active"
+                : "reader-search-hit";
+            range.surroundContents(mark);
+            iosEpubSearchFallbackMarks.push(mark);
+        } catch (error) {}
+    });
+
+    const activeMark = document.querySelector(
+        "#iosEpubContent mark.reader-search-hit-active"
+    );
+    activeMark?.scrollIntoView?.({
+        block:"center",
+        inline:"nearest",
+        behavior:"smooth"
+    });
+}
+
+function clearClassicEpubSearchHighlight() {
+    if (!classicEpubSearchMarkCfi || !rendition) {
+        classicEpubSearchMarkCfi = "";
+        return;
+    }
+
+    try {
+        rendition.annotations.remove(classicEpubSearchMarkCfi, "mark");
+    } catch (error) {}
+
+    classicEpubSearchMarkCfi = "";
+}
+
+function applyClassicEpubSearchHighlight(cfi) {
+    clearClassicEpubSearchHighlight();
+
+    const locator = String(cfi || "");
+    if (!locator || !rendition) return;
+
+    try {
+        rendition.annotations.mark(
+            locator,
+            {pastorSearch:true},
+            null,
+            "pr-search-active",
+            {
+                "fill":"#ff8a00",
+                "fill-opacity":"0.72",
+                "mix-blend-mode":"multiply"
+            }
+        );
+        classicEpubSearchMarkCfi = locator;
+    } catch (error) {
+        console.warn("EPUB search result could not be highlighted", error);
+    }
+}
+
+function clearReaderSearchHighlights() {
+    clearPdfSearchHighlights();
+    clearIosEpubSearchHighlights();
+    clearClassicEpubSearchHighlight();
 }
 
 function updateSearchResultUI() {
@@ -13853,11 +15965,26 @@ async function openSearchMatch(index) {
     if (READER_FORMAT === "PDF") {
         pdfPageNumber = Number(match.page || 1);
         await renderPdfPage();
+        applyPdfSearchHighlights();
+    } else if (
+        iosDirectEpubActive
+        && Number.isFinite(Number(match.iosSpineIndex))
+    ) {
+        await iosEpubRenderChapter(
+            Number(match.iosSpineIndex),
+            "",
+            0
+        );
+        applyIosEpubSearchHighlights(
+            activeSearchQuery,
+            Number(match.iosOccurrence ?? 0)
+        );
     } else if (rendition && match.cfi) {
         epubNavigationQueue = [];
         setPageBusy(true,"Opening search result…");
         try {
             await Promise.resolve(rendition.display(match.cfi));
+            applyClassicEpubSearchHighlight(match.cfi);
         } finally {
             if (!epubLayoutRefreshing) setPageBusy(false);
         }
@@ -13874,6 +16001,8 @@ function stepSearchMatch(delta) {
 async function findInBook() {
     const query = document.getElementById("readerSearchInput").value.trim();
 
+    clearReaderSearchHighlights();
+    activeSearchQuery = query;
     searchMatches = [];
     searchMatchIndex = -1;
     updateSearchResultUI();
@@ -13890,10 +16019,41 @@ async function findInBook() {
         for (let i=1;i<=pdfDoc.numPages;i++) {
             const page = await pdfDoc.getPage(i);
             const content = await page.getTextContent();
-            const text = content.items.map(item => item.str || "").join(" ").toLowerCase();
 
-            if (text.includes(q)) {
-                searchMatches.push({page:i});
+            let occurrenceOnPage = 0;
+            let directMatches = 0;
+
+            for (const item of content.items) {
+                const itemText = String(item.str || "");
+                const count = countTextOccurrences(itemText, q);
+
+                for (let n=0; n<count; n++) {
+                    searchMatches.push({
+                        page:i,
+                        pdfOccurrence:occurrenceOnPage,
+                        query
+                    });
+                    occurrenceOnPage += 1;
+                    directMatches += 1;
+                }
+            }
+
+            // Fallback for a phrase split across PDF text items. We can still
+            // navigate to the correct page even when PDF.js split the phrase
+            // into separate positioned spans.
+            if (!directMatches) {
+                const pageText = content.items
+                    .map(item => item.str || "")
+                    .join(" ")
+                    .toLowerCase();
+
+                if (pageText.includes(q)) {
+                    searchMatches.push({
+                        page:i,
+                        pdfOccurrence:0,
+                        query
+                    });
+                }
             }
         }
 
@@ -13907,6 +16067,44 @@ async function findInBook() {
         return;
     }
 
+    if (iosDirectEpubActive) {
+        try {
+            for (let i=0; i<iosEpubSpine.length; i++) {
+                const file = iosEpubZip?.file(iosEpubSpine[i].path);
+                if (!file) continue;
+
+                const source = await file.async("text");
+                const doc = new DOMParser().parseFromString(source, "text/html");
+                const chapterText = String(
+                    doc.body?.textContent
+                    || doc.documentElement?.textContent
+                    || ""
+                ).replace(/\s+/g," ");
+
+                const count = countTextOccurrences(chapterText, query);
+
+                for (let occurrence=0; occurrence<count; occurrence++) {
+                    searchMatches.push({
+                        iosSpineIndex:i,
+                        iosOccurrence:occurrence,
+                        query,
+                        excerpt:chapterText.slice(0,180)
+                    });
+                }
+            }
+
+            if (searchMatches.length) {
+                await openSearchMatch(0);
+            } else {
+                showReaderToast("No match found.");
+                updateSearchResultUI();
+            }
+        } catch (error) {
+            showReaderToast("Search failed: " + error.message);
+        }
+        return;
+    }
+
     if (!epubBook || !rendition) return;
 
     try {
@@ -13917,7 +16115,8 @@ async function findInBook() {
             found.forEach(match => {
                 searchMatches.push({
                     cfi:match.cfi,
-                    excerpt:match.excerpt || ""
+                    excerpt:match.excerpt || "",
+                    query
                 });
             });
 
@@ -13942,7 +16141,15 @@ function jumpToAnnotation(id) {
     if (READER_FORMAT === "PDF" && item.page) {
         pdfPageNumber = Number(item.page);
         renderPdfPage();
-    } else if (READER_FORMAT === "EPUB" && item.locator && rendition) {
+    } else if (READER_FORMAT === "EPUB" && item.locator && iosDirectEpubActive) {
+        const loc = iosEpubParseRangeLocator(item.locator);
+        if (loc) {
+            iosEpubRenderChapter(Number(loc.s || 0), "", 0).then(() => {
+                const range = iosEpubRangeFromLocator(item.locator, item.selected_text || "");
+                range?.startContainer?.parentElement?.scrollIntoView?.({block:"center"});
+            });
+        }
+    } else if (READER_FORMAT === "EPUB" && item.locator && rendition && !String(item.locator).startsWith("iosdom:")) {
         rendition.display(item.locator);
     }
 }
@@ -13954,7 +16161,14 @@ function jumpToBookmark(id) {
     if (READER_FORMAT === "PDF" && item.page) {
         pdfPageNumber = Number(item.page);
         renderPdfPage();
-    } else if (READER_FORMAT === "EPUB" && item.locator && rendition) {
+    } else if (READER_FORMAT === "EPUB" && item.locator && iosDirectEpubActive) {
+        const pos = iosEpubParsePositionLocator(item.locator);
+        if (pos) iosEpubRenderChapter(pos.index, "", pos.ratio);
+        else {
+            const loc = iosEpubParseRangeLocator(item.locator);
+            if (loc) iosEpubRenderChapter(Number(loc.s || 0), "", 0);
+        }
+    } else if (READER_FORMAT === "EPUB" && item.locator && rendition && !String(item.locator).startsWith("iosdom")) {
         rendition.display(item.locator);
     }
 }
@@ -13969,15 +16183,28 @@ document.getElementById("themeSelect").value = currentTheme;
     const canvasArea = document.getElementById("readerCanvasArea");
     const selectionBar = document.getElementById("selectionBar");
 
+    installReaderBrowserZoomLock();
     syncReaderViewport();
 
     if (READER_FORMAT === "PDF") {
         installSwipeHandlers(canvasArea, window);
+        installPdfPinchZoom(canvasArea);
+    } else {
+        const epubViewer = document.getElementById("epubViewer");
+        if (IS_IOS_READER) {
+            if (epubViewer) epubViewer.style.display = "none";
+        } else {
+            installSwipeHandlers(epubViewer, window);
+        }
     }
 
     document.addEventListener("keydown", event => {
         const target = event.target;
         const tag = String(target?.tagName || "").toLowerCase();
+
+        if (event.key === "Escape") {
+            toggleChapterPanel(false);
+        }
 
         if (
             tag === "input"
@@ -14040,18 +16267,50 @@ document.getElementById("themeSelect").value = currentTheme;
         await initEpubReader();
     }
 
+    let lastReaderLayoutWidth = Math.round(
+        window.visualViewport?.width
+        || window.innerWidth
+        || document.documentElement.clientWidth
+        || 0
+    );
+
     const refreshReaderViewport = () => {
         syncReaderViewport();
+
+        const currentWidth = Math.round(
+            window.visualViewport?.width
+            || window.innerWidth
+            || document.documentElement.clientWidth
+            || 0
+        );
+        const widthChanged = Math.abs(currentWidth - lastReaderLayoutWidth) > 2;
+        lastReaderLayoutWidth = currentWidth;
+
         setTimeout(() => {
+            if (READER_FORMAT === "PDF") {
+                if (pdfAutoFitWidth && widthChanged) {
+                    renderPdfPage();
+                }
+                return;
+            }
+
+            if (iosDirectEpubActive) {
+                iosEpubApplyReaderAppearance();
+                return;
+            }
             try { rendition?.resize?.(); } catch (error) {}
         }, 70);
+    };
+
+    const refreshReaderViewportPositionOnly = () => {
+        syncReaderViewport();
     };
 
     syncReaderViewport();
 
     if (window.visualViewport) {
         window.visualViewport.addEventListener("resize", refreshReaderViewport, {passive:true});
-        window.visualViewport.addEventListener("scroll", refreshReaderViewport, {passive:true});
+        window.visualViewport.addEventListener("scroll", refreshReaderViewportPositionOnly, {passive:true});
     }
 
     window.addEventListener("resize", refreshReaderViewport, {passive:true});
