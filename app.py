@@ -35,6 +35,7 @@ from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
 from sermon_ebooks import register_sermon_ebooks_routes
 from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
+from ai_assistant import register_ai_assistant
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
 def init_db():
@@ -2120,20 +2121,22 @@ def refresh_pastor_from_cache():
 
 def _current_user_key():
     """
-    We store 'Submitted By' as username (preferred) so filtering is stable.
+    Identity is based on the account that actually logged in.
+    AO/DO takes priority over any temporary Pastor's Tool working context.
     """
-    if session.get("pastor_logged_in"):
-        return (session.get("pastor_username") or "").strip() or "pastor"
     if session.get("ao_logged_in"):
         return (session.get("ao_username") or "").strip() or "ao"
+    if session.get("pastor_logged_in"):
+        return (session.get("pastor_username") or "").strip() or "pastor"
     return ""
 
 
 def _current_user_display():
+    # AO/DO identity must not become the temporarily selected pastor.
+    if session.get("ao_logged_in"):
+        return (session.get("ao_name") or "").strip() or (session.get("ao_username") or "AO")
     if session.get("pastor_logged_in"):
         return (session.get("pastor_name") or "").strip() or (session.get("pastor_username") or "Pastor")
-    if session.get("ao_logged_in"):
-        return (session.get("ao_username") or "").strip() or "AO"
     return "Unknown"
 
 
@@ -3670,6 +3673,7 @@ register_temp_edit_routes(app)
 register_church_finder_routes(app)
 register_pastor_resources_routes(app)
 register_sermon_ebooks_routes(app)
+register_ai_assistant(app)
 
 @app.template_filter("phpeso")
 def phpeso_filter(value):
@@ -4042,6 +4046,11 @@ def _normalize_key(value):
 def _current_user_area_number():
     db = get_db()
 
+    # The original AO/DO login is authoritative even while Pastor's Tool
+    # is displaying/editing a selected pastor's report.
+    if ao_logged_in():
+        return (session.get("ao_area_number") or "").strip()
+
     if pastor_logged_in():
         username = (session.get("pastor_username") or "").strip()
         if not username:
@@ -4051,9 +4060,6 @@ def _current_user_area_number():
             (username,),
         ).fetchone()
         return str(row["age"] or "").strip() if row else ""
-
-    if ao_logged_in():
-        return (session.get("ao_area_number") or "").strip()
 
     return ""
 
@@ -5034,8 +5040,12 @@ def pastor_tool():
     # --- AO MODE: AO can act as pastor for churches in the same Area Number ---
     if ao_logged_in():
         ao_mode = True
-        session.setdefault("pastor_logged_in", True)
 
+        # IMPORTANT:
+        # An AO is only SELECTING a pastor record for Pastor's Tool.
+        # Do NOT mark the AO session as pastor_logged_in.
+        # This keeps the original logged-in AO identity authoritative
+        # everywhere else in the website (including Pij).
         ao_area = (session.get("ao_area_number") or "").strip()
 
         rows = get_db().execute(
@@ -5255,7 +5265,8 @@ def sunday_detail(year, month, day):
     church = (request.args.get("church") or "").strip()
 
     if ao_logged_in():
-        session.setdefault("pastor_logged_in", True)
+        # Keep AO as the authenticated identity. `church` is only the
+        # selected Pastor's Tool working context.
         if church:
             if not _pastor_username_in_current_ao_scope(church):
                 abort(403)
@@ -5396,7 +5407,8 @@ def church_progress_view(year, month):
     church = (request.args.get("church") or "").strip()
 
     if ao_logged_in():
-        session.setdefault("pastor_logged_in", True)
+        # Keep AO as the authenticated identity. `church` is only the
+        # selected Pastor's Tool working context.
         if church:
             if not _pastor_username_in_current_ao_scope(church):
                 abort(403)
