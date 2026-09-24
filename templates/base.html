@@ -41,6 +41,240 @@
       0% { transform: translateX(-120%); }
       100% { transform: translateX(320%); }
     }
+
+    /* =====================================================
+       PIJ — FLOATING DISTRICT 4 AI ASSISTANT
+       ===================================================== */
+    .pij-launcher {
+      position: fixed;
+      right: 20px;
+      bottom: 22px;
+      z-index: 15000;
+      width: 68px;
+      height: 68px;
+      border: 0;
+      border-radius: 50%;
+      padding: 0;
+      background: #fff;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28);
+      cursor: pointer;
+      overflow: hidden;
+    }
+    .pij-launcher img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .pij-launcher:hover { transform: translateY(-2px); }
+    .pij-launcher:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
+
+    .pij-panel {
+      position: fixed;
+      right: 20px;
+      bottom: 102px;
+      z-index: 15001;
+      width: min(420px, calc(100vw - 24px));
+      height: min(650px, calc(100vh - 130px));
+      background: #f4f7fb;
+      border-radius: 22px;
+      box-shadow: 0 24px 70px rgba(15, 23, 42, 0.30);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+    }
+    .pij-panel.open { display: flex; }
+
+    .pij-header {
+      background: #1f4b82;
+      color: #fff;
+      padding: 13px 14px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      flex: 0 0 auto;
+    }
+    .pij-header-avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: #fff;
+      border: 2px solid rgba(255,255,255,0.85);
+    }
+    .pij-header-copy { min-width: 0; flex: 1; }
+    .pij-header-name { font-size: 20px; line-height: 1.05; font-weight: 800; }
+    .pij-header-subtitle { margin-top: 3px; font-size: 11px; opacity: .95; }
+    .pij-new-chat, .pij-close {
+      border: 0;
+      color: #fff;
+      background: rgba(255,255,255,.14);
+      cursor: pointer;
+      border-radius: 9px;
+    }
+    .pij-new-chat { padding: 9px 11px; font-weight: 700; white-space: nowrap; }
+    .pij-close {
+      width: 36px;
+      height: 36px;
+      font-size: 25px;
+      line-height: 32px;
+      display: grid;
+      place-items: center;
+    }
+
+    .pij-messages {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 15px 14px 18px;
+      scroll-behavior: smooth;
+    }
+    .pij-row { display: flex; margin-bottom: 14px; }
+    .pij-row.user { justify-content: flex-end; }
+    .pij-message-wrap { max-width: 86%; }
+    .pij-row.user .pij-message-wrap { text-align: right; }
+    .pij-sender { font-size: 10px; color: #475569; margin: 0 4px 5px; }
+    .pij-bubble {
+      text-align: left;
+      background: #fff;
+      color: #172033;
+      border: 1px solid #d7dee8;
+      border-radius: 15px 15px 15px 3px;
+      padding: 11px 13px;
+      font-size: 14px;
+      line-height: 1.48;
+      overflow-wrap: anywhere;
+    }
+    .pij-row.user .pij-bubble {
+      background: #1f4b82;
+      color: #fff;
+      border-color: #1f4b82;
+      border-radius: 15px 15px 3px 15px;
+    }
+    .pij-bubble p { margin: 0 0 9px; }
+    .pij-bubble p:last-child { margin-bottom: 0; }
+    .pij-bubble ul, .pij-bubble ol { margin: 7px 0 7px 21px; padding: 0; }
+    .pij-bubble blockquote {
+      margin: 8px 0;
+      padding-left: 10px;
+      border-left: 3px solid #93c5fd;
+      color: #475569;
+    }
+    .pij-bubble code {
+      background: #eef2f7;
+      border-radius: 5px;
+      padding: 1px 4px;
+      font-size: .92em;
+    }
+    .pij-thinking {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #64748b;
+    }
+    .pij-dot {
+      width: 6px;
+      height: 6px;
+      background: #64748b;
+      border-radius: 50%;
+      animation: pij-bounce 1s infinite ease-in-out;
+    }
+    .pij-dot:nth-child(2) { animation-delay: .14s; }
+    .pij-dot:nth-child(3) { animation-delay: .28s; }
+    @keyframes pij-bounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: .45; }
+      40% { transform: translateY(-4px); opacity: 1; }
+    }
+
+    .pij-composer {
+      flex: 0 0 auto;
+      background: #fff;
+      border-top: 1px solid #d7dee8;
+      padding: 10px;
+    }
+    .pij-form { display: flex; gap: 8px; }
+    .pij-input {
+      min-width: 0;
+      flex: 1;
+      border: 1px solid #b9c4d2;
+      border-radius: 12px;
+      padding: 11px 12px;
+      font: inherit;
+      outline: none;
+    }
+    .pij-input:focus { border-color: #1f4b82; box-shadow: 0 0 0 2px rgba(31,75,130,.12); }
+    .pij-send {
+      border: 0;
+      border-radius: 12px;
+      background: #1f4b82;
+      color: #fff;
+      font-weight: 800;
+      padding: 0 17px;
+      cursor: pointer;
+    }
+    .pij-send:disabled, .pij-input:disabled { opacity: .62; cursor: not-allowed; }
+    .pij-disclaimer {
+      text-align: center;
+      color: #64748b;
+      font-size: 9px;
+      margin-top: 7px;
+    }
+
+    /* Pij visual states */
+    .pij-row.pij { align-items: flex-end; gap: 7px; }
+    .pij-message-avatar {
+      width: 30px; height: 30px; border-radius: 50%; object-fit: cover;
+      background: #fff; border: 1px solid #d7dee8; flex: 0 0 auto;
+    }
+    .pij-welcome-card {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+      padding: 12px; background: #eaf2fb; border: 1px solid #d4e2f1; border-radius: 16px;
+    }
+    .pij-welcome-image {
+      width: 88px; height: 88px; object-fit: contain; flex: 0 0 auto;
+    }
+    .pij-welcome-copy { color: #172033; font-size: 13px; line-height: 1.45; }
+    .pij-intro-overlay {
+      position: absolute; inset: 0; z-index: 5; display: none;
+      align-items: center; justify-content: center; padding: 20px;
+      background: rgba(244,247,251,.97);
+    }
+    .pij-intro-overlay.show { display: flex; }
+    .pij-intro-card {
+      width: min(320px, 100%); text-align: center; background: #fff;
+      border: 1px solid #d7dee8; border-radius: 20px; padding: 18px;
+      box-shadow: 0 16px 45px rgba(15,23,42,.16);
+    }
+    .pij-intro-image { width: min(220px, 72vw); max-height: 270px; object-fit: contain; }
+    .pij-intro-title { margin-top: 8px; font-size: 20px; font-weight: 800; color: #172033; }
+    .pij-intro-text { margin-top: 7px; color: #475569; font-size: 13px; line-height: 1.45; }
+    .pij-intro-start {
+      margin-top: 14px; width: 100%; min-height: 46px; border: 0; border-radius: 12px;
+      background: #1f4b82; color: #fff; font-weight: 800; font-size: 15px; cursor: pointer;
+    }
+
+    /* Mobile first: Pij becomes a full-screen app-style chat. */
+    @media (max-width: 600px) {
+      .pij-launcher { right: 14px; bottom: 16px; width: 62px; height: 62px; }
+      .pij-panel {
+        inset: 0; width: 100vw; height: 100dvh; max-height: none;
+        border-radius: 0; border: 0;
+      }
+      .pij-header { padding: max(10px, env(safe-area-inset-top)) 10px 10px; gap: 8px; }
+      .pij-header-avatar { width: 42px; height: 42px; }
+      .pij-header-name { font-size: 18px; }
+      .pij-header-subtitle { font-size: 10px; }
+      .pij-new-chat { padding: 9px 8px; font-size: 11px; }
+      .pij-close { width: 38px; height: 38px; }
+      .pij-messages { padding: 12px 10px 14px; }
+      .pij-message-wrap { max-width: calc(100% - 42px); }
+      .pij-bubble { font-size: 14px; padding: 10px 12px; }
+      .pij-composer { padding: 8px 8px max(8px, env(safe-area-inset-bottom)); }
+      .pij-input { min-height: 46px; font-size: 16px; }
+      .pij-send { min-width: 64px; min-height: 46px; padding: 0 13px; }
+      .pij-disclaimer { font-size: 8px; }
+      .pij-welcome-card { padding: 10px; gap: 9px; }
+      .pij-welcome-image { width: 70px; height: 70px; }
+      .pij-welcome-copy { font-size: 12px; }
+      body.pij-mobile-open { overflow: hidden; }
+    }
+
   </style>
 </head>
 <body>
@@ -51,6 +285,9 @@
   {% set is_member = role == 'member' or session.get("member_logged_in") %}
   {% set is_do = role in ['district overseer', 'do'] %}
   {% set is_ao = (role in ['area overseer', 'ao', 'sub area overseer', 'subarea overseer'] or session.get("ao_logged_in")) and not is_do %}
+  {% set pij_person_name = (session.get("pastor_name") if is_pastor else session.get("ao_name")) or '' %}
+  {% set pij_person_role = 'Pastor' if is_pastor else ('District Overseer' if is_do else ('Area Overseer' if is_ao else '')) %}
+  {% set pij_greeting_name = (pij_person_role ~ ' ' ~ pij_person_name)|trim %}
 
   <header class="app-header">
     <div class="header-left">
@@ -117,6 +354,83 @@
   <main class="app-main">
     {% block content %}{% endblock %}
   </main>
+
+
+  {% if is_logged_in %}
+  <!-- =====================================================
+       PIJ — FLOATING AI ASSISTANT
+       ===================================================== -->
+  <button
+    type="button"
+    class="pij-launcher"
+    id="pijLauncher"
+    aria-label="Open Pij District 4 AI Assistant"
+    aria-controls="pijPanel"
+    aria-expanded="false"
+  >
+    <img src="{{ url_for('static', filename='pij/pij-avatar.png') }}" alt="Pij">
+  </button>
+
+  <section
+    class="pij-panel"
+    id="pijPanel"
+    aria-label="Pij District 4 AI Assistant"
+    aria-hidden="true"
+  >
+    <div class="pij-intro-overlay" id="pijIntroOverlay" aria-hidden="true">
+      <div class="pij-intro-card">
+        <img class="pij-intro-image" src="{{ url_for('static', filename='pij/pij-intro.png') }}" alt="Pij District 4 AI Assistant">
+        <div class="pij-intro-title">Kilalanin si Pij</div>
+        <div class="pij-intro-text">Ang District 4 AI Assistant na handang tumulong sa paggamit ng District 4 Tool.</div>
+        <button type="button" class="pij-intro-start" id="pijIntroStart">Simulan</button>
+      </div>
+    </div>
+
+    <div class="pij-header">
+      <img
+        class="pij-header-avatar"
+        src="{{ url_for('static', filename='pij/pij-avatar.png') }}"
+        alt="Pij"
+      >
+      <div class="pij-header-copy">
+        <div class="pij-header-name">Pij</div>
+        <div class="pij-header-subtitle">District 4 AI Assistant</div>
+      </div>
+      <button type="button" class="pij-new-chat" id="pijNewChat">New Chat</button>
+      <button type="button" class="pij-close" id="pijClose" aria-label="Close Pij">&times;</button>
+    </div>
+
+    <div class="pij-messages" id="pijMessages" aria-live="polite">
+      <div class="pij-welcome-card">
+        <img class="pij-welcome-image" src="{{ url_for('static', filename='pij/pij-welcome.png') }}" alt="Pij welcoming you">
+        <div class="pij-welcome-copy"><strong>Magandang araw!</strong><br>Ako si Pij, ang inyong District 4 AI Assistant.</div>
+      </div>
+      <div class="pij-row pij">
+        <img class="pij-message-avatar" src="{{ url_for('static', filename='pij/pij-avatar.png') }}" alt="" aria-hidden="true">
+        <div class="pij-message-wrap">
+          <div class="pij-sender">Pij</div>
+          <div class="pij-bubble">Ano po ang maitutulong ko sa iyo{% if pij_greeting_name %}, {{ pij_greeting_name|e }}{% endif %}?</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pij-composer">
+      <form class="pij-form" id="pijForm" data-skip-global-loading="true">
+        <input
+          class="pij-input"
+          id="pijInput"
+          type="text"
+          maxlength="3000"
+          autocomplete="off"
+          placeholder="Ask Pij..."
+          aria-label="Message Pij"
+        >
+        <button class="pij-send" id="pijSend" type="submit">Send</button>
+      </form>
+      <div class="pij-disclaimer">Pij can make mistakes. Verify important information.</div>
+    </div>
+  </section>
+  {% endif %}
 
   <script>
     (function () {
@@ -237,5 +551,379 @@
       });
     })();
   </script>
+
+  {% if is_logged_in %}
+  <script>
+    (function () {
+      const launcher = document.getElementById('pijLauncher');
+      const panel = document.getElementById('pijPanel');
+      const closeBtn = document.getElementById('pijClose');
+      const newChatBtn = document.getElementById('pijNewChat');
+      const form = document.getElementById('pijForm');
+      const input = document.getElementById('pijInput');
+      const sendBtn = document.getElementById('pijSend');
+      const messages = document.getElementById('pijMessages');
+      const pijGreetingName = {{ pij_greeting_name|tojson }};
+      const introOverlay = document.getElementById('pijIntroOverlay');
+      const introStart = document.getElementById('pijIntroStart');
+
+      if (!launcher || !panel || !form || !input || !messages) return;
+
+      const welcomeHtml = ('Ano po ang maitutulong ko sa iyo' + (pijGreetingName ? ', ' + pijGreetingName : '') + '?');
+      const introStorageKey = 'district4_pij_intro_seen_v1';
+
+      function welcomeCardHtml() {
+        return '<div class="pij-welcome-card">' +
+          `<img class="pij-welcome-image" src="{{ url_for('static', filename='pij/pij-welcome.png') }}" alt="Pij welcoming you">` +
+          '<div class="pij-welcome-copy"><strong>Magandang araw!</strong><br>Ako si Pij, ang inyong District 4 AI Assistant.</div>' +
+          '</div>';
+      }
+
+      function resetWelcome() {
+        messages.innerHTML = welcomeCardHtml();
+        addMessage('Pij', welcomeHtml, false, true);
+      }
+
+      function openPij() {
+        panel.classList.add('open');
+        panel.setAttribute('aria-hidden', 'false');
+        launcher.setAttribute('aria-expanded', 'true');
+        if (window.matchMedia('(max-width: 600px)').matches) {
+          document.body.classList.add('pij-mobile-open');
+        }
+
+        let introSeen = false;
+        try { introSeen = localStorage.getItem(introStorageKey) === '1'; } catch (e) {}
+        if (!introSeen && introOverlay) {
+          introOverlay.classList.add('show');
+          introOverlay.setAttribute('aria-hidden', 'false');
+        } else {
+          setTimeout(function () { input.focus(); }, 80);
+        }
+      }
+
+      function closePij() {
+        panel.classList.remove('open');
+        panel.setAttribute('aria-hidden', 'true');
+        launcher.setAttribute('aria-expanded', 'false');
+        document.body.classList.remove('pij-mobile-open');
+        launcher.focus();
+      }
+
+      if (introStart) {
+        introStart.addEventListener('click', function () {
+          try { localStorage.setItem(introStorageKey, '1'); } catch (e) {}
+          if (introOverlay) {
+            introOverlay.classList.remove('show');
+            introOverlay.setAttribute('aria-hidden', 'true');
+          }
+          input.focus();
+        });
+      }
+
+      function scrollBottom() {
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      // Safe, deliberately small Markdown renderer for Pij output.
+      // HTML is escaped first so model-generated HTML cannot execute.
+      function formatPijText(text) {
+        let safe = escapeHtml(text).replace(/\r\n?/g, '\n');
+
+        safe = safe.replace(/```([\s\S]*?)```/g, function (_, code) {
+          return '<pre><code>' + code.trim() + '</code></pre>';
+        });
+
+        safe = safe.replace(/^### (.+)$/gm, '<strong>$1</strong>');
+        safe = safe.replace(/^## (.+)$/gm, '<strong>$1</strong>');
+        safe = safe.replace(/^# (.+)$/gm, '<strong>$1</strong>');
+        safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        safe = safe.replace(/__(.+?)__/g, '<u>$1</u>');
+        safe = safe.replace(/(^|[^*])\*([^*\n]+?)\*/g, '$1<em>$2</em>');
+        safe = safe.replace(/`([^`\n]+?)`/g, '<code>$1</code>');
+        safe = safe.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+        const lines = safe.split('\n');
+        let html = '';
+        let listType = null;
+
+        function closeList() {
+          if (listType) {
+            html += '</' + listType + '>';
+            listType = null;
+          }
+        }
+
+        lines.forEach(function (line) {
+          const bullet = line.match(/^\s*[-•]\s+(.+)$/);
+          const number = line.match(/^\s*\d+[.)]\s+(.+)$/);
+
+          if (bullet) {
+            if (listType !== 'ul') {
+              closeList();
+              html += '<ul>';
+              listType = 'ul';
+            }
+            html += '<li>' + bullet[1] + '</li>';
+            return;
+          }
+
+          if (number) {
+            if (listType !== 'ol') {
+              closeList();
+              html += '<ol>';
+              listType = 'ol';
+            }
+            html += '<li>' + number[1] + '</li>';
+            return;
+          }
+
+          closeList();
+
+          if (!line.trim()) {
+            html += '<br>';
+          } else if (line.startsWith('<blockquote>') || line.startsWith('<pre>')) {
+            html += line;
+          } else {
+            html += '<p>' + line + '</p>';
+          }
+        });
+
+        closeList();
+        return html;
+      }
+
+      function addMessage(sender, text, isUser, allowHtml) {
+        const row = document.createElement('div');
+        row.className = 'pij-row ' + (isUser ? 'user' : 'pij');
+
+        const wrap = document.createElement('div');
+        wrap.className = 'pij-message-wrap';
+
+        const label = document.createElement('div');
+        label.className = 'pij-sender';
+        label.textContent = sender;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'pij-bubble';
+
+        if (allowHtml) {
+          bubble.innerHTML = text;
+        } else if (isUser) {
+          bubble.textContent = text;
+        } else {
+          bubble.innerHTML = formatPijText(text);
+        }
+
+        wrap.appendChild(label);
+        wrap.appendChild(bubble);
+
+        if (!isUser) {
+          const avatar = document.createElement('img');
+          avatar.className = 'pij-message-avatar';
+          avatar.src = "{{ url_for('static', filename='pij/pij-avatar.png') }}";
+          avatar.alt = '';
+          avatar.setAttribute('aria-hidden', 'true');
+          row.appendChild(avatar);
+        }
+
+        row.appendChild(wrap);
+        messages.appendChild(row);
+        scrollBottom();
+
+        return row;
+      }
+
+      function addThinking() {
+        return addMessage(
+          'Pij',
+          '<span class="pij-thinking">Thinking <span class="pij-dot"></span><span class="pij-dot"></span><span class="pij-dot"></span></span>',
+          false,
+          true
+        );
+      }
+
+      function setBusy(busy) {
+        input.disabled = busy;
+        sendBtn.disabled = busy;
+        sendBtn.textContent = busy ? '...' : 'Send';
+      }
+
+      let historyPollTimer = null;
+
+      function renderHistory(history) {
+        messages.innerHTML = '';
+        if (!history || !history.length) {
+          resetWelcome();
+          return;
+        }
+
+        history.forEach(function (item) {
+          const role = item && item.role;
+          const content = item && item.content ? item.content : '';
+          if (!content) return;
+          addMessage(role === 'user' ? 'You' : 'Pij', content, role === 'user', false);
+        });
+      }
+
+      async function restoreConversation() {
+        try {
+          const response = await fetch('/ai/history', {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store'
+          });
+          const data = await response.json().catch(function () { return {}; });
+          if (!response.ok || !data.ok) return;
+
+          renderHistory(data.messages || []);
+
+          if (data.pending) {
+            setBusy(true);
+            addThinking();
+            startHistoryPolling();
+          } else {
+            setBusy(false);
+          }
+        } catch (e) {
+          // Keep the normal welcome UI if history cannot be restored.
+        }
+      }
+
+      function startHistoryPolling() {
+        if (historyPollTimer) return;
+
+        historyPollTimer = window.setInterval(async function () {
+          try {
+            const response = await fetch('/ai/history', {
+              method: 'GET',
+              headers: { 'Accept': 'application/json' },
+              cache: 'no-store'
+            });
+            const data = await response.json().catch(function () { return {}; });
+            if (!response.ok || !data.ok) return;
+
+            if (!data.pending) {
+              window.clearInterval(historyPollTimer);
+              historyPollTimer = null;
+              renderHistory(data.messages || []);
+              setBusy(false);
+            }
+          } catch (e) {}
+        }, 1500);
+      }
+
+      launcher.addEventListener('click', function () {
+        if (panel.classList.contains('open')) closePij();
+        else openPij();
+      });
+
+      closeBtn.addEventListener('click', closePij);
+
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && panel.classList.contains('open')) {
+          closePij();
+        }
+      });
+
+      newChatBtn.addEventListener('click', async function () {
+        newChatBtn.disabled = true;
+
+        try {
+          const response = await fetch('/ai/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+
+          const data = await response.json().catch(function () { return {}; });
+
+          if (!response.ok || !data.ok) {
+            throw new Error(data.error || 'Could not start a new chat.');
+          }
+
+          if (historyPollTimer) {
+            window.clearInterval(historyPollTimer);
+            historyPollTimer = null;
+          }
+          resetWelcome();
+          input.value = '';
+          setBusy(false);
+          input.focus();
+        } catch (error) {
+          addMessage('Pij', 'Sorry, I could not start a new chat right now.', false, false);
+        } finally {
+          newChatBtn.disabled = false;
+        }
+      });
+
+      // Restore the same server-side conversation on every page load.
+      restoreConversation();
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        const message = input.value.trim();
+        if (!message) return;
+
+        addMessage('You', message, true, false);
+        input.value = '';
+        setBusy(true);
+
+        const thinkingRow = addThinking();
+
+        try {
+          const response = await fetch('/ai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: message,
+              current_path: window.location.pathname,
+              page_title: document.title
+            })
+          });
+
+          const data = await response.json().catch(function () { return {}; });
+
+          if (thinkingRow && thinkingRow.parentNode) {
+            thinkingRow.parentNode.removeChild(thinkingRow);
+          }
+
+          if (!response.ok || !data.ok) {
+            throw new Error(data.error || 'Pij could not answer right now.');
+          }
+
+          addMessage('Pij', data.answer || 'Sorry, I could not generate a response.', false, false);
+
+        } catch (error) {
+          if (thinkingRow && thinkingRow.parentNode) {
+            thinkingRow.parentNode.removeChild(thinkingRow);
+          }
+
+          addMessage(
+            'Pij',
+            error && error.message
+              ? error.message
+              : 'Sorry, Pij is temporarily unavailable. Please try again.',
+            false,
+            false
+          );
+        } finally {
+          setBusy(false);
+          input.focus();
+        }
+      });
+    })();
+  </script>
+  {% endif %}
+
 </body>
 </html>
