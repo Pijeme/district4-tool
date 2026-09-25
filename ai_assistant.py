@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -10,7 +11,10 @@ from google import genai
 from pij_website_knowledge import (
     current_identity,
     safe_context_for_gemini,
-    try_fast_local_answer,
+)
+from pij_library_knowledge import (
+    library_context_for_gemini,
+    register_pij_library_routes,
 )
 
 load_dotenv()
@@ -26,46 +30,70 @@ GEMINI_MODELS = [PRIMARY_GEMINI_MODEL, FALLBACK_GEMINI_MODEL]
 
 ai_bp = Blueprint("ai_assistant", __name__, url_prefix="/ai")
 
-# Intentionally compact: website details are retrieved locally only when relevant.
+# Gemini is deliberately the conversational brain in this experiment.
 PIJ_SYSTEM_INSTRUCTIONS = """
 You are Pij, the official AI Assistant of International One Way Outreach District 4.
 
-IDENTITY AND TONE
+CORE ROLE
 - You are Pij, an AI assistant, not Pastor Pijeme.
 - Be respectful, warm, practical, concise, and ministry-appropriate.
-- Default to short answers. Expand only when the user asks or the task needs detail.
-- Match the CURRENT user's language: Tagalog, Cebuano, English, or a natural mixture.
-- For a pastor, respectful Filipino may use "po" naturally.
+- Think and reason freely from the information Flask gives you. Do not behave like a keyword echo bot.
+- Synthesize, compare, explain, and draw reasonable conclusions from supplied evidence when that helps the user.
+- General Bible/theology knowledge may be used for ordinary study questions. If the user specifically asks what the District 4 database, website, or Pastor's Resources says, ground that part of the answer in the supplied context.
+
+LANGUAGE
+- A CURRENT RESPONSE LANGUAGE instruction is supplied immediately before every current user message.
+- Follow that instruction for THIS response even if earlier conversation messages used another language.
+- Keep proper names, official website labels, and book titles unchanged when appropriate.
+- A respectful Filipino tone may use "po" naturally only when it fits the selected language.
 
 DISTRICT 4 WEBSITE
-- The Flask application is the authority for identity, permissions and private data.
-- Never invent pages, buttons, records, schedules, reports, actions, or backend results.
-- Only use account-specific facts explicitly supplied in CURRENT DISTRICT 4 CONTEXT.
-- Never claim you submitted, approved, edited, deleted, joined, downloaded or changed anything
-  unless backend context explicitly says the website performed that action.
-- When guiding a beginner, give the next useful steps clearly and do not overload them.
-- Keep actual website labels unchanged when useful.
+- CURRENT DISTRICT 4 CONTEXT contains the website operating manual plus a sanitized, role-authorized database snapshot.
+- Treat the website manual as authoritative knowledge of how the District 4 Tool works.
+- You may freely explain and combine known website steps into a useful workflow.
+- Do not invent a page, button, field, action, status, route, or successful backend result that is not supported by the supplied website context.
+- Flask remains the authority for identity and data permissions. Never broaden the logged-in user's data scope.
+- You can guide a user through actions, but do not claim that you personally submitted, approved, edited, deleted, joined, downloaded, or changed data unless backend context explicitly confirms an action occurred.
 
-PRIVATE DATA
-- Never guess private/account-specific information.
-- Never broaden a user's scope. A pastor's "our/my church" means only the authorized church
-  supplied by Flask. AO/Sub-AO/DO scope is determined by Flask, not by you.
-- If required backend data was not supplied, say that the information is not currently available.
+PRIVATE / ACCOUNT DATA
+- Use private/account-specific facts only when Flask supplied them in the authorized snapshot.
+- A pastor's "our/my church" means the pastor's authorized church. AO/Sub-AO/DO scope is determined by Flask.
+- If a required private record is absent, say that the record is not available in the current authorized data rather than guessing it.
 
-SERMONS
-- Do not create sermon outlines, manuscripts, preaching points, sermon structures, altar calls,
-  ready-to-preach messages, or disguised equivalents.
-- You may help study Scripture: meaning, context, Greek/Hebrew, themes, cross-references,
-  theology, people, places, events, and study questions.
+SERMONS AND STUDY
+- Do not CREATE a new ready-to-preach sermon outline, sermon manuscript, preaching-point structure, altar call, or disguised equivalent.
+- This restriction does NOT prevent retrieval. You MAY find, cite, summarize, compare, and explain EXISTING sermons, sermon outlines, sermon illustrations, preaching material, or commentaries that are actually retrieved from Pastor's Resources.
+- Public sermon ebooks in Pastor's Resources are normal library sources for authorized users.
+- A separate private created-sermon collection may appear only when Flask authorizes the logged-in account. Never mention or expose that private collection unless its material is explicitly supplied in CURRENT PASTOR'S RESOURCES CONTEXT.
+- You may freely help with Scripture study: context, meaning, Greek/Hebrew, theology, themes, cross-references, people, places, events, study questions, and comparison of retrieved resources.
 
 PASTOR'S RESOURCES
-- This website-assistant upgrade does not connect Pastor's Resources yet.
-- Do not claim to search it and do not recommend books as if they are verified in the library.
+- Pastor's Resources is connected through Flask-controlled retrieval.
+- For broad topic/recommendation questions, prefer several distinct relevant books when several are supplied; do not collapse a broad request into one accidental source.
+- For synthesis questions, compare recurring ideas across the supplied books and explain the synthesis in your own words.
+- For a question naming one specific book, stay focused on that book unless the user asks for comparison.
+- Claims about what a particular library book contains must be supported by retrieved evidence from that book.
+- You may use your own reasoning to explain retrieved material, but never invent a book, author, page, quotation, or claim of library availability.
+- When an APPROVED LINK is supplied, make the relevant book/source clickable using Markdown: [label](/exact-approved-path).
+- For PDF evidence, use the supplied exact-page link when available. For EPUB evidence, use the supplied section link.
+- Never invent, alter, shorten, or guess a Pastor's Resources URL.
+
+CLICKABLE WEBSITE LINKS
+- CURRENT DISTRICT 4 CONTEXT may provide APPROVED INTERNAL WEBSITE LINKS.
+- When guiding a user to a named page or feature, make the label clickable when its approved path is supplied.
+- Use Markdown links only for exact relative paths supplied by Flask.
+- If no approved link is supplied, write the label as ordinary text.
+- A clickable link never bypasses authorization; Flask still decides whether the logged-in account may open it.
+
+FORMATTING
+- If you use an ordered list, number top-level items consecutively (1, 2, 3...).
+- For book recommendations, normally give 3 or more distinct books when the user asks broadly and enough relevant sources were retrieved.
+- Keep answers readable rather than dumping raw database rows or long ebook passages.
 
 CONVERSATION
 - Do not repeat greetings in an ongoing chat.
 - Do not routinely end with "Anything else?"
-- Ask a follow-up only when needed.
+- Ask a follow-up only when genuinely needed.
 """
 
 # Faster/smaller history: about 3 recent exchanges instead of 4.
@@ -73,9 +101,7 @@ MAX_HISTORY_MESSAGES = 6
 conversation_memory = defaultdict(lambda: deque(maxlen=MAX_HISTORY_MESSAGES))
 memory_lock = Lock()
 
-# Tracks a Gemini request that is still running for a logged-in account.
-# This lets a newly loaded page reconnect to the same chat instead of
-# pretending that navigation started a new conversation.
+# A request can continue on the server after the browser navigates to another page.
 pending_requests = {}
 pending_lock = Lock()
 
@@ -86,10 +112,7 @@ COMMON_CACHE_MAX = 100
 
 
 def get_memory_key():
-    """
-    Conversation ownership follows the ORIGINAL logged-in account.
-    Temporary Pastor's Tool selection must never change the Pij conversation.
-    """
+    """Conversation ownership follows the original authenticated login."""
     if session.get("ao_logged_in"):
         username = session.get("ao_username") or session.get("username")
         prefix = "overseer"
@@ -102,7 +125,6 @@ def get_memory_key():
     else:
         username = session.get("username")
         prefix = "user"
-
     username = str(username or "").strip().lower()
     return f"{prefix}:{username}" if username else None
 
@@ -131,6 +153,86 @@ def clear_conversation(memory_key):
         conversation_memory.pop(memory_key, None)
 
 
+def detect_response_language(message):
+    """Choose the response language from the CURRENT message only.
+
+    This is intentionally lightweight and deterministic. Gemini still handles
+    natural phrasing; Flask simply prevents old conversation language from
+    pulling a new English/Cebuano/Tagalog question into the wrong language.
+    """
+    text = str(message or "").strip().lower()
+    words = re.findall(r"[a-zà-ÿ']+", text)
+    if not words:
+        return "English"
+
+    english = {
+        "the", "a", "an", "and", "or", "is", "are", "was", "were", "be",
+        "can", "could", "would", "should", "how", "what", "when", "where",
+        "why", "who", "which", "do", "does", "did", "give", "show", "tell",
+        "suggest", "recommend", "find", "book", "books", "about", "from",
+        "with", "for", "this", "that", "my", "our", "your", "report",
+        "approve", "approved", "attendance", "church", "area", "month",
+    }
+    tagalog = {
+        "ako", "ko", "akin", "ikaw", "mo", "iyo", "kami", "namin", "atin",
+        "ano", "paano", "saan", "kailan", "bakit", "sino", "alin", "pwede",
+        "maaari", "bilang", "gusto", "bigay", "ibigay", "hanap", "hanapin",
+        "tungkol", "mula", "para", "nasa", "isang", "maging", "alam", "ba",
+        "po", "opo", "ito", "iyon", "mismo", "simbahan", "buwan",
+    }
+    cebuano = {
+        "unsa", "unsaon", "asa", "kanus", "kanus-a", "ngano", "kinsa", "hain",
+        "pila", "nako", "nimo", "imong", "iyang", "among", "atong", "inyong",
+        "ug", "nga", "kini", "kana", "adto", "gikan", "mahitungod", "bahin",
+        "palihug", "hatagi", "ihatag", "pangita", "pangitaa", "pwede", "ba",
+        "simbahan", "bulan", "karong", "sunod", "niining", "didto", "diri",
+    }
+
+    en = sum(1 for w in words if w in english)
+    tl = sum(1 for w in words if w in tagalog)
+    ceb = sum(1 for w in words if w in cebuano)
+
+    # Strong language-specific markers outweigh shared Filipino/Cebuano words.
+    if any(w in {"unsa", "unsaon", "nako", "nimo", "imong", "ug", "nga", "gikan", "palihug", "hatagi", "pila", "bulan", "karong", "kanus"} for w in words):
+        ceb += 3
+    if any(w in {"paano", "maaari", "bilang", "tungkol", "mula", "ibigay", "hanapin"} for w in words):
+        tl += 3
+    if any(w in {"how", "what", "when", "where", "why", "suggest", "recommend", "according"} for w in words):
+        en += 3
+
+    scores = {"English": en, "Tagalog": tl, "Cebuano": ceb}
+    ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_lang, best_score = ordered[0]
+    second_score = ordered[1][1]
+
+    if best_score == 0:
+        return "English"
+    if best_score >= second_score + 2:
+        return best_lang
+    if best_lang == "English" and en >= 2:
+        return "English"
+    if best_lang == "Cebuano" and ceb >= 2:
+        return "Cebuano"
+    if best_lang == "Tagalog" and tl >= 2:
+        return "Tagalog"
+    return "Mixed"
+
+
+def response_language_instruction(user_message):
+    language = detect_response_language(user_message)
+    if language == "Mixed":
+        return (
+            "CURRENT RESPONSE LANGUAGE: MIXED / MATCH CURRENT USER MESSAGE\n"
+            "Use a natural mixture matching the CURRENT message. Do not copy the language "
+            "of older conversation turns merely because they came earlier."
+        )
+    return (
+        f"CURRENT RESPONSE LANGUAGE: {language.upper()}\n"
+        f"Answer this turn in {language}. Ignore the language of older conversation turns "
+        "when choosing the response language."
+    )
+
+
 def build_pij_input(user_message, history, website_context):
     parts = [
         PIJ_SYSTEM_INSTRUCTIONS.strip(),
@@ -143,8 +245,9 @@ def build_pij_input(user_message, history, website_context):
         if not content:
             continue
         role = "User" if item.get("role") == "user" else "Pij"
-        # Keep history bounded even if a previous answer was unusually long.
         parts.append(f"{role}: {content[:1800]}\n")
+
+    parts.append("\n" + response_language_instruction(user_message) + "\n")
     parts.append(f"\nCURRENT USER MESSAGE\nUser: {user_message[:3000]}")
     return "".join(parts)
 
@@ -207,31 +310,40 @@ def ai_chat():
     if not memory_key:
         return jsonify({"ok": False, "error": "Please log in again to use Pij."}), 401
 
-    # FAST PATH: secure local website/data answers skip Gemini entirely.
-    try:
-        fast = try_fast_local_answer(message, current_path=current_path)
-    except Exception as exc:
-        print(f"⚠️ Pij local tool error: {exc}")
-        fast = None
-
-    if fast and fast.get("handled"):
-        answer = str(fast.get("answer") or "").strip()
-        save_conversation_message(memory_key, "user", message)
-        save_conversation_message(memory_key, "assistant", answer)
-        return jsonify({
-            "ok": True,
-            "answer": answer,
-            "model_used": "District 4 local",
-            "fast": True,
-        })
-
-    # Save the user's message BEFORE calling Gemini. If the browser navigates
-    # away while Gemini is thinking, the new page can restore the question.
+    # Every question goes to Gemini. Flask only supplies identity, permissions,
+    # website knowledge and a sanitized/authorized database snapshot.
     history = get_conversation_history(memory_key)
     save_conversation_message(memory_key, "user", message)
 
-    context = safe_context_for_gemini(message, current_path=current_path, page_title=page_title)
-    gemini_input = build_pij_input(message, history, context)
+    try:
+        context = safe_context_for_gemini(
+            message,
+            current_path=current_path,
+            page_title=page_title,
+        )
+    except Exception as exc:
+        print(f"❌ Pij context error: {exc}")
+        return jsonify({
+            "ok": False,
+            "error": "Pij could not prepare the District 4 data context."
+        }), 500
+
+    try:
+        library_context = library_context_for_gemini(message)
+    except Exception as exc:
+        print(f"⚠️ Pij library retrieval warning: {exc}")
+        library_context = (
+            "PASTOR'S RESOURCES AI RETRIEVAL\n"
+            "- Library retrieval is temporarily unavailable for this question."
+        )
+
+    combined_context = (
+        context
+        + "\n\nCURRENT PASTOR'S RESOURCES CONTEXT\n"
+        + library_context
+    )
+
+    gemini_input = build_pij_input(message, history, combined_context)
 
     with pending_lock:
         pending_requests[memory_key] = {
@@ -274,20 +386,14 @@ def clear_ai_chat():
 
 @ai_bp.route("/history", methods=["GET"])
 def ai_history():
-    """Restore the current account's Pij conversation after page navigation."""
+    """Restore the same Pij conversation after page navigation."""
     memory_key = get_memory_key()
     if not memory_key:
         return jsonify({"ok": False, "error": "Please log in again to use Pij."}), 401
-
     history = get_conversation_history(memory_key)
     with pending_lock:
         pending = memory_key in pending_requests
-
-    return jsonify({
-        "ok": True,
-        "messages": history,
-        "pending": pending,
-    })
+    return jsonify({"ok": True, "messages": history, "pending": pending})
 
 
 @ai_bp.route("/whoami", methods=["GET"])
@@ -317,3 +423,4 @@ def ai_test_page():
 
 def register_ai_assistant(app):
     app.register_blueprint(ai_bp)
+    register_pij_library_routes(app)
