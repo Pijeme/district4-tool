@@ -9515,6 +9515,7 @@ async function toggleFavorite(bookId, button) {
 }
 
 let resourceSyncPollTimer = null;
+let pijIndexPollTimer = null;
 
 function setResourceSyncUiRunning(running) {
     const button = document.getElementById("syncButton");
@@ -9534,6 +9535,7 @@ function setResourceSyncUiRunning(running) {
 
 function renderResourceSyncProgress(state) {
     const overlay = document.getElementById("resourceSyncOverlay");
+    const title = document.getElementById("resourceSyncTitle");
     const bar = document.getElementById("resourceSyncBar");
     const current = document.getElementById("resourceSyncCurrent");
     const stats = document.getElementById("resourceSyncStats");
@@ -9543,6 +9545,10 @@ function renderResourceSyncProgress(state) {
 
     if (!overlay || !bar || !current || !stats || !stage) {
         return;
+    }
+
+    if (title) {
+        title.textContent = "Syncing Pastor's Resources...";
     }
 
     const total = Math.max(0, safeNumber(state.total));
@@ -9677,6 +9683,218 @@ async function fetchResourceSyncStatus() {
     return data.state || {};
 }
 
+async function fetchPijIndexStatus() {
+    const response = await fetch(
+        "/ai/library-index/status",
+        {
+            cache:"no-store"
+        }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+        throw new Error(
+            data.error
+            || "Unable to read Pij AI indexing status."
+        );
+    }
+
+    return data;
+}
+
+function renderPijIndexProgress(state) {
+    state = state || {};
+
+    const overlay = document.getElementById("resourceSyncOverlay");
+    const title = document.getElementById("resourceSyncTitle");
+    const bar = document.getElementById("resourceSyncBar");
+    const current = document.getElementById("resourceSyncCurrent");
+    const stats = document.getElementById("resourceSyncStats");
+    const stage = document.getElementById("resourceSyncStage");
+    const count = document.getElementById("resourceSyncCount");
+    const percentLabel = document.getElementById("resourceSyncPercent");
+    const button = document.getElementById("syncButton");
+
+    if (!overlay || !bar || !current || !stats || !stage) {
+        return;
+    }
+
+    const total = Math.max(0, safeNumber(state.total));
+    const processed = Math.max(0, safeNumber(state.processed));
+    const indexed = Math.max(0, safeNumber(state.indexed));
+    const skipped = Math.max(0, safeNumber(state.skipped));
+    const errors = Math.max(0, safeNumber(state.errors));
+    const chunks = Math.max(0, safeNumber(state.chunks));
+    const searchableDocuments = Math.max(
+        0,
+        safeNumber(state.searchable_documents)
+    );
+    const currentFile = String(state.current_file || "").trim();
+    const queued = Boolean(state.queued);
+
+    if (title) {
+        title.textContent = "Updating Pij AI Knowledge...";
+    }
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = "🧠 Updating Pij...";
+    }
+
+    overlay.classList.add("show");
+
+    current.textContent = currentFile
+        ? "AI indexing: " + currentFile
+        : (
+            state.running
+                ? "Preparing the next ebook for Pij..."
+                : "Pij AI ebook indexing complete."
+        );
+
+    if (total > 0) {
+        const percent = Math.min(
+            100,
+            Math.max(
+                0,
+                Math.round((processed / total) * 100)
+            )
+        );
+
+        bar.classList.remove("indeterminate");
+        bar.style.width = percent + "%";
+
+        if (count) {
+            count.textContent = processed.toLocaleString()
+                + " / "
+                + total.toLocaleString()
+                + " ebooks checked for AI";
+        }
+
+        if (percentLabel) {
+            percentLabel.textContent = percent + "%";
+        }
+    } else {
+        bar.style.width = "";
+        bar.classList.add("indeterminate");
+
+        if (count) {
+            count.textContent = "Preparing AI ebook index...";
+        }
+
+        if (percentLabel) {
+            percentLabel.textContent = "Starting…";
+        }
+    }
+
+    stats.textContent =
+        indexed.toLocaleString()
+        + " newly indexed"
+        + " · "
+        + skipped.toLocaleString()
+        + " already current"
+        + " · "
+        + errors.toLocaleString()
+        + " errors"
+        + " · "
+        + chunks.toLocaleString()
+        + " searchable chunks";
+
+    if (queued) {
+        stage.textContent =
+            "Pij is still indexing. Another incremental pass is queued so newly synced books are not missed.";
+    } else if (state.running) {
+        stage.textContent =
+            state.message
+            || "Extracting ebook text and updating Pij's searchable knowledge...";
+    } else if (String(state.stage || "") === "error") {
+        stage.textContent =
+            state.last_error
+            || "Pij AI indexing stopped because of an error.";
+    } else {
+        stage.textContent =
+            searchableDocuments.toLocaleString()
+            + " searchable ebooks are ready for Pij.";
+    }
+}
+
+async function pollPijIndexProgress() {
+    clearTimeout(pijIndexPollTimer);
+
+    try {
+        const state = await fetchPijIndexStatus();
+
+        setResourceSyncUiRunning(true);
+        renderPijIndexProgress(state);
+
+        if (state.running || state.queued) {
+            pijIndexPollTimer = setTimeout(
+                pollPijIndexProgress,
+                650
+            );
+            return;
+        }
+
+        if (String(state.stage || "") === "error") {
+            showToast(
+                "Library sync finished, but Pij AI indexing stopped: "
+                + (
+                    state.last_error
+                    || "Unknown indexing error."
+                )
+            );
+
+            setTimeout(() => {
+                setResourceSyncUiRunning(false);
+            }, 3000);
+
+            return;
+        }
+
+        showToast(
+            "Pij AI knowledge is ready: "
+            + safeNumber(
+                state.searchable_documents
+            ).toLocaleString()
+            + " searchable ebooks."
+        );
+
+        document.getElementById(
+            "statusDot"
+        ).className = "pr-status-dot ready";
+
+        document.getElementById(
+            "statusText"
+        ).textContent =
+            "Pastor's Resources and Pij AI knowledge are up to date.";
+
+        document.getElementById(
+            "syncDetail"
+        ).textContent =
+            safeNumber(state.chunks).toLocaleString()
+            + " searchable AI text chunks ready.";
+
+        setTimeout(() => {
+            setResourceSyncUiRunning(false);
+        }, 1800);
+
+    } catch (error) {
+        // The visible Drive catalog is already safe. Keep the overlay up and
+        // retry briefly because the AI indexing thread may still be working.
+        const stage = document.getElementById("resourceSyncStage");
+
+        if (stage) {
+            stage.textContent =
+                "Reconnecting to Pij AI indexing progress...";
+        }
+
+        pijIndexPollTimer = setTimeout(
+            pollPijIndexProgress,
+            1800
+        );
+    }
+}
+
 async function pollResourceSyncProgress() {
     clearTimeout(resourceSyncPollTimer);
 
@@ -9718,11 +9936,11 @@ async function pollResourceSyncProgress() {
             }
 
             showToast(
-                "Sync complete: "
+                "Library catalog sync complete: "
                 + safeNumber(
                     finalStats.unique_books
                 ).toLocaleString()
-                + " unique books."
+                + " unique books. Updating Pij AI knowledge now..."
             );
 
             await Promise.all([
@@ -9730,9 +9948,11 @@ async function pollResourceSyncProgress() {
                 loadContinueReading()
             ]);
 
-            setTimeout(() => {
-                setResourceSyncUiRunning(false);
-            }, 1600);
+            // The backend automatically starts or queues the incremental Pij
+            // index when Drive synchronization completes. Keep this same
+            // progress card open and transition to AI indexing progress.
+            await pollPijIndexProgress();
+            return;
 
         } else if (state.stage === "error") {
             setResourceSyncUiRunning(true);
@@ -9898,7 +10118,24 @@ async function resumeResourceSyncIfRunning() {
             setResourceSyncUiRunning(true);
             renderResourceSyncProgress(state);
             pollResourceSyncProgress();
+            return;
         }
+
+        // A browser refresh must not make an active Pij indexing pass look
+        // as though it disappeared after the Drive catalog sync finished.
+        try {
+            const aiState = await fetchPijIndexStatus();
+
+            if (aiState.running || aiState.queued) {
+                setResourceSyncUiRunning(true);
+                renderPijIndexProgress(aiState);
+                pollPijIndexProgress();
+            }
+        } catch (_aiError) {
+            // Normal library browsing continues even if AI status cannot be
+            // checked for this one page load.
+        }
+
     } catch (_error) {
         // Normal page loading should not fail only because
         // live sync status could not be checked.
@@ -12059,6 +12296,8 @@ const READ_BASE_URL = {{ read_base_url|tojson }};
 const STATE = {{ state|tojson }};
 const JUMP_ANNOTATION_ID = {{ jump_annotation_id|tojson }};
 const JUMP_BOOKMARK_ID = {{ jump_bookmark_id|tojson }};
+const PIJ_JUMP_PAGE = {{ jump_page|tojson }};
+const PIJ_JUMP_SECTION = {{ jump_section|tojson }};
 const AVAILABLE_FORMATS = {{ formats|tojson }};
 const PASTOR_RESOURCES_URL = {{ url_for('pastor_resources')|tojson }};
 const LIBRARY_RESTORE_KEY = "pastorResourcesRestoreRequestedV1";
@@ -13040,7 +13279,10 @@ window.addEventListener("beforeunload", () => {
    ===================================================== */
 
 let pdfDoc = null;
-let pdfPageNumber = Math.max(1, Number(STATE.pdf_page || 1));
+let pdfPageNumber = Math.max(
+    1,
+    Number(PIJ_JUMP_PAGE || STATE.pdf_page || 1)
+);
 let pdfScale = Math.max(.5, Number(STATE.pdf_scale || 1.15));
 let pdfRenderTask = null;
 let pdfOutlineFlat = [];
@@ -14676,6 +14918,17 @@ async function initIosDirectEpubReader() {
             }
         } catch (error) {}
 
+        if (Number(PIJ_JUMP_SECTION || 0) > 0) {
+            initialIndex = Math.max(
+                0,
+                Math.min(
+                    iosEpubSpine.length - 1,
+                    Number(PIJ_JUMP_SECTION) - 1
+                )
+            );
+            initialRatio = 0;
+        }
+
         const jumpAnn = annotations.find(a => Number(a.id) === Number(JUMP_ANNOTATION_ID));
         const jumpBm = bookmarks.find(b => Number(b.id) === Number(JUMP_BOOKMARK_ID));
         const annLoc = iosEpubParseRangeLocator(jumpAnn?.locator || "");
@@ -14833,6 +15086,26 @@ async function initEpubReader() {
         });
 
         let initialLocation = currentEpubCfi || undefined;
+
+        if (Number(PIJ_JUMP_SECTION || 0) > 0) {
+            try {
+                const spineIndex = Math.max(
+                    0,
+                    Number(PIJ_JUMP_SECTION) - 1
+                );
+                const spineItem = epubBook.spine.get(spineIndex);
+
+                if (spineItem && spineItem.href) {
+                    initialLocation = spineItem.href;
+                }
+            } catch (error) {
+                console.warn(
+                    "Unable to jump directly to the Pij EPUB section",
+                    error
+                );
+            }
+        }
+
         const jumpAnn = annotations.find(a => Number(a.id) === Number(JUMP_ANNOTATION_ID));
         const jumpBm = bookmarks.find(b => Number(b.id) === Number(JUMP_BOOKMARK_ID));
         if (jumpAnn && jumpAnn.locator) initialLocation = jumpAnn.locator;
@@ -16474,6 +16747,50 @@ def sync_library_to_database_v3(progress_callback=None):
     return result
 
 
+def trigger_pij_library_index():
+    """
+    Start (or queue) the incremental Pij ebook-text index after the visible
+    Pastor's Resources catalog has synchronized.
+
+    The import is deliberately lazy because pij_library_knowledge imports this
+    module for Drive/file helpers. Importing it here avoids a circular import
+    during Flask startup.
+    """
+    try:
+        from pij_library_knowledge import (
+            get_index_state,
+            start_public_library_index,
+        )
+
+        started = start_public_library_index(
+            force=False,
+            queue_if_running=True,
+        )
+        state = get_index_state()
+
+        return {
+            "ok": True,
+            "started": bool(started),
+            "queued": bool(state.get("queued")),
+            "running": bool(state.get("running")),
+            "state": state,
+        }
+
+    except Exception as error:
+        print(
+            "[Pastor Resources -> Pij Index WARNING] "
+            + str(error),
+            flush=True,
+        )
+        return {
+            "ok": False,
+            "started": False,
+            "queued": False,
+            "running": False,
+            "error": str(error),
+        }
+
+
 def start_resource_library_sync(app):
     """
     Start one live Pastor's Resources synchronization in a background
@@ -16510,18 +16827,39 @@ def start_resource_library_sync(app):
                     progress_callback=update_resource_sync_state
                 )
 
+                # Keep Pij's searchable ebook text in step with the visible
+                # library. If another AI index is already running, the helper
+                # queues one more incremental pass instead of starting a
+                # competing writer.
+                pij_index = trigger_pij_library_index()
+                stats = dict(stats or {})
+                stats["pij_index_started"] = bool(
+                    pij_index.get("started")
+                )
+                stats["pij_index_queued"] = bool(
+                    pij_index.get("queued")
+                )
+                stats["pij_index_ok"] = bool(
+                    pij_index.get("ok")
+                )
+
             update_resource_sync_state(
                 running=False,
                 stage="complete",
                 message=(
-                    "Sync complete. "
+                    "Library catalog sync complete. "
                     + str(
                         stats.get(
                             "unique_books",
                             0,
                         )
                     )
-                    + " unique books cataloged."
+                    + " unique books cataloged. "
+                    + (
+                        "Pij AI indexing is running."
+                        if stats.get("pij_index_ok")
+                        else "Pij AI indexing could not be started automatically."
+                    )
                 ),
                 current_file="",
                 finished_at=utc_now_iso(),
@@ -18922,10 +19260,23 @@ def register_pastor_resources_routes(app):
                 sync_library_to_database_v3()
             )
 
+            pij_index = trigger_pij_library_index()
+            stats = dict(stats or {})
+            stats["pij_index_started"] = bool(
+                pij_index.get("started")
+            )
+            stats["pij_index_queued"] = bool(
+                pij_index.get("queued")
+            )
+            stats["pij_index_ok"] = bool(
+                pij_index.get("ok")
+            )
+
             return jsonify(
                 ok=True,
                 message=(
-                    "Library synchronization completed."
+                    "Library synchronization completed. "
+                    "Pij AI knowledge refresh started or queued."
                 ),
                 stats=stats,
             )
@@ -19167,6 +19518,40 @@ def register_pastor_resources_routes(app):
             },
         )
 
+        # Pij may link directly to the PDF page / EPUB section that supplied
+        # an answer. These query values are navigation hints only; normal
+        # authentication and book visibility checks above still apply.
+        jump_page = 0
+        jump_section = 0
+
+        try:
+            jump_page = max(
+                0,
+                int(
+                    request.args.get(
+                        "page",
+                        0,
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            jump_page = 0
+
+        try:
+            jump_section = max(
+                0,
+                int(
+                    request.args.get(
+                        "section",
+                        0,
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            jump_section = 0
+
         formats = []
 
         for value in get_book_files(
@@ -19215,6 +19600,8 @@ def register_pastor_resources_routes(app):
                     "",
                 )
             ),
+            jump_page=jump_page,
+            jump_section=jump_section,
         )
 
     # -----------------------------------------------------
