@@ -1746,7 +1746,8 @@ def start_sermon_sync(app):
                 message=(
                     "Sync complete. "
                     + str(stats.get("pdf_files_seen", 0))
-                    + " sermon PDFs cataloged."
+                    + " sermon PDFs cataloged. "
+                    "Pij private sermon knowledge is refreshed."
                 ),
                 finished_at=utc_now_iso(),
                 stats=stats,
@@ -4414,12 +4415,20 @@ function renderSyncProgress(state) {
     document.getElementById("loadingTitle").textContent =
         state.stage === "scanning"
             ? "Scanning sermon folder..."
-            : "Syncing sermon PDFs...";
+            : (
+                state.stage === "complete"
+                    ? "Sermon Library + Pij Knowledge Ready"
+                    : "Syncing sermon PDFs + Pij knowledge..."
+            );
 
     document.getElementById("loadingSub").textContent =
         state.current_file
-            ? state.current_file
-            : (state.message || "Preparing sermon library...");
+            ? "Reading / indexing: " + state.current_file
+            : (
+                state.stage === "complete"
+                    ? "Pij can now search the refreshed private sermon text."
+                    : (state.message || "Preparing sermon library...")
+            );
 
     document.getElementById("loadingProgress").textContent =
         total > 0
@@ -4456,9 +4465,8 @@ async function pollSyncProgress() {
             return;
         }
 
-        setSyncUiRunning(false);
-
         if (state.stage === "error") {
+            setSyncUiRunning(false);
             showToast(state.last_error || "Sermon sync stopped with an error.");
             document.getElementById("statusText").textContent =
                 "Sync error: " + (state.last_error || "Unknown error");
@@ -4467,13 +4475,36 @@ async function pollSyncProgress() {
 
         if (state.stage === "complete") {
             const stats = state.stats || {};
+
+            // Pij reads the authorized sermon_library_pages table directly,
+            // so the same sermon sync that extracts page text is also the
+            // private Pij knowledge refresh. No second duplicate index is
+            // required.
+            renderSyncProgress({
+                ...state,
+                stage:"complete",
+                running:false
+            });
+
             showToast(
                 "Sermon sync complete. "
                 + Number(stats.pdf_files_seen || 0)
-                + " sermon PDFs cataloged."
+                + " sermon PDFs cataloged. Pij private sermon knowledge refreshed."
             );
+
+            document.getElementById("statusText").textContent =
+                "Sermon library and Pij private knowledge are up to date.";
+
             await loadSermons(currentPage);
+
+            setTimeout(() => {
+                setSyncUiRunning(false);
+            }, 1800);
+
+            return;
         }
+
+        setSyncUiRunning(false);
 
     } catch (error) {
         setSyncUiRunning(false);
