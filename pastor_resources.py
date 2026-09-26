@@ -6674,6 +6674,32 @@ def search_library_database_v3(
             ),
         ).fetchall()
 
+        # Page counts already discovered by Pij's ebook index are reused here.
+        # This avoids downloading/opening every PDF merely to render the library grid.
+        page_count_by_book = {}
+        try:
+            has_ai_docs = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pij_library_documents'"
+            ).fetchone()
+            if has_ai_docs and rows:
+                book_ids = [int(row["id"]) for row in rows]
+                placeholders = ",".join("?" for _ in book_ids)
+                page_rows = db.execute(
+                    f"""
+                    SELECT book_id, MAX(COALESCE(page_count,0)) AS page_count
+                    FROM pij_library_documents
+                    WHERE source_type='public_ebook' AND LOWER(COALESCE(format,''))='pdf' AND book_id IN ({placeholders})
+                    GROUP BY book_id
+                    """,
+                    tuple(book_ids),
+                ).fetchall()
+                page_count_by_book = {
+                    int(item["book_id"]): int(item["page_count"] or 0)
+                    for item in page_rows
+                }
+        except Exception:
+            page_count_by_book = {}
+
         books = []
 
         for row in rows:
@@ -6697,6 +6723,7 @@ def search_library_database_v3(
                     "created_time": str(row["created_time"] or ""),
                     "modified_time": str(row["modified_time"] or ""),
                     "formats": formats,
+                    "page_count": int(page_count_by_book.get(int(row["id"]), 0)),
                     "favorite": bool(row["favorite"]),
                     "progress_percent": float(
                         row["progress_percent"] or 0
@@ -9402,6 +9429,7 @@ function renderBooks(books) {
                     </div>
                     <h3 class="pr-book-title">${escapeHtml(book.title)}</h3>
                     <div class="pr-author">${escapeHtml(book.author || "Unknown Author")}</div>
+                    <div class="pr-pages">${safeNumber(book.page_count) > 0 ? safeNumber(book.page_count).toLocaleString() + " pages" : "Pages unavailable"}</div>
                     <div class="pr-actions">
                         <a class="pr-btn read" data-reader-link="1" href="${escapeHtml(book.read_url)}">Read</a>
                         <button class="pr-btn download" type="button" onclick="startLibraryDownload(${Number(book.id)})">Download</button>
@@ -13882,6 +13910,7 @@ let iosEpubProgressTimer = null;
 let iosEpubPinchStartDistance = 0;
 let iosEpubPinchStartSize = 100;
 let iosEpubPinching = false;
+let iosEpubChapterNavigationBusy = false;
 const IOS_EPUB_POSITION_KEY = "pastorIosDirectEpubPositionV1:" + BOOK_ID;
 
 function epubRangeFromCfi(contents, cfiRange) {
@@ -14808,11 +14837,31 @@ async function iosEpubOpenHref(href) {
 }
 
 async function iosEpubGo(direction) {
-    if (!iosDirectEpubActive) return;
-    const next = iosEpubSpineIndex + (direction < 0 ? -1 : 1);
-    if (next < 0 || next >= iosEpubSpine.length) return;
-    hideSelectionBarOnly();
-    await iosEpubRenderChapter(next, "", 0);
+    if (!iosDirectEpubActive || iosEpubChapterNavigationBusy) return;
+
+    const normalized = direction < 0 ? -1 : 1;
+    const next = iosEpubSpineIndex + normalized;
+
+    if (next < 0 || next >= iosEpubSpine.length) {
+        showReaderToast(normalized < 0 ? "Beginning of book." : "End of book.");
+        return;
+    }
+
+    // A page/chapter turn should never leave an old native selection or
+    // floating selection toolbar behind. This is used by buttons, edge taps
+    // and the iOS swipe handler below.
+    if (pendingSelection || selectionIsActive(window)) {
+        clearPendingSelection();
+    } else {
+        hideSelectionBarOnly();
+    }
+
+    iosEpubChapterNavigationBusy = true;
+    try {
+        await iosEpubRenderChapter(next, "", 0);
+    } finally {
+        iosEpubChapterNavigationBusy = false;
+    }
 }
 
 function iosEpubInstallInteractions() {
@@ -14823,7 +14872,125 @@ function iosEpubInstallInteractions() {
 
     if (!viewer.__pastorDirectHandlers) {
         viewer.__pastorDirectHandlers = true;
+
+        // -------------------------------------------------
+        // iOS direct-DOM chapter swipe
+        // -------------------------------------------------
+        // Do not preventDefault() on one-finger touches. Safari must keep the
+        // complete native touch stream so long-press text selection and the
+        // blue selection handles continue to work. We only decide that the
+        // gesture was a swipe after touchend/touchcancel.
+        let swipeStartX = 0;
+        let swipeStartY = 0;
+        let swipeLastX = 0;
+        let swipeLastY = 0;
+        let swipeStartedAt = 0;
+        let swipeTracking = false;
+        let swipeMultiTouch = false;
+        let lastCompletedSwipeAt = 0;
+
+        const resetDirectSwipe = () => {
+            swipeTracking = false;
+            swipeMultiTouch = false;
+        };
+
+        const beginDirectSwipe = event => {
+            if (!event?.touches || event.touches.length !== 1) {
+                if (event?.touches?.length > 1) swipeMultiTouch = true;
+                swipeTracking = false;
+                return;
+            }
+
+            if (iosEpubPinching || selectionToolbarInteracting || selectionIsActive(window)) {
+                swipeTracking = false;
+                return;
+            }
+
+            if (event.target?.closest?.("a,button,input,textarea,select,label,[role='button']")) {
+                swipeTracking = false;
+                return;
+            }
+
+            const touch = event.touches[0];
+            const viewportWidth = Number(window.innerWidth || document.documentElement.clientWidth || 0);
+
+            // Leave the extreme screen edges to Safari's own back/forward
+            // navigation gesture. Swiping anywhere else in the reading area
+            // can turn the EPUB chapter.
+            if (viewportWidth > 0 && (touch.clientX < 24 || touch.clientX > viewportWidth - 24)) {
+                swipeTracking = false;
+                return;
+            }
+
+            swipeStartX = swipeLastX = Number(touch.clientX || 0);
+            swipeStartY = swipeLastY = Number(touch.clientY || 0);
+            swipeStartedAt = Date.now();
+            swipeTracking = true;
+            swipeMultiTouch = false;
+        };
+
+        const moveDirectSwipe = event => {
+            if (!swipeTracking) return;
+
+            if (!event?.touches || event.touches.length !== 1) {
+                if (event?.touches?.length > 1) swipeMultiTouch = true;
+                swipeTracking = false;
+                return;
+            }
+
+            const touch = event.touches[0];
+            swipeLastX = Number(touch.clientX || swipeLastX);
+            swipeLastY = Number(touch.clientY || swipeLastY);
+
+            // Intentionally no preventDefault here. Vertical scrolling and
+            // native iOS text selection must remain fully native.
+        };
+
+        const finishDirectSwipe = (x, y) => {
+            if (!swipeTracking || swipeMultiTouch) {
+                resetDirectSwipe();
+                return false;
+            }
+
+            const dx = Number(x ?? swipeLastX) - swipeStartX;
+            const dy = Number(y ?? swipeLastY) - swipeStartY;
+            const elapsed = Date.now() - swipeStartedAt;
+            resetDirectSwipe();
+
+            // A native selection always wins over chapter navigation. This
+            // prevents a long-press or selection-handle drag from turning the
+            // chapter.
+            if (selectionToolbarInteracting || selectionIsActive(window)) return false;
+            if (elapsed > 950) return false;
+
+            // Conservative threshold: a deliberate horizontal gesture of at
+            // least 64px that is clearly more horizontal than vertical.
+            if (Math.abs(dx) < 64) return false;
+            if (Math.abs(dx) < Math.abs(dy) * 1.25) return false;
+
+            lastCompletedSwipeAt = Date.now();
+            iosEpubGo(dx < 0 ? 1 : -1);
+            return true;
+        };
+
+        viewer.addEventListener("touchstart", beginDirectSwipe, {passive:true,capture:true});
+        viewer.addEventListener("touchmove", moveDirectSwipe, {passive:true,capture:true});
+        viewer.addEventListener("touchend", event => {
+            const touch = event?.changedTouches?.[0];
+            finishDirectSwipe(touch?.clientX ?? swipeLastX, touch?.clientY ?? swipeLastY);
+        }, {passive:true,capture:true});
+        viewer.addEventListener("touchcancel", () => {
+            // WebKit may convert a finished horizontal gesture to touchcancel.
+            // Use the last observed point so that a valid deliberate swipe is
+            // not lost, while the same selection safeguards still apply.
+            finishDirectSwipe(swipeLastX, swipeLastY);
+        }, {passive:true,capture:true});
+
         viewer.addEventListener("click", event => {
+            // Some WebKit builds synthesize a click after a touch gesture.
+            // Ignore it briefly so a swipe cannot also trigger the edge-tap
+            // chapter navigation and accidentally skip two chapters.
+            if (Date.now() - lastCompletedSwipeAt < 450) return;
             const link = event.target?.closest?.("a[data-epub-href]");
             if (link) {
                 event.preventDefault();
@@ -14938,7 +15105,7 @@ async function initIosDirectEpubReader() {
 
         await iosEpubRenderChapter(initialIndex, "", initialRatio);
         hideReaderLoading();
-        showReaderToast("iPhone/iPad EPUB compatibility mode: select text normally; tap the far left/right edge for previous/next chapter.");
+        showReaderToast("iPhone/iPad EPUB mode: swipe left/right or tap the far edge to change chapter; long-press to select text.");
 
         if (annLoc && jumpAnn?.locator) {
             const range = iosEpubRangeFromLocator(jumpAnn.locator, jumpAnn.selected_text || "");
@@ -16960,6 +17127,11 @@ def get_database_details_payload(
         "same_name",
         "hidden",
         "inactive",
+        "logical",
+        "pdf",
+        "epub",
+        "ai_indexed",
+        "ai_not_indexed",
     }
 
     allowed_sorts = {
@@ -17047,7 +17219,38 @@ def get_database_details_payload(
                 COALESCE(b.manual_category, '') AS manual_category,
                 COALESCE(b.is_hidden, 0) AS is_hidden,
                 COALESCE(b.hidden_at, '') AS hidden_at,
-                COALESCE(b.hidden_by, '') AS hidden_by
+                COALESCE(b.hidden_by, '') AS hidden_by,
+
+                COALESCE((
+                    SELECT MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END)
+                    FROM pij_library_documents d
+                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
+                ),0) AS ai_indexed,
+
+                COALESCE((
+                    SELECT MAX(d.page_count)
+                    FROM pij_library_documents d
+                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
+                ),0) AS ai_page_count,
+
+                COALESCE((
+                    SELECT SUM(d.chunk_count)
+                    FROM pij_library_documents d
+                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
+                ),0) AS ai_chunk_count,
+
+                COALESCE((
+                    SELECT MAX(d.indexed_at)
+                    FROM pij_library_documents d
+                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
+                ),'') AS ai_indexed_at,
+
+                COALESCE((
+                    SELECT MAX(d.extract_error)
+                    FROM pij_library_documents d
+                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
+                      AND COALESCE(d.extract_error,'')<>''
+                ),'') AS ai_extract_error
 
             FROM pastor_library_files f
 
@@ -17327,10 +17530,35 @@ def get_database_details_payload(
                 )
 
             elif view == "inactive":
+                include = (not item["is_current"])
+
+            elif view == "logical":
+                include = item["is_current"]
+
+            elif view == "pdf":
                 include = (
-                    not item[
-                        "is_current"
-                    ]
+                    item["is_current"]
+                    and str(item.get("format") or "").lower() == "pdf"
+                )
+
+            elif view == "epub":
+                include = (
+                    item["is_current"]
+                    and str(item.get("format") or "").lower() == "epub"
+                )
+
+            elif view == "ai_indexed":
+                include = (
+                    item["is_current"]
+                    and not item["is_hidden"]
+                    and bool(int(item.get("ai_indexed") or 0))
+                )
+
+            elif view == "ai_not_indexed":
+                include = (
+                    item["is_current"]
+                    and not item["is_hidden"]
+                    and not bool(int(item.get("ai_indexed") or 0))
                 )
 
             if not include:
@@ -17415,6 +17643,24 @@ def get_database_details_payload(
             items.append(
                 item
             )
+
+        # Book-level views list each logical book once.
+        if view in {"logical", "hidden", "ai_indexed", "ai_not_indexed"}:
+            grouped = {}
+            for item in items:
+                group_key = item.get("book_id")
+                if group_key is None:
+                    group_key = "file:" + str(item.get("database_file_id") or "")
+                previous = grouped.get(group_key)
+                if (
+                    previous is None
+                    or (
+                        str(item.get("format") or "").lower() == "pdf"
+                        and str(previous.get("format") or "").lower() != "pdf"
+                    )
+                ):
+                    grouped[group_key] = item
+            items = list(grouped.values())
 
         # ---------------------------------------------
         # Sort
@@ -17632,6 +17878,24 @@ def get_database_details_payload(
                     "last_sync_at"
                 )
                 or "",
+
+            "ai_indexed_books":
+                len({
+                    int(item["book_id"])
+                    for item in current_rows
+                    if item.get("book_id") is not None
+                    and not int(item.get("is_hidden") or 0)
+                    and int(item.get("ai_indexed") or 0)
+                }),
+
+            "ai_not_indexed_books":
+                len({
+                    int(item["book_id"])
+                    for item in current_rows
+                    if item.get("book_id") is not None
+                    and not int(item.get("is_hidden") or 0)
+                    and not int(item.get("ai_indexed") or 0)
+                }),
         }
 
         return {
@@ -17669,1358 +17933,59 @@ def get_database_details_payload(
 
 PASTOR_DATABASE_DETAILS_HTML = r"""
 {% extends "base.html" %}
-
-{% block title %}
-Database Details - Pastor's Resources
-{% endblock %}
-
+{% block title %}Database Details - Pastor's Resources{% endblock %}
 {% block content %}
-
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Lora:wght@600;700&family=Nunito+Sans:wght@400;600;700;800;900&display=swap');
-
-.app-main {
-    max-width: 1550px;
-    padding: 0;
-}
-
-.db-page {
-    width: 100%;
-    padding: 14px 12px 52px;
-    color: #17233c;
-    font-family: "Nunito Sans", Arial, sans-serif;
-}
-
-.db-hero {
-    padding: 18px;
-    border-radius: 20px;
-    background: linear-gradient(
-        135deg,
-        #f8fbff,
-        #f7f5ff 48%,
-        #fff7fb
-    );
-    border: 1px solid rgba(15,23,42,.07);
-    box-shadow: 0 10px 30px rgba(15,23,42,.06);
-}
-
-.db-kicker {
-    color: #8a6590;
-    font-size: 10px;
-    font-weight: 900;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-}
-
-.db-title {
-    margin: 4px 0 0;
-    font: 700 31px/1.05 "Lora", Georgia, serif;
-    color: #17233c;
-}
-
-.db-subtitle {
-    max-width: 850px;
-    margin: 8px 0 0;
-    color: #64748b;
-    font-size: 12px;
-    line-height: 1.55;
-}
-
-.db-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 14px;
-}
-
-.db-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 40px;
-    padding: 9px 12px;
-    border: 0;
-    border-radius: 11px;
-    background: #fff;
-    color: #52627d;
-    text-decoration: none;
-    font: 800 11px "Nunito Sans", Arial, sans-serif;
-    cursor: pointer;
-    box-shadow: 0 4px 14px rgba(15,23,42,.07);
-}
-
-.db-action.primary {
-    color: #fff;
-    background: linear-gradient(135deg,#b77fba,#6f96dd);
-}
-
-.db-action:disabled {
-    opacity: .6;
-    cursor: not-allowed;
-}
-
-.db-summary {
-    display: grid;
-    grid-template-columns: repeat(2,minmax(0,1fr));
-    gap: 8px;
-    margin-top: 14px;
-}
-
-.db-stat {
-    min-width: 0;
-    padding: 12px;
-    border-radius: 15px;
-    background: #fff;
-    border: 1px solid rgba(15,23,42,.07);
-    box-shadow: 0 6px 18px rgba(15,23,42,.045);
-}
-
-.db-stat-value {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #17233c;
-    font-size: 21px;
-    font-weight: 900;
-}
-
-.db-stat-label {
-    margin-top: 2px;
-    color: #8a96a9;
-    font-size: 9px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-}
-
-.db-note {
-    margin-top: 12px;
-    padding: 11px 13px;
-    border-radius: 13px;
-    background: #fff9e9;
-    color: #755b1e;
-    border: 1px solid #f3e1a4;
-    font-size: 11px;
-    line-height: 1.5;
-}
-
-.db-controls {
-    margin-top: 14px;
-    padding: 12px;
-    border-radius: 17px;
-    background: #fff;
-    border: 1px solid rgba(15,23,42,.07);
-}
-
-.db-search-row {
-    display: grid;
-    grid-template-columns: minmax(0,1fr);
-    gap: 8px;
-}
-
-.db-input,
-.db-select {
-    width: 100%;
-    min-height: 44px;
-    border: 1px solid #dbe3ee;
-    border-radius: 11px;
-    padding: 9px 11px;
-    outline: none;
-    background: #fff;
-    color: #334155;
-    font: 700 12px "Nunito Sans", Arial, sans-serif;
-}
-
-.db-input:focus,
-.db-select:focus {
-    border-color: #8ea8dc;
-    box-shadow: 0 0 0 3px rgba(109,142,210,.12);
-}
-
-.db-filters {
-    display: flex;
-    gap: 7px;
-    margin-top: 9px;
-    overflow-x: auto;
-    padding-bottom: 2px;
-}
-
-.db-filter {
-    flex: 0 0 auto;
-    border: 0;
-    border-radius: 999px;
-    padding: 8px 11px;
-    background: #eef2f8;
-    color: #59677f;
-    font: 850 10px "Nunito Sans", Arial, sans-serif;
-    cursor: pointer;
-}
-
-.db-filter.active {
-    color: #fff;
-    background: linear-gradient(135deg,#a878b0,#6c94dc);
-}
-
-.db-results-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    align-items: end;
-    margin: 17px 2px 9px;
-}
-
-.db-results-head h2 {
-    margin: 0;
-    color: #17233c;
-    font: 700 21px "Lora", Georgia, serif;
-}
-
-.db-results-count {
-    color: #8a96a9;
-    font-size: 10px;
-    text-align: right;
-}
-
-.db-list {
-    display: grid;
-    gap: 10px;
-}
-
-.db-file-card {
-    padding: 13px;
-    border-radius: 17px;
-    background: #fff;
-    border: 1px solid rgba(15,23,42,.07);
-    box-shadow: 0 6px 18px rgba(15,23,42,.045);
-}
-
-.db-file-top {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-}
-
-.db-file-main {
-    min-width: 0;
-    flex: 1;
-}
-
-.db-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 7px;
-}
-
-.db-badge {
-    display: inline-flex;
-    align-items: center;
-    min-height: 22px;
-    padding: 3px 7px;
-    border-radius: 999px;
-    background: #eef2f8;
-    color: #59677f;
-    font-size: 8px;
-    font-weight: 900;
-    letter-spacing: .025em;
-}
-
-.db-badge.pdf { background:#fff0f0; color:#b53b3b; }
-.db-badge.epub { background:#eef8f2; color:#28845a; }
-.db-badge.duplicate { background:#fff2d8; color:#995e00; }
-.db-badge.same { background:#f2ecff; color:#7049a4; }
-.db-badge.hidden { background:#ffeef5; color:#a33d6c; }
-.db-badge.inactive { background:#edf0f4; color:#6f7887; }
-.db-badge.manual { background:#eaf4ff; color:#28669c; }
-
-.db-file-title {
-    margin: 0;
-    color: #17233c;
-    font: 700 16px/1.3 "Lora", Georgia, serif;
-    overflow-wrap: anywhere;
-}
-
-.db-drive-name {
-    margin-top: 4px;
-    color: #5f6d84;
-    font-size: 10px;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-.db-author {
-    margin-top: 5px;
-    color: #7b879a;
-    font-size: 10px;
-}
-
-.db-meta-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 7px;
-    margin-top: 11px;
-}
-
-.db-meta {
-    min-width: 0;
-    padding: 8px 9px;
-    border-radius: 10px;
-    background: #f8fafc;
-}
-
-.db-meta-label {
-    color: #9aa5b5;
-    font-size: 8px;
-    font-weight: 900;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-}
-
-.db-meta-value {
-    margin-top: 2px;
-    color: #44526a;
-    font-size: 10px;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-.db-copy {
-    margin-left: 5px;
-    border: 0;
-    border-radius: 7px;
-    padding: 3px 6px;
-    background: #e9eef7;
-    color: #586980;
-    font: 800 8px "Nunito Sans", Arial, sans-serif;
-    cursor: pointer;
-}
-
-.db-empty {
-    padding: 32px 15px;
-    border-radius: 16px;
-    background: #fff;
-    border: 1px solid rgba(15,23,42,.07);
-    text-align: center;
-    color: #64748b;
-    font-size: 12px;
-}
-
-.db-pagination {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 8px;
-    margin-top: 18px;
-}
-
-.db-page-btn {
-    min-height: 38px;
-    border: 0;
-    border-radius: 10px;
-    padding: 8px 11px;
-    background: #fff;
-    color: #576780;
-    font: 850 10px "Nunito Sans", Arial, sans-serif;
-    cursor: pointer;
-    box-shadow: 0 4px 14px rgba(15,23,42,.07);
-}
-
-.db-page-btn:disabled {
-    opacity: .4;
-    cursor: default;
-}
-
-.db-page-label {
-    color: #7b879a;
-    font-size: 10px;
-}
-
-.db-toast {
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 14px;
-    z-index: 12000;
-    display: none;
-    padding: 12px 14px;
-    border-radius: 12px;
-    background: #111827;
-    color: #fff;
-    font-size: 11px;
-    box-shadow: 0 14px 32px rgba(0,0,0,.2);
-}
-
-@media(min-width:650px) {
-    .db-page {
-        padding: 20px 18px 58px;
-    }
-
-    .db-summary {
-        grid-template-columns:
-            repeat(4,minmax(0,1fr));
-    }
-
-    .db-search-row {
-        grid-template-columns:
-            minmax(0,1fr)
-            190px;
-    }
-
-    .db-meta-grid {
-        grid-template-columns:
-            repeat(2,minmax(0,1fr));
-    }
-}
-
-@media(min-width:1000px) {
-    .db-page {
-        padding: 26px 24px 68px;
-    }
-
-    .db-hero {
-        padding: 24px 26px;
-    }
-
-    .db-title {
-        font-size: 38px;
-    }
-
-    .db-summary {
-        grid-template-columns:
-            repeat(5,minmax(0,1fr));
-    }
-
-    .db-meta-grid {
-        grid-template-columns:
-            repeat(4,minmax(0,1fr));
-    }
-
-    .db-toast {
-        left: auto;
-        right: 20px;
-        width: 360px;
-    }
-}
+.app-main{max-width:1550px;padding:0}.db-page{padding:16px 14px 60px;color:#10213d;font-family:Arial,sans-serif}
+.db-hero{padding:24px 28px;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#f7f5ff 48%,#fff7fb);border:1px solid rgba(15,23,42,.07);box-shadow:0 10px 30px rgba(15,23,42,.06)}
+.db-kicker{color:#8b6591;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.db-title{margin:6px 0 0;font:700 40px/1.05 Georgia,serif}.db-subtitle{max-width:980px;margin:10px 0 0;color:#607292;font-size:13px;line-height:1.55}
+.db-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}.db-action{display:inline-flex;align-items:center;justify-content:center;min-height:45px;padding:10px 14px;border:0;border-radius:12px;background:#fff;color:#3e5578;text-decoration:none;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 5px 16px rgba(15,23,42,.07)}.db-action.primary{color:#fff;background:linear-gradient(135deg,#b27db9,#7297de)}.db-action:disabled{opacity:.6}
+.db-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.db-stat{min-width:0;padding:14px;border-radius:16px;background:#fff;border:1px solid rgba(15,23,42,.07);box-shadow:0 6px 18px rgba(15,23,42,.045);text-align:left}.db-stat.click{cursor:pointer}.db-stat.click:hover{transform:translateY(-1px)}.db-stat.active{outline:2px solid rgba(112,148,220,.45)}.db-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:24px;font-weight:900}.db-label{margin-top:3px;color:#8796ad;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+.db-note{margin-top:14px;padding:13px 15px;border-radius:14px;background:#fff9e9;color:#755b1e;border:1px solid #f0d985;font-size:11px;line-height:1.5}
+.db-browser{display:none;margin-top:18px}.db-browser.open{display:block}.db-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}.db-head h2{margin:0;font:700 22px Georgia,serif}.db-tools{display:flex;flex-wrap:wrap;gap:8px}.db-input,.db-select{min-height:42px;border:1px solid #dbe3ee;border-radius:11px;padding:9px 11px;background:#fff;color:#334155;font-size:12px;font-weight:700}.db-input{width:min(420px,80vw)}
+.db-list{display:grid;gap:8px}.db-row{background:#fff;border:1px solid rgba(15,23,42,.08);border-radius:14px;overflow:hidden;box-shadow:0 5px 16px rgba(15,23,42,.04)}.db-rowbtn{width:100%;border:0;background:#fff;padding:13px 14px;text-align:left;cursor:pointer;display:flex;gap:12px;align-items:center}.db-main{min-width:0;flex:1}.db-book{font:700 15px/1.3 Georgia,serif}.db-sub{margin-top:4px;color:#7b879a;font-size:10px;overflow-wrap:anywhere}.db-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.badge{padding:4px 7px;border-radius:999px;background:#eef2f8;color:#59677f;font-size:8px;font-weight:900}.pdf{background:#fff0f0;color:#b53b3b}.epub{background:#eef8f2;color:#28845a}.aiyes{background:#e9f8ef;color:#18754a}.aino{background:#fff1e8;color:#a45718}.warn{background:#f2ecff;color:#7049a4}.chev{font-size:18px;color:#9aa7b9}
+.db-details{display:none;padding:0 14px 14px}.db-row.open .db-details{display:block}.db-grid{display:grid;grid-template-columns:1fr;gap:7px}.db-detail{padding:9px 10px;border-radius:10px;background:#f8fafc;min-width:0}.db-dlabel{font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;color:#9aa5b5}.db-dvalue{margin-top:3px;color:#44526a;font-size:10px;line-height:1.45;overflow-wrap:anywhere}.copy{margin-left:5px;border:0;border-radius:7px;padding:3px 6px;background:#e9eef7;color:#586980;font-size:8px;font-weight:800;cursor:pointer}
+.db-empty{padding:30px 15px;border-radius:15px;background:#fff;text-align:center;color:#64748b}.db-pages{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}.db-pbtn{min-height:38px;border:0;border-radius:10px;padding:8px 11px;background:#fff;color:#576780;font-size:10px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(15,23,42,.07)}.db-pbtn:disabled{opacity:.4}.db-toast{position:fixed;left:12px;right:12px;bottom:14px;z-index:12000;display:none;padding:12px 14px;border-radius:12px;background:#111827;color:#fff;font-size:11px}
+@media(min-width:700px){.db-summary{grid-template-columns:repeat(4,minmax(0,1fr))}.db-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(min-width:1050px){.db-summary{grid-template-columns:repeat(5,minmax(0,1fr))}.db-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.db-toast{left:auto;right:20px;width:360px}}
 </style>
 
 <div class="db-page">
-    <section class="db-hero">
-        <div class="db-kicker">
-            🔐 Private administrator / developer view
-        </div>
-
-        <h1 class="db-title">
-            Database Details
-        </h1>
-
-        <p class="db-subtitle">
-            Inspect the PDF and EPUB files recorded from the most recent Google Drive synchronization,
-            including upload dates, file IDs, checksums, hidden records, exact duplicates and same-name groups.
-        </p>
-
-        <div class="db-actions">
-            <a
-                class="db-action"
-                href="{{ url_for('pastor_resources') }}"
-            >
-                ← Back to Pastor's Resources
-            </a>
-
-            <button
-                class="db-action primary"
-                id="dbSyncButton"
-                type="button"
-                onclick="syncDatabaseBooks()"
-            >
-                🔄 Sync Books Now
-            </button>
-        </div>
-
-        <div
-            class="db-summary"
-            id="dbSummary"
-        ></div>
-
-        <div class="db-note">
-            This page reads the SQLite catalog snapshot only. It does not scan Google Drive every time you open it.
-            Use <strong>Sync Books Now</strong> when you want this developer view to reflect the latest Drive contents.
-            “Same name” is an informational warning only; it never removes or merges files automatically.
-        </div>
-    </section>
-
-    <section class="db-controls">
-        <div class="db-search-row">
-            <input
-                class="db-input"
-                id="dbSearch"
-                type="search"
-                placeholder="Search title, author, Drive filename, folder, file ID, checksum..."
-                autocomplete="off"
-            >
-
-            <select
-                class="db-select"
-                id="dbSort"
-                onchange="dbSortChanged()"
-            >
-                <option value="name">Sort: Name</option>
-                <option value="uploaded_desc">Uploaded: Newest</option>
-                <option value="modified_desc">Modified: Newest</option>
-                <option value="size_desc">Largest File</option>
-            </select>
-        </div>
-
-        <div class="db-filters">
-            <button class="db-filter active" data-view="all" onclick="changeDbView('all',this)">All Drive eBooks</button>
-            <button class="db-filter" data-view="exact" onclick="changeDbView('exact',this)">Exact Duplicates</button>
-            <button class="db-filter" data-view="same_name" onclick="changeDbView('same_name',this)">Same Names</button>
-            <button class="db-filter" data-view="hidden" onclick="changeDbView('hidden',this)">Hidden</button>
-            <button class="db-filter" data-view="inactive" onclick="changeDbView('inactive',this)">Inactive / Missing</button>
-        </div>
-    </section>
-
-    <div class="db-results-head">
-        <h2 id="dbResultsTitle">
-            All Drive eBooks
-        </h2>
-
-        <div
-            class="db-results-count"
-            id="dbResultsCount"
-        >
-            Loading…
-        </div>
-    </div>
-
-    <div
-        class="db-list"
-        id="dbList"
-    >
-        <div class="db-empty">
-            Loading database details…
-        </div>
-    </div>
-
-    <div
-        class="db-pagination"
-        id="dbPagination"
-    ></div>
-
-    <div
-        class="db-toast"
-        id="dbToast"
-    ></div>
-</div>
+<section class="db-hero">
+<div class="db-kicker">🔐 Private administrator / developer view</div>
+<h1 class="db-title">Database Details</h1>
+<p class="db-subtitle">Inspect the PDF and EPUB files recorded from the most recent Google Drive synchronization, including upload dates, file IDs, checksums, hidden records, exact duplicates, same-name groups and Pij AI indexing status.</p>
+<div class="db-actions"><a class="db-action" href="{{ url_for('pastor_resources') }}">← Back to Pastor's Resources</a><button class="db-action primary" id="syncBtn" onclick="syncBooks()">🔄 Sync Books Now</button></div>
+<div class="db-summary" id="summary"></div>
+<div class="db-note">This page reads the SQLite catalog snapshot only. It does not scan Google Drive every time you open it. Use <strong>Sync Books Now</strong> when you want this developer view to reflect the latest Drive contents. “Same name” is an informational warning only; it never removes or merges files automatically.</div>
+</section>
+<section class="db-browser" id="browser">
+<div class="db-head"><div><h2 id="resultTitle">Books</h2><div id="resultCount" style="font-size:10px;color:#8a96a9;margin-top:3px"></div></div><div class="db-tools"><input class="db-input" id="search" type="search" placeholder="Search this list..."><select class="db-select" id="sort"><option value="name">Name</option><option value="uploaded_desc">Uploaded newest</option><option value="modified_desc">Modified newest</option><option value="size_desc">Largest file</option></select></div></div>
+<div class="db-list" id="list"></div><div class="db-pages" id="pages"></div>
+</section></div><div class="db-toast" id="toast"></div>
 
 <script>
-let dbCurrentPage = 1;
-let dbCurrentView = "all";
-let dbCurrentSort = "name";
-let dbCurrentQuery = "";
-let dbTotalPages = 1;
-let dbSearchTimer = null;
-
-const DB_VIEW_TITLES = {
-    all: "All Drive eBooks",
-    exact: "Exact Duplicate Files",
-    same_name: "Same-Name eBooks",
-    hidden: "Hidden Books / Files",
-    inactive: "Inactive / Missing File Records"
-};
-
-function dbEscape(value) {
-    const div = document.createElement("div");
-    div.textContent = value == null ? "" : String(value);
-    return div.innerHTML;
-}
-
-function dbToast(message) {
-    const toast = document.getElementById("dbToast");
-    toast.textContent = message || "";
-    toast.style.display = "block";
-    clearTimeout(toast.hideTimer);
-    toast.hideTimer = setTimeout(
-        () => toast.style.display = "none",
-        4200
-    );
-}
-
-function dbNumber(value) {
-    return Number(value || 0);
-}
-
-function dbBytes(bytes) {
-    let value = Number(bytes || 0);
-
-    if (!value) {
-        return "0 B";
-    }
-
-    const units = [
-        "B",
-        "KB",
-        "MB",
-        "GB",
-        "TB"
-    ];
-
-    let unit = 0;
-
-    while (
-        value >= 1024
-        && unit < units.length - 1
-    ) {
-        value /= 1024;
-        unit += 1;
-    }
-
-    return (
-        (
-            unit === 0
-            ? Math.round(value)
-            : value.toFixed(
-                value >= 10 ? 1 : 2
-            )
-        )
-        + " "
-        + units[unit]
-    );
-}
-
-function dbDate(value) {
-    if (!value) {
-        return "—";
-    }
-
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return String(value);
-    }
-
-    return date.toLocaleString();
-}
-
-async function dbCopy(text) {
-    try {
-        await navigator.clipboard.writeText(
-            String(text || "")
-        );
-
-        dbToast("Copied.");
-    } catch (_error) {
-        dbToast("Unable to copy automatically.");
-    }
-}
-
-function renderDbSummary(summary) {
-    const values = [
-        [
-            dbNumber(summary.logical_books)
-                .toLocaleString(),
-            "Logical Books"
-        ],
-        [
-            dbNumber(summary.current_ebook_files)
-                .toLocaleString(),
-            "Drive eBook Files"
-        ],
-        [
-            dbNumber(summary.pdf_files)
-                .toLocaleString(),
-            "PDF Files"
-        ],
-        [
-            dbNumber(summary.epub_files)
-                .toLocaleString(),
-            "EPUB Files"
-        ],
-        [
-            dbNumber(summary.exact_duplicate_files)
-                .toLocaleString(),
-            "Exact Duplicates"
-        ],
-        [
-            dbNumber(summary.same_name_groups)
-                .toLocaleString(),
-            "Same-Name Groups"
-        ],
-        [
-            dbNumber(summary.hidden_books)
-                .toLocaleString(),
-            "Hidden Books"
-        ],
-        [
-            dbNumber(summary.inactive_file_records)
-                .toLocaleString(),
-            "Inactive Records"
-        ],
-        [
-            dbNumber(summary.folders_scanned)
-                .toLocaleString(),
-            "Folders Scanned"
-        ],
-        [
-            dbNumber(summary.unsupported_files)
-                .toLocaleString(),
-            "Unsupported Files"
-        ]
-    ];
-
-    document.getElementById(
-        "dbSummary"
-    ).innerHTML = (
-        values.map(
-            item => `
-                <div class="db-stat">
-                    <div class="db-stat-value">
-                        ${dbEscape(item[0])}
-                    </div>
-                    <div class="db-stat-label">
-                        ${dbEscape(item[1])}
-                    </div>
-                </div>
-            `
-        ).join("")
-        + `
-            <div class="db-stat">
-                <div
-                    class="db-stat-value"
-                    style="font-size:13px;padding-top:5px;"
-                >
-                    ${dbEscape(
-                        dbDate(
-                            summary.last_sync_at
-                        )
-                    )}
-                </div>
-                <div class="db-stat-label">
-                    Last Sync
-                </div>
-            </div>
-        `
-    );
-}
-
-function dbBadge(
-    label,
-    className=""
-) {
-    return (
-        '<span class="db-badge '
-        + dbEscape(className)
-        + '">'
-        + dbEscape(label)
-        + '</span>'
-    );
-}
-
-function renderDbItems(items) {
-    const list = document.getElementById(
-        "dbList"
-    );
-
-    if (!items.length) {
-        list.innerHTML = `
-            <div class="db-empty">
-                No database records matched this view.
-            </div>
-        `;
-        return;
-    }
-
-    list.innerHTML = items.map(
-        item => {
-            const format = String(
-                item.format || "FILE"
-            ).toUpperCase();
-
-            let badges = "";
-
-            badges += dbBadge(
-                format,
-                format === "PDF"
-                    ? "pdf"
-                    : (
-                        format === "EPUB"
-                        ? "epub"
-                        : ""
-                    )
-            );
-
-            if (item.is_exact_duplicate) {
-                badges += dbBadge(
-                    "EXACT DUPLICATE",
-                    "duplicate"
-                );
-            }
-
-            if (item.is_same_name) {
-                badges += dbBadge(
-                    "SAME NAME ×"
-                    + dbNumber(
-                        item.same_name_count
-                    ),
-                    "same"
-                );
-            }
-
-            if (
-                dbNumber(
-                    item.logical_group_file_count
-                )
-                > 1
-            ) {
-                badges += dbBadge(
-                    "GROUPED FILES ×"
-                    + dbNumber(
-                        item.logical_group_file_count
-                    ),
-                    "same"
-                );
-            }
-
-            if (item.is_hidden) {
-                badges += dbBadge(
-                    "HIDDEN",
-                    "hidden"
-                );
-            }
-
-            if (!item.is_current) {
-                badges += dbBadge(
-                    "INACTIVE / MISSING",
-                    "inactive"
-                );
-            }
-
-            if (
-                item.has_manual_override
-            ) {
-                badges += dbBadge(
-                    "MANUAL METADATA",
-                    "manual"
-                );
-            }
-
-            const checksum = (
-                item.sha256_checksum
-                || item.md5_checksum
-                || item.sha1_checksum
-                || "—"
-            );
-
-            const folder = (
-                item.file_folder_path
-                || item.book_folder_path
-                || "Root folder"
-            );
-
-            const duplicateOf = (
-                item.duplicate_of_drive_file_id
-                || "—"
-            );
-
-            return `
-                <article class="db-file-card">
-                    <div class="db-file-top">
-                        <div class="db-file-main">
-                            <div class="db-badges">
-                                ${badges}
-                            </div>
-
-                            <h3 class="db-file-title">
-                                ${dbEscape(
-                                    item.title
-                                    || item.drive_name
-                                    || "Untitled"
-                                )}
-                            </h3>
-
-                            <div class="db-author">
-                                ${dbEscape(
-                                    item.author
-                                    || "Unknown Author"
-                                )}
-                                •
-                                ${dbEscape(
-                                    item.category
-                                    || "General"
-                                )}
-                            </div>
-
-                            <div class="db-drive-name">
-                                <strong>Drive filename:</strong>
-                                ${dbEscape(
-                                    item.drive_name
-                                    || ""
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="db-meta-grid">
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Drive Uploaded / Created
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    dbDate(
-                                        item.drive_created_time
-                                    )
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Drive Modified
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    dbDate(
-                                        item.drive_modified_time
-                                    )
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Size / MIME
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    dbBytes(
-                                        item.size
-                                    )
-                                )}
-                                •
-                                ${dbEscape(
-                                    item.mime_type
-                                    || "—"
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Logical Book ID
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    item.book_id
-                                    ?? "—"
-                                )}
-                                •
-                                ${dbEscape(
-                                    item.logical_group_file_count
-                                    || 0
-                                )}
-                                current file(s)
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Google Drive File ID
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    item.drive_file_id
-                                    || "—"
-                                )}
-                                <button
-                                    class="db-copy"
-                                    type="button"
-                                    data-copy="${dbEscape(
-                                        item.drive_file_id
-                                        || ""
-                                    )}"
-                                >
-                                    Copy
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Folder
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(folder)}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Checksum
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(checksum)}
-                                <button
-                                    class="db-copy"
-                                    type="button"
-                                    data-copy="${dbEscape(
-                                        checksum === "—"
-                                        ? ""
-                                        : checksum
-                                    )}"
-                                >
-                                    Copy
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Duplicate Of Drive ID
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(duplicateOf)}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                First Seen in Database
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    dbDate(
-                                        item.file_first_seen_at
-                                    )
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Last Seen in Database
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    dbDate(
-                                        item.file_last_seen_at
-                                    )
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Book Key
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    item.book_key
-                                    || "—"
-                                )}
-                            </div>
-                        </div>
-
-                        <div class="db-meta">
-                            <div class="db-meta-label">
-                                Database File Row ID
-                            </div>
-                            <div class="db-meta-value">
-                                ${dbEscape(
-                                    item.database_file_id
-                                    ?? "—"
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </article>
-            `;
-        }
-    ).join("");
-
-    list
-        .querySelectorAll(
-            "[data-copy]"
-        )
-        .forEach(
-            button => {
-                button.addEventListener(
-                    "click",
-                    () => dbCopy(
-                        button.dataset.copy
-                        || ""
-                    )
-                );
-            }
-        );
-}
-
-function renderDbPagination() {
-    const box = document.getElementById(
-        "dbPagination"
-    );
-
-    if (dbTotalPages <= 1) {
-        box.innerHTML = "";
-        return;
-    }
-
-    box.innerHTML = `
-        <button
-            class="db-page-btn"
-            type="button"
-            ${dbCurrentPage <= 1 ? "disabled" : ""}
-            onclick="loadDatabaseDetails(${dbCurrentPage - 1})"
-        >
-            ← Previous
-        </button>
-
-        <span class="db-page-label">
-            Page ${dbCurrentPage}
-            of ${dbTotalPages}
-        </span>
-
-        <button
-            class="db-page-btn"
-            type="button"
-            ${dbCurrentPage >= dbTotalPages ? "disabled" : ""}
-            onclick="loadDatabaseDetails(${dbCurrentPage + 1})"
-        >
-            Next →
-        </button>
-    `;
-}
-
-async function loadDatabaseDetails(
-    page=1
-) {
-    dbCurrentPage = Math.max(
-        1,
-        Number(page || 1)
-    );
-
-    document.getElementById(
-        "dbResultsTitle"
-    ).textContent = (
-        DB_VIEW_TITLES[
-            dbCurrentView
-        ]
-        || "Database Details"
-    );
-
-    document.getElementById(
-        "dbResultsCount"
-    ).textContent = "Loading…";
-
-    try {
-        const params = new URLSearchParams({
-            page: dbCurrentPage,
-            per_page: 50,
-            view: dbCurrentView,
-            sort: dbCurrentSort,
-            q: dbCurrentQuery
-        });
-
-        const response = await fetch(
-            "/pastor-resources/admin/api/database-details?"
-            + params.toString()
-        );
-
-        const data = await response.json();
-
-        if (
-            !response.ok
-            || !data.ok
-        ) {
-            throw new Error(
-                data.error
-                || "Unable to load database details."
-            );
-        }
-
-        dbCurrentPage = Number(
-            data.page || 1
-        );
-
-        dbTotalPages = Number(
-            data.pages || 1
-        );
-
-        renderDbSummary(
-            data.summary || {}
-        );
-
-        renderDbItems(
-            data.items || []
-        );
-
-        document.getElementById(
-            "dbResultsCount"
-        ).textContent = (
-            dbNumber(
-                data.total
-            ).toLocaleString()
-            + (
-                dbNumber(
-                    data.total
-                ) === 1
-                ? " file"
-                : " files"
-            )
-        );
-
-        renderDbPagination();
-
-    } catch (error) {
-        document.getElementById(
-            "dbList"
-        ).innerHTML = `
-            <div class="db-empty">
-                <strong>Database error</strong><br>
-                ${dbEscape(error.message)}
-            </div>
-        `;
-
-        document.getElementById(
-            "dbResultsCount"
-        ).textContent = "";
-
-        dbToast(
-            error.message
-        );
-    }
-}
-
-function changeDbView(
-    view,
-    button
-) {
-    dbCurrentView = view;
-
-    document
-        .querySelectorAll(
-            ".db-filter"
-        )
-        .forEach(
-            item => item.classList.remove(
-                "active"
-            )
-        );
-
-    if (button) {
-        button.classList.add(
-            "active"
-        );
-    }
-
-    loadDatabaseDetails(
-        1
-    );
-}
-
-function dbSortChanged() {
-    dbCurrentSort = (
-        document.getElementById(
-            "dbSort"
-        ).value
-        || "name"
-    );
-
-    loadDatabaseDetails(
-        1
-    );
-}
-
-async function syncDatabaseBooks() {
-    const button = document.getElementById(
-        "dbSyncButton"
-    );
-
-    if (!button) {
-        return;
-    }
-
-    const oldText = button.textContent;
-
-    button.disabled = true;
-    button.textContent = "⏳ Syncing…";
-
-    dbToast(
-        "Scanning Google Drive. Keep this page open until synchronization finishes."
-    );
-
-    try {
-        const response = await fetch(
-            "/pastor-resources/sync-books",
-            {
-                method: "POST"
-            }
-        );
-
-        const data = await response.json();
-
-        if (
-            !response.ok
-            || !data.ok
-        ) {
-            throw new Error(
-                data.error
-                || "Synchronization failed."
-            );
-        }
-
-        dbToast(
-            "Sync complete. Refreshing database details…"
-        );
-
-        await loadDatabaseDetails(
-            1
-        );
-
-    } catch (error) {
-        dbToast(
-            "Sync failed: "
-            + error.message
-        );
-
-    } finally {
-        button.disabled = false;
-        button.textContent = oldText;
-    }
-}
-
-document
-    .getElementById(
-        "dbSearch"
-    )
-    .addEventListener(
-        "input",
-        event => {
-            clearTimeout(
-                dbSearchTimer
-            );
-
-            dbSearchTimer = setTimeout(
-                () => {
-                    dbCurrentQuery = (
-                        event.target.value
-                        || ""
-                    ).trim();
-
-                    loadDatabaseDetails(
-                        1
-                    );
-                },
-                280
-            );
-        }
-    );
-
-loadDatabaseDetails(
-    1
-);
+let V="",P=1,TP=1,Q="",S="name",timer=null;
+const titles={all:"Drive eBook Files",logical:"Logical Books",pdf:"PDF Files",epub:"EPUB Files",exact:"Exact Duplicates",same_name:"Same-Name Groups",hidden:"Hidden Books",inactive:"Inactive Records",ai_indexed:"AI Indexed Books",ai_not_indexed:"Not AI Indexed"};
+const esc=v=>{const d=document.createElement("div");d.textContent=String(v??"");return d.innerHTML},num=v=>Number(v||0)||0;
+function date(v){if(!v)return"—";const d=new Date(v);return isNaN(d) ? String(v):d.toLocaleString()}
+function size(v){let n=num(v),u=["B","KB","MB","GB"],i=0;while(n>=1024&&i<3){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`}
+function toast(m){const e=document.getElementById("toast");e.textContent=m;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display="none",2500)}
+async function copy(v){if(v)try{await navigator.clipboard.writeText(v);toast("Copied")}catch(e){toast("Copy failed")}}
+function card(v,l,view){return `<button class="db-stat click ${V===view?"active":""}" onclick="openView('${view}')"><div class="db-value">${num(v).toLocaleString()}</div><div class="db-label">${l}</div></button>`}
+function info(v,l){return `<div class="db-stat"><div class="db-value">${esc(v)}</div><div class="db-label">${l}</div></div>`}
+function summary(s){document.getElementById("summary").innerHTML=card(s.logical_books,"Logical Books","logical")+card(s.current_ebook_files,"Drive eBook Files","all")+card(s.pdf_files,"PDF Files","pdf")+card(s.epub_files,"EPUB Files","epub")+card(s.exact_duplicate_files,"Exact Duplicates","exact")+card(s.same_name_groups,"Same-Name Groups","same_name")+card(s.hidden_books,"Hidden Books","hidden")+card(s.inactive_file_records,"Inactive Records","inactive")+info(num(s.folders_scanned).toLocaleString(),"Folders Scanned")+info(num(s.unsupported_files).toLocaleString(),"Unsupported Files")+card(s.ai_indexed_books,"AI Indexed Books","ai_indexed")+card(s.ai_not_indexed_books,"Not AI Indexed","ai_not_indexed")+info(date(s.last_sync_at),"Last Sync")}
+function badges(i){let x=[`<span class="badge ${String(i.format||"").toLowerCase()}">${esc(String(i.format||"FILE").toUpperCase())}</span>`,i.ai_indexed?`<span class="badge aiyes">AI INDEXED</span>`:`<span class="badge aino">NOT AI INDEXED</span>`];if(i.is_exact_duplicate)x.push(`<span class="badge warn">EXACT DUPLICATE</span>`);if(i.is_same_name)x.push(`<span class="badge warn">SAME NAME ×${num(i.same_name_count)}</span>`);if(i.is_hidden)x.push(`<span class="badge warn">HIDDEN</span>`);if(!i.is_current)x.push(`<span class="badge warn">INACTIVE</span>`);return x.join("")}
+function detail(l,v,c=false){v=(v===null||v===undefined||v==="")?"—":String(v);return `<div class="db-detail"><div class="db-dlabel">${esc(l)}</div><div class="db-dvalue">${esc(v)}${c&&v!=="—"?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div></div>`}
+function render(items){const e=document.getElementById("list");if(!items.length){e.innerHTML=`<div class="db-empty">No records found.</div>`;return}e.innerHTML=items.map((i,n)=>{let ck=i.sha256_checksum||i.sha1_checksum||i.md5_checksum||"—",folder=i.file_folder_path||i.book_folder_path||"—";return `<article class="db-row" id="r${n}"><button class="db-rowbtn" onclick="document.getElementById('r${n}').classList.toggle('open')"><div class="db-main"><div class="db-book">${esc(i.title||i.drive_name||"Untitled")}</div><div class="db-sub">${esc(i.author||"Unknown Author")} • ${esc(i.drive_name||"")}</div><div class="db-badges">${badges(i)}</div></div><div class="chev">›</div></button><div class="db-details"><div class="db-grid">${detail("Drive filename",i.drive_name)}${detail("Drive Uploaded / Created",date(i.drive_created_time))}${detail("Drive Modified",date(i.drive_modified_time))}${detail("Size / MIME",`${size(i.size)} • ${i.mime_type||"—"}`)}${detail("Logical Book ID",`${i.book_id??"—"} • ${num(i.logical_group_file_count)} current file(s)`)}${detail("Google Drive File ID",i.drive_file_id,true)}${detail("Folder",folder)}${detail("Checksum",ck,true)}${detail("Duplicate Of Drive ID",i.duplicate_of_drive_file_id||"—")}${detail("First Seen in Database",date(i.file_first_seen_at))}${detail("Last Seen in Database",date(i.file_last_seen_at))}${detail("Book Key",i.book_key)}${detail("Database File Row ID",i.database_file_id)}${detail("Pij AI Index Status",i.ai_indexed?"Indexed / searchable":"Not indexed / not searchable")}${detail("AI Indexed Pages",i.ai_page_count||0)}${detail("AI Chunks",i.ai_chunk_count||0)}${detail("AI Indexed At",date(i.ai_indexed_at))}${detail("AI Index / Extraction Error",i.ai_extract_error||"None")}</div></div></article>`}).join("");e.querySelectorAll("[data-copy]").forEach(b=>b.onclick=x=>{x.stopPropagation();copy(b.dataset.copy||"")})}
+function pager(){const e=document.getElementById("pages");e.innerHTML=TP<=1?"":`<button class="db-pbtn" ${P<=1?"disabled":""} onclick="load(${P-1})">← Previous</button><span style="font-size:10px;color:#7b879a">Page ${P} of ${TP}</span><button class="db-pbtn" ${P>=TP?"disabled":""} onclick="load(${P+1})">Next →</button>`}
+async function load(p=1,onlySummary=false){P=Math.max(1,num(p));try{const q=new URLSearchParams({page:P,per_page:50,view:V||"all",sort:S,q:Q}),r=await fetch("/pastor-resources/admin/api/database-details?"+q),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||"Unable to load database details.");summary(d.summary||{});if(onlySummary&&!V)return;P=num(d.page)||1;TP=num(d.pages)||1;document.getElementById("resultTitle").textContent=titles[V]||"Database Details";document.getElementById("resultCount").textContent=`${num(d.total).toLocaleString()} records`;render(d.items||[]);pager()}catch(e){toast(e.message)}}
+function openView(v){V=v;Q="";P=1;document.getElementById("search").value="";document.getElementById("browser").classList.add("open");load(1);setTimeout(()=>document.getElementById("browser").scrollIntoView({behavior:"smooth"}),70)}
+document.getElementById("sort").onchange=e=>{S=e.target.value;load(1)};document.getElementById("search").oninput=e=>{clearTimeout(timer);timer=setTimeout(()=>{Q=e.target.value.trim();load(1)},300)};
+async function syncBooks(){const b=document.getElementById("syncBtn"),old=b.textContent;b.disabled=true;b.textContent="⏳ Syncing…";try{const r=await fetch("/pastor-resources/sync-books",{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||"Synchronization failed.");toast("Sync complete.");await load(1,!V)}catch(e){toast("Sync failed: "+e.message)}finally{b.disabled=false;b.textContent=old}}
+load(1,true);
 </script>
-
 {% endblock %}
+
 """
 
 
