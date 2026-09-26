@@ -44,7 +44,7 @@ INDEX_STATE = {
     "queued_force": False,
 }
 
-MAX_FILE_BYTES = int(os.getenv("PIJ_LIBRARY_MAX_FILE_MB", "80")) * 1024 * 1024
+MAX_FILE_BYTES = int(os.getenv("PIJ_LIBRARY_MAX_FILE_MB", "300")) * 1024 * 1024
 CHUNK_TARGET_CHARS = int(os.getenv("PIJ_LIBRARY_CHUNK_CHARS", "4200"))
 CHUNK_OVERLAP_CHARS = int(os.getenv("PIJ_LIBRARY_CHUNK_OVERLAP", "500"))
 MAX_RESULTS = int(os.getenv("PIJ_LIBRARY_MAX_RESULTS", "6"))
@@ -294,15 +294,44 @@ def _public_files_to_index():
 
 
 def _needs_reindex(row):
+    """Return True for new/changed files AND for previously failed/empty indexes.
+
+    Older behavior looked only at modified_time/checksum. That meant a document
+    which had previously failed extraction was stored with searchable=0 and then
+    skipped forever on later incremental passes because the Drive file itself had
+    not changed. Healthy indexed books remain skipped.
+    """
     db = _db()
     try:
         old = db.execute(
-            "SELECT modified_time, checksum FROM pij_library_documents WHERE source_type='public_ebook' AND source_file_id=?",
+            """
+            SELECT modified_time, checksum, searchable, chunk_count, extract_error
+            FROM pij_library_documents
+            WHERE source_type='public_ebook' AND source_file_id=?
+            """,
             (int(row["source_file_id"]),),
         ).fetchone()
+
         if not old:
             return True
-        return _clean(old["modified_time"]) != _clean(row["modified_time"]) or _clean(old["checksum"]) != _clean(row["checksum"])
+
+        metadata_changed = (
+            _clean(old["modified_time"]) != _clean(row["modified_time"])
+            or _clean(old["checksum"]) != _clean(row["checksum"])
+        )
+        if metadata_changed:
+            return True
+
+        # Retry only unhealthy records. This repairs failed/empty books without
+        # rebuilding the already-good library index.
+        if not bool(old["searchable"]):
+            return True
+        if int(old["chunk_count"] or 0) <= 0:
+            return True
+        if _clean(old["extract_error"]):
+            return True
+
+        return False
     finally:
         db.close()
 
@@ -1090,9 +1119,169 @@ def _format_public_evidence(book, max_chunks):
     return blocks
 
 
-def library_context_for_gemini(question):
-    """Retrieve diverse, book-aware evidence while keeping private sermons authorized in Flask."""
+
+def _catalog_specific_book_for_question(question):
+    """Find a likely named Pastor's Resources book, including unindexed books.
+
+    This is deliberately deterministic and local: no Gemini/API call is used.
+    A match must be strong enough that a broad topic question is not mistaken
+    for a specific title.
+    """
+    pastor_resources.ensure_resource_tables()
+    terms = [
+        t for t in _query_terms(question)
+        if t not in _GENERIC_THEOLOGY_TERMS
+        and t not in {"database", "index", "indexed", "available", "availability", "information", "info"}
+    ]
+    hint = _extract_title_hint(question)
+    hint_terms = [
+        w for w in _word_tokens(hint)
+        if len(w) >= 2 and w not in _QUERY_STOPWORDS
+    ]
+
+    db = _db()
+    try:
+        rows = db.execute(
+            """
+            SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path,
+                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(COALESCE(d.page_count,0)) AS page_count,
+                   MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
+                   MAX(COALESCE(d.extract_error,'')) AS extract_error
+            FROM pastor_library_books b
+            LEFT JOIN pij_library_documents d
+              ON d.book_id=b.id AND d.source_type='public_ebook'
+            WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
+            GROUP BY b.id
+            """
+        ).fetchall()
+    finally:
+        db.close()
+
+    best = None
+    best_score = 0.0
+    for row in rows:
+        title_norm = _normalize_words(row["title"])
+        title_words = set(_word_tokens(row["title"]))
+        score = 0.0
+
+        if hint:
+            hint_norm = _normalize_words(hint)
+            if hint_norm and hint_norm == title_norm:
+                score += 100.0
+            elif hint_norm and hint_norm in title_norm:
+                score += 55.0
+            overlap = sum(1 for w in hint_terms if w in title_words)
+            score += overlap * 12.0
+            if hint_terms:
+                score += (overlap / len(hint_terms)) * 20.0
+        else:
+            distinctive = [t for t in terms if len(t) >= 3]
+            overlap = sum(
+                1 for t in distinctive
+                if any(v in title_norm for v in _term_variants(t))
+            )
+            if overlap >= 2:
+                score += overlap * 14.0
+                score += (overlap / max(1, len(distinctive))) * 18.0
+
+        if score > best_score:
+            best = row
+            best_score = score
+
+    threshold = 24.0 if hint else 34.0
+    return best if best is not None and best_score >= threshold else None
+
+
+_BOOK_FOLLOWUP_PHRASES = (
+    "this book", "that book", "the book", "this ebook", "that ebook",
+    "this resource", "that resource", "this one", "that one",
+)
+
+_GENERIC_BOOK_INFO_TERMS = {
+    "information", "info", "overview", "summary", "summarize", "details",
+    "detail", "quick", "contents", "content", "availability", "available",
+    "database", "index", "indexed",
+}
+
+
+def _recent_catalog_book_from_history(question, history):
+    """Resolve 'this book' / 'it' from recent USER turns without another AI call."""
+    if not history:
+        return None
+
+    low = _clean(question).lower()
+    words = _word_tokens(question)
+    explicit_followup = any(p in low for p in _BOOK_FOLLOWUP_PHRASES)
+
+    # Permit a short pronoun follow-up such as "tell me more about it" only when
+    # it is genuinely short. This avoids dragging an old book into a new topic.
+    short_it_followup = (
+        len(words) <= 12
+        and re.search(r"\b(it|its)\b", low)
+        and any(x in low for x in ("tell", "more", "summary", "summarize", "explain", "information", "info", "about"))
+    )
+
+    if not (explicit_followup or short_it_followup):
+        return None
+
+    for item in reversed(history[-8:]):
+        if str(item.get("role") or "").lower() != "user":
+            continue
+        content = _clean(item.get("content"))
+        if not content:
+            continue
+        book = _catalog_specific_book_for_question(content)
+        if book is not None:
+            return book
+
+    return None
+
+
+def _opening_chunks_for_book(db, book_id, limit=6):
+    """Return opening searchable chunks for an exact book.
+
+    Useful for requests such as "give me quick information about this book",
+    where there is no topic term worth searching for. This never substitutes
+    another book.
+    """
+    return db.execute(
+        """
+        SELECT d.id AS document_id,d.book_id,d.title,d.author,d.category,d.folder_path,d.format,
+               c.chunk_number,c.page_start,c.page_end,c.content,
+               0.0 AS rank
+        FROM pij_library_chunks c
+        JOIN pij_library_documents d ON d.id=c.document_id
+        JOIN pastor_library_books b ON b.id=d.book_id
+        WHERE d.source_type='public_ebook'
+          AND d.searchable=1
+          AND d.book_id=?
+          AND b.is_active=1
+          AND COALESCE(b.is_hidden,0)=0
+        ORDER BY COALESCE(c.page_start, c.chunk_number), c.chunk_number
+        LIMIT ?
+        """,
+        (int(book_id), max(1, min(12, int(limit or 6)))),
+    ).fetchall()
+
+def library_context_for_gemini(question, history=None):
+    """Retrieve book-aware evidence locally, with recent-turn follow-up support."""
+    history = history or []
+
+    # Resolve the book BEFORE deciding that retrieval is unnecessary. This lets
+    # normal follow-ups such as "Can you give me quick information about this
+    # book?" stay attached to the book named in the preceding user turn.
+    direct_catalog_book = _catalog_specific_book_for_question(question)
+    followup_catalog_book = (
+        None if direct_catalog_book is not None
+        else _recent_catalog_book_from_history(question, history)
+    )
+    catalog_book = direct_catalog_book or followup_catalog_book
+
     mode = _library_mode(question)
+    if mode == "none" and catalog_book is not None:
+        mode = "synthesis"
+
     if mode == "none":
         return (
             "PASTOR'S RESOURCES AI RETRIEVAL\n"
@@ -1100,12 +1289,87 @@ def library_context_for_gemini(question):
         )
 
     ensure_ai_library_tables()
+
+    if catalog_book is not None and not bool(catalog_book["indexed"]):
+        title = _clean(catalog_book["title"])
+        author = _clean(catalog_book["author"])
+        page_count = int(catalog_book["page_count"] or 0)
+        index_error = _clean(catalog_book["extract_error"])
+        return (
+            "PASTOR'S RESOURCES AI RETRIEVAL\n"
+            "RETRIEVAL MODE: SPECIFIC_BOOK_CATALOG_ONLY\n"
+            f"CATALOG BOOK ID: {int(catalog_book['book_id'])}\n"
+            f"CATALOG TITLE: {title}\n"
+            + (f"CATALOG AUTHOR: {author}\n" if author else "")
+            + "INDEXED/SEARCHABLE CONTENT: NO\n"
+            + (f"KNOWN PAGE COUNT: {page_count}\n" if page_count else "KNOWN PAGE COUNT: unavailable\n")
+            + (f"INDEX NOTE: {index_error}\n" if index_error else "")
+            + "APPROVED LIBRARY LINK: /pastor-resources\n"
+            + "WEB_FALLBACK_ALLOWED: YES\n"
+            + "The named book is confirmed in Pastor's Resources, but its contents are not searchable in Pij's local index. "
+              "If the user asks for information about this book, external web information may be used only for this exact title. "
+              "Clearly warn that external information may differ from the library edition and should be checked against the actual ebook. "
+              "Do not invent page numbers or quotations from the library copy."
+        )
+
     explicit_count = _requested_book_count(question, default=0)
     desired_books = explicit_count or (3 if mode == "sermon_retrieval" else 4)
 
     db = _db()
     try:
-        ranked_books, effective_mode = _rank_books(db, question, mode, desired_books)
+        # Exact catalog identity wins completely. Do not first rank the whole
+        # library and then hope to replace the result.
+        if catalog_book is not None and bool(catalog_book["indexed"]):
+            exact_book_id = int(catalog_book["book_id"])
+            terms = _query_terms(question)
+            title_words = set(_word_tokens(catalog_book["title"]))
+
+            topic_terms = [
+                t for t in terms
+                if not any(v in title_words for v in _term_variants(t))
+                and t not in _GENERIC_BOOK_INFO_TERMS
+                and t not in {"book", "ebook", "resource"}
+            ]
+
+            exact_rows = []
+            if topic_terms:
+                exact_rows = _search_chunks(
+                    db,
+                    topic_terms,
+                    limit=40,
+                    book_id=exact_book_id,
+                    strict=False,
+                )
+
+            # A generic exact-book request should read the book's opening
+            # material/TOC, not search unrelated books for words like "info".
+            if not exact_rows:
+                exact_rows = _opening_chunks_for_book(
+                    db,
+                    exact_book_id,
+                    limit=6,
+                )
+
+            ranked_books = []
+            if exact_rows:
+                ranked_books = [{
+                    "book_id": exact_book_id,
+                    "title": catalog_book["title"],
+                    "author": catalog_book["author"],
+                    "category": catalog_book["category"],
+                    "folder_path": catalog_book["folder_path"],
+                    "score": 100.0,
+                    "chunks": list(exact_rows)[:6],
+                }]
+            effective_mode = "specific_book"
+
+        else:
+            ranked_books, effective_mode = _rank_books(
+                db,
+                question,
+                mode,
+                desired_books,
+            )
     finally:
         db.close()
 
@@ -1214,3 +1478,198 @@ def register_pij_library_routes(app):
         data = __import__("flask").request.get_json(silent=True) or {}
         started = start_public_library_index(force=bool(data.get("force", False)))
         return jsonify(ok=True, started=started, state=get_index_state())
+
+
+# =========================================================
+# GEMINI-CONTROLLED READ-ONLY LIBRARY TOOLS
+# =========================================================
+# Gemini decides which searches to perform. Flask remains the security boundary
+# and exposes only read-only Pastor's Resources operations.
+
+PIJ_LIBRARY_TOOLS = [
+    {
+        "type": "function",
+        "name": "find_library_books",
+        "description": (
+            "Search the Pastor's Resources catalog by title, author, category, or folder. "
+            "Use this first when the user names a book or asks whether a book is available. "
+            "Results explicitly say whether each catalog book has searchable indexed text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Book title, author, or catalog search phrase."},
+                "limit": {"type": "integer", "description": "Maximum results, 1 to 12."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "search_library_index",
+        "description": (
+            "Search actual indexed ebook text in Pastor's Resources. For a named book, first call "
+            "find_library_books and then pass its exact book_id here so unrelated books cannot substitute."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Concept, topic, phrase, or information to find in ebook text."},
+                "book_id": {"type": "integer", "description": "Optional exact Pastor's Resources book ID."},
+                "limit": {"type": "integer", "description": "Maximum passages, 1 to 12."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_library_book_status",
+        "description": (
+            "Get catalog metadata and AI-index status for one exact Pastor's Resources book ID, including "
+            "known PDF page count when available from the index."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"book_id": {"type": "integer"}},
+            "required": ["book_id"],
+        },
+    },
+]
+
+
+def _catalog_book_rows(query, limit=8):
+    pastor_resources.ensure_resource_tables()
+    q = _clean(query)
+    limit = max(1, min(12, int(limit or 8)))
+    like = f"%{q}%"
+    db = _db()
+    try:
+        return db.execute(
+            """
+            SELECT b.id AS book_id, b.title, b.author, b.category, b.folder_path,
+                   GROUP_CONCAT(DISTINCT UPPER(f.format)) AS formats,
+                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(COALESCE(d.page_count,0)) AS page_count,
+                   MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
+                   MAX(COALESCE(d.extract_error,'')) AS extract_error
+            FROM pastor_library_books b
+            LEFT JOIN pastor_library_files f
+              ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
+            LEFT JOIN pij_library_documents d
+              ON d.book_id=b.id AND d.source_type='public_ebook'
+            WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
+              AND (b.title LIKE ? OR b.author LIKE ? OR b.category LIKE ? OR b.folder_path LIKE ?)
+            GROUP BY b.id
+            ORDER BY CASE WHEN LOWER(b.title)=LOWER(?) THEN 0
+                          WHEN LOWER(b.title) LIKE LOWER(?) THEN 1 ELSE 2 END,
+                     LOWER(b.title)
+            LIMIT ?
+            """,
+            (like, like, like, like, q, q + "%", limit),
+        ).fetchall()
+    finally:
+        db.close()
+
+
+def find_library_books(query, limit=8):
+    rows = _catalog_book_rows(query, limit)
+    books = []
+    for row in rows:
+        book_id = int(row["book_id"])
+        books.append({
+            "book_id": book_id,
+            "title": _clean(row["title"]),
+            "author": _clean(row["author"]),
+            "category": _clean(row["category"]),
+            "folder_path": _clean(row["folder_path"]),
+            "formats": [x for x in _clean(row["formats"]).split(",") if x],
+            "indexed": bool(row["indexed"]),
+            "page_count": int(row["page_count"] or 0),
+            "chunk_count": int(row["chunk_count"] or 0),
+            "index_error": _clean(row["extract_error"]),
+            "approved_library_link": "/pastor-resources",
+        })
+    return {"ok": True, "query": _clean(query), "count": len(books), "books": books}
+
+
+def get_library_book_status(book_id):
+    db = _db()
+    try:
+        row = db.execute(
+            """
+            SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path,
+                   GROUP_CONCAT(DISTINCT UPPER(f.format)) AS formats,
+                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(COALESCE(d.page_count,0)) AS page_count,
+                   SUM(COALESCE(d.chunk_count,0)) AS chunk_count,
+                   MAX(COALESCE(d.extract_error,'')) AS extract_error
+            FROM pastor_library_books b
+            LEFT JOIN pastor_library_files f
+              ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
+            LEFT JOIN pij_library_documents d
+              ON d.book_id=b.id AND d.source_type='public_ebook'
+            WHERE b.id=? AND b.is_active=1 AND COALESCE(b.is_hidden,0)=0
+            GROUP BY b.id
+            """,
+            (int(book_id),),
+        ).fetchone()
+    finally:
+        db.close()
+    if not row:
+        return {"ok": False, "found": False, "book_id": int(book_id)}
+    return {
+        "ok": True, "found": True, "book_id": int(row["book_id"]),
+        "title": _clean(row["title"]), "author": _clean(row["author"]),
+        "category": _clean(row["category"]), "folder_path": _clean(row["folder_path"]),
+        "formats": [x for x in _clean(row["formats"]).split(",") if x],
+        "indexed": bool(row["indexed"]), "page_count": int(row["page_count"] or 0),
+        "chunk_count": int(row["chunk_count"] or 0), "index_error": _clean(row["extract_error"]),
+        "approved_library_link": "/pastor-resources",
+    }
+
+
+def search_library_index(query, book_id=None, limit=8):
+    ensure_ai_library_tables()
+    terms = _query_terms(query)
+    if not terms:
+        terms = [w for w in _word_tokens(query) if len(w) >= 2][:8]
+    limit = max(1, min(12, int(limit or 8)))
+    db = _db()
+    try:
+        rows = _search_chunks(db, terms, limit=max(limit * 4, 20), book_id=book_id, strict=True)
+        if not rows:
+            rows = _search_chunks(db, terms, limit=max(limit * 4, 20), book_id=book_id, strict=False)
+    finally:
+        db.close()
+    results = []
+    seen = set()
+    for row in rows:
+        key = (int(row["document_id"]), int(row["chunk_number"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        fmt = _clean(row["format"]).upper()
+        location = int(row["page_start"] or row["chunk_number"] or 1)
+        link = _public_reader_link(row)
+        results.append({
+            "book_id": int(row["book_id"]), "title": _clean(row["title"]),
+            "author": _clean(row["author"]), "format": fmt,
+            "location_type": "PDF page" if fmt == "PDF" else "EPUB section",
+            "location": location, "approved_link": link,
+            "passage": _clean(row["content"])[:6500],
+        })
+        if len(results) >= limit:
+            break
+    return {"ok": True, "query": _clean(query), "book_id": int(book_id) if book_id is not None else None,
+            "count": len(results), "results": results}
+
+
+def execute_pij_library_tool(name, arguments=None):
+    args = dict(arguments or {})
+    if name == "find_library_books":
+        return find_library_books(args.get("query", ""), args.get("limit", 8))
+    if name == "get_library_book_status":
+        return get_library_book_status(args.get("book_id"))
+    if name == "search_library_index":
+        return search_library_index(args.get("query", ""), args.get("book_id"), args.get("limit", 8))
+    return {"ok": False, "error": "Unknown or unauthorized library tool."}
