@@ -31,6 +31,7 @@ from church_finder import register_church_finder_routes
 from area_progress_monitor import register_area_progress_monitor
 from church_progress import register_church_progress
 from schedule import register_schedule_routes
+from thanksgiving_pledges import register_thanksgiving_pledges
 from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
 from sermon_ebooks import register_sermon_ebooks_routes
@@ -484,7 +485,7 @@ def init_db():
         )
         """
     )
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(logged_in_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username)")
 
@@ -3669,6 +3670,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123"
 register_area_progress_monitor(app)
 register_church_progress(app)
 register_schedule_routes(app)
+register_thanksgiving_pledges(app)
 register_temp_edit_routes(app)
 register_church_finder_routes(app)
 register_pastor_resources_routes(app)
@@ -3861,6 +3863,7 @@ def splash():
 
                 # Common session fields for all account types
                 session["username"] = username
+                session["pledge_actor"] = username
                 session["name"] = row["name"] or ""
                 session["church_address"] = row["church_address"] or ""
                 session["church_id"] = (row["sex"] or "").strip()
@@ -4538,6 +4541,7 @@ def pastor_login():
             ).fetchone()
 
             if row and str(row["password"] or "").strip() == password:
+                session["pledge_actor"] = username
                 session["pastor_logged_in"] = True
                 session["pastor_username"] = username
                 session["pastor_name"] = row["name"] or ""
@@ -4564,6 +4568,7 @@ def pastor_login():
                         break
 
                 if matched:
+                    session["pledge_actor"] = username
                     session["pastor_logged_in"] = True
                     session["pastor_username"] = username
                     session["pastor_name"] = matched.get("Name", "")
@@ -5532,6 +5537,7 @@ def ao_login():
         if row and (str(row["password"] or "").strip() == password):
             pos = str((row["position"] if "position" in row.keys() else "") or "").strip().lower()
             if pos in ("area overseer", "sub area overseer"):
+                session["pledge_actor"] = username
                 session["ao_logged_in"] = True
                 session["ao_username"] = username
                 session["ao_name"] = row["name"] or ""
