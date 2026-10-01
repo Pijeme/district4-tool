@@ -1,0 +1,272 @@
+{% extends 'base.html' %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='thanksgiving_pledges.css') }}">
+
+<section class="pledge-page">
+  {% set pledge_logged_in = session.get("pastor_username") or session.get("ao_logged_in") or session.get("member_logged_in") or session.get("username") %}
+
+  <div class="pledge-hero">
+    <div class="pledge-hero-overlay">
+      <div class="pledge-hero-content">
+        <div>
+          <h1>2027 Thanksgiving Pledges</h1>
+          <p class="pledge-hero-verse">“Each of you should give what you have decided in your heart to give, not reluctantly or under compulsion, for God loves a cheerful giver.”</p>
+          <p class="pledge-hero-reference">2 Corinthians 9:7 (NIV)</p>
+        </div>
+
+        {% if not pledge_logged_in %}
+          <a class="pledge-hero-link" href="{{ url_for('splash') }}">Home / Log in</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <p class="pledge-notice {{ category }}" role="status">{{ message }}</p>
+    {% endfor %}
+  {% endwith %}
+
+  {% if error %}
+    <p class="pledge-notice error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if stale %}
+    <p class="pledge-notice">Google could not be refreshed. Showing the last successfully saved list.</p>
+  {% endif %}
+
+  <div class="pledge-summary">
+    <div>
+      <span>Total Cash Pledges</span>
+      <strong>{{ 'Unavailable' if error else ('₱{:,.2f}'.format(total)) }}</strong>
+      <small>Pledged amounts · Livestocks and Goods are listed below.</small>
+    </div>
+
+    <div class="pledge-actions">
+      <button type="button" id="pledgeOpen" {% if not ready %}disabled{% endif %}>Add My Pledge</button>
+
+      {% if moderator %}
+        <a class="pledge-button secondary" href="{{ url_for('pledge_pending') }}">
+          Pending Pledges{% if pending_count is not none %} ({{ pending_count }}){% endif %}
+        </a>
+
+        <form data-no-loading method="post" action="{{ url_for('pledge_refresh') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="secondary" type="submit">Refresh from Google</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not ready %}
+    <p class="pledge-notice">Online submissions will open when storage setup is complete.</p>
+  {% endif %}
+
+  {% if updated %}
+    <p class="pledge-muted">
+      Last refreshed:
+      <time class="pledge-local-time" datetime="{{ updated }}" data-unix="{{ updated }}"></time>
+    </p>
+  {% endif %}
+
+  <div class="pledge-filters" aria-label="Filter pledges">
+    <label>
+      Area
+      <select id="pledgeFilterArea">
+        <option value="">All areas</option>
+        {% for item in areas %}
+          <option value="{{ item }}" {% if area == item %}selected{% endif %}>Area {{ item }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      Search
+      <input
+        id="pledgeFilterSearch"
+        value="{{ q }}"
+        maxlength="100"
+        placeholder="Name or church"
+        autocomplete="off"
+      >
+    </label>
+  </div>
+
+  <p id="pledgeFilterSummary" class="pledge-filter-summary" hidden></p>
+
+  <div class="pledge-table-wrap">
+    <table class="pledge-table">
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Church / Address</th>
+          <th>Name</th>
+          <th>Cash Pledges</th>
+          <th>Livestocks</th>
+          <th>Goods</th>
+        </tr>
+      </thead>
+      <tbody id="pledgeTableBody">
+        {% for r in records %}
+          <tr
+            data-pledge-row
+            data-area="{{ r.area }}"
+            data-cash="{{ (r.cash|replace(',', '')|replace('₱', '')|trim) or '0' }}"
+            data-search="{{ (r.name ~ ' ' ~ r.church ~ ' ' ~ r.area)|lower }}"
+          >
+            <td data-label="Area">{{ r.area or '—' }}</td>
+            <td data-label="Church / Address">{{ r.church }}</td>
+            <td data-label="Name">{{ r.name }}</td>
+            <td data-label="Cash Pledges" class="pledge-money">
+              {{ ('₱{:,.2f}'.format((r.cash|replace(',', '')|replace('₱', '')|trim)|float)) if r.cash != '' else '—' }}
+            </td>
+            <td data-label="Livestocks">{{ r.livestock or '—' }}</td>
+            <td data-label="Goods">{{ r.goods or '—' }}</td>
+          </tr>
+        {% endfor %}
+
+        <tr id="pledgeNoResults" {% if records %}hidden{% endif %}>
+          <td colspan="6">
+            {{ 'The list is temporarily unavailable.' if error else 'No pledges to display for this selection.' }}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <dialog id="pledgeDialog" class="pledge-dialog" aria-labelledby="pledgeFormTitle">
+    <form data-no-loading id="pledgeForm">
+      <div class="pledge-dialog-heading">
+        <h2 id="pledgeFormTitle">Add My Pledge</h2>
+        <button type="button" data-close="pledgeDialog" class="secondary" aria-label="Close pledge form">✕</button>
+      </div>
+
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="submission_id" value="{{ submission_id }}">
+
+      <div class="pledge-honeypot" aria-hidden="true">
+        <label>
+          Website
+          <input name="website" tabindex="-1" autocomplete="off">
+        </label>
+      </div>
+
+      <fieldset>
+        <legend>I am submitting as</legend>
+        <label class="pledge-radio"><input type="radio" name="kind" value="Pastor" checked> Pastor</label>
+        <label class="pledge-radio"><input type="radio" name="kind" value="Others"> Others</label>
+      </fieldset>
+
+      <div id="pledgePastorFields">
+        <label>
+          Area
+          <select id="pledgeArea" required>
+            <option value="">Select your area</option>
+          </select>
+        </label>
+
+        <label>
+          Church
+          <select id="pledgeChurch" name="account_key" required>
+            <option value="">Select your church</option>
+          </select>
+        </label>
+
+        <label>
+          Pastor’s name
+          <input id="pledgePastorName" readonly>
+        </label>
+
+        <p class="pledge-muted">
+          If your church is missing, contact the moderator or use Others and enter your details.
+        </p>
+      </div>
+
+      <div id="pledgeOtherFields" hidden>
+        <label>
+          Your name
+          <input name="name" maxlength="150" autocomplete="name" disabled>
+        </label>
+
+        <label>
+          Church address
+          <input name="church" maxlength="250" disabled>
+        </label>
+      </div>
+
+      <div class="pledge-form-grid">
+        <label>
+          Cash Pledges (₱)
+          <input
+            name="cash"
+            type="number"
+            min="0.01"
+            max="999999999.99"
+            step="0.01"
+            inputmode="decimal"
+            placeholder="Optional"
+          >
+        </label>
+
+        <label>
+          Livestocks
+          <textarea name="livestock" maxlength="500" placeholder="e.g. 2 chickens"></textarea>
+        </label>
+
+        <label>
+          Goods
+          <textarea name="goods" maxlength="500" placeholder="e.g. Half sack of rice"></textarea>
+        </label>
+      </div>
+
+      <p class="pledge-muted">
+        Complete at least one pledge category. Your approved name, church/address and pledge details
+        will be publicly displayed. Your selfie is for private moderator review.
+      </p>
+
+      <p id="pledgeFormError" class="pledge-notice error" role="alert" hidden></p>
+      <button type="submit">Continue to Selfie</button>
+    </form>
+  </dialog>
+
+  <dialog id="pledgeCameraDialog" class="pledge-dialog" aria-labelledby="pledgeCameraTitle">
+    <div class="pledge-dialog-heading">
+      <h2 id="pledgeCameraTitle">📸 One Way, Jesus! ☝️</h2>
+      <button type="button" id="pledgeCameraClose" class="secondary" aria-label="Back to form">✕</button>
+    </div>
+
+    <p>
+      Before sending your pledge, snap a selfie with your
+      <strong>“One Way, Jesus” pose—one finger pointing upward!</strong>
+    </p>
+    <p>
+      This helps our moderator recognize you and review your pledge. Your selfie will be visible only
+      to the moderator on this website and won’t appear on the public pledge page.
+    </p>
+    <p>
+      Ready? Smile, point up, and say, <strong>“One Way, Jesus!”</strong>
+    </p>
+
+    <video id="pledgeVideo" autoplay playsinline muted hidden></video>
+    <img id="pledgePhotoPreview" alt="Your selfie preview" hidden>
+    <canvas id="pledgeCanvas" hidden></canvas>
+
+    <p id="pledgeCameraError" class="pledge-notice error" role="alert" hidden></p>
+    <p id="pledgeSaveStatus" role="status"></p>
+
+    <div class="pledge-actions">
+      <button type="button" id="pledgeStartCamera">Open Camera</button>
+      <button type="button" id="pledgeCapture" hidden>Take Selfie</button>
+      <button type="button" id="pledgeRetake" class="secondary" hidden>Retake</button>
+      <button type="button" id="pledgeConfirm" hidden>Confirm &amp; Submit</button>
+    </div>
+  </dialog>
+
+  <form data-no-loading id="pledgeSuccessForm" method="post" action="{{ url_for('pledge_new_form') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  </form>
+
+  <script type="application/json" id="pledgeAccounts">{{ accounts|tojson }}</script>
+  <script src="{{ url_for('static', filename='thanksgiving_pledges.js') }}" defer></script>
+</section>
+{% endblock %}

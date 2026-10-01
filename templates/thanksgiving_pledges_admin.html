@@ -1,0 +1,157 @@
+{% extends 'base.html' %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='thanksgiving_pledges.css') }}">
+
+<section class="pledge-page">
+  <div class="pledge-heading">
+    <div>
+      <p class="pledge-eyebrow">Moderator · 2027 Thanksgiving</p>
+      <h1>Pending Pledges ({{ data.total }})</h1>
+    </div>
+    <a href="{{ url_for('thanksgiving_pledges') }}">Back to pledges</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <p class="pledge-notice {{ category }}" role="status">{{ message }}</p>
+    {% endfor %}
+  {% endwith %}
+
+  {% if error %}
+    <p class="pledge-notice error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% for item in data['items'] %}
+    <article class="pledge-review">
+      <div>
+        <a href="{{ url_for('pledge_selfie', submission_id=item.id) }}" target="_blank" rel="noopener">
+          <img
+            class="pledge-selfie"
+            src="{{ url_for('pledge_selfie', submission_id=item.id) }}"
+            alt="Verification selfie for {{ item.name }}"
+            loading="lazy"
+          >
+        </a>
+        <p class="pledge-muted">Click photo to enlarge.</p>
+      </div>
+
+      <div>
+        <p class="pledge-eyebrow">
+          {{ item.kind }}{% if item.area %} · Area {{ item.area }}{% endif %}
+        </p>
+        <h2>{{ item.name }}</h2>
+        <p>{{ item.church }}</p>
+        <p class="pledge-muted">
+          Submitted {{ item.submitted }}<br>
+          Reference: {{ item.id }}
+        </p>
+
+        <dl class="pledge-details">
+          <dt>Cash Pledges</dt>
+          <dd>{{ ('₱{:,.2f}'.format(item.cash|float)) if item.cash != '' else '—' }}</dd>
+          <dt>Livestocks</dt>
+          <dd>{{ item.livestock or '—' }}</dd>
+          <dt>Goods</dt>
+          <dd>{{ item.goods or '—' }}</dd>
+        </dl>
+
+        <form
+          data-no-loading
+          class="pledge-decision-form"
+          method="post"
+          action="{{ url_for('pledge_decision') }}"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="submission_id" value="{{ item.id }}">
+
+          {% if item.matches %}
+            <div class="pledge-match">
+              <h3>Possible existing pledges</h3>
+              <p>
+                Choose a row only if this submission replaces that entire pledge.
+                Adding keeps both contributions.
+              </p>
+
+              {% for match in item.matches %}
+                <label class="pledge-match-choice">
+                  <input type="radio" name="target" value="{{ match.target }}">
+                  <span>
+                    <strong>{{ match.name }}</strong> · {{ match.church }} · Area {{ match.area or '—' }}<br>
+                    Cash: {{ ('₱{:,.2f}'.format(match.cash|float)) if match.cash != '' else '—' }}<br>
+                    Livestocks: {{ match.livestock or '—' }}<br>
+                    Goods: {{ match.goods or '—' }}
+                  </span>
+                </label>
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          <div class="pledge-actions">
+            <button name="decision" value="approve_add">
+              Approve as {{ 'Additional' if item.matches else 'New' }} Pledge
+            </button>
+
+            {% if item.matches %}
+              <button
+                class="secondary"
+                name="decision"
+                value="approve_replace"
+                onclick="if(!this.form.querySelector('input[name=target]:checked')){alert('Select the existing pledge to replace first.');return false;}return confirm('Replace all pledge categories in the selected row with this submission?');"
+              >
+                Approve &amp; Replace Selected
+              </button>
+            {% endif %}
+
+            <button
+              class="danger"
+              name="decision"
+              value="reject"
+              onclick="return confirm('Reject this submission?');"
+            >
+              Reject
+            </button>
+          </div>
+        </form>
+      </div>
+    </article>
+  {% else %}
+    {% if not error %}
+      <p class="pledge-notice">No pledges are waiting for approval.</p>
+    {% endif %}
+  {% endfor %}
+
+  <nav class="pledge-actions" aria-label="Pending pledge pages">
+    {% if data.page > 1 %}
+      <a href="{{ url_for('pledge_pending', page=data.page-1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ data.page }} of {{ data.pages }}</span>
+    {% if data.page < data.pages %}
+      <a href="{{ url_for('pledge_pending', page=data.page+1) }}">Next</a>
+    {% endif %}
+  </nav>
+</section>
+
+<script>
+  (function () {
+    document.querySelectorAll('.pledge-decision-form').forEach(function (form) {
+      form.addEventListener('submit', function (event) {
+        var button = event.submitter;
+        var decision = button ? button.value : '';
+        var message = 'Processing pledge decision, please wait...';
+
+        if (decision === 'approve_add') {
+          message = 'Approving pledge and updating Google Sheets, please wait...';
+        } else if (decision === 'approve_replace') {
+          message = 'Replacing pledge and updating Google Sheets, please wait...';
+        } else if (decision === 'reject') {
+          message = 'Rejecting pledge, please wait...';
+        }
+
+        if (typeof window.showGlobalLoading === 'function') {
+          window.showGlobalLoading(message);
+        }
+      });
+    });
+  })();
+</script>
+{% endblock %}
