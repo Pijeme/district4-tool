@@ -485,6 +485,36 @@ def init_db():
         )
         """
     )
+    # Migrate older login tables before indexing or recording new logins.
+    columns = {
+        row[1]
+        for row in cursor.execute(
+            "PRAGMA table_info(user_login_events)"
+        ).fetchall()
+    }
+    if "created_at" not in columns:
+        try:
+            if "logged_in_at" in columns:
+                cursor.execute(
+                    "ALTER TABLE user_login_events "
+                    "RENAME COLUMN logged_in_at TO created_at"
+                )
+            else:
+                cursor.execute(
+                    "ALTER TABLE user_login_events "
+                    "ADD COLUMN created_at TEXT"
+                )
+        except sqlite3.OperationalError:
+            # Another worker may have completed the same migration.
+            columns = {
+                row[1]
+                for row in cursor.execute(
+                    "PRAGMA table_info(user_login_events)"
+                ).fetchall()
+            }
+            if "created_at" not in columns:
+                raise
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username)")
