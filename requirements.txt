@@ -7,3 +7,4 @@ pypdf
 reportlab
 python-dotenv
 google-genai
+Pillow>=10.4,<13
