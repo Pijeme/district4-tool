@@ -37,6 +37,7 @@ from pastor_resources import register_pastor_resources_routes
 from sermon_ebooks import register_sermon_ebooks_routes
 from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
 from ai_assistant import register_ai_assistant
+from developer import register_developer_routes
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
 def init_db():
@@ -3706,6 +3707,7 @@ register_church_finder_routes(app)
 register_pastor_resources_routes(app)
 register_sermon_ebooks_routes(app)
 register_ai_assistant(app)
+register_developer_routes(app)
 
 @app.template_filter("phpeso")
 def phpeso_filter(value):
@@ -4036,12 +4038,6 @@ def church_progress_redirect():
 @app.route('/do-tool')
 def do_tool():
     return pending_page("DO Tool")
-
-
-
-@app.route('/about-developer')
-def about_developer():
-    return pending_page("About Developer")
 
 
 @app.route("/logout")
