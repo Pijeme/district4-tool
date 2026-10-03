@@ -40,6 +40,7 @@ from ai_assistant import register_ai_assistant
 from developer import register_developer_routes
 
 DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
+AI_DATABASE = os.getenv("AI_DATABASE", os.path.join(os.path.dirname(__file__), "ai_index.db"))
 def init_db():
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
