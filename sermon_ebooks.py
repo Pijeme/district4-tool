@@ -4723,571 +4723,184 @@ SERMON_READER_HTML = r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Lora:wght@500;600;700&family=Nunito+Sans:wght@400;600;700;800;900&display=swap');
 
+html, body { overflow:hidden !important; }
 .app-main { max-width:none; padding:0; }
 
 .sr-root {
-    --reader-bg:#eef2f7;
-    --reader-panel:#fff;
-    --reader-text:#17233c;
-    min-height:calc(100vh - 70px);
+    --reader-bg:#f5f1ea;
+    --reader-panel:#fffdfa;
+    --reader-text:#2f2924;
+    --reader-muted:#857b71;
+    --reader-line:rgba(90,78,66,.16);
+    --reader-accent:#9a7756;
+    position:relative;
+    width:100%;
+    height:calc(100vh - 70px);
+    height:calc(100dvh - 70px);
+    min-height:420px;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
     background:var(--reader-bg);
     color:var(--reader-text);
     font-family:"Nunito Sans",Arial,sans-serif;
 }
-.sr-root.theme-sepia {
-    --reader-bg:#eee4cf;
-    --reader-panel:#fbf4e5;
-    --reader-text:#4b3b29;
-}
-.sr-root.theme-dark {
-    --reader-bg:#171b24;
-    --reader-panel:#242a36;
-    --reader-text:#ecf0f7;
-}
+.sr-root.theme-sepia { --reader-bg:#eee4cf;--reader-panel:#fbf3e4;--reader-text:#4b3b29;--reader-muted:#806f5d;--reader-line:rgba(92,70,44,.18); }
+.sr-root.theme-dark { --reader-bg:#171b24;--reader-panel:#242a36;--reader-text:#ecf0f7;--reader-muted:#aeb6c3;--reader-line:rgba(255,255,255,.09);--reader-accent:#c5a67e; }
 
-.sr-toolbar {
-    position:sticky;
-    top:0;
-    z-index:120;
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-    padding:9px 10px;
-    background:rgba(255,255,255,.96);
-    border-bottom:1px solid rgba(15,23,42,.10);
-    box-shadow:0 5px 18px rgba(15,23,42,.08);
-    backdrop-filter:blur(12px);
-}
-.theme-dark .sr-toolbar {
-    background:rgba(28,33,44,.97);
-    border-color:rgba(255,255,255,.08);
-}
-.theme-sepia .sr-toolbar {
-    background:rgba(251,244,229,.97);
-}
+.sr-toolbar { position:relative;z-index:240;flex:0 0 auto;background:var(--reader-panel);border-bottom:1px solid var(--reader-line);box-shadow:0 3px 14px rgba(54,43,32,.06); }
+.sr-topline { min-height:46px;display:grid;grid-template-columns:minmax(72px,auto) minmax(0,1fr) 36px 36px;align-items:center;gap:3px;padding:4px 7px;box-sizing:border-box; }
+.sr-back-btn { border:0;background:transparent;color:var(--reader-text);padding:7px 5px;cursor:pointer;font-size:12px;font-weight:800;white-space:nowrap; }
+.sr-chevron { font-size:21px;vertical-align:-2px;margin-right:2px;font-weight:400; }
+.sr-info { min-width:0;text-align:center;padding:0 5px; }
+.sr-title { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 12px Georgia,"Times New Roman",serif; }
+.sr-text { margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--reader-muted);font-size:9px;font-weight:700; }
+.sr-icon-btn { width:36px;min-width:36px;min-height:36px;border:0;border-radius:50%;background:transparent;color:var(--reader-text);display:inline-flex;align-items:center;justify-content:center;cursor:pointer; }
+.sr-icon-btn:hover { background:rgba(120,110,100,.09); }
+.sr-top-svg { width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round; }
 
-.sr-topline {
-    display:flex;
-    align-items:center;
-    gap:7px;
-    min-width:0;
-}
-.sr-info { min-width:0; flex:1; }
-.sr-title {
-    overflow:hidden;
-    text-overflow:ellipsis;
-    white-space:nowrap;
-    font:700 14px "Lora",Georgia,serif;
-}
-.sr-text {
-    overflow:hidden;
-    text-overflow:ellipsis;
-    white-space:nowrap;
-    color:#8a648b;
-    font-size:10px;
-    font-weight:800;
-    margin-top:2px;
-}
-.theme-dark .sr-text { color:#d7afd6; }
+.sr-search-panel { display:none;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:7px 9px 9px;border-top:1px solid var(--reader-line);align-items:center; }
+.sr-search-panel.open { display:grid; }
+.sr-search-box { position:relative;display:flex;align-items:center;min-width:0; }
+.sr-search-symbol { position:absolute;left:10px;width:16px;height:16px;color:var(--reader-muted);pointer-events:none; }
+.sr-search-symbol svg { width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8; }
+.sr-search { width:100%;min-height:38px;box-sizing:border-box;border:1px solid var(--reader-line);border-radius:11px;padding:8px 35px 8px 34px;background:rgba(255,255,255,.56);color:var(--reader-text);font-size:12px;outline:none; }
+.theme-dark .sr-search { background:#303747;border-color:#465065; }
+.sr-search-clear { position:absolute;right:4px;width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:var(--reader-muted);font-size:18px;cursor:pointer; }
+.sr-search-action { min-height:36px;border:0;background:transparent;color:var(--reader-text);font-size:11px;font-weight:800;cursor:pointer; }
 
-.sr-controls {
-    display:flex;
-    gap:6px;
-    overflow-x:auto;
-    padding-bottom:2px;
-}
+.sr-progress { height:3px;background:rgba(120,110,100,.12);overflow:hidden; }
+.sr-progress > div { height:100%;background:#9a7756;transition:width .2s ease; }
+.theme-dark .sr-progress > div { background:#c5a67e; }
 
-.sr-btn,
-.sr-select,
-.sr-search,
-.sr-page-input {
-    flex:0 0 auto;
-    min-height:36px;
-    border:1px solid #d8e0eb;
-    border-radius:9px;
-    padding:7px 9px;
-    background:#fff;
-    color:#4e5f78;
-    font:800 10px "Nunito Sans",Arial,sans-serif;
-}
-.sr-btn { cursor:pointer; }
-.sr-btn.primary {
-    border:0;
-    color:white;
-    background:linear-gradient(135deg,#c98cc0,#789be0);
-}
-.sr-search { width:150px; font-weight:600; }
-.sr-page-input { width:68px; }
-.sr-select { max-width:120px; }
-
-.theme-dark .sr-btn,
-.theme-dark .sr-select,
-.theme-dark .sr-search,
-.theme-dark .sr-page-input {
-    background:#303747;
-    color:#e8edf5;
-    border-color:#465065;
-}
-
-.sr-progress {
-    height:4px;
-    background:rgba(148,163,184,.25);
-    overflow:hidden;
-}
-.sr-progress > div {
-    height:100%;
-    background:linear-gradient(90deg,#cc8fc1,#6f97dd);
-}
-
-.sr-main {
-    position:relative;
-    display:flex;
-    min-height:calc(100vh - 170px);
-}
-.sr-canvas-area {
-    flex:1;
-    min-width:0;
-    overflow:auto;
-    padding:14px 10px 34px;
-    display:flex;
-    justify-content:center;
-    align-items:flex-start;
-    touch-action:pan-y pinch-zoom;
-}
-
-#pdfStage {
-    position:relative;
-    flex:0 0 auto;
-    background:#fff;
-    box-shadow:0 10px 35px rgba(15,23,42,.18);
-}
+.sr-main { position:relative;flex:1 1 auto;min-height:0;display:flex; }
+.sr-canvas-area { flex:1;min-width:0;min-height:0;overflow:auto;padding:10px 12px 14px;display:flex;justify-content:center;align-items:flex-start;touch-action:pan-x pan-y;box-sizing:border-box;overscroll-behavior:contain; }
+#pdfStage { position:relative;flex:0 0 auto;background:#fff;box-shadow:0 4px 22px rgba(54,43,32,.12);transform-origin:top center; }
 #pdfCanvas { display:block; }
+.textLayer { position:absolute;inset:0;overflow:hidden;opacity:1;line-height:1;text-size-adjust:none;transform-origin:0 0;z-index:3; }
+.textLayer span,.textLayer br { color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0 0; }
+.textLayer ::selection { background:rgba(72,114,205,.30); }
+.pdf-link-layer { position:absolute;inset:0;z-index:4;pointer-events:none; }
+.pdf-link-hit { position:absolute;pointer-events:auto;cursor:pointer;border:0;padding:0;margin:0;background:rgba(52,105,190,.035);border-bottom:1px solid rgba(52,105,190,.24); }
+.pdf-link-hit:hover { background:rgba(52,105,190,.12); }
+.pdf-annotation-layer { position:absolute;inset:0;z-index:2;pointer-events:none; }
+.pdf-annotation { position:absolute;border-radius:2px;pointer-events:none; }
+.theme-dark #pdfStage { filter:invert(.88) hue-rotate(180deg); }
+.theme-sepia #pdfStage { filter:sepia(.22) saturate(.92); }
 
-.textLayer {
-    position:absolute;
-    inset:0;
-    overflow:hidden;
-    opacity:1;
-    line-height:1;
-    text-size-adjust:none;
-    transform-origin:0 0;
-    z-index:3;
-}
-.textLayer span,
-.textLayer br {
-    color:transparent;
-    position:absolute;
-    white-space:pre;
-    cursor:text;
-    transform-origin:0% 0%;
-}
-.textLayer ::selection {
-    background:rgba(70,115,220,.32);
-}
+.sr-bottom-bar { position:relative;z-index:240;flex:0 0 auto;min-height:48px;display:flex;align-items:center;justify-content:center;padding:5px 10px calc(5px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--reader-line);background:var(--reader-panel);box-sizing:border-box; }
+.sr-page-nav { display:flex;align-items:center;justify-content:center;gap:9px;min-width:0; }
+.sr-page-arrow { width:38px;height:34px;border:0;border-radius:10px;padding:0;background:transparent;color:var(--reader-text);font:400 23px/1 Arial,sans-serif;cursor:pointer; }
+.sr-page-arrow:hover { background:rgba(80,70,60,.07); }
+.sr-page-kind { display:none;color:var(--reader-muted);font-size:9px; }
+.sr-page-input { width:76px;height:34px;box-sizing:border-box;border:1px solid rgba(90,78,66,.25);border-radius:9px;background:#fffdfa;color:#2f2924;text-align:center;font:600 14px Georgia,"Times New Roman",serif;outline:none;-moz-appearance:textfield; }
+.sr-page-input::-webkit-outer-spin-button,.sr-page-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.theme-dark .sr-page-input{background:#303747;color:#f4f0e9;border-color:#465065}.sr-page-total{min-width:48px;color:var(--reader-text);font:600 11px Georgia,"Times New Roman",serif;white-space:nowrap}
+.sr-chapter-button { width:38px;min-width:38px;height:38px;border:0;border-radius:50%;background:transparent;color:var(--reader-text);display:inline-flex;align-items:center;justify-content:center;cursor:pointer; }
+.sr-chapter-button:hover { background:rgba(120,110,100,.09); }
+.sr-chapter-button svg { width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round; }
 
-.pdf-link-layer {
-    position:absolute;
-    inset:0;
-    z-index:4;
-    pointer-events:none;
-}
-.pdf-link-hit {
-    position:absolute;
-    pointer-events:auto;
-    cursor:pointer;
-    border:0;
-    padding:0;
-    margin:0;
-    background:rgba(52,105,190,.035);
-    border-bottom:1px solid rgba(52,105,190,.28);
-}
-.pdf-link-hit:hover {
-    background:rgba(52,105,190,.12);
-}
+.sr-sheet-backdrop,.sr-side-backdrop { position:fixed;inset:0;z-index:20700;display:none;background:rgba(15,23,42,.38); }
+.sr-sheet-backdrop.show,.sr-side-backdrop.show { display:block; }
+.sr-tools-sheet,.sr-chapter-sheet { position:fixed;z-index:20800;left:0;right:0;bottom:0;max-height:min(72vh,620px);max-height:min(72dvh,620px);transform:translateY(105%);transition:transform .22s ease;border-radius:24px 24px 0 0;background:var(--reader-panel);color:var(--reader-text);box-shadow:0 -18px 48px rgba(54,43,32,.18);padding:7px 12px calc(14px + env(safe-area-inset-bottom,0px));box-sizing:border-box;overflow:auto; }
+.sr-tools-sheet.open,.sr-chapter-sheet.open { transform:translateY(0); }
+.sr-tools-handle { width:42px;height:4px;border-radius:999px;background:rgba(120,110,100,.22);margin:0 auto 7px; }
+.sr-tools-head,.sr-chapter-head { display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 2px 8px; }
+.sr-tools-head h3,.sr-chapter-head h3 { margin:0;font:600 16px Georgia,"Times New Roman",serif; }
+.sr-btn { border:0;border-radius:9px;padding:8px 10px;background:rgba(120,110,100,.10);color:inherit;font-size:10px;font-weight:800;cursor:pointer; }
+.sr-tools-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px; }
+.sr-tool-btn { min-height:74px;border:1px solid var(--reader-line);border-radius:15px;background:rgba(255,255,255,.45);color:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;font-size:10px;font-weight:800;cursor:pointer; }
+.theme-dark .sr-tool-btn { background:rgba(255,255,255,.035); }
+.sr-tool-icon-circle { width:31px;height:31px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:rgba(120,110,100,.09);font-size:15px; }
+.sr-tool-icon-circle svg { width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round; }
+.sr-tool-detail { display:none;margin-top:10px;padding:11px;border:1px solid var(--reader-line);border-radius:14px;background:rgba(120,110,100,.045); }
+.sr-tool-detail.open { display:block; }
+.sr-tool-section-title { margin-bottom:7px;color:var(--reader-muted);font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.04em; }
+.sr-control-row { display:flex;flex-wrap:wrap;gap:7px; }
+.sr-select { min-height:36px;border:1px solid var(--reader-line);border-radius:9px;padding:7px 9px;background:var(--reader-panel);color:var(--reader-text);font-size:10px;font-weight:800; }
 
-.pdf-annotation-layer {
-    position:absolute;
-    inset:0;
-    z-index:2;
-    pointer-events:none;
-}
-.pdf-annotation {
-    position:absolute;
-    border-radius:2px;
-    pointer-events:none;
-}
+.sr-chapter-list { overflow:auto;max-height:calc(min(72vh,620px) - 70px); }
+.sr-chapter-item { width:100%;border:0;border-radius:10px;background:transparent;color:inherit;text-align:left;padding:9px 10px;margin:2px 0;font-size:11px;cursor:pointer; }
+.sr-chapter-item:hover,.sr-chapter-item.current { background:rgba(120,110,100,.09); }
+.sr-chapter-empty { padding:20px 10px;color:var(--reader-muted);font-size:11px;text-align:center; }
 
-.theme-dark #pdfStage {
-    filter:invert(.88) hue-rotate(180deg);
-}
-.theme-sepia #pdfStage {
-    filter:sepia(.25) saturate(.9);
-}
+.sr-side { position:fixed;z-index:20850;top:0;right:0;bottom:0;width:min(390px,92vw);transform:translateX(105%);transition:transform .22s ease;background:var(--reader-panel);color:var(--reader-text);box-shadow:-12px 0 36px rgba(15,23,42,.18);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px); }
+.sr-side.open { transform:translateX(0); }.sr-side-head{display:flex;align-items:center;justify-content:space-between;padding:13px;border-bottom:1px solid var(--reader-line)}.sr-side-head h3{margin:0;font:600 17px Georgia,"Times New Roman",serif}.sr-side-tabs{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--reader-line)}.sr-side-tab{flex:1;border:0;border-radius:9px;padding:8px;background:rgba(120,110,100,.08);color:inherit;font-size:10px;font-weight:850;cursor:pointer}.sr-side-tab.active{background:#9a7756;color:#fff}.theme-dark .sr-side-tab.active{background:#8e755b}.sr-side-body{flex:1;overflow:auto;padding:10px}.sr-side-panel{display:none}.sr-side-panel.active{display:block}.sr-item{padding:10px;border-radius:12px;margin-bottom:8px;background:rgba(120,110,100,.07);font-size:11px;line-height:1.45}.sr-item-quote{margin-top:6px;padding-left:8px;border-left:3px solid #c8a47c}.sr-item-actions{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}.sr-item-actions button{border:0;border-radius:8px;padding:6px 7px;font-size:9px;font-weight:850;cursor:pointer}
 
-.sr-side {
-    position:fixed;
-    z-index:500;
-    top:70px;
-    right:0;
-    bottom:0;
-    width:min(390px,90vw);
-    transform:translateX(105%);
-    transition:transform .22s ease;
-    background:var(--reader-panel);
-    color:var(--reader-text);
-    box-shadow:-12px 0 36px rgba(15,23,42,.18);
-    display:flex;
-    flex-direction:column;
-}
-.sr-side.open { transform:translateX(0); }
-.sr-side-head {
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    padding:13px;
-    border-bottom:1px solid rgba(100,116,139,.18);
-}
-.sr-side-head h3 {
-    margin:0;
-    font:700 19px "Lora",Georgia,serif;
-}
-.sr-side-tabs {
-    display:flex;
-    gap:6px;
-    padding:10px;
-    border-bottom:1px solid rgba(100,116,139,.14);
-}
-.sr-side-tab {
-    flex:1;
-    border:0;
-    border-radius:9px;
-    padding:8px;
-    background:#edf2f8;
-    color:#53637b;
-    font-size:10px;
-    font-weight:850;
-    cursor:pointer;
-}
-.sr-side-tab.active {
-    color:white;
-    background:linear-gradient(135deg,#c98cc0,#789be0);
-}
-.sr-side-body { flex:1; overflow:auto; padding:10px; }
-.sr-side-panel { display:none; }
-.sr-side-panel.active { display:block; }
+.sr-selection { position:fixed;z-index:21000;left:8px;right:8px;bottom:58px;display:none;gap:5px;flex-wrap:wrap;justify-content:center;padding:8px;border-radius:13px;background:#101827;color:white;box-shadow:0 15px 35px rgba(0,0,0,.28); }.sr-selection.show{display:flex}.sr-selection-btn{border:0;border-radius:8px;padding:8px 9px;font-size:9px;font-weight:850;cursor:pointer;background:#fff;color:#334155}.sr-color{width:29px;padding:0}
+.sr-toast { position:fixed;z-index:22000;left:10px;right:10px;bottom:66px;display:none;padding:12px 13px;border-radius:12px;background:#111827;color:white;font-size:11px;box-shadow:0 12px 30px rgba(0,0,0,.24); }
 
-.sr-item {
-    padding:10px;
-    border-radius:12px;
-    margin-bottom:8px;
-    background:rgba(148,163,184,.10);
-    font-size:11px;
-    line-height:1.45;
-}
-.sr-item-quote {
-    margin-top:6px;
-    padding-left:8px;
-    border-left:3px solid #d7a0c8;
-}
-.sr-item-actions {
-    display:flex;
-    gap:5px;
-    margin-top:8px;
-    flex-wrap:wrap;
-}
-.sr-item-actions button {
-    border:0;
-    border-radius:8px;
-    padding:6px 7px;
-    font-size:9px;
-    font-weight:850;
-    cursor:pointer;
-}
+.sr-load-overlay { position:fixed;inset:0;z-index:30000;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(245,241,234,.95);backdrop-filter:blur(6px); }.theme-dark .sr-load-overlay{background:rgba(17,22,31,.95)}.sr-load-overlay.hidden{display:none}.sr-load-card{width:min(520px,100%);padding:22px;border-radius:20px;background:var(--reader-panel);color:var(--reader-text);box-shadow:0 24px 70px rgba(15,23,42,.20);border:1px solid var(--reader-line)}.sr-load-title{font:700 22px/1.2 Georgia,"Times New Roman",serif}.sr-load-detail{margin-top:7px;color:var(--reader-muted);font-size:12px;line-height:1.5}.sr-load-track{height:10px;margin-top:15px;border-radius:999px;overflow:hidden;background:rgba(120,110,100,.16)}.sr-load-fill{width:34%;height:100%;border-radius:999px;background:#9a7756;animation:sr-load-slide 1.15s ease-in-out infinite}.sr-load-fill.determinate{animation:none;transform:none}.sr-load-meta{display:flex;justify-content:space-between;gap:8px;margin-top:8px;color:var(--reader-muted);font-size:10px}.sr-load-actions{display:none;gap:8px;flex-wrap:wrap;margin-top:15px}.sr-load-actions.show{display:flex}.sr-load-actions button,.sr-load-actions a{border:0;border-radius:10px;padding:9px 11px;text-decoration:none;background:rgba(120,110,100,.10);color:inherit;font-size:10px;font-weight:800;cursor:pointer}.sr-load-actions .primary{color:#fff;background:#9a7756}@keyframes sr-load-slide{0%{transform:translateX(-120%)}100%{transform:translateX(310%)}}
+.sr-page-busy { position:absolute;z-index:80;top:10px;left:50%;transform:translateX(-50%);display:none;padding:7px 11px;border-radius:999px;background:rgba(17,24,39,.86);color:#fff;font-size:10px;font-weight:800;box-shadow:0 6px 18px rgba(0,0,0,.15);pointer-events:none; }.sr-page-busy.show{display:block}
 
-.sr-side-backdrop {
-    position:fixed;
-    inset:0;
-    z-index:480;
-    display:none;
-    background:rgba(15,23,42,.38);
-}
-.sr-side-backdrop.show { display:block; }
-
-.sr-selection {
-    position:fixed;
-    z-index:900;
-    left:8px;
-    right:8px;
-    bottom:10px;
-    display:none;
-    gap:5px;
-    flex-wrap:wrap;
-    justify-content:center;
-    padding:8px;
-    border-radius:13px;
-    background:#101827;
-    color:white;
-    box-shadow:0 15px 35px rgba(0,0,0,.28);
-}
-.sr-selection.show { display:flex; }
-.sr-selection-btn {
-    border:0;
-    border-radius:8px;
-    padding:8px 9px;
-    font-size:9px;
-    font-weight:850;
-    cursor:pointer;
-    background:#fff;
-    color:#334155;
-}
-.sr-color {
-    width:29px;
-    padding:0;
-}
-
-.sr-toast {
-    position:fixed;
-    z-index:1200;
-    left:10px;
-    right:10px;
-    bottom:64px;
-    display:none;
-    padding:12px 13px;
-    border-radius:12px;
-    background:#111827;
-    color:white;
-    font-size:11px;
-    box-shadow:0 12px 30px rgba(0,0,0,.24);
-}
-
-.sr-load-overlay {
-    position:fixed;
-    inset:0;
-    z-index:30000;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:18px;
-    background:rgba(244,247,252,.94);
-    backdrop-filter:blur(6px);
-}
-.theme-dark .sr-load-overlay {
-    background:rgba(17,22,31,.95);
-}
-.sr-load-overlay.hidden { display:none; }
-.sr-load-card {
-    width:min(520px,100%);
-    padding:22px;
-    border-radius:20px;
-    background:var(--reader-panel);
-    color:var(--reader-text);
-    box-shadow:0 24px 70px rgba(15,23,42,.20);
-    border:1px solid rgba(100,116,139,.15);
-}
-.sr-load-title {
-    font:700 22px/1.2 "Lora",Georgia,serif;
-}
-.sr-load-detail {
-    margin-top:7px;
-    color:#738097;
-    font-size:12px;
-    line-height:1.5;
-}
-.theme-dark .sr-load-detail { color:#b3bdcc; }
-.sr-load-track {
-    height:13px;
-    margin-top:15px;
-    border-radius:999px;
-    overflow:hidden;
-    background:rgba(148,163,184,.24);
-}
-.sr-load-fill {
-    width:34%;
-    height:100%;
-    border-radius:999px;
-    background:linear-gradient(90deg,#c98fc2,#789ee3);
-    animation:sr-load-slide 1.15s ease-in-out infinite;
-}
-@keyframes sr-load-slide {
-    0% { transform:translateX(-120%); }
-    100% { transform:translateX(310%); }
-}
-.sr-load-actions {
-    display:none;
-    gap:8px;
-    flex-wrap:wrap;
-    margin-top:15px;
-}
-.sr-load-actions.show { display:flex; }
-.sr-load-actions button,
-.sr-load-actions a {
-    border:0;
-    border-radius:10px;
-    padding:9px 11px;
-    text-decoration:none;
-    background:#eef2f8;
-    color:#52627d;
-    font:800 10px "Nunito Sans",Arial,sans-serif;
-    cursor:pointer;
-}
-.sr-load-actions .primary {
-    color:#fff;
-    background:linear-gradient(135deg,#c98cc0,#789be0);
-}
-
-.sr-page-busy {
-    position:absolute;
-    z-index:80;
-    top:12px;
-    left:50%;
-    transform:translateX(-50%);
-    display:none;
-    padding:7px 11px;
-    border-radius:999px;
-    background:rgba(17,24,39,.86);
-    color:#fff;
-    font-size:10px;
-    font-weight:800;
-    box-shadow:0 6px 18px rgba(0,0,0,.15);
-    pointer-events:none;
-}
-.sr-page-busy.show { display:block; }
-
-@media(min-width:800px) {
-    .sr-toolbar { padding:9px 14px; }
-    .sr-controls { flex-wrap:wrap; overflow:visible; }
-    .sr-canvas-area { padding:18px 18px 38px; }
-    .sr-selection {
-        left:50%;
-        right:auto;
-        transform:translateX(-50%);
-        width:auto;
-        bottom:16px;
-    }
-    .sr-toast {
-        left:auto;
-        right:20px;
-        width:360px;
-        bottom:20px;
-    }
-}
+@media(min-width:800px){.sr-topline{min-height:50px;padding:5px 16px;grid-template-columns:minmax(120px,auto) minmax(0,1fr) 40px 40px}.sr-back-btn{font-size:13px}.sr-title{font-size:13px}.sr-canvas-area{padding:14px 18px}.sr-bottom-bar{min-height:48px}.sr-page-nav{gap:12px}.sr-page-arrow{width:44px;font-size:25px}.sr-page-input{width:88px;font-size:15px}.sr-page-total{min-width:58px;font-size:12px}.sr-page-kind{display:inline}.sr-tools-sheet,.sr-chapter-sheet{left:auto;right:18px;bottom:18px;width:min(390px,calc(100vw - 36px));border-radius:22px;padding-bottom:14px}.sr-toast{left:auto;right:20px;width:360px;bottom:20px}.sr-selection{left:50%;right:auto;transform:translateX(-50%);width:auto;bottom:16px}}
+@media(max-width:799px){.sr-canvas-area{padding-left:0;padding-right:0;padding-top:4px;padding-bottom:8px}#pdfStage{box-shadow:0 2px 10px rgba(54,43,32,.10)}}
+@media(max-width:420px){.sr-topline{grid-template-columns:minmax(64px,auto) minmax(0,1fr) 32px 32px;gap:2px;padding-left:5px;padding-right:5px}.sr-back-btn{font-size:11px}.sr-title{font-size:11px}.sr-icon-btn{width:32px;min-width:32px;min-height:34px}.sr-bottom-bar{padding-left:6px;padding-right:6px}.sr-page-nav{gap:5px}.sr-page-arrow{width:34px}.sr-page-input{width:66px}.sr-page-total{min-width:44px;font-size:10px}.sr-selection-btn{padding:7px 9px;font-size:9px}}
 </style>
 
 <div class="sr-root theme-{{ state.theme or 'light' }}" id="readerRoot">
     <div class="sr-toolbar">
         <div class="sr-topline">
-            <button class="sr-btn" type="button" onclick="returnToSermonLibrary()">← Sermon eBooks</button>
-
+            <button class="sr-back-btn" type="button" onclick="returnToSermonLibrary()"><span class="sr-chevron">‹</span>Sermons</button>
             <div class="sr-info">
                 <div class="sr-title">{{ sermon.theme }}</div>
                 <div class="sr-text">{{ sermon.text }}</div>
             </div>
-
-            <button class="sr-btn" type="button" onclick="toggleSidePanel()">Notes</button>
+            <button class="sr-icon-btn" type="button" title="Search" aria-label="Search in sermon" onclick="toggleReaderSearch()"><svg class="sr-top-svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg></button>
+            <button class="sr-icon-btn" type="button" title="Reader settings" aria-label="Reader settings" onclick="toggleToolsPanel()"><svg class="sr-top-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.16.38.38.72.68 1 .3.27.68.4 1.09.4H21v4h-.09c-.41 0-.79.13-1.09.4-.3.28-.52.62-.68 1z"></path></svg></button>
         </div>
-
-        <div class="sr-controls">
-            <button class="sr-btn" type="button" onclick="goPrevious()">← Prev</button>
-            <button class="sr-btn" type="button" onclick="goNext()">Next →</button>
-
-            <input
-                class="sr-page-input"
-                id="pageInput"
-                type="number"
-                min="1"
-                value="{{ state.pdf_page or 1 }}"
-                title="Page"
-            >
-            <button class="sr-btn" type="button" onclick="jumpPdfPage()">Go</button>
-
-            <button class="sr-btn" type="button" onclick="zoomPdf(-0.15)">−</button>
-            <button class="sr-btn" type="button" onclick="zoomPdf(0.15)">+</button>
-            <button class="sr-btn" type="button" onclick="fitPdfWidth()">Fit Width</button>
-            <button class="sr-btn" type="button" onclick="fitPdfPage()">Fit Page</button>
-
-            <select class="sr-select" id="themeSelect" onchange="setReaderTheme(this.value)">
-                <option value="light">Light</option>
-                <option value="sepia">Sepia</option>
-                <option value="dark">Dark</option>
-            </select>
-
-            <input
-                class="sr-search"
-                id="readerSearchInput"
-                type="search"
-                placeholder="Search in sermon..."
-            >
-            <button class="sr-btn" type="button" onclick="findInSermon()">Find</button>
-
-            <button class="sr-btn" type="button" onclick="addCurrentBookmark()">Bookmark</button>
-            <a class="sr-btn" href="{{ download_url }}">Download</a>
-            <button class="sr-btn" type="button" onclick="toggleFullscreen()">Full Screen</button>
+        <div class="sr-search-panel" id="readerSearchPanel" role="search">
+            <div class="sr-search-box"><span class="sr-search-symbol"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg></span><input class="sr-search" id="readerSearchInput" type="search" placeholder="Search this sermon" autocomplete="off" enterkeyhint="search"><button class="sr-search-clear" type="button" onclick="clearReaderSearchInput()">×</button></div>
+            <button class="sr-search-action" type="button" onclick="toggleReaderSearch(false)">Cancel</button>
         </div>
-
-        <div class="sr-progress">
-            <div id="readerProgressFill" style="width:{{ state.progress_percent or 0 }}%"></div>
-        </div>
+        <div class="sr-progress"><div id="readerProgressFill" style="width:{{ state.progress_percent or 0 }}%"></div></div>
     </div>
 
     <main class="sr-main">
-        <div class="sr-page-busy" id="readerPageBusy">Loading page...</div>
-
+        <div class="sr-page-busy" id="readerPageBusy">Loading page…</div>
         <div class="sr-canvas-area" id="readerCanvasArea">
-            <div id="pdfStage">
-                <canvas id="pdfCanvas"></canvas>
-                <div class="pdf-annotation-layer" id="pdfAnnotationLayer"></div>
-                <div class="textLayer" id="pdfTextLayer"></div>
-                <div class="pdf-link-layer" id="pdfLinkLayer"></div>
-            </div>
+            <div id="pdfStage"><canvas id="pdfCanvas"></canvas><div class="pdf-annotation-layer" id="pdfAnnotationLayer"></div><div class="textLayer" id="pdfTextLayer"></div><div class="pdf-link-layer" id="pdfLinkLayer"></div></div>
         </div>
     </main>
 
+    <footer class="sr-bottom-bar">
+        <div class="sr-page-nav">
+            <button class="sr-page-arrow" id="readerPreviousButton" type="button" onclick="goPrevious()" title="Previous page">‹</button>
+            <span class="sr-page-kind">Page</span>
+            <input class="sr-page-input" id="pageInput" type="number" min="1" value="{{ state.pdf_page or 1 }}" inputmode="numeric" aria-label="Go directly to page">
+            <span class="sr-page-total" id="readerPageTotal">/ …</span>
+            <button class="sr-page-arrow" id="readerNextButton" type="button" onclick="goNext()" title="Next page">›</button>
+            <button class="sr-chapter-button" type="button" onclick="toggleChapterPanel()" title="Quick chapters"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path></svg></button>
+        </div>
+    </footer>
+
+    <div class="sr-sheet-backdrop" id="readerChapterBackdrop" onclick="toggleChapterPanel(false)"></div>
+    <div class="sr-chapter-sheet" id="readerChapterSheet" role="dialog" aria-modal="true" aria-label="Quick chapter navigation"><div class="sr-tools-handle"></div><div class="sr-chapter-head"><h3>Chapters</h3><button class="sr-btn" type="button" onclick="toggleChapterPanel(false)">✕</button></div><div class="sr-chapter-list" id="readerChapterList"><div class="sr-chapter-empty">Preparing chapter navigation…</div></div></div>
+
     <aside class="sr-side" id="readerSide">
-        <div class="sr-side-head">
-            <h3>Sermon Notes</h3>
-            <button class="sr-btn" type="button" onclick="toggleSidePanel(false)">Close</button>
-        </div>
-
-        <div class="sr-side-tabs">
-            <button class="sr-side-tab active" type="button" onclick="openReaderTab('annotations',this)">
-                Highlights & Notes
-            </button>
-            <button class="sr-side-tab" type="button" onclick="openReaderTab('bookmarks',this)">
-                Bookmarks
-            </button>
-        </div>
-
-        <div class="sr-side-body">
-            <div class="sr-side-panel active" id="side-annotations"></div>
-            <div class="sr-side-panel" id="side-bookmarks"></div>
-        </div>
+        <div class="sr-side-head"><h3>Sermon Notes</h3><button class="sr-btn" type="button" onclick="toggleSidePanel(false)">Close</button></div>
+        <div class="sr-side-tabs"><button class="sr-side-tab active" type="button" onclick="openReaderTab('annotations',this)">Highlights & Notes</button><button class="sr-side-tab" type="button" onclick="openReaderTab('bookmarks',this)">Bookmarks</button></div>
+        <div class="sr-side-body"><div class="sr-side-panel active" id="side-annotations"></div><div class="sr-side-panel" id="side-bookmarks"></div></div>
     </aside>
-
     <div class="sr-side-backdrop" id="readerSideBackdrop" onclick="toggleSidePanel(false)"></div>
 
-    <div class="sr-selection" id="selectionBar">
-        <button class="sr-selection-btn" type="button" onclick="copySelectedText()">Copy</button>
-        <button class="sr-selection-btn sr-color" type="button" style="background:#ffe66d" onclick="savePendingAnnotation('highlight','#ffe66d',false)" title="Yellow highlight"></button>
-        <button class="sr-selection-btn sr-color" type="button" style="background:#9ee6b8" onclick="savePendingAnnotation('highlight','#9ee6b8',false)" title="Green highlight"></button>
-        <button class="sr-selection-btn sr-color" type="button" style="background:#9ed3ff" onclick="savePendingAnnotation('highlight','#9ed3ff',false)" title="Blue highlight"></button>
-        <button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('underline','#e5962d',false)">Underline</button>
-        <button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('highlight','#ffe66d',true)">Add Note</button>
-        <button class="sr-selection-btn" type="button" onclick="clearPendingSelection()">Close</button>
-    </div>
-
-    <div class="sr-load-overlay" id="readerLoadOverlay">
-        <div class="sr-load-card">
-            <div class="sr-load-title" id="readerLoadTitle">Opening sermon PDF...</div>
-            <div class="sr-load-detail" id="readerLoadDetail">Preparing the built-in reader.</div>
-            <div class="sr-load-track"><div class="sr-load-fill" id="readerLoadFill"></div></div>
-            <div class="sr-load-actions" id="readerLoadActions">
-                <button class="primary" type="button" onclick="location.reload()">Retry</button>
-                <a href="{{ download_url }}">Download PDF</a>
-                <button type="button" onclick="returnToSermonLibrary()">Back to Sermon eBooks</button>
-            </div>
+    <div class="sr-tools-sheet" id="readerToolsSheet" role="dialog" aria-modal="true" aria-label="Reader tools">
+        <div class="sr-tools-handle"></div><div class="sr-tools-head"><h3>Tools</h3><button class="sr-btn" type="button" onclick="toggleToolsPanel(false)">✕</button></div>
+        <div class="sr-tools-grid">
+            <button class="sr-tool-btn" type="button" onclick="addCurrentBookmark();toggleToolsPanel(false)"><span class="sr-tool-icon-circle">🔖</span><span>Bookmark</span></button>
+            <button class="sr-tool-btn" type="button" onclick="toggleToolDetail('theme')"><span class="sr-tool-icon-circle" style="font-family:Georgia,serif">Aa</span><span>Theme</span></button>
+            <button class="sr-tool-btn" type="button" onclick="toggleToolsPanel(false);toggleSidePanel(true)"><span class="sr-tool-icon-circle">📝</span><span>Notes</span></button>
+            <button class="sr-tool-btn" type="button" onclick="toggleToolDetail('view')"><span class="sr-tool-icon-circle">↕</span><span>PDF View</span></button>
+            <a class="sr-tool-btn" href="{{ download_url }}" style="text-decoration:none"><span class="sr-tool-icon-circle">⇩</span><span>Download</span></a>
+            <button class="sr-tool-btn" type="button" onclick="toggleFullscreen();toggleToolsPanel(false)"><span class="sr-tool-icon-circle">⛶</span><span>Full Screen</span></button>
         </div>
+        <div class="sr-tool-detail" id="readerToolDetailTheme"><div class="sr-tool-section-title">Theme</div><div class="sr-control-row"><select class="sr-select" id="themeSelect" onchange="setReaderTheme(this.value)"><option value="light">Light</option><option value="sepia">Sepia</option><option value="dark">Dark</option></select></div></div>
+        <div class="sr-tool-detail" id="readerToolDetailView"><div class="sr-tool-section-title">PDF View</div><div class="sr-control-row"><button class="sr-btn" type="button" onclick="zoomPdf(-0.15)">Zoom −</button><button class="sr-btn" type="button" onclick="zoomPdf(0.15)">Zoom +</button><button class="sr-btn" type="button" onclick="fitPdfWidth()">Fit Width</button><button class="sr-btn" type="button" onclick="fitPdfPage()">Fit Page</button></div></div>
     </div>
+    <div class="sr-sheet-backdrop" id="readerToolsBackdrop" onclick="toggleToolsPanel(false)"></div>
 
+    <div class="sr-selection" id="selectionBar"><button class="sr-selection-btn" type="button" onclick="copySelectedText()">Copy</button><button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('underline','#e5962d',false)">Underline</button><button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('highlight','#ffe66d',true)">Note</button><button class="sr-selection-btn sr-color" type="button" style="background:#ffe66d" onclick="savePendingAnnotation('highlight','#ffe66d',false)" title="Yellow highlight"></button><button class="sr-selection-btn sr-color" type="button" style="background:#9ee6b8" onclick="savePendingAnnotation('highlight','#9ee6b8',false)" title="Green highlight"></button><button class="sr-selection-btn sr-color" type="button" style="background:#9ed3ff" onclick="savePendingAnnotation('highlight','#9ed3ff',false)" title="Blue highlight"></button><button class="sr-selection-btn" type="button" onclick="clearPendingSelection()">Close</button></div>
+
+    <div class="sr-load-overlay" id="readerLoadOverlay"><div class="sr-load-card"><div class="sr-load-title" id="readerLoadTitle">Opening sermon PDF…</div><div class="sr-load-detail" id="readerLoadDetail">Preparing your reader.</div><div class="sr-load-track"><div class="sr-load-fill" id="readerLoadFill"></div></div><div class="sr-load-meta"><span id="readerLoadBytes">Please wait…</span><span id="readerLoadPercent"></span></div><div class="sr-load-actions" id="readerLoadActions"><button class="primary" type="button" onclick="location.reload()">Retry</button><a href="{{ download_url }}">Download PDF</a><button type="button" onclick="returnToSermonLibrary()">Back to Sermon eBooks</button></div></div></div>
     <div class="sr-toast" id="readerToast"></div>
 </div>
 
@@ -5308,6 +4921,8 @@ let pdfPageNumber = Math.max(1, Number(STATE.pdf_page || 1));
 let pdfScale = Math.max(.5, Number(STATE.pdf_scale || 1.15));
 let pdfRenderTask = null;
 let selectionTimer = null;
+let pdfOutlineFlat = [];
+let pdfAutoFitWidth = window.matchMedia?.("(max-width: 799px)")?.matches || false;
 
 function escapeReaderHtml(value) {
     const div = document.createElement("div");
@@ -5332,13 +4947,48 @@ function setPageBusy(show, text="Loading page...") {
     busy.classList.toggle("show", Boolean(show));
 }
 
+function formatReaderBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (!value || value < 0) return "";
+    const units = ["B","KB","MB","GB"];
+    let size = value, unit = 0;
+    while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
+    return (unit === 0 ? Math.round(size) : size.toFixed(size >= 10 ? 1 : 2)) + " " + units[unit];
+}
+
+function showReaderLoading(title, detail="", percent=null, loaded=0, total=0) {
+    const overlay = document.getElementById("readerLoadOverlay");
+    const fill = document.getElementById("readerLoadFill");
+    overlay.classList.remove("hidden");
+    document.getElementById("readerLoadTitle").textContent = title || "Opening sermon PDF…";
+    document.getElementById("readerLoadDetail").textContent = detail || "Preparing your reader.";
+    document.getElementById("readerLoadActions").classList.remove("show");
+    if (percent === null || !Number.isFinite(Number(percent))) {
+        fill.classList.remove("determinate");
+        fill.style.width = "34%";
+        document.getElementById("readerLoadPercent").textContent = "";
+    } else {
+        const pct = Math.max(0, Math.min(100, Number(percent)));
+        fill.classList.add("determinate");
+        fill.style.width = pct.toFixed(1) + "%";
+        document.getElementById("readerLoadPercent").textContent = Math.round(pct) + "%";
+    }
+    document.getElementById("readerLoadBytes").textContent = loaded > 0
+        ? (total > 0 ? formatReaderBytes(loaded) + " of " + formatReaderBytes(total) : formatReaderBytes(loaded) + " loaded")
+        : "Please wait…";
+}
+
 function showReaderLoadError(message) {
     const overlay = document.getElementById("readerLoadOverlay");
+    const fill = document.getElementById("readerLoadFill");
     overlay.classList.remove("hidden");
-    document.getElementById("readerLoadTitle").textContent =
-        "Unable to open this sermon PDF";
-    document.getElementById("readerLoadDetail").textContent =
-        message || "The PDF reader could not load this file.";
+    fill.classList.add("determinate");
+    fill.style.width = "100%";
+    fill.style.background = "#ef4444";
+    document.getElementById("readerLoadTitle").textContent = "Unable to open this sermon PDF";
+    document.getElementById("readerLoadDetail").textContent = message || "The PDF reader could not load this file.";
+    document.getElementById("readerLoadBytes").textContent = "You can retry or download the PDF.";
+    document.getElementById("readerLoadPercent").textContent = "";
     document.getElementById("readerLoadActions").classList.add("show");
 }
 
@@ -5381,6 +5031,138 @@ function returnToSermonLibrary() {
     } else {
         window.location.href = SERMON_HOME_URL;
     }
+}
+
+
+function readerIsMobileWidth() {
+    return Boolean(window.matchMedia?.("(max-width: 799px)")?.matches);
+}
+
+function pdfFitWidthScaleForPage(page) {
+    if (!page) return pdfScale;
+    const area = document.getElementById("readerCanvasArea");
+    if (!area) return pdfScale;
+    const base = page.getViewport({scale:1});
+    const gutter = readerIsMobileWidth() ? 2 : 24;
+    return Math.min(4, Math.max(.5, Math.max(120, area.clientWidth - gutter) / base.width));
+}
+
+function updateReaderPageControls(current, total) {
+    const input = document.getElementById("pageInput");
+    const totalEl = document.getElementById("readerPageTotal");
+    if (input && document.activeElement !== input) input.value = String(Math.round(Number(current || 1)));
+    if (input) input.max = String(Math.max(1, Math.round(Number(total || 1))));
+    if (totalEl) totalEl.textContent = "/ " + Math.max(1, Math.round(Number(total || 1)));
+}
+
+function toggleReaderSearch(force) {
+    const panel = document.getElementById("readerSearchPanel");
+    if (!panel) return;
+    const open = typeof force === "boolean" ? force : !panel.classList.contains("open");
+    panel.classList.toggle("open", open);
+    if (open) {
+        toggleToolsPanel(false);
+        setTimeout(() => document.getElementById("readerSearchInput")?.focus(), 40);
+    }
+}
+
+function clearReaderSearchInput() {
+    const input = document.getElementById("readerSearchInput");
+    if (input) { input.value = ""; input.focus(); }
+}
+
+function toggleToolsPanel(force) {
+    const sheet = document.getElementById("readerToolsSheet");
+    const backdrop = document.getElementById("readerToolsBackdrop");
+    if (!sheet || !backdrop) return;
+    const open = typeof force === "boolean" ? force : !sheet.classList.contains("open");
+    if (open) toggleChapterPanel(false);
+    sheet.classList.toggle("open", open);
+    backdrop.classList.toggle("show", open);
+}
+
+function toggleToolDetail(name) {
+    const ids = {theme:"readerToolDetailTheme", view:"readerToolDetailView"};
+    const target = document.getElementById(ids[name] || "");
+    document.querySelectorAll(".sr-tool-detail").forEach(el => {
+        if (el !== target) el.classList.remove("open");
+    });
+    target?.classList.toggle("open");
+}
+
+function flattenPdfOutline(items, depth=0, output=[]) {
+    (items || []).forEach(item => {
+        output.push({label:String(item?.title || "Untitled section").trim(),dest:item?.dest ?? null,depth:Number(depth||0),page:null});
+        if (Array.isArray(item?.items) && item.items.length) flattenPdfOutline(item.items, depth + 1, output);
+    });
+    return output;
+}
+
+async function pdfOutlinePageFromDestination(destination) {
+    if (!pdfDoc || !destination) return null;
+    try {
+        let explicit = destination;
+        if (typeof explicit === "string") explicit = await pdfDoc.getDestination(explicit);
+        if (!Array.isArray(explicit) || !explicit.length) return null;
+        const target = explicit[0];
+        let pageIndex = null;
+        if (typeof target === "number") pageIndex = target;
+        else if (target && typeof target === "object") pageIndex = await pdfDoc.getPageIndex(target);
+        if (pageIndex === null || pageIndex === undefined) return null;
+        return Math.max(1, Math.min(pdfDoc.numPages, Number(pageIndex) + 1));
+    } catch (error) { return null; }
+}
+
+async function preparePdfQuickNavigation() {
+    if (!pdfDoc) return;
+    const outline = await pdfDoc.getOutline();
+    const flat = flattenPdfOutline(outline || []);
+    for (const item of flat) item.page = await pdfOutlinePageFromDestination(item.dest);
+    pdfOutlineFlat = flat.filter(item => Number.isFinite(Number(item.page)) && Number(item.page) >= 1);
+    renderQuickChapterList();
+    updateCurrentChapterHighlight();
+}
+
+function renderQuickChapterList() {
+    const list = document.getElementById("readerChapterList");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!pdfOutlineFlat.length) {
+        list.innerHTML = '<div class="sr-chapter-empty">This PDF does not provide embedded chapter bookmarks.</div>';
+        return;
+    }
+    pdfOutlineFlat.forEach((item,index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "sr-chapter-item";
+        button.dataset.index = String(index);
+        button.style.paddingLeft = (10 + Math.min(4,item.depth) * 16) + "px";
+        button.textContent = item.label + (item.page ? "  ·  p. " + item.page : "");
+        button.onclick = async () => {
+            pdfPageNumber = Math.max(1, Math.min(pdfDoc.numPages, Number(item.page || 1)));
+            await renderPdfPage();
+            toggleChapterPanel(false);
+        };
+        list.appendChild(button);
+    });
+    updateCurrentChapterHighlight();
+}
+
+function updateCurrentChapterHighlight() {
+    let best = -1;
+    pdfOutlineFlat.forEach((item,index) => { if (Number(item.page || 0) <= Number(pdfPageNumber || 1)) best = index; });
+    document.querySelectorAll(".sr-chapter-item").forEach(button => button.classList.toggle("current", Number(button.dataset.index) === best));
+}
+
+function toggleChapterPanel(force) {
+    const sheet = document.getElementById("readerChapterSheet");
+    const backdrop = document.getElementById("readerChapterBackdrop");
+    if (!sheet || !backdrop) return;
+    const open = typeof force === "boolean" ? force : !sheet.classList.contains("open");
+    if (open) toggleToolsPanel(false);
+    sheet.classList.toggle("open", open);
+    backdrop.classList.toggle("show", open);
+    if (open) { renderQuickChapterList(); updateCurrentChapterHighlight(); }
 }
 
 function setProgress(percent) {
@@ -5921,39 +5703,34 @@ function renderPdfAnnotations() {
 
 async function initPdfReader() {
     if (!window.pdfjsLib) {
-        showReaderLoadError(
-            "PDF.js could not be loaded. Check the internet connection used to load the reader library."
-        );
+        showReaderLoadError("PDF.js could not be loaded. Check the internet connection used to load the reader library.");
         return;
     }
 
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
     try {
-        const loadingTask = pdfjsLib.getDocument({
-            url:MEDIA_URL,
-            rangeChunkSize:65536,
-            withCredentials:true
-        });
+        showReaderLoading("Loading PDF…", "Connecting to the private sermon file…", null);
+        const loadingTask = pdfjsLib.getDocument({url:MEDIA_URL,rangeChunkSize:65536,withCredentials:true});
+        loadingTask.onProgress = progress => {
+            const loaded = Number(progress?.loaded || 0);
+            const total = Number(progress?.total || 0);
+            const pct = total > 0 ? (loaded / total) * 100 : null;
+            showReaderLoading("Loading PDF…", "Downloading the PDF data needed to open this sermon…", pct, loaded, total);
+        };
 
         pdfDoc = await loadingTask.promise;
-
-        pdfPageNumber = Math.max(
-            1,
-            Math.min(
-                pdfDoc.numPages,
-                pdfPageNumber
-            )
-        );
-
+        pdfPageNumber = Math.max(1, Math.min(pdfDoc.numPages, pdfPageNumber));
+        preparePdfQuickNavigation().catch(error => {
+            console.warn("PDF chapter navigation could not be prepared", error);
+            renderQuickChapterList();
+        });
+        showReaderLoading("Preparing PDF…", "Rendering page " + pdfPageNumber + " of " + pdfDoc.numPages + "…", null);
         await renderPdfPage();
         hideReaderLoading();
     } catch (error) {
         console.error(error);
-        showReaderLoadError(
-            error?.message || "Unable to open this PDF."
-        );
+        showReaderLoadError(error?.message || "Unable to open this PDF.");
     }
 }
 
@@ -5979,6 +5756,10 @@ async function renderPdfPage() {
         const page = await pdfDoc.getPage(
             pdfPageNumber
         );
+
+        if (pdfAutoFitWidth) {
+            pdfScale = pdfFitWidthScaleForPage(page);
+        }
 
         const viewport = page.getViewport({
             scale:pdfScale
@@ -6052,6 +5833,8 @@ async function renderPdfPage() {
             pdfPageNumber;
         document.getElementById("pageInput").max =
             pdfDoc.numPages;
+        updateReaderPageControls(pdfPageNumber, pdfDoc.numPages);
+        updateCurrentChapterHighlight();
 
         const percent =
             (pdfPageNumber / pdfDoc.numPages) * 100;
@@ -6322,81 +6105,28 @@ function jumpPdfPage() {
 }
 
 async function zoomPdf(delta) {
-    pdfScale = Math.min(
-        4,
-        Math.max(
-            .5,
-            pdfScale + delta
-        )
-    );
-
+    pdfAutoFitWidth = false;
+    pdfScale = Math.min(4, Math.max(.5, pdfScale + delta));
     await renderPdfPage();
 }
 
 async function fitPdfWidth() {
-    if (!pdfDoc) {
-        return;
-    }
-
-    const page = await pdfDoc.getPage(
-        pdfPageNumber
-    );
-
-    const base = page.getViewport({
-        scale:1
-    });
-
-    const available = Math.max(
-        280,
-        document.getElementById(
-            "readerCanvasArea"
-        ).clientWidth - 24
-    );
-
-    pdfScale = Math.min(
-        4,
-        Math.max(
-            .5,
-            available / base.width
-        )
-    );
-
+    if (!pdfDoc) return;
+    const page = await pdfDoc.getPage(pdfPageNumber);
+    pdfScale = pdfFitWidthScaleForPage(page);
+    pdfAutoFitWidth = true;
     await renderPdfPage();
 }
 
 async function fitPdfPage() {
-    if (!pdfDoc) {
-        return;
-    }
-
-    const page = await pdfDoc.getPage(
-        pdfPageNumber
-    );
-
-    const base = page.getViewport({
-        scale:1
-    });
-
-    const area = document.getElementById(
-        "readerCanvasArea"
-    );
-
-    const widthScale = Math.max(
-        .5,
-        (area.clientWidth - 24) / base.width
-    );
-
-    const heightScale = Math.max(
-        .5,
-        (window.innerHeight - 210) / base.height
-    );
-
-    pdfScale = Math.min(
-        4,
-        widthScale,
-        heightScale
-    );
-
+    if (!pdfDoc) return;
+    pdfAutoFitWidth = false;
+    const page = await pdfDoc.getPage(pdfPageNumber);
+    const base = page.getViewport({scale:1});
+    const area = document.getElementById("readerCanvasArea");
+    const widthScale = Math.max(.5, (area.clientWidth - (readerIsMobileWidth() ? 2 : 24)) / base.width);
+    const heightScale = Math.max(.5, (area.clientHeight - 12) / base.height);
+    pdfScale = Math.min(4, widthScale, heightScale);
     await renderPdfPage();
 }
 
@@ -6584,6 +6314,7 @@ document.getElementById(
 async function initializeReader() {
     document.getElementById("themeSelect").value =
         currentTheme;
+    updateReaderPageControls(pdfPageNumber, {{ sermon.page_count or 1 }});
     setReaderTheme(currentTheme);
 
     try {
@@ -6597,6 +6328,12 @@ async function initializeReader() {
 
     await initPdfReader();
 }
+
+window.addEventListener("resize", () => {
+    if (!pdfDoc || !pdfAutoFitWidth) return;
+    clearTimeout(window.__sermonReaderResizeTimer);
+    window.__sermonReaderResizeTimer = setTimeout(() => renderPdfPage(), 120);
+});
 
 initializeReader();
 </script>
