@@ -63,10 +63,18 @@ def _db():
     # A generous busy timeout lets short writes finish instead of immediately
     # failing while the ebook indexer is inserting many chunks.
     timeout_seconds = max(1.0, SQLITE_BUSY_TIMEOUT_MS / 1000.0)
-    db = sqlite3.connect(_appmod().DATABASE, timeout=timeout_seconds, check_same_thread=False)
+    appmod = _appmod()
+    db = sqlite3.connect(appmod.AI_DATABASE, timeout=timeout_seconds, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
     db.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+
+    # The AI index now lives in ai_index.db, while the Pastor Resources
+    # catalog remains in app_v2.db. Attach the main application database
+    # read/write so existing catalog lookups can join against it without
+    # duplicating normal website data into the AI database.
+    main_db_path = str(appmod.DATABASE).replace("'", "''")
+    db.execute(f"ATTACH DATABASE '{main_db_path}' AS appdb")
     return db
 
 
@@ -280,8 +288,8 @@ def _public_files_to_index():
                    LOWER(COALESCE(f.format,'')) AS format, f.size, f.modified_time,
                    COALESCE(f.sha256_checksum, f.md5_checksum, '') AS checksum,
                    b.title, b.author, b.category, b.folder_path
-            FROM pastor_library_files f
-            JOIN pastor_library_books b ON b.id = f.book_id
+            FROM appdb.pastor_library_files f
+            JOIN appdb.pastor_library_books b ON b.id = f.book_id
             WHERE f.is_active = 1 AND b.is_active = 1
               AND COALESCE(b.is_hidden,0) = 0
               AND COALESCE(f.is_duplicate,0) = 0
@@ -525,7 +533,7 @@ def get_index_state():
             SELECT COUNT(*) AS docs,
                    COALESCE(SUM(d.chunk_count),0) AS chunks
             FROM pij_library_documents d
-            JOIN pastor_library_books b ON b.id=d.book_id
+            JOIN appdb.pastor_library_books b ON b.id=d.book_id
             WHERE d.source_type='public_ebook'
               AND d.searchable=1
               AND b.is_active=1
@@ -743,7 +751,7 @@ def _active_indexed_books(db):
     return db.execute(
         """
         SELECT DISTINCT b.id AS book_id, b.title, b.author, b.category, b.folder_path
-        FROM pastor_library_books b
+        FROM appdb.pastor_library_books b
         JOIN pij_library_documents d ON d.book_id=b.id
         WHERE d.source_type='public_ebook'
           AND d.searchable=1
@@ -865,7 +873,7 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
                       ON c.document_id=CAST(f.document_id AS INTEGER)
                      AND c.chunk_number=CAST(f.chunk_number AS INTEGER)
                     JOIN pij_library_documents d ON d.id=c.document_id
-                    JOIN pastor_library_books b ON b.id=d.book_id
+                    JOIN appdb.pastor_library_books b ON b.id=d.book_id
                     WHERE pij_library_chunks_fts MATCH ?
                       AND d.source_type='public_ebook'
                       AND d.searchable=1
@@ -901,7 +909,7 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
                c.chunk_number,c.page_start,c.page_end,c.content,0 AS rank
         FROM pij_library_chunks c
         JOIN pij_library_documents d ON d.id=c.document_id
-        JOIN pastor_library_books b ON b.id=d.book_id
+        JOIN appdb.pastor_library_books b ON b.id=d.book_id
         WHERE d.source_type='public_ebook'
           AND d.searchable=1
           AND b.is_active=1
@@ -1148,7 +1156,7 @@ def _catalog_specific_book_for_question(question):
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
-            FROM pastor_library_books b
+            FROM appdb.pastor_library_books b
             LEFT JOIN pij_library_documents d
               ON d.book_id=b.id AND d.source_type='public_ebook'
             WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
@@ -1252,7 +1260,7 @@ def _opening_chunks_for_book(db, book_id, limit=6):
                0.0 AS rank
         FROM pij_library_chunks c
         JOIN pij_library_documents d ON d.id=c.document_id
-        JOIN pastor_library_books b ON b.id=d.book_id
+        JOIN appdb.pastor_library_books b ON b.id=d.book_id
         WHERE d.source_type='public_ebook'
           AND d.searchable=1
           AND d.book_id=?
@@ -1552,8 +1560,8 @@ def _catalog_book_rows(query, limit=8):
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
-            FROM pastor_library_books b
-            LEFT JOIN pastor_library_files f
+            FROM appdb.pastor_library_books b
+            LEFT JOIN appdb.pastor_library_files f
               ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
             LEFT JOIN pij_library_documents d
               ON d.book_id=b.id AND d.source_type='public_ebook'
@@ -1603,8 +1611,8 @@ def get_library_book_status(book_id):
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    SUM(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
-            FROM pastor_library_books b
-            LEFT JOIN pastor_library_files f
+            FROM appdb.pastor_library_books b
+            LEFT JOIN appdb.pastor_library_files f
               ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
             LEFT JOIN pij_library_documents d
               ON d.book_id=b.id AND d.source_type='public_ebook'
