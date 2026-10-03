@@ -365,6 +365,12 @@ def get_resource_db():
         "PRAGMA busy_timeout = 30000"
     )
 
+    # AI ebook indexing is stored separately in ai_index.db. Attach it so
+    # Pastor Resources can display index/page/chunk status without storing
+    # the large full-text index inside app_v2.db.
+    ai_database_path = str(_appmod().AI_DATABASE).replace("'", "''")
+    db.execute(f"ATTACH DATABASE '{ai_database_path}' AS aidb")
+
     return db
 
 
@@ -6679,7 +6685,7 @@ def search_library_database_v3(
         page_count_by_book = {}
         try:
             has_ai_docs = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pij_library_documents'"
+                "SELECT 1 FROM aidb.sqlite_master WHERE type='table' AND name='pij_library_documents'"
             ).fetchone()
             if has_ai_docs and rows:
                 book_ids = [int(row["id"]) for row in rows]
@@ -6687,7 +6693,7 @@ def search_library_database_v3(
                 page_rows = db.execute(
                     f"""
                     SELECT book_id, MAX(COALESCE(page_count,0)) AS page_count
-                    FROM pij_library_documents
+                    FROM aidb.pij_library_documents
                     WHERE source_type='public_ebook' AND LOWER(COALESCE(format,''))='pdf' AND book_id IN ({placeholders})
                     GROUP BY book_id
                     """,
@@ -17091,6 +17097,267 @@ def _database_detail_same_name_key(filename):
     )
 
 
+
+DATABASE_MAINTENANCE_FLAG = os.path.join(
+    BASE_DIR,
+    ".database_maintenance",
+)
+
+OLD_AI_INDEX_TABLES = (
+    "pij_library_chunks_fts",
+    "pij_library_chunks",
+    "pij_library_documents",
+)
+
+
+def _database_maintenance_active():
+    """Return True while the one-time main-database cleanup is running."""
+    try:
+        if not os.path.exists(DATABASE_MAINTENANCE_FLAG):
+            return False
+
+        # A crashed worker must not leave the whole site locked forever.
+        age = max(
+            0,
+            datetime.now(timezone.utc).timestamp()
+            - os.path.getmtime(DATABASE_MAINTENANCE_FLAG),
+        )
+
+        if age > 1800:  # 30 minutes = stale maintenance flag.
+            try:
+                os.remove(DATABASE_MAINTENANCE_FLAG)
+            except OSError:
+                pass
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
+def _set_database_maintenance(enabled):
+    if enabled:
+        with open(DATABASE_MAINTENANCE_FLAG, "w", encoding="utf-8") as handle:
+            handle.write(utc_now_iso())
+        return
+
+    try:
+        if os.path.exists(DATABASE_MAINTENANCE_FLAG):
+            os.remove(DATABASE_MAINTENANCE_FLAG)
+    except OSError:
+        pass
+
+
+def _plain_sqlite_connection(path, timeout=60):
+    db = sqlite3.connect(
+        path,
+        timeout=timeout,
+        check_same_thread=False,
+    )
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA busy_timeout = 60000")
+    return db
+
+
+def get_old_ai_index_cleanup_status():
+    """
+    Check the old AI-index tables in app_v2.db and independently verify that
+    the replacement ai_index.db contains the expected searchable index.
+    This helper is read-only.
+    """
+    main_database_path = _appmod().DATABASE
+    ai_database_path = _appmod().AI_DATABASE
+
+    main_db = _plain_sqlite_connection(main_database_path)
+    try:
+        old_rows = main_db.execute(
+            """
+            SELECT name, type
+            FROM sqlite_master
+            WHERE name LIKE 'pij_library_%'
+            ORDER BY name
+            """
+        ).fetchall()
+        old_names = [str(row["name"]) for row in old_rows]
+    finally:
+        main_db.close()
+
+    ai_verified = False
+    ai_document_count = 0
+    ai_chunk_count = 0
+    ai_error = ""
+
+    try:
+        if not os.path.exists(ai_database_path):
+            raise RuntimeError("ai_index.db was not found.")
+
+        ai_db = _plain_sqlite_connection(ai_database_path)
+        try:
+            names = {
+                str(row["name"])
+                for row in ai_db.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type IN ('table', 'view')
+                    """
+                ).fetchall()
+            }
+
+            required = {
+                "pij_library_documents",
+                "pij_library_chunks",
+                "pij_library_chunks_fts",
+            }
+
+            missing = sorted(required - names)
+            if missing:
+                raise RuntimeError(
+                    "ai_index.db is missing: " + ", ".join(missing)
+                )
+
+            ai_document_count = int(
+                ai_db.execute(
+                    "SELECT COUNT(*) FROM pij_library_documents"
+                ).fetchone()[0]
+                or 0
+            )
+            ai_chunk_count = int(
+                ai_db.execute(
+                    "SELECT COUNT(*) FROM pij_library_chunks"
+                ).fetchone()[0]
+                or 0
+            )
+
+            if ai_document_count <= 0 or ai_chunk_count <= 0:
+                raise RuntimeError(
+                    "ai_index.db exists but its document/chunk index is empty."
+                )
+
+            ai_verified = True
+        finally:
+            ai_db.close()
+
+    except Exception as error:
+        ai_error = str(error)
+
+    return {
+        "old_ai_index_detected": bool(old_names),
+        "old_ai_tables": old_names,
+        "old_ai_table_count": len(old_names),
+        "ai_database_verified": ai_verified,
+        "ai_document_count": ai_document_count,
+        "ai_chunk_count": ai_chunk_count,
+        "ai_verification_error": ai_error,
+    }
+
+
+def remove_old_ai_index_from_main_database():
+    """
+    One-time cleanup used by the private Database Details page.
+
+    Safety rules:
+    - verifies the replacement ai_index.db first;
+    - touches only the old top-level Pij AI index tables in app_v2.db;
+    - drops the FTS virtual table first so SQLite removes its shadow tables;
+    - VACUUM runs only after the drops are committed;
+    - maintenance mode is always cleared in finally.
+    """
+    status = get_old_ai_index_cleanup_status()
+
+    if not status["old_ai_index_detected"]:
+        return {
+            "removed": False,
+            "message": "The old AI index is already removed.",
+            "status": status,
+        }
+
+    if not status["ai_database_verified"]:
+        raise RuntimeError(
+            "Cleanup cancelled because ai_index.db could not be verified. "
+            + (status.get("ai_verification_error") or "")
+        )
+
+    _set_database_maintenance(True)
+    db = None
+
+    try:
+        db = _plain_sqlite_connection(
+            _appmod().DATABASE,
+            timeout=120,
+        )
+
+        # Check what is present immediately before the destructive step.
+        present = {
+            str(row["name"])
+            for row in db.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE name LIKE 'pij_library_%'
+                """
+            ).fetchall()
+        }
+
+        # The virtual FTS table must be dropped before its source tables.
+        for table_name in OLD_AI_INDEX_TABLES:
+            if table_name in present:
+                db.execute(
+                    f'DROP TABLE IF EXISTS "{table_name}"'
+                )
+
+        db.commit()
+
+        # Physically reclaim the freed pages now, matching the successful
+        # local cleanup already tested with remove_old_ai_index.py.
+        db.execute("VACUUM")
+
+        remaining = [
+            str(row["name"])
+            for row in db.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE name LIKE 'pij_library_%'
+                ORDER BY name
+                """
+            ).fetchall()
+        ]
+
+        if remaining:
+            raise RuntimeError(
+                "Cleanup finished but these old AI tables remain: "
+                + ", ".join(remaining)
+            )
+
+    finally:
+        if db is not None:
+            db.close()
+        _set_database_maintenance(False)
+
+    return {
+        "removed": True,
+        "message": "Old AI index removed and app_v2.db optimized successfully.",
+        "status": get_old_ai_index_cleanup_status(),
+    }
+
+
+DATABASE_MAINTENANCE_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Website Maintenance</title>
+<style>
+html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f5f7fb;color:#25314a;font-family:Arial,sans-serif;padding:22px;box-sizing:border-box}.m{width:min(560px,100%);background:#fff;border:1px solid #e3e8f0;border-radius:22px;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.10);text-align:center}.i{font-size:38px}.m h1{margin:10px 0 8px;font:700 30px Georgia,serif}.m p{margin:0;color:#65738a;line-height:1.6;font-size:14px}.bar{height:8px;margin-top:20px;border-radius:999px;background:#e9edf4;overflow:hidden}.bar:after{content:"";display:block;width:35%;height:100%;border-radius:999px;background:#8c83c9;animation:x 1.2s ease-in-out infinite}@keyframes x{from{transform:translateX(-120%)}to{transform:translateX(390%)}}
+</style>
+</head>
+<body><div class="m"><div class="i">🛠️</div><h1>Website Maintenance</h1><p>The database is being optimized after removing the old AI index. Please try again in a few minutes.</p><div class="bar"></div></div></body>
+</html>
+"""
+
+
 def get_database_details_payload(
     query="",
     view="all",
@@ -17223,31 +17490,31 @@ def get_database_details_payload(
 
                 COALESCE((
                     SELECT MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END)
-                    FROM pij_library_documents d
+                    FROM aidb.pij_library_documents d
                     WHERE d.source_type='public_ebook' AND d.book_id=b.id
                 ),0) AS ai_indexed,
 
                 COALESCE((
                     SELECT MAX(d.page_count)
-                    FROM pij_library_documents d
+                    FROM aidb.pij_library_documents d
                     WHERE d.source_type='public_ebook' AND d.book_id=b.id
                 ),0) AS ai_page_count,
 
                 COALESCE((
                     SELECT SUM(d.chunk_count)
-                    FROM pij_library_documents d
+                    FROM aidb.pij_library_documents d
                     WHERE d.source_type='public_ebook' AND d.book_id=b.id
                 ),0) AS ai_chunk_count,
 
                 COALESCE((
                     SELECT MAX(d.indexed_at)
-                    FROM pij_library_documents d
+                    FROM aidb.pij_library_documents d
                     WHERE d.source_type='public_ebook' AND d.book_id=b.id
                 ),'') AS ai_indexed_at,
 
                 COALESCE((
                     SELECT MAX(d.extract_error)
-                    FROM pij_library_documents d
+                    FROM aidb.pij_library_documents d
                     WHERE d.source_type='public_ebook' AND d.book_id=b.id
                       AND COALESCE(d.extract_error,'')<>''
                 ),'') AS ai_extract_error
@@ -17788,7 +18055,11 @@ def get_database_details_payload(
             )
         }
 
+        cleanup_status = get_old_ai_index_cleanup_status()
+
         summary = {
+            **cleanup_status,
+
             "current_ebook_files":
                 len(
                     current_rows
@@ -17939,7 +18210,7 @@ PASTOR_DATABASE_DETAILS_HTML = r"""
 .app-main{max-width:1550px;padding:0}.db-page{padding:16px 14px 60px;color:#10213d;font-family:Arial,sans-serif}
 .db-hero{padding:24px 28px;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#f7f5ff 48%,#fff7fb);border:1px solid rgba(15,23,42,.07);box-shadow:0 10px 30px rgba(15,23,42,.06)}
 .db-kicker{color:#8b6591;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.db-title{margin:6px 0 0;font:700 40px/1.05 Georgia,serif}.db-subtitle{max-width:980px;margin:10px 0 0;color:#607292;font-size:13px;line-height:1.55}
-.db-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}.db-action{display:inline-flex;align-items:center;justify-content:center;min-height:45px;padding:10px 14px;border:0;border-radius:12px;background:#fff;color:#3e5578;text-decoration:none;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 5px 16px rgba(15,23,42,.07)}.db-action.primary{color:#fff;background:linear-gradient(135deg,#b27db9,#7297de)}.db-action:disabled{opacity:.6}
+.db-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}.db-action{display:inline-flex;align-items:center;justify-content:center;min-height:45px;padding:10px 14px;border:0;border-radius:12px;background:#fff;color:#3e5578;text-decoration:none;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 5px 16px rgba(15,23,42,.07)}.db-action.primary{color:#fff;background:linear-gradient(135deg,#b27db9,#7297de)}.db-action:disabled{opacity:.6}.db-action.danger{display:none;color:#fff;background:linear-gradient(135deg,#c54848,#9e2f43)}.db-action.danger.show{display:inline-flex}.db-cleanup-state{margin-top:10px;font-size:10px;font-weight:800;color:#64748b}.db-maint{position:fixed;inset:0;z-index:40000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(244,247,252,.96);backdrop-filter:blur(6px)}.db-maint.show{display:flex}.db-maint-card{width:min(520px,100%);padding:24px;border-radius:20px;background:#fff;border:1px solid #e2e8f0;box-shadow:0 24px 70px rgba(15,23,42,.20);text-align:center}.db-maint-card h3{margin:0;font:700 24px Georgia,serif}.db-maint-card p{color:#64748b;font-size:12px;line-height:1.55}.db-maint-track{height:10px;border-radius:999px;overflow:hidden;background:#e9edf4}.db-maint-track:after{content:"";display:block;width:35%;height:100%;border-radius:999px;background:#8c83c9;animation:dbmaint 1.15s ease-in-out infinite}@keyframes dbmaint{from{transform:translateX(-120%)}to{transform:translateX(390%)}}
 .db-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.db-stat{min-width:0;padding:14px;border-radius:16px;background:#fff;border:1px solid rgba(15,23,42,.07);box-shadow:0 6px 18px rgba(15,23,42,.045);text-align:left}.db-stat.click{cursor:pointer}.db-stat.click:hover{transform:translateY(-1px)}.db-stat.active{outline:2px solid rgba(112,148,220,.45)}.db-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:24px;font-weight:900}.db-label{margin-top:3px;color:#8796ad;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
 .db-note{margin-top:14px;padding:13px 15px;border-radius:14px;background:#fff9e9;color:#755b1e;border:1px solid #f0d985;font-size:11px;line-height:1.5}
 .db-browser{display:none;margin-top:18px}.db-browser.open{display:block}.db-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}.db-head h2{margin:0;font:700 22px Georgia,serif}.db-tools{display:flex;flex-wrap:wrap;gap:8px}.db-input,.db-select{min-height:42px;border:1px solid #dbe3ee;border-radius:11px;padding:9px 11px;background:#fff;color:#334155;font-size:12px;font-weight:700}.db-input{width:min(420px,80vw)}
@@ -17954,14 +18225,14 @@ PASTOR_DATABASE_DETAILS_HTML = r"""
 <div class="db-kicker">🔐 Private administrator / developer view</div>
 <h1 class="db-title">Database Details</h1>
 <p class="db-subtitle">Inspect the PDF and EPUB files recorded from the most recent Google Drive synchronization, including upload dates, file IDs, checksums, hidden records, exact duplicates, same-name groups and Pij AI indexing status.</p>
-<div class="db-actions"><a class="db-action" href="{{ url_for('pastor_resources') }}">← Back to Pastor's Resources</a><button class="db-action primary" id="syncBtn" onclick="syncBooks()">🔄 Sync Books Now</button></div>
+<div class="db-actions"><a class="db-action" href="{{ url_for('pastor_resources') }}">← Back to Pastor's Resources</a><button class="db-action primary" id="syncBtn" onclick="syncBooks()">🔄 Sync Books Now</button><button class="db-action danger" id="removeOldAiBtn" onclick="removeOldAiIndex()">🗑 Remove Old AI Index</button></div><div class="db-cleanup-state" id="oldAiStatus"></div>
 <div class="db-summary" id="summary"></div>
 <div class="db-note">This page reads the SQLite catalog snapshot only. It does not scan Google Drive every time you open it. Use <strong>Sync Books Now</strong> when you want this developer view to reflect the latest Drive contents. “Same name” is an informational warning only; it never removes or merges files automatically.</div>
 </section>
 <section class="db-browser" id="browser">
 <div class="db-head"><div><h2 id="resultTitle">Books</h2><div id="resultCount" style="font-size:10px;color:#8a96a9;margin-top:3px"></div></div><div class="db-tools"><input class="db-input" id="search" type="search" placeholder="Search this list..."><select class="db-select" id="sort"><option value="name">Name</option><option value="uploaded_desc">Uploaded newest</option><option value="modified_desc">Modified newest</option><option value="size_desc">Largest file</option></select></div></div>
 <div class="db-list" id="list"></div><div class="db-pages" id="pages"></div>
-</section></div><div class="db-toast" id="toast"></div>
+</section></div><div class="db-maint" id="dbMaintenance"><div class="db-maint-card"><h3>Website Maintenance</h3><p>Removing the old AI index and optimizing the main database. Please keep this page open until it finishes.</p><div class="db-maint-track"></div></div></div><div class="db-toast" id="toast"></div>
 
 <script>
 let V="",P=1,TP=1,Q="",S="name",timer=null;
@@ -17973,7 +18244,7 @@ function toast(m){const e=document.getElementById("toast");e.textContent=m;e.sty
 async function copy(v){if(v)try{await navigator.clipboard.writeText(v);toast("Copied")}catch(e){toast("Copy failed")}}
 function card(v,l,view){return `<button class="db-stat click ${V===view?"active":""}" onclick="openView('${view}')"><div class="db-value">${num(v).toLocaleString()}</div><div class="db-label">${l}</div></button>`}
 function info(v,l){return `<div class="db-stat"><div class="db-value">${esc(v)}</div><div class="db-label">${l}</div></div>`}
-function summary(s){document.getElementById("summary").innerHTML=card(s.logical_books,"Logical Books","logical")+card(s.current_ebook_files,"Drive eBook Files","all")+card(s.pdf_files,"PDF Files","pdf")+card(s.epub_files,"EPUB Files","epub")+card(s.exact_duplicate_files,"Exact Duplicates","exact")+card(s.same_name_groups,"Same-Name Groups","same_name")+card(s.hidden_books,"Hidden Books","hidden")+card(s.inactive_file_records,"Inactive Records","inactive")+info(num(s.folders_scanned).toLocaleString(),"Folders Scanned")+info(num(s.unsupported_files).toLocaleString(),"Unsupported Files")+card(s.ai_indexed_books,"AI Indexed Books","ai_indexed")+card(s.ai_not_indexed_books,"Not AI Indexed","ai_not_indexed")+info(date(s.last_sync_at),"Last Sync")}
+function summary(s){document.getElementById("summary").innerHTML=card(s.logical_books,"Logical Books","logical")+card(s.current_ebook_files,"Drive eBook Files","all")+card(s.pdf_files,"PDF Files","pdf")+card(s.epub_files,"EPUB Files","epub")+card(s.exact_duplicate_files,"Exact Duplicates","exact")+card(s.same_name_groups,"Same-Name Groups","same_name")+card(s.hidden_books,"Hidden Books","hidden")+card(s.inactive_file_records,"Inactive Records","inactive")+info(num(s.folders_scanned).toLocaleString(),"Folders Scanned")+info(num(s.unsupported_files).toLocaleString(),"Unsupported Files")+card(s.ai_indexed_books,"AI Indexed Books","ai_indexed")+card(s.ai_not_indexed_books,"Not AI Indexed","ai_not_indexed")+info(date(s.last_sync_at),"Last Sync");const b=document.getElementById("removeOldAiBtn"),st=document.getElementById("oldAiStatus");if(s.old_ai_index_detected){b.classList.add("show");b.disabled=!s.ai_database_verified;st.textContent=s.ai_database_verified?`Old AI index detected in app_v2.db (${num(s.old_ai_table_count)} table entries). ai_index.db verified.`:`Old AI index detected, but cleanup is locked: ${s.ai_verification_error||"ai_index.db could not be verified."}`;}else{b.classList.remove("show");st.textContent="✓ Old AI index is not present in app_v2.db.";}}
 function badges(i){let x=[`<span class="badge ${String(i.format||"").toLowerCase()}">${esc(String(i.format||"FILE").toUpperCase())}</span>`,i.ai_indexed?`<span class="badge aiyes">AI INDEXED</span>`:`<span class="badge aino">NOT AI INDEXED</span>`];if(i.is_exact_duplicate)x.push(`<span class="badge warn">EXACT DUPLICATE</span>`);if(i.is_same_name)x.push(`<span class="badge warn">SAME NAME ×${num(i.same_name_count)}</span>`);if(i.is_hidden)x.push(`<span class="badge warn">HIDDEN</span>`);if(!i.is_current)x.push(`<span class="badge warn">INACTIVE</span>`);return x.join("")}
 function detail(l,v,c=false){v=(v===null||v===undefined||v==="")?"—":String(v);return `<div class="db-detail"><div class="db-dlabel">${esc(l)}</div><div class="db-dvalue">${esc(v)}${c&&v!=="—"?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div></div>`}
 function render(items){const e=document.getElementById("list");if(!items.length){e.innerHTML=`<div class="db-empty">No records found.</div>`;return}e.innerHTML=items.map((i,n)=>{let ck=i.sha256_checksum||i.sha1_checksum||i.md5_checksum||"—",folder=i.file_folder_path||i.book_folder_path||"—";return `<article class="db-row" id="r${n}"><button class="db-rowbtn" onclick="document.getElementById('r${n}').classList.toggle('open')"><div class="db-main"><div class="db-book">${esc(i.title||i.drive_name||"Untitled")}</div><div class="db-sub">${esc(i.author||"Unknown Author")} • ${esc(i.drive_name||"")}</div><div class="db-badges">${badges(i)}</div></div><div class="chev">›</div></button><div class="db-details"><div class="db-grid">${detail("Drive filename",i.drive_name)}${detail("Drive Uploaded / Created",date(i.drive_created_time))}${detail("Drive Modified",date(i.drive_modified_time))}${detail("Size / MIME",`${size(i.size)} • ${i.mime_type||"—"}`)}${detail("Logical Book ID",`${i.book_id??"—"} • ${num(i.logical_group_file_count)} current file(s)`)}${detail("Google Drive File ID",i.drive_file_id,true)}${detail("Folder",folder)}${detail("Checksum",ck,true)}${detail("Duplicate Of Drive ID",i.duplicate_of_drive_file_id||"—")}${detail("First Seen in Database",date(i.file_first_seen_at))}${detail("Last Seen in Database",date(i.file_last_seen_at))}${detail("Book Key",i.book_key)}${detail("Database File Row ID",i.database_file_id)}${detail("Pij AI Index Status",i.ai_indexed?"Indexed / searchable":"Not indexed / not searchable")}${detail("AI Indexed Pages",i.ai_page_count||0)}${detail("AI Chunks",i.ai_chunk_count||0)}${detail("AI Indexed At",date(i.ai_indexed_at))}${detail("AI Index / Extraction Error",i.ai_extract_error||"None")}</div></div></article>`}).join("");e.querySelectorAll("[data-copy]").forEach(b=>b.onclick=x=>{x.stopPropagation();copy(b.dataset.copy||"")})}
@@ -17982,6 +18253,19 @@ async function load(p=1,onlySummary=false){P=Math.max(1,num(p));try{const q=new 
 function openView(v){V=v;Q="";P=1;document.getElementById("search").value="";document.getElementById("browser").classList.add("open");load(1);setTimeout(()=>document.getElementById("browser").scrollIntoView({behavior:"smooth"}),70)}
 document.getElementById("sort").onchange=e=>{S=e.target.value;load(1)};document.getElementById("search").oninput=e=>{clearTimeout(timer);timer=setTimeout(()=>{Q=e.target.value.trim();load(1)},300)};
 async function syncBooks(){const b=document.getElementById("syncBtn"),old=b.textContent;b.disabled=true;b.textContent="⏳ Syncing…";try{const r=await fetch("/pastor-resources/sync-books",{method:"POST"}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||"Synchronization failed.");toast("Sync complete.");await load(1,!V)}catch(e){toast("Sync failed: "+e.message)}finally{b.disabled=false;b.textContent=old}}
+async function removeOldAiIndex(){
+    if(!confirm("WARNING: This permanently removes the OLD Pij AI index from app_v2.db, then runs VACUUM. The website will temporarily enter maintenance mode. ai_index.db will not be modified. Continue?"))return;
+    const b=document.getElementById("removeOldAiBtn"),overlay=document.getElementById("dbMaintenance");
+    b.disabled=true;overlay.classList.add("show");
+    try{
+        const r=await fetch("/pastor-resources/admin/api/remove-old-ai-index",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+        const d=await r.json();
+        if(!r.ok||!d.ok)throw Error(d.error||"Old AI index cleanup failed.");
+        toast(d.message||"Old AI index removed successfully.");
+        await load(1,!V);
+    }catch(e){toast("Cleanup failed: "+e.message);}
+    finally{overlay.classList.remove("show");b.disabled=false;}
+}
 load(1,true);
 </script>
 {% endblock %}
@@ -17995,6 +18279,21 @@ load(1,true);
 
 def register_pastor_resources_routes(app):
     ensure_v3_tables()
+
+    @app.before_request
+    def pastor_resources_database_maintenance_guard():
+        if not _database_maintenance_active():
+            return None
+
+        # The cleanup request that created the flag has already passed this
+        # hook. Any other request receives the maintenance page until VACUUM
+        # finishes and the flag is removed.
+        return Response(
+            DATABASE_MAINTENANCE_HTML,
+            status=503,
+            mimetype="text/html",
+            headers={"Retry-After": "30"},
+        )
 
     # -----------------------------------------------------
     # MAIN LIBRARY
@@ -19176,6 +19475,29 @@ def register_pastor_resources_routes(app):
                 **result,
             )
 
+        except Exception as error:
+            return jsonify(
+                ok=False,
+                error=str(error),
+            ), 500
+
+    @app.route(
+        "/pastor-resources/admin/api/remove-old-ai-index",
+        methods=["POST"],
+    )
+    def pastor_resources_remove_old_ai_index():
+        if not is_resource_admin():
+            return jsonify(
+                ok=False,
+                error="Administrator access required.",
+            ), 403
+
+        try:
+            result = remove_old_ai_index_from_main_database()
+            return jsonify(
+                ok=True,
+                **result,
+            )
         except Exception as error:
             return jsonify(
                 ok=False,
