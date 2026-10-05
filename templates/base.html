@@ -6,6 +6,11 @@
   <title>{% block title %}District 4 Tool{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='visual_upgrade.css', v='20261005') }}">
+  {% if request.endpoint != 'developer.developer_page' %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='glass_theme.css', v='20261005-2') }}">
+  {% endif %}
+  {% from 'ui_icons.html' import icon %}
 
   <style>
     .global-loading-overlay {
@@ -288,7 +293,7 @@
 
   </style>
 </head>
-<body>
+<body class="district-ui{% if request.endpoint != 'developer.developer_page' %} district-glass{% endif %}">
   {% set role_raw = session.get('role') or session.get('ao_role') or '' %}
   {% set role = role_raw|lower|trim %}
   {% set is_logged_in = session.get("pastor_username") or session.get("ao_logged_in") or session.get("member_logged_in") or session.get("username") %}
@@ -303,8 +308,8 @@
   <header class="app-header">
     <div class="header-left">
       {% if is_logged_in %}
-        <button class="menu-toggle" id="menuToggle" aria-label="Open menu">
-          &#9776;
+        <button type="button" class="menu-toggle" id="menuToggle" aria-label="Open menu" aria-controls="sideDrawer" aria-expanded="false">
+          <span class="burger-lines" aria-hidden="true"><span></span><span></span><span></span></span>
         </button>
       {% endif %}
 
@@ -320,44 +325,51 @@
   </header>
 
   {% if is_logged_in %}
-  <nav class="side-drawer" id="sideDrawer">
+  <nav class="side-drawer" id="sideDrawer" aria-label="Main menu" aria-hidden="true" inert>
     <div class="drawer-header">
       <span>Menu</span>
-      <button class="drawer-close" id="drawerClose" aria-label="Close menu">&times;</button>
+      <button type="button" class="drawer-close" id="drawerClose" aria-label="Close menu">{{ icon('close') }}</button>
+    </div>
+
+    {% set drawer_name = (session.get('ao_name') if is_ao or is_do else (session.get('pastor_name') if is_pastor else session.get('name'))) or session.get('name') or session.get('ao_username') or session.get('pastor_username') or session.get('username') or 'Welcome' %}
+    {% set drawer_role = (session.get('ao_role') or session.get('role') or 'Area Overseer') if is_ao or is_do else ('Pastor' if is_pastor else (session.get('role') or 'Member')) %}
+    <div class="drawer-greeting">
+      <span class="drawer-avatar" aria-hidden="true">{{ drawer_name[:1]|upper }}</span>
+      <div><span class="drawer-hello">Hello,</span><strong>{{ drawer_name }}</strong><span class="drawer-role">{{ drawer_role }} · District 4</span></div>
     </div>
 
     <ul class="menu-list">
-      <li><a href="{{ url_for('bulletin') }}">Bulletin Board</a></li>
+      <li><a href="{{ url_for('bulletin') }}">{{ icon('home') }}<span>Bulletin Board</span></a></li>
 
       {% if is_pastor or is_ao %}
-        <li><a href="{{ url_for('pastor_tool') }}">Pastor's Tool</a></li>
+        <li><a href="{{ url_for('pastor_tool') }}">{{ icon('user') }}<span>Pastor's Tool</span></a></li>
       {% endif %}
 
       {% if is_pastor %}
         {% if session.get("pastor_logged_in") and session.get("pastor_church_id") %}
 <li>
   <a href="{{ url_for('church_progress.church_progress', church_id=session.get('pastor_church_id')) }}">
-    Church Progress
+    {{ icon('chart') }}<span>Church Progress</span>
   </a>
 </li>
 {% endif %}
       {% endif %}
 
       {% if is_do %}
-        <li><a href="{{ url_for('do_tool') }}">DO Tool (Pending)</a></li>
+        <li><a href="{{ url_for('do_tool') }}">{{ icon('shield') }}<span>DO Tool</span><span class="menu-pending">Pending</span></a></li>
       {% elif is_ao %}
-        <li><a href="{{ url_for('ao_tool') }}">AO Tool</a></li>
+        <li><a href="{{ url_for('ao_tool') }}">{{ icon('users') }}<span>AO Tool</span></a></li>
       {% endif %}
 
-      <li><a href="{{ url_for('prayer_request') }}">Prayer Request</a></li>
-      <li><a href="{{ url_for('schedules') }}">Schedules</a></li>
-      <li><a href="{{ url_for('church_finder') }}">Church Finder</a></li>
-      <li><a href="{{ url_for('pastor_resources') }}">Pastor's Resources</a></li>
+      <li><a href="{{ url_for('prayer_request') }}">{{ icon('heart') }}<span>Prayer Request</span></a></li>
+      <li><a href="{{ url_for('schedules') }}">{{ icon('calendar') }}<span>Schedules</span></a></li>
+      <li><a href="{{ url_for('church_finder') }}">{{ icon('map') }}<span>Church Finder</span></a></li>
+      <li><a href="{{ url_for('pastor_resources') }}">{{ icon('book') }}<span>Pastor's Resources</span></a></li>
 
-      <li><a href="{{ url_for('event_registration') }}">Event Registration (Pending)</a></li>
-      <li><a href="{{ url_for('developer.developer_page') }}">About Developer</a></li>
-      <li><a href="{{ url_for('thanksgiving_pledges') }}">2027 Thanksgiving Pledges</a></li>
-      <li><a href="{{ url_for('logout') }}">Log Out</a></li>
+      <li><a href="{{ url_for('event_registration') }}">{{ icon('event') }}<span>Event Registration</span><span class="menu-pending">Pending</span></a></li>
+      <li><a href="{{ url_for('developer.developer_page') }}">{{ icon('info') }}<span>About Developer</span></a></li>
+      <li><a href="{{ url_for('thanksgiving_pledges') }}">{{ icon('church') }}<span>2027 Thanksgiving Pledges</span></a></li>
+      <li class="menu-logout"><a href="{{ url_for('logout') }}">{{ icon('logout') }}<span>Log Out</span></a></li>
     </ul>
   </nav>
   <div class="backdrop" id="backdrop"></div>
@@ -450,20 +462,70 @@
       const sideDrawer = document.getElementById('sideDrawer');
       const drawerClose = document.getElementById('drawerClose');
       const backdrop = document.getElementById('backdrop');
+      let previousOverflow = '';
+
+      // Only presentation state changes here; links and role visibility stay in Jinja.
+      if (sideDrawer) {
+        const links = Array.from(sideDrawer.querySelectorAll('.menu-list a'));
+        let activeLink = null;
+        links.forEach(function (link, index) {
+          link.parentElement.style.setProperty('--menu-delay', Math.min(index * 12, 96) + 'ms');
+          const path = new URL(link.href, window.location.origin).pathname;
+          if (path !== '/' && (window.location.pathname === path || window.location.pathname.startsWith(path + '/'))) {
+            if (!activeLink || path.length > new URL(activeLink.href).pathname.length) activeLink = link;
+          }
+        });
+        if (activeLink) activeLink.setAttribute('aria-current', 'page');
+      }
 
       function openDrawer() {
+        if (!sideDrawer || sideDrawer.classList.contains('open')) return;
+        previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        sideDrawer.removeAttribute('inert');
+        sideDrawer.setAttribute('aria-hidden', 'false');
         if (sideDrawer) sideDrawer.classList.add('open');
         if (backdrop) backdrop.classList.add('visible');
+        if (menuToggle) {
+          menuToggle.classList.add('is-open');
+          menuToggle.setAttribute('aria-expanded', 'true');
+          menuToggle.setAttribute('aria-label', 'Close menu');
+        }
+        window.requestAnimationFrame(function () {
+          if (drawerClose && sideDrawer.classList.contains('open')) drawerClose.focus();
+        });
       }
 
       function closeDrawer() {
+        if (!sideDrawer || !sideDrawer.classList.contains('open')) return;
         if (sideDrawer) sideDrawer.classList.remove('open');
         if (backdrop) backdrop.classList.remove('visible');
+        sideDrawer.setAttribute('inert', '');
+        sideDrawer.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = previousOverflow;
+        if (menuToggle) {
+          menuToggle.classList.remove('is-open');
+          menuToggle.setAttribute('aria-expanded', 'false');
+          menuToggle.setAttribute('aria-label', 'Open menu');
+          menuToggle.focus();
+        }
       }
 
-      if (menuToggle) menuToggle.addEventListener('click', openDrawer);
+      if (menuToggle) menuToggle.addEventListener('click', function () {
+        if (sideDrawer && sideDrawer.classList.contains('open')) closeDrawer(); else openDrawer();
+      });
       if (drawerClose) drawerClose.addEventListener('click', closeDrawer);
       if (backdrop) backdrop.addEventListener('click', closeDrawer);
+      document.addEventListener('keydown', function (event) {
+        if (!sideDrawer || !sideDrawer.classList.contains('open')) return;
+        if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); }
+        if (event.key === 'Tab') {
+          const items = Array.from(sideDrawer.querySelectorAll('button, a[href]'));
+          const first = items[0], last = items[items.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      });
     })();
   </script>
 
