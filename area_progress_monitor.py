@@ -4,6 +4,7 @@ import calendar
 import os
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -529,14 +530,8 @@ def _update_sync_time() -> None:
 
 
 def get_last_sync_display_ph() -> str:
-    dt_utc = _last_sync_time_utc()
-    if not dt_utc:
-        return "Never"
-    try:
-        dt_ph = dt_utc.astimezone(PH_TZ)
-        return dt_ph.strftime("%b %d, %Y %I:%M %p")
-    except Exception:
-        return "Unknown"
+    import app as appmod
+    return appmod.get_last_sync_display_ph()
 
 
 def get_gs_client():
@@ -548,229 +543,8 @@ def get_gs_client():
 
 
 def sync_from_sheets_if_needed(force: bool = False):
-    last = _last_sync_time_utc()
-    if not force and last and (datetime.now(timezone.utc) - last).total_seconds() < SYNC_INTERVAL_SECONDS:
-        return
-
-    client = get_gs_client()
-    sh = client.open("District4 Data")
-    conn = _connect()
-    cur = conn.cursor()
-
-    # Accounts
-    try:
-        ws_accounts = sh.worksheet("Accounts")
-        values = ws_accounts.get_all_values()
-    except Exception:
-        values = []
-    cur.execute("DELETE FROM sheet_accounts_cache")
-    if values and len(values) >= 2:
-        headers = values[0]
-        i_name = _find_col(headers, "Name")
-        i_user = _find_col(headers, "UserName")
-        i_pass = _find_col(headers, "Password")
-        i_addr = _find_col(headers, "Church Address")
-        i_age = _find_col(headers, "Area Number")
-        if i_age is None:
-            i_age = _find_col(headers, "Age")
-        i_sex = _find_col(headers, "Church ID")
-        if i_sex is None:
-            i_sex = _find_col(headers, "Sex")
-        i_contact = _find_col(headers, "Contact #")
-        i_bday = _find_col(headers, "Birth Day")
-        i_pos = _find_col(headers, "Position")
-        i_sub = _find_col(headers, "Sub Area")
-        if i_sub is None:
-            i_sub = _find_col(headers, "SubArea")
-
-        for r in range(1, len(values)):
-            row = values[r]
-            def cell(idx):
-                return row[idx] if idx is not None and idx < len(row) else ""
-            username = str(cell(i_user)).strip()
-            full_name = str(cell(i_name)).strip()
-            church_address = str(cell(i_addr)).strip()
-            area_number = str(cell(i_age)).strip()
-            church_id = str(cell(i_sex)).strip()
-            if not area_number and not church_id and not full_name and not church_address:
-                continue
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO sheet_accounts_cache
-                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, sheet_row)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    username,
-                    full_name,
-                    church_address,
-                    str(cell(i_pass)).strip(),
-                    area_number,
-                    church_id,
-                    str(cell(i_contact)).strip(),
-                    str(cell(i_bday)).strip(),
-                    str(cell(i_pos)).strip(),
-                    str(cell(i_sub)).strip(),
-                    r + 1,
-                ),
-            )
-
-    # Report
-    try:
-        ws_report = sh.worksheet("Report")
-        values = ws_report.get_all_values()
-    except Exception:
-        values = []
-    cur.execute("DELETE FROM sheet_report_cache")
-    if values and len(values) >= 2:
-        headers = values[0]
-        i_activity = _find_col(headers, "activity_date")
-        i_status = _find_col(headers, "status")
-        i_church = _find_col(headers, "church")
-        i_pastor = _find_col(headers, "pastor")
-        i_address = _find_col(headers, "address")
-        i_adult = _find_col(headers, "adult")
-        i_youth = _find_col(headers, "youth")
-        i_children = _find_col(headers, "children")
-        i_tithes = _find_col(headers, "tithes")
-        i_offering = _find_col(headers, "offering")
-        i_personal = _find_col(headers, "personal tithes")
-        i_mission = _find_col(headers, "mission offering")
-        i_recv = _find_col(headers, "received jesus")
-        i_exist = _find_col(headers, "existing bible study")
-        i_new = _find_col(headers, "new bible study")
-        i_water = _find_col(headers, "water baptized")
-        i_holy = _find_col(headers, "holy spirit baptized")
-        i_ded = _find_col(headers, "childrens dedication")
-        i_healed = _find_col(headers, "healed")
-        i_send = _find_col(headers, "amount to send")
-        for r in range(1, len(values)):
-            row = values[r]
-            def cell(idx):
-                return row[idx] if idx is not None and idx < len(row) else ""
-            d = parse_sheet_date(cell(i_activity))
-            if not d:
-                continue
-            cur.execute(
-                """
-                INSERT INTO sheet_report_cache (
-                    sheet_row, year, month, activity_date,
-                    church, pastor, address,
-                    adult, youth, children,
-                    tithes, offering, personal_tithes, mission_offering,
-                    received_jesus, existing_bible_study, new_bible_study,
-                    water_baptized, holy_spirit_baptized, childrens_dedication, healed,
-                    amount_to_send, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    r + 1, d.year, d.month, d.isoformat(),
-                    str(cell(i_church)).strip(),
-                    str(cell(i_pastor)).strip(),
-                    str(cell(i_address)).strip(),
-                    _safe_float(cell(i_adult)),
-                    _safe_float(cell(i_youth)),
-                    _safe_float(cell(i_children)),
-                    _safe_float(cell(i_tithes)),
-                    _safe_float(cell(i_offering)),
-                    _safe_float(cell(i_personal)),
-                    _safe_float(cell(i_mission)),
-                    _safe_float(cell(i_recv)),
-                    _safe_float(cell(i_exist)),
-                    _safe_float(cell(i_new)),
-                    _safe_float(cell(i_water)),
-                    _safe_float(cell(i_holy)),
-                    _safe_float(cell(i_ded)),
-                    _safe_float(cell(i_healed)),
-                    _safe_float(cell(i_send)),
-                    str(cell(i_status)).strip(),
-                ),
-            )
-
-    # AOPT
-    try:
-        ws_aopt = sh.worksheet("AOPT")
-        values = ws_aopt.get_all_values()
-    except Exception:
-        values = []
-    cur.execute("DELETE FROM sheet_aopt_cache")
-    if values and len(values) >= 2:
-        headers = values[0]
-        i_month = _find_col(headers, "Month")
-        i_amount = _find_col(headers, "Amount")
-        i_area = _find_col(headers, "Area Number")
-        if i_area is None:
-            i_area = _find_col(headers, "Area")
-        i_sub = _find_col(headers, "Sub Area")
-        if i_sub is None:
-            i_sub = _find_col(headers, "SubArea")
-        for r in range(1, len(values)):
-            row = values[r]
-            def cell(idx):
-                return row[idx] if idx is not None and idx < len(row) else ""
-            month_label = str(cell(i_month)).strip()
-            if not month_label:
-                continue
-            cur.execute(
-                "INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, sub_area, amount, sheet_row) VALUES (?, ?, ?, ?, ?)",
-                (month_label, str(cell(i_area)).strip(), str(cell(i_sub)).strip(), _safe_float(cell(i_amount)), r + 1),
-            )
-
-    # PrayerRequest
-    try:
-        ws_pr = sh.worksheet("PrayerRequest")
-        values = ws_pr.get_all_values()
-    except Exception:
-        values = []
-    try:
-        cur.execute("DELETE FROM sheet_prayer_request_cache")
-        if values and len(values) >= 2:
-            headers = values[0]
-            i_church = _find_col(headers, "Church Name")
-            i_submitted_by = _find_col(headers, "Submitted By")
-            i_request_id = _find_col(headers, "Request ID")
-            i_title = _find_col(headers, "Prayer Request Title")
-            i_request_date = _find_col(headers, "Prayer Request Date")
-            i_request_text = _find_col(headers, "Prayer Request")
-            i_status = _find_col(headers, "Status")
-            if i_status is None:
-                i_status = _find_col(headers, "status")
-            i_praying = _find_col(headers, "Pastor's Praying")
-            i_answered = _find_col(headers, "Answered Date")
-
-            for r in range(1, len(values)):
-                row = values[r]
-                def cell(idx):
-                    return row[idx] if idx is not None and idx < len(row) else ""
-                req_id = str(cell(i_request_id)).strip()
-                if not req_id:
-                    req_id = f"row-{r+1}"
-                cur.execute(
-                    """
-                    INSERT OR REPLACE INTO sheet_prayer_request_cache (
-                        request_id, church_name, submitted_by, title, request_date,
-                        request_text, status, pastors_praying, answered_date, sheet_row
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        req_id,
-                        str(cell(i_church)).strip(),
-                        str(cell(i_submitted_by)).strip(),
-                        str(cell(i_title)).strip(),
-                        str(cell(i_request_date)).strip(),
-                        str(cell(i_request_text)).strip(),
-                        str(cell(i_status)).strip(),
-                        str(cell(i_praying)).strip(),
-                        str(cell(i_answered)).strip(),
-                        r + 1,
-                    ),
-                )
-    except Exception:
-        pass
-
-    conn.commit()
-    conn.close()
-    _update_sync_time()
+    import app as appmod
+    return appmod.sync_from_sheets_if_needed(force=force)
 
 
 def get_aopt_amount_from_cache(month_label: str, area_number: str = "", sub_area: str = ""):
@@ -1272,50 +1046,27 @@ def _mark_notifications_seen(scope: Scope, notification_ids: list[str]) -> int:
     return len(clean_ids)
 
 
-def _members_for_scope_from_sheet(scope: Scope, churches: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    try:
-        client = get_gs_client()
-        sh = client.open("District4 Data")
-        ws = sh.worksheet("Members Account")
-        values = ws.get_all_values()
-    except Exception:
-        return []
-
-    if len(values) < 2:
-        return []
-
-    headers = values[0]
-    i_name = _find_col(headers, "Name")
-    i_bday = _find_col(headers, "BDay")
-    if i_bday is None:
-        i_bday = _find_col(headers, "Birthday")
-    i_church = _find_col(headers, "Church ID")
-    i_address = _find_col(headers, "Church Address")
-    i_area = _find_col(headers, "Area Number")
-    i_pastor = _find_col(headers, "Pastor")
-    i_user = _find_col(headers, "UserName")
-    i_pass = _find_col(headers, "Password")
-
+def _members_for_scope_from_cache(scope: Scope, churches: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    with closing(_connect()) as conn:
+        rows = conn.execute("SELECT * FROM sheet_members_account_cache ORDER BY sheet_row").fetchall()
     members = []
-    for r, row in enumerate(values[1:], start=2):
-        def cell(idx):
-            return row[idx] if idx is not None and idx < len(row) else ""
-        church_name = str(cell(i_church)).strip()
-        church_address = str(cell(i_address)).strip()
+    for member in rows:
+        church_name = member["church_id"] or ""
+        church_address = member["church_address"] or ""
         church_key = _resolve_church_key(churches, church_name, church_address)
         if not church_key:
             continue
-        if str(cell(i_area)).strip() and str(cell(i_area)).strip() != str(scope.area).strip():
+        if str(member["area_number"] or "").strip() and str(member["area_number"] or "").strip() != str(scope.area).strip():
             continue
         members.append({
-            "name": str(cell(i_name)).strip(),
-            "birthday": str(cell(i_bday)).strip(),
+            "name": str(member["name"] or "").strip(),
+            "birthday": str(member["bday"] or "").strip(),
             "church_key": church_key,
             "church_name": churches[church_key]["church_name"],
-            "pastor": str(cell(i_pastor)).strip(),
-            "username": str(cell(i_user)).strip(),
-            "password": str(cell(i_pass)).strip(),
-            "sheet_row": r,
+            "pastor": str(member["pastor"] or "").strip(),
+            "username": str(member["username"] or "").strip(),
+            "password": str(member["password"] or "").strip(),
+            "sheet_row": member["sheet_row"],
         })
     return members
 
@@ -1682,7 +1433,7 @@ def _notification_payload(scope: Scope, churches: dict[str, dict[str, Any]]) -> 
             items.append(_notification_item("birthday", "Pastor birthday", f"Pastor {church['pastor_name']} of {church['church_name']} has a birthday {label}.", church["church_name"], 2))
 
     # Member birthdays plus created/edited/deleted account notifications from Members Account sheet.
-    members = _members_for_scope_from_sheet(scope, churches)
+    members = _members_for_scope_from_cache(scope, churches)
     _detect_member_account_changes(scope, members)
     items.extend(_member_account_event_notifications(scope))
     for member in members:
@@ -1920,13 +1671,12 @@ PAGE_HTML = r'''
     .remarks-grid{display:grid;grid-template-columns:1fr;gap:12px}textarea{min-height:88px;width:100%;padding:10px 12px;resize:vertical}.loader{padding:32px 0;text-align:center;color:var(--muted)}.hidden{display:none!important}
     .modal{position:fixed;inset:0;background:rgba(15,23,42,.58);display:none;align-items:stretch;justify-content:stretch;z-index:50}.modal.open{display:flex}.modal-panel{background:var(--bg);width:100%;height:100%;overflow:auto;padding:14px}
     .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.90);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}.loading-box{width:min(420px,88vw);background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:22px;text-align:center}.loading-title{font-weight:800;margin-bottom:8px;font-size:18px}.progress-track{width:100%;height:10px;background:#e5edf8;border-radius:999px;overflow:hidden;margin-top:12px}.progress-bar{width:0%;height:100%;background:linear-gradient(90deg,var(--brand),var(--brand2));border-radius:999px;transition:width .25s ease}
-    .apm-floating-notif-row{display:flex;justify-content:flex-end;align-items:center;margin:-2px 4px 12px 0;min-height:64px}.notif-wrap{position:relative;z-index:120}.notif-btn{width:58px;height:58px;border-radius:19px;border:1px solid rgba(255,255,255,.28);background:#111827;color:#fff;font-size:25px;display:inline-flex;align-items:center;justify-content:center;position:relative;box-shadow:0 14px 32px rgba(15,23,42,.38)}.notif-badge{position:absolute;top:-7px;right:-7px;min-width:24px;height:24px;border-radius:999px;background:#ef4444;color:#fff;border:2px solid #fff;font-size:11px;font-weight:900;display:none;align-items:center;justify-content:center;padding:0 5px}.notif-panel{position:absolute;right:0;top:66px;width:min(370px,calc(100vw - 32px));background:#fff;color:#10324a;border:1px solid #b8e6ff;border-radius:18px;box-shadow:0 18px 44px rgba(15,23,42,.28);display:none;overflow:hidden;z-index:999}.notif-panel.open{display:block}.notif-head{padding:12px 14px;background:linear-gradient(135deg,#e0f7ff,#ffffff);font-weight:900;color:#075985;border-bottom:1px solid #b8e6ff}.notif-list{max-height:430px;overflow:auto;background:#fff}.notif-item{padding:12px 14px;border-bottom:1px solid #f1f5f9;background:#fff}.notif-title{font-weight:900;color:#10324a;font-size:13px}.notif-msg{font-size:13px;color:#475569;line-height:1.4;margin-top:3px}.notif-kind{display:inline-flex;margin-top:7px;font-size:11px;border-radius:999px;padding:4px 8px;background:#e0f7ff;color:#075985;border:1px solid #b8e6ff}.notif-empty{padding:16px;color:#64748b;font-size:13px;background:#fff}
-    .apm-hero-card{background:linear-gradient(180deg,#a7f3ff 0%,#38bdf8 55%,#0ea5e9 100%);color:#fff;border-radius:24px;padding:22px;margin-bottom:14px;box-shadow:0 18px 38px rgba(14,165,233,.20);position:relative;overflow:hidden;min-height:150px}.apm-hero-card:before{content:"";position:absolute;inset:-80px -80px auto auto;width:220px;height:220px;background:rgba(255,255,255,.18);border-radius:999px;pointer-events:none}.apm-hero-content{position:relative;display:block}.apm-hero-card h1{margin:0;font-size:30px;line-height:1.06;font-family:"Trebuchet MS","Segoe UI",Arial,sans-serif;letter-spacing:-.04em;text-shadow:0 3px 14px rgba(0,0,0,.14)}.apm-hero-card .subtitle{color:rgba(255,255,255,.98);font-weight:700;text-shadow:0 2px 10px rgba(0,0,0,.14)}
-    @media (max-width:700px){.wrap{padding-top:14px}.apm-floating-notif-row{margin:-4px 2px 12px 0;min-height:64px}.notif-btn{width:56px;height:56px;border-radius:18px}.notif-panel{right:0;top:66px;width:calc(100vw - 34px);max-width:365px}.notif-list{max-height:54vh}.apm-hero-card{padding:22px;min-height:145px}.apm-hero-card h1{font-size:29px;max-width:100%;word-break:normal}}
+    .apm-hero-card{background:linear-gradient(180deg,#a7f3ff 0%,#38bdf8 55%,#0ea5e9 100%);color:#fff;border-radius:24px;padding:22px;margin-bottom:14px;box-shadow:0 18px 38px rgba(14,165,233,.20);position:relative;overflow:visible}.apm-hero-card:before{content:"";position:absolute;inset:-80px -80px auto auto;width:220px;height:220px;background:rgba(255,255,255,.18);border-radius:999px}.apm-hero-content{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.apm-hero-card h1{margin:0;font-size:30px;line-height:1.06;font-family:"Trebuchet MS","Segoe UI",Arial,sans-serif;letter-spacing:-.04em;text-shadow:0 3px 14px rgba(0,0,0,.14)}.apm-hero-card .subtitle{color:rgba(255,255,255,.95)}
+    .top-actions{display:flex;align-items:center;gap:8px}.notif-wrap{position:relative}.notif-btn{width:46px;height:46px;border-radius:16px;border:1px solid rgba(255,255,255,.28);background:#111827;color:#fff;font-size:21px;display:inline-flex;align-items:center;justify-content:center;position:relative;box-shadow:0 10px 24px rgba(15,23,42,.32)}.notif-badge{position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;border-radius:999px;background:#ef4444;color:#fff;border:2px solid #fff;font-size:11px;font-weight:900;display:none;align-items:center;justify-content:center;padding:0 5px}.notif-panel{position:absolute;right:0;top:50px;width:min(370px,92vw);background:#fff;border:1px solid #b8e6ff;border-radius:18px;box-shadow:0 18px 44px rgba(15,23,42,.22);display:none;overflow:hidden;z-index:80}.notif-panel.open{display:block}.notif-head{padding:12px 14px;background:linear-gradient(135deg,#e0f7ff,#ffffff);font-weight:900;color:#075985;border-bottom:1px solid #b8e6ff}.notif-list{max-height:430px;overflow:auto}.notif-item{padding:12px 14px;border-bottom:1px solid #f1f5f9}.notif-title{font-weight:900;color:#10324a;font-size:13px}.notif-msg{font-size:13px;color:#475569;line-height:1.4;margin-top:3px}.notif-kind{display:inline-flex;margin-top:7px;font-size:11px;border-radius:999px;padding:4px 8px;background:#e0f7ff;color:#075985;border:1px solid #b8e6ff}.notif-empty{padding:16px;color:#64748b;font-size:13px}
     @media (min-width:900px){.toolbar{grid-template-columns:1fr auto}.grid-2{grid-template-columns:1fr 1fr}.grid-4{grid-template-columns:repeat(4,1fr)}.insights{grid-template-columns:1fr 1fr}.remarks-grid{grid-template-columns:1fr 1fr}}
   </style>
 <div class="loading-overlay" id="loadingOverlay"><div class="loading-box"><div class="loading-title">Loading Area Progress Monitor</div><div class="subtitle">Please wait while the latest data is being prepared...</div><div class="progress-track"><div class="progress-bar" id="progressBar"></div></div></div></div>
-<div class="wrap"><div class="back-row"><a href="{{ ao_tool_url }}" class="pill" style="text-decoration:none;">← Back to AO Tool</a><div class="muted-chip" id="lastSyncChip">Last sync: loading...</div></div><div class="apm-floating-notif-row"><div class="notif-wrap"><button type="button" class="notif-btn" id="notifBtn" aria-label="Notifications">🔔<span class="notif-badge" id="notifBadge">0</span></button><div class="notif-panel" id="notifPanel"><div class="notif-head">Notifications</div><div class="notif-list" id="notifList"><div class="notif-empty">Loading notifications...</div></div></div></div></div><div class="apm-hero-card"><div class="apm-hero-content"><div><h1>Area Progress Monitor</h1><div class="subtitle" id="scopeLabel">Loading scope...</div></div></div></div><div class="card section"><div class="toolbar"><select id="churchFilter"></select><div class="filters" id="timePills"></div></div><div class="legend" id="globalLegend"></div></div><div id="loader" class="loader card section">Loading Area Progress Monitor...</div><div id="content" class="hidden"></div></div>
+<div class="wrap"><div class="back-row"><a href="{{ ao_tool_url }}" class="pill" style="text-decoration:none;">← Back to AO Tool</a><div class="muted-chip" id="lastSyncChip">Last sync: loading...</div></div><div class="apm-hero-card"><div class="apm-hero-content"><div><h1>Area Progress Monitor</h1><div class="subtitle" id="scopeLabel">Loading scope...</div></div><div class="notif-wrap"><button type="button" class="notif-btn" id="notifBtn" aria-label="Notifications">🔔<span class="notif-badge" id="notifBadge">0</span></button><div class="notif-panel" id="notifPanel"><div class="notif-head">Notifications</div><div class="notif-list" id="notifList"><div class="notif-empty">Loading notifications...</div></div></div></div></div></div><div class="card section"><div class="toolbar"><select id="churchFilter"></select><div class="filters" id="timePills"></div></div><div class="legend" id="globalLegend"></div></div><div id="loader" class="loader card section">Loading Area Progress Monitor...</div><div id="content" class="hidden"></div></div>
 <div class="modal" id="chartModal"><div class="modal-panel"><div class="section card"><div class="section-head"><div><div class="section-title" id="modalTitle">All Churches</div><div class="subtitle" id="modalSubtitle"></div></div><button class="pill ghost" id="closeChartModal">Close</button></div><div class="inline-actions" id="modalFilterBar" style="margin-bottom:12px;"></div><div class="chart-box"><canvas id="modalChart"></canvas></div><div class="legend" id="modalLegend"></div></div></div></div>
 <div class="modal" id="churchModal"><div class="modal-panel" id="churchModalBody"></div></div>
 <script>
@@ -1993,7 +1743,7 @@ def area_progress_monitor_page():
 @bp.route("/api/ao-tool/area-progress-monitor/boot", methods=["POST"])
 def area_progress_monitor_boot():
     _require_ao()
-    sync_from_sheets_if_needed(force=True)
+    sync_from_sheets_if_needed()
     return jsonify({"ok": True, "last_sync_display": get_last_sync_display_ph()})
 
 
