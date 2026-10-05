@@ -34,6 +34,8 @@ INDEX_STATE = {
     "total": 0,
     "processed": 0,
     "indexed": 0,
+    "newly_indexed": 0,
+    "reindexed": 0,
     "skipped": 0,
     "errors": 0,
     "current_file": "",
@@ -164,6 +166,16 @@ def _ensure_ai_library_tables_once():
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_pij_library_doc_source ON pij_library_documents(source_type, source_file_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_pij_library_doc_drive ON pij_library_documents(source_type, drive_file_id)")
+        # Legacy duplicates, if present, must keep their text. Enforce stable
+        # identity when possible without deleting them to make an index fit.
+        duplicates = db.execute("""SELECT 1 FROM pij_library_documents
+            WHERE COALESCE(drive_file_id,'')<>'' GROUP BY source_type,drive_file_id
+            HAVING COUNT(*)>1 LIMIT 1""").fetchone()
+        if not duplicates:
+            db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pij_library_doc_drive_unique
+                ON pij_library_documents(source_type,drive_file_id)
+                WHERE drive_file_id IS NOT NULL AND drive_file_id<>''""")
         db.execute("CREATE INDEX IF NOT EXISTS idx_pij_library_chunk_doc ON pij_library_chunks(document_id, chunk_number)")
         try:
             db.execute(
@@ -175,12 +187,80 @@ def _ensure_ai_library_tables_once():
         except sqlite3.OperationalError:
             pass
         db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        _reconcile_document_references(db)
+        db.commit()
     finally:
         db.close()
 
 
 def ensure_ai_library_tables():
     return _retry_locked(_ensure_ai_library_tables_once, label="Preparing AI library tables")
+
+
+def _find_public_document(db, drive_file_id):
+    return db.execute("""SELECT * FROM pij_library_documents
+        WHERE source_type='public_ebook' AND drive_file_id=?
+        ORDER BY searchable DESC, chunk_count DESC, id LIMIT 1""",
+        (_clean(drive_file_id),)).fetchone()
+
+
+def _reconcile_document_references(db):
+    """Rebind local references atomically; never modify chunks or fingerprints.
+
+    Negative file references reserve unmatched/legacy records under the old
+    UNIQUE(source_type,source_file_id) constraint. Two phases also handle swaps.
+    """
+    if not db.execute("SELECT 1 FROM appdb.sqlite_master WHERE name='pastor_library_files'").fetchone():
+        return 0
+    catalog_ids = {r[0] for r in db.execute("SELECT id FROM appdb.pastor_library_files")}
+    rows = db.execute("""SELECT d.id,d.source_file_id,d.book_id,d.drive_file_id,
+            f.id AS local_file_id,f.book_id AS local_book_id
+        FROM pij_library_documents d LEFT JOIN appdb.pastor_library_files f
+          ON f.drive_file_id=d.drive_file_id AND COALESCE(d.drive_file_id,'')<>''
+        WHERE d.source_type='public_ebook'
+        ORDER BY d.searchable DESC,d.chunk_count DESC,d.id""").fetchall()
+    owners = set()
+    plans = []
+    for row in rows:
+        local_id = row['local_file_id']
+        if local_id is not None and local_id not in owners:
+            owners.add(local_id)
+            plans.append((row, local_id, row['local_book_id']))
+        else:
+            plans.append((row, None, None))
+    next_reserved = min([0] + [int(r['source_file_id']) for r in rows]) - 1
+    updates = []
+    for row, local_id, book_id in plans:
+        target = local_id
+        if target is None:
+            target = int(row['source_file_id'])
+            if target in catalog_ids:
+                target = next_reserved
+                next_reserved -= 1
+        if target != row['source_file_id'] or book_id != row['book_id']:
+            updates.append((target, book_id, row['id']))
+    # Release all conflicting IDs first, within the caller's transaction.
+    for _, _, document_id in updates:
+        db.execute("UPDATE pij_library_documents SET source_file_id=? WHERE id=?",
+                   (next_reserved, document_id))
+        next_reserved -= 1
+    db.executemany("UPDATE pij_library_documents SET source_file_id=?,book_id=? WHERE id=?", updates)
+    return len(updates)
+
+
+def reconcile_public_library_references():
+    """Safe repeated reconciliation after an upload or catalog synchronization."""
+    def operation():
+        db = _db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            changed = _reconcile_document_references(db)
+            db.commit()
+            return changed
+        finally:
+            db.close()
+    return _retry_locked(operation, label="Reconciling AI library references")
 
 
 def _fts_available(db):
@@ -286,7 +366,8 @@ def _public_files_to_index():
             """
             SELECT f.id AS source_file_id, f.drive_file_id, f.book_id, f.name,
                    LOWER(COALESCE(f.format,'')) AS format, f.size, f.modified_time,
-                   COALESCE(f.sha256_checksum, f.md5_checksum, '') AS checksum,
+                   COALESCE(NULLIF(f.sha256_checksum,''), NULLIF(f.md5_checksum,''), NULLIF(f.sha1_checksum,''), '') AS checksum,
+                   f.sha256_checksum, f.md5_checksum, f.sha1_checksum,
                    b.title, b.author, b.category, b.folder_path
             FROM appdb.pastor_library_files f
             JOIN appdb.pastor_library_books b ON b.id = f.book_id
@@ -301,45 +382,30 @@ def _public_files_to_index():
         db.close()
 
 
-def _needs_reindex(row):
-    """Return True for new/changed files AND for previously failed/empty indexes.
+def _document_needs_reindex(old, row):
+    if not old or not old['searchable'] or int(old['chunk_count'] or 0) <= 0:
+        return True
+    if _clean(old['extract_error']):
+        return True
+    old_checksum = _clean(old['checksum']).lower()
+    # Compare the same hash algorithm, including indexes created when Drive
+    # exposed MD5 but not SHA-256. Missing hashes alone are not content changes.
+    candidates = [_clean(row[key]).lower() for key in
+                  ('sha256_checksum', 'md5_checksum', 'sha1_checksum') if key in row.keys()]
+    candidates.append(_clean(row['checksum']).lower())
+    comparable = next((value for value in candidates
+                       if value and old_checksum and len(value) == len(old_checksum)), '')
+    if comparable:
+        return comparable != old_checksum
+    old_time, new_time = _clean(old['modified_time']), _clean(row['modified_time'])
+    return not (old_time and new_time and old_time == new_time)
 
-    Older behavior looked only at modified_time/checksum. That meant a document
-    which had previously failed extraction was stored with searchable=0 and then
-    skipped forever on later incremental passes because the Drive file itself had
-    not changed. Healthy indexed books remain skipped.
-    """
+
+def _needs_reindex(row):
+    """Drive identity and content fingerprints determine incremental work."""
     db = _db()
     try:
-        old = db.execute(
-            """
-            SELECT modified_time, checksum, searchable, chunk_count, extract_error
-            FROM pij_library_documents
-            WHERE source_type='public_ebook' AND source_file_id=?
-            """,
-            (int(row["source_file_id"]),),
-        ).fetchone()
-
-        if not old:
-            return True
-
-        metadata_changed = (
-            _clean(old["modified_time"]) != _clean(row["modified_time"])
-            or _clean(old["checksum"]) != _clean(row["checksum"])
-        )
-        if metadata_changed:
-            return True
-
-        # Retry only unhealthy records. This repairs failed/empty books without
-        # rebuilding the already-good library index.
-        if not bool(old["searchable"]):
-            return True
-        if int(old["chunk_count"] or 0) <= 0:
-            return True
-        if _clean(old["extract_error"]):
-            return True
-
-        return False
+        return _document_needs_reindex(_find_public_document(db, row['drive_file_id']), row)
     finally:
         db.close()
 
@@ -347,11 +413,14 @@ def _needs_reindex(row):
 def _store_public_document_once(row, chunks, page_count, error=""):
     db = _db()
     try:
-        db.execute("BEGIN")
-        existing = db.execute(
-            "SELECT id FROM pij_library_documents WHERE source_type='public_ebook' AND source_file_id=?",
-            (int(row["source_file_id"]),),
-        ).fetchone()
+        db.execute("BEGIN IMMEDIATE")
+        _reconcile_document_references(db)
+        existing = _find_public_document(db, row['drive_file_id'])
+        if not chunks and existing and existing['searchable'] and existing['chunk_count'] > 0:
+            # A transient download/extraction failure must not erase the last
+            # successful index or advance its content fingerprint.
+            db.commit()
+            return
         values = (
             row["drive_file_id"], row["book_id"], _clean(row["title"] or row["name"]), _clean(row["author"]),
             _clean(row["category"]), _clean(row["folder_path"]), _clean(row["format"]), _clean(row["modified_time"]),
@@ -360,8 +429,8 @@ def _store_public_document_once(row, chunks, page_count, error=""):
         if existing:
             document_id = int(existing["id"])
             db.execute(
-                """UPDATE pij_library_documents SET drive_file_id=?,book_id=?,title=?,author=?,category=?,folder_path=?,format=?,modified_time=?,checksum=?,page_count=?,chunk_count=?,searchable=?,extract_error=?,indexed_at=? WHERE id=?""",
-                values + (document_id,),
+                """UPDATE pij_library_documents SET source_file_id=?,drive_file_id=?,book_id=?,title=?,author=?,category=?,folder_path=?,format=?,modified_time=?,checksum=?,page_count=?,chunk_count=?,searchable=?,extract_error=?,indexed_at=? WHERE id=?""",
+                (int(row['source_file_id']),) + values + (document_id,),
             )
             db.execute("DELETE FROM pij_library_chunks WHERE document_id=?", (document_id,))
             if _fts_available(db):
@@ -416,13 +485,23 @@ def index_public_library(force=False):
     try:
         rows = _public_files_to_index()
         with INDEX_STATE_LOCK:
-            INDEX_STATE.update(running=True, stage="indexing", message="Preparing Pastor's Resources for Pij...", total=len(rows), processed=0, indexed=0, skipped=0, errors=0, current_file="", started_at=_now(), finished_at="", last_error="")
-        drive = pastor_resources.get_drive_session()
-        indexed = skipped = errors = 0
+            INDEX_STATE.update(running=True, stage="indexing", message="Checking existing Drive IDs and content fingerprints...", total=len(rows), processed=0, indexed=0, newly_indexed=0, reindexed=0, skipped=0, errors=0, current_file="", started_at=_now(), finished_at="", last_error="")
+        # One metadata snapshot, no connection/authentication per skipped file.
+        db = _db()
+        try:
+            documents = {}
+            for doc in db.execute("""SELECT * FROM pij_library_documents WHERE source_type='public_ebook'
+                    ORDER BY searchable DESC,chunk_count DESC,id"""):
+                documents.setdefault(doc['drive_file_id'], doc)
+        finally:
+            db.close()
+        drive = None
+        indexed = newly_indexed = reindexed = skipped = errors = 0
         for number, row in enumerate(rows, start=1):
             with INDEX_STATE_LOCK:
                 INDEX_STATE.update(processed=number - 1, current_file=_clean(row["name"]))
-            if not force and not _needs_reindex(row):
+            old = documents.get(row['drive_file_id'])
+            if not force and not _document_needs_reindex(old, row):
                 skipped += 1
                 with INDEX_STATE_LOCK:
                     INDEX_STATE.update(processed=number, skipped=skipped)
@@ -430,22 +509,31 @@ def index_public_library(force=False):
             try:
                 if int(row["size"] or 0) > MAX_FILE_BYTES:
                     raise ValueError(f"File exceeds AI indexing limit of {MAX_FILE_BYTES // (1024*1024)} MB")
+                if drive is None:
+                    drive = pastor_resources.get_drive_session()
                 data = pastor_resources.download_drive_file_bytes(drive, row["drive_file_id"])
                 fmt = _clean(row["format"]).lower()
                 sections = _extract_pdf(data) if fmt == "pdf" else _extract_epub(data)
                 chunks = _make_chunks(sections)
+                if not chunks:
+                    raise ValueError("No searchable text extracted from ebook")
                 _store_public_document(row, chunks, len(sections))
                 indexed += 1
+                if old and old['searchable'] and int(old['chunk_count'] or 0) > 0:
+                    reindexed += 1
+                else:
+                    newly_indexed += 1
             except Exception as exc:
                 errors += 1
                 _store_index_error(row, exc)
                 with INDEX_STATE_LOCK:
                     INDEX_STATE["last_error"] = f"{_clean(row['name'])}: {_clean(exc)}"
             with INDEX_STATE_LOCK:
-                INDEX_STATE.update(processed=number, indexed=indexed, skipped=skipped, errors=errors)
+                INDEX_STATE.update(processed=number, indexed=indexed, newly_indexed=newly_indexed, reindexed=reindexed, skipped=skipped, errors=errors)
         with INDEX_STATE_LOCK:
             INDEX_STATE.update(running=False, stage="complete", message="AI library indexing complete.", current_file="", finished_at=_now())
-        return {"ok": True, "total": len(rows), "indexed": indexed, "skipped": skipped, "errors": errors}
+        return {"ok": True, "total": len(rows), "checked": len(rows), "indexed": indexed,
+                "newly_indexed": newly_indexed, "reindexed": reindexed, "skipped": skipped, "errors": errors}
     finally:
         with INDEX_STATE_LOCK:
             INDEX_STATE["running"] = False
@@ -533,9 +621,11 @@ def get_index_state():
             SELECT COUNT(*) AS docs,
                    COALESCE(SUM(d.chunk_count),0) AS chunks
             FROM pij_library_documents d
-            JOIN appdb.pastor_library_books b ON b.id=d.book_id
+            JOIN appdb.pastor_library_files pf ON pf.drive_file_id=d.drive_file_id
+              AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
+            JOIN appdb.pastor_library_books b ON b.id=pf.book_id
             WHERE d.source_type='public_ebook'
-              AND d.searchable=1
+              AND d.searchable=1 AND d.chunk_count>0
               AND b.is_active=1
               AND COALESCE(b.is_hidden,0)=0
             """
@@ -752,9 +842,11 @@ def _active_indexed_books(db):
         """
         SELECT DISTINCT b.id AS book_id, b.title, b.author, b.category, b.folder_path
         FROM appdb.pastor_library_books b
-        JOIN pij_library_documents d ON d.book_id=b.id
+        JOIN appdb.pastor_library_files pf ON pf.book_id=b.id
+          AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
+        JOIN pij_library_documents d ON d.drive_file_id=pf.drive_file_id
         WHERE d.source_type='public_ebook'
-          AND d.searchable=1
+          AND d.searchable=1 AND d.chunk_count>0
           AND b.is_active=1
           AND COALESCE(b.is_hidden,0)=0
         """
@@ -853,7 +945,7 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
     if not terms:
         return []
 
-    book_sql = " AND d.book_id=? " if book_id is not None else ""
+    book_sql = " AND b.id=? " if book_id is not None else ""
 
     if _fts_available(db):
         expr = _fts_expression(terms, strict=strict)
@@ -865,7 +957,7 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
             try:
                 return db.execute(
                     f"""
-                    SELECT d.id AS document_id,d.book_id,d.title,d.author,d.category,d.folder_path,d.format,
+                    SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
                            c.chunk_number,c.page_start,c.page_end,c.content,
                            bm25(pij_library_chunks_fts) AS rank
                     FROM pij_library_chunks_fts f
@@ -873,10 +965,12 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
                       ON c.document_id=CAST(f.document_id AS INTEGER)
                      AND c.chunk_number=CAST(f.chunk_number AS INTEGER)
                     JOIN pij_library_documents d ON d.id=c.document_id
-                    JOIN appdb.pastor_library_books b ON b.id=d.book_id
+                    JOIN appdb.pastor_library_files pf ON pf.drive_file_id=d.drive_file_id
+                      AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
+                    JOIN appdb.pastor_library_books b ON b.id=pf.book_id
                     WHERE pij_library_chunks_fts MATCH ?
                       AND d.source_type='public_ebook'
-                      AND d.searchable=1
+                      AND d.searchable=1 AND d.chunk_count>0
                       AND b.is_active=1
                       AND COALESCE(b.is_hidden,0)=0
                       {book_sql}
@@ -905,13 +999,15 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True):
     params = ([int(book_id)] if book_id is not None else []) + like_params + [int(limit)]
     return db.execute(
         f"""
-        SELECT d.id AS document_id,d.book_id,d.title,d.author,d.category,d.folder_path,d.format,
+        SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
                c.chunk_number,c.page_start,c.page_end,c.content,0 AS rank
         FROM pij_library_chunks c
         JOIN pij_library_documents d ON d.id=c.document_id
-        JOIN appdb.pastor_library_books b ON b.id=d.book_id
+        JOIN appdb.pastor_library_files pf ON pf.drive_file_id=d.drive_file_id
+          AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
+        JOIN appdb.pastor_library_books b ON b.id=pf.book_id
         WHERE d.source_type='public_ebook'
-          AND d.searchable=1
+          AND d.searchable=1 AND d.chunk_count>0
           AND b.is_active=1
           AND COALESCE(b.is_hidden,0)=0
           {book_sql}
@@ -1152,13 +1248,15 @@ def _catalog_specific_book_for_question(question):
         rows = db.execute(
             """
             SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path,
-                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END) AS indexed,
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
             FROM appdb.pastor_library_books b
+            LEFT JOIN appdb.pastor_library_files f
+              ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
             LEFT JOIN pij_library_documents d
-              ON d.book_id=b.id AND d.source_type='public_ebook'
+              ON d.drive_file_id=f.drive_file_id AND d.source_type='public_ebook'
             WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
             GROUP BY b.id
             """
@@ -1255,15 +1353,17 @@ def _opening_chunks_for_book(db, book_id, limit=6):
     """
     return db.execute(
         """
-        SELECT d.id AS document_id,d.book_id,d.title,d.author,d.category,d.folder_path,d.format,
+        SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
                c.chunk_number,c.page_start,c.page_end,c.content,
                0.0 AS rank
         FROM pij_library_chunks c
         JOIN pij_library_documents d ON d.id=c.document_id
-        JOIN appdb.pastor_library_books b ON b.id=d.book_id
+        JOIN appdb.pastor_library_files pf ON pf.drive_file_id=d.drive_file_id
+          AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
+        JOIN appdb.pastor_library_books b ON b.id=pf.book_id
         WHERE d.source_type='public_ebook'
-          AND d.searchable=1
-          AND d.book_id=?
+          AND d.searchable=1 AND d.chunk_count>0
+          AND b.id=?
           AND b.is_active=1
           AND COALESCE(b.is_hidden,0)=0
         ORDER BY COALESCE(c.page_start, c.chunk_number), c.chunk_number
@@ -1556,7 +1656,7 @@ def _catalog_book_rows(query, limit=8):
             """
             SELECT b.id AS book_id, b.title, b.author, b.category, b.folder_path,
                    GROUP_CONCAT(DISTINCT UPPER(f.format)) AS formats,
-                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END) AS indexed,
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
@@ -1564,7 +1664,7 @@ def _catalog_book_rows(query, limit=8):
             LEFT JOIN appdb.pastor_library_files f
               ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
             LEFT JOIN pij_library_documents d
-              ON d.book_id=b.id AND d.source_type='public_ebook'
+              ON d.drive_file_id=f.drive_file_id AND d.source_type='public_ebook'
             WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
               AND (b.title LIKE ? OR b.author LIKE ? OR b.category LIKE ? OR b.folder_path LIKE ?)
             GROUP BY b.id
@@ -1607,7 +1707,7 @@ def get_library_book_status(book_id):
             """
             SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path,
                    GROUP_CONCAT(DISTINCT UPPER(f.format)) AS formats,
-                   MAX(CASE WHEN d.searchable=1 THEN 1 ELSE 0 END) AS indexed,
+                   MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END) AS indexed,
                    MAX(COALESCE(d.page_count,0)) AS page_count,
                    SUM(COALESCE(d.chunk_count,0)) AS chunk_count,
                    MAX(COALESCE(d.extract_error,'')) AS extract_error
@@ -1615,7 +1715,7 @@ def get_library_book_status(book_id):
             LEFT JOIN appdb.pastor_library_files f
               ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
             LEFT JOIN pij_library_documents d
-              ON d.book_id=b.id AND d.source_type='public_ebook'
+              ON d.drive_file_id=f.drive_file_id AND d.source_type='public_ebook'
             WHERE b.id=? AND b.is_active=1 AND COALESCE(b.is_hidden,0)=0
             GROUP BY b.id
             """,
