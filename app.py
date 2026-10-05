@@ -5,6 +5,13 @@ import calendar
 import urllib.parse
 import uuid
 import traceback
+import secrets
+import tempfile
+import hmac
+import shutil
+from pathlib import Path
+
+from sheet_cache import DATASETS, CacheSyncError, init_cache_tables, sync_cache
 
 from zoneinfo import ZoneInfo
 
@@ -26,6 +33,7 @@ from flask import (
     jsonify,
     make_response,
     send_file,
+    has_request_context,
 )
 from church_finder import register_church_finder_routes
 from area_progress_monitor import register_area_progress_monitor
@@ -616,6 +624,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_prayer_status ON sheet_prayer_request_cache(status)"
     )
 
+    init_cache_tables(db)
     migrate_monthly_reports_scope_to_pastor()
     db.commit()
 
@@ -881,9 +890,6 @@ def _find_col(headers, wanted):
 # ✅ Sheets → DB cache sync
 # ==========================
 
-SYNC_INTERVAL_SECONDS = 300  # 5 minutes
-
-
 def _last_sync_time_utc():
     row = get_db().execute("SELECT last_sync FROM sync_state WHERE id = 1").fetchone()
     if row and row["last_sync"]:
@@ -920,531 +926,95 @@ def _update_sync_time():
     get_db().commit()
     
 def ensure_schedule_cache_loaded():
-    """
-    For the Schedule page only:
-    - if either district schedule cache or chain prayer cache is empty,
-      load once from Sheets
-    - otherwise use local DB only
-    """
+    # Header-only sheets are valid initialized caches; do not re-read empty ones.
+    sync_from_sheets_if_needed()
+
+
+def refresh_sheet_cache(*datasets):
+    """Strict refresh: source fetch/validation failures leave every cache intact."""
+    return sync_cache(get_db(), DATABASE, get_gs_client, parse_float,
+                      parse_sheet_date, utc_now_iso, datasets or None)
+
+
+def queue_sheet_cache_refresh(*datasets):
+    if any(name not in DATASETS for name in datasets):
+        raise ValueError("Unknown cache dataset")
     db = get_db()
+    db.executemany("INSERT OR REPLACE INTO sheet_cache_pending_refresh VALUES (?,?)",
+                   [(name, utc_now_iso()) for name in datasets])
+    db.commit()
 
-    row_ds = db.execute(
-        "SELECT COUNT(*) AS cnt FROM sheet_district_schedule_cache"
-    ).fetchone()
-    district_count = int(row_ds["cnt"] or 0) if row_ds else 0
 
-    row_cp = db.execute(
-        "SELECT COUNT(*) AS cnt FROM sheet_chain_prayer_schedule_cache"
-    ).fetchone()
-    chain_count = int(row_cp["cnt"] or 0) if row_cp else 0
+def refresh_after_sheet_write(*datasets):
+    """Queue recovery after a confirmed Sheet write, without reporting it as failed."""
+    queue_sheet_cache_refresh(*datasets)
+    try:
+        refresh_sheet_cache(*datasets)
+        return True
+    except CacheSyncError:
+        app.logger.exception("Google Sheets write succeeded but cache refresh failed")
+        if has_request_context():
+            flash("Saved to Google Sheets. The local view could not refresh yet; it will retry automatically.", "error")
+        return False
 
-    if district_count <= 0 or chain_count <= 0:
-        sync_from_sheets_if_needed(force=True)
+
+def verify_sheet_row(ws, dataset, sheet_row, headers=None, values=None):
+    """Reject writes to rows that moved since the page's mirror was built."""
+    if values is not None:
+        headers = values[0] if values else []
+        source_row = values[sheet_row - 1] if 1 < sheet_row <= len(values) else []
+    elif headers is not None:
+        source_row = ws.row_values(sheet_row)
+    else:
+        values = ws.get_all_values()
+        headers = values[0] if values else []
+        source_row = values[sheet_row - 1] if 1 < sheet_row <= len(values) else []
+    cached = get_db().execute(f"SELECT * FROM {DATASETS[dataset]} WHERE sheet_row = ?", (sheet_row,)).fetchone()
+    identities = {
+        "Accounts": [("username", ("UserName",)), ("name", ("Name",)),
+                     ("sex", ("Church ID", "Sex")), ("church_address", ("Church Address",))],
+        "PrayerRequest": [("request_id", ("Request ID",))],
+        "DistrictSchedule": [("church_name", ("Church Name",)), ("activity_date_start", ("Activity Date Start",))],
+        "Anouncement": [("title", ("Title",)), ("announcement", ("Announcement",)), ("area", ("Area",))],
+        "Report": [("activity_date", ("activity_date",)), ("church", ("church",)),
+                   ("address", ("address",)), ("pastor", ("pastor",))],
+        "AOPT": [("month", ("Month",)), ("area_number", ("Area Number", "Area")),
+                 ("sub_area", ("Sub Area", "SubArea"))],
+    }
+    matches = bool(cached and source_row and sheet_row > 1)
+    if matches:
+        for column, alternatives in identities[dataset]:
+            index = next((index for header in alternatives
+                          if (index := _find_col(headers, header)) is not None), None)
+            source_value = str(source_row[index]).strip() if index is not None and index < len(source_row) else ""
+            cached_value = str(cached[column] or "").strip()
+            if column in ("activity_date", "activity_date_start"):
+                matches = bool(parse_sheet_date(source_value)) and parse_sheet_date(source_value) == parse_sheet_date(cached_value)
+            else:
+                matches = source_value == cached_value
+            if not matches:
+                break
+    if not matches:
+        queue_sheet_cache_refresh(dataset)
+        raise RuntimeError("Google Sheets data changed. Reload the page before trying again.")
 
 
 def sync_from_sheets_if_needed(force=False):
-    """
-    Reads Google Sheets ONLY once per interval, stores into cache tables.
-    AO pages read ONLY from cache tables (no quota spam).
-    """
-    last = _last_sync_time_utc()
-    if not force and last and (utc_now() - last).total_seconds() < SYNC_INTERVAL_SECONDS:
-        return
-
-    try:
-        client = get_gs_client()
-        sh = client.open("District4 Data")
-    except Exception as e:
-        print("❌ Sync failed (open sheet):", e)
-        return
-
+    """Normal requests use initialized mirrors; only bootstrap/recovery reads Sheets."""
+    if force:
+        return refresh_sheet_cache()
     db = get_db()
-    cur = db.cursor()
-
-    # -----------------------
-    # ACCOUNTS (with sheet_row)
-    # -----------------------
+    initialized = {row[0] for row in db.execute("SELECT dataset FROM sheet_cache_sync_state")}
+    pending = {row[0] for row in db.execute("SELECT dataset FROM sheet_cache_pending_refresh")}
+    needed = [name for name in DATASETS if name not in initialized or name in pending]
+    if not needed:
+        return {}
     try:
-        ws_accounts = sh.worksheet("Accounts")
-        acc_values = ws_accounts.get_all_values()
-    except Exception as e:
-        print("❌ Accounts sync failed:", e)
-        acc_values = []
-
-    cur.execute("DELETE FROM sheet_accounts_cache")
-
-    if acc_values and len(acc_values) >= 2:
-        headers = acc_values[0]
-        i_name = _find_col(headers, "Name")
-        i_user = _find_col(headers, "UserName")
-        i_pass = _find_col(headers, "Password")
-        i_addr = _find_col(headers, "Church Address")
-        i_age = _find_col(headers, "Area Number")
-        if i_age is None:
-            i_age = _find_col(headers, "Age")
-        i_sex = _find_col(headers, "Church ID")
-        if i_sex is None:
-            i_sex = _find_col(headers, "Sex")
-        i_contact = _find_col(headers, "Contact #")
-        i_bday = _find_col(headers, "Birth Day")
-        i_pos = _find_col(headers, "Position")
-        i_sub = _find_col(headers, "Sub Area")
-        if i_sub is None:
-            i_sub = _find_col(headers, "SubArea")
-        i_pin = _find_col(headers, "GooglePinLocation")
-        i_lat = _find_col(headers, "Latitude")
-        i_lng = _find_col(headers, "Longitude")
-
-        def cell(row, idx):
-            if idx is None:
-                return ""
-            if idx < len(row):
-                return row[idx]
-            return ""
-
-        for r in range(1, len(acc_values)):
-            row = acc_values[r]
-
-            username = str(cell(row, i_user)).strip()
-            password = str(cell(row, i_pass)).strip()
-            full_name = str(cell(row, i_name)).strip()
-            church_address = str(cell(row, i_addr)).strip()
-            area_number = str(cell(row, i_age)).strip()
-            church_id = str(cell(row, i_sex)).strip()
-            contact = str(cell(row, i_contact)).strip()
-            birthday = str(cell(row, i_bday)).strip()
-            position = str(cell(row, i_pos)).strip()
-            sub_area = str(cell(row, i_sub)).strip()
-            google_pin_location = str(cell(row, i_pin)).strip()
-            latitude = str(cell(row, i_lat)).strip()
-            longitude = str(cell(row, i_lng)).strip()
-
-            # keep rows that have the search essentials even if username/password are blank
-            if not area_number and not church_id and not full_name and not church_address:
-                continue
-
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO sheet_accounts_cache
-                (username, name, church_address, password, age, sex, contact, birthday, position, sub_area, google_pin_location, latitude, longitude, sheet_row)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    username,
-                    full_name,
-                    church_address,
-                    password,
-                    area_number,
-                    church_id,
-                    contact,
-                    birthday,
-                    position,
-                    sub_area,
-                    google_pin_location,
-                    latitude,
-                    longitude,
-                    r + 1,
-                ),
-            )
-
-    # -----------------------
-    # REPORT (with sheet_row)
-    # -----------------------
-    try:
-        ws_report = sh.worksheet("Report")
-        rep_values = ws_report.get_all_values()
-    except Exception as e:
-        print("❌ Report sync failed:", e)
-        rep_values = []
-
-    cur.execute("DELETE FROM sheet_report_cache")
-
-    if rep_values and len(rep_values) >= 2:
-        headers = rep_values[0]
-
-        i_activity = _find_col(headers, "activity_date")
-
-        # Church approval status (Approved / Pending) for Church Status colors
-        i_status = _find_col(headers, "Status")
-        if i_status is None:
-            i_status = _find_col(headers, "status")
-
-        # Print workflow status (MainPrint / LatePrint / Received)
-        i_report_status = _find_col(headers, "ReportStatus")
-
-        i_church = _find_col(headers, "church")
-        i_pastor = _find_col(headers, "pastor")
-        i_address = _find_col(headers, "address")
-
-        i_adult = _find_col(headers, "adult")
-        i_youth = _find_col(headers, "youth")
-        i_children = _find_col(headers, "children")
-
-        i_tithes = _find_col(headers, "tithes")
-        i_offering = _find_col(headers, "offering")
-        i_personal = _find_col(headers, "personal tithes")
-        i_mission = _find_col(headers, "mission offering")
-
-        i_recv = _find_col(headers, "received jesus")
-        i_exist = _find_col(headers, "existing bible study")
-        i_new = _find_col(headers, "new bible study")
-        i_water = _find_col(headers, "water baptized")
-        i_holy = _find_col(headers, "holy spirit baptized")
-        i_ded = _find_col(headers, "childrens dedication")
-        i_healed = _find_col(headers, "healed")
-
-        i_send = _find_col(headers, "amount to send")
-
-        def cell(row, idx):
-            if idx is None:
-                return ""
-            if idx < len(row):
-                return row[idx]
-            return ""
-
-        for r in range(1, len(rep_values)):
-            row = rep_values[r]
-            activity = str(cell(row, i_activity)).strip()
-            if not activity:
-                continue
-            d = parse_sheet_date(activity)
-            if not d:
-                continue
-
-            cur.execute(
-                """
-                INSERT INTO sheet_report_cache (
-                    sheet_row, year, month, activity_date,
-                    church, pastor, address,
-                    adult, youth, children,
-                    tithes, offering, personal_tithes, mission_offering,
-                    received_jesus, existing_bible_study, new_bible_study,
-                    water_baptized, holy_spirit_baptized, childrens_dedication, healed,
-                    amount_to_send, status, report_status
-                ) VALUES (
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?
-                )
-                """,
-                (
-                    r + 1,
-                    d.year,
-                    d.month,
-                    d.isoformat(),
-                    str(cell(row, i_church)).strip(),
-                    str(cell(row, i_pastor)).strip(),
-                    str(cell(row, i_address)).strip(),
-                    parse_float(cell(row, i_adult)),
-                    parse_float(cell(row, i_youth)),
-                    parse_float(cell(row, i_children)),
-                    parse_float(cell(row, i_tithes)),
-                    parse_float(cell(row, i_offering)),
-                    parse_float(cell(row, i_personal)),
-                    parse_float(cell(row, i_mission)),
-                    parse_float(cell(row, i_recv)),
-                    parse_float(cell(row, i_exist)),
-                    parse_float(cell(row, i_new)),
-                    parse_float(cell(row, i_water)),
-                    parse_float(cell(row, i_holy)),
-                    parse_float(cell(row, i_ded)),
-                    parse_float(cell(row, i_healed)),
-                    parse_float(cell(row, i_send)),
-                    str(cell(row, i_status)).strip(),
-                    str(cell(row, i_report_status)).strip(),
-                ),
-            )
-
-    # -----------------------
-    # AOPT (AO Personal Tithes)
-    # -----------------------
-    try:
-        ws_aopt = sh.worksheet("AOPT")
-        aopt_values = ws_aopt.get_all_values()
-    except Exception as e:
-        print("❌ AOPT sync failed:", e)
-        aopt_values = []
-
-    cur.execute("DELETE FROM sheet_aopt_cache")
-
-    if aopt_values and len(aopt_values) >= 2:
-        headers = aopt_values[0]
-        i_month = _find_col(headers, "Month")
-        i_amount = _find_col(headers, "Amount")
-        i_area = _find_col(headers, "Area Number")
-        if i_area is None:
-            i_area = _find_col(headers, "Area")
-        i_sub_area = _find_col(headers, "Sub Area")
-        if i_sub_area is None:
-            i_sub_area = _find_col(headers, "SubArea")
-
-        def cell(row, idx):
-            if idx is None:
-                return ""
-            if idx < len(row):
-                return row[idx]
-            return ""
-
-        for r in range(1, len(aopt_values)):
-            row = aopt_values[r]
-            month_label = str(cell(row, i_month)).strip()
-            if not month_label:
-                continue
-            amount_val = parse_float(cell(row, i_amount))
-            area_number = str(cell(row, i_area)).strip()
-            sub_area = str(cell(row, i_sub_area)).strip()
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO sheet_aopt_cache (month, area_number, sub_area, amount, sheet_row)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (month_label, area_number, sub_area, amount_val, r + 1),
-            )
-
-    # -----------------------
-    # PRAYER REQUEST (PrayerRequest)
-    # -----------------------
-    try:
-        ws_pr = sh.worksheet("PrayerRequest")
-        pr_values = ws_pr.get_all_values()
-    except Exception as e:
-        print("❌ PrayerRequest sync failed:", e)
-        pr_values = []
-
-    cur.execute("DELETE FROM sheet_prayer_request_cache")
-
-    if pr_values and len(pr_values) >= 2:
-        headers = pr_values[0]
-
-        i_church = _find_col(headers, "Church Name")
-        i_submitted_by = _find_col(headers, "Submitted By")
-        i_request_id = _find_col(headers, "Request ID")
-        i_title = _find_col(headers, "Prayer Request Title")
-        i_request_date = _find_col(headers, "Prayer Request Date")
-        i_request_text = _find_col(headers, "Prayer Request")
-        i_status = _find_col(headers, "status")
-        if i_status is None:
-            i_status = _find_col(headers, "status")
-        i_praying = _find_col(headers, "Pastor's Praying")
-        i_answered = _find_col(headers, "Answered Date")
-
-        def cell(row, idx):
-            if idx is None:
-                return ""
-            if idx < len(row):
-                return row[idx]
-            return ""
-
-        for r in range(1, len(pr_values)):
-            row = pr_values[r]
-            req_id = str(cell(row, i_request_id)).strip()
-            if not req_id:
-                continue
-
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO sheet_prayer_request_cache (
-                    request_id, church_name, submitted_by, title, request_date,
-                    request_text, status, pastors_praying, answered_date, sheet_row
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    req_id,
-                    str(cell(row, i_church)).strip(),
-                    str(cell(row, i_submitted_by)).strip(),
-                    str(cell(row, i_title)).strip(),
-                    str(cell(row, i_request_date)).strip(),
-                    str(cell(row, i_request_text)).strip(),
-                    str(cell(row, i_status)).strip(),
-                    str(cell(row, i_praying)).strip(),
-                    str(cell(row, i_answered)).strip(),
-                    r + 1,
-                ),
-            )
-
-    db.commit()
-    # -----------------------
-    # DISTRICT SCHEDULE
-    # -----------------------
-    try:
-        ws_ds = sh.worksheet("DistrictSchedule")
-        ds_values = ws_ds.get_all_values()
-    except Exception as e:
-        print("❌ DistrictSchedule sync failed:", e)
-        ds_values = []
-
-    cur.execute("DELETE FROM sheet_district_schedule_cache")
-
-    if ds_values and len(ds_values) >= 2:
-        headers = ds_values[0]
-
-        i_church_name = _find_col(headers, "Church Name")
-        i_church_address = _find_col(headers, "Church Address")
-        i_pastor_name = _find_col(headers, "Pastor's Name")
-        i_contact_number = _find_col(headers, "Contact Number")
-        i_activity_start = _find_col(headers, "Activity Date Start")
-        i_activity_end = _find_col(headers, "Activity Date End")
-        i_activity_type = _find_col(headers, "Activity Type")
-        i_note = _find_col(headers, "Note")
-        i_joining = _find_col(headers, "Joining")
-        i_theme = _find_col(headers, "Theme")
-        i_text = _find_col(headers, "Text")
-
-        def ds_cell(row, idx):
-            if idx is None:
-                return ""
-            return row[idx].strip() if idx < len(row) else ""
-
-        for rnum, row in enumerate(ds_values[1:], start=2):
-            church_name = ds_cell(row, i_church_name)
-            activity_start = ds_cell(row, i_activity_start)
-
-            if not church_name or not activity_start:
-                continue
-
-            cur.execute(
-                """
-                INSERT INTO sheet_district_schedule_cache (
-                    church_name,
-                    church_address,
-                    pastor_name,
-                    contact_number,
-                    activity_date_start,
-                    activity_date_end,
-                    activity_type,
-                    note,
-                    joining,
-                    theme,
-                    text,
-                    sheet_row
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    church_name,
-                    ds_cell(row, i_church_address),
-                    ds_cell(row, i_pastor_name),
-                    ds_cell(row, i_contact_number),
-                    activity_start,
-                    ds_cell(row, i_activity_end),
-                    ds_cell(row, i_activity_type),
-                    ds_cell(row, i_note),
-                    ds_cell(row, i_joining),
-                    ds_cell(row, i_theme),
-                    ds_cell(row, i_text),
-                    rnum,
-                ),
-            )
-        # -----------------------
-    # CHAIN PRAYER SCHEDULE
-    # -----------------------
-    try:
-        ws_cp = sh.worksheet("ChainPrayerSchedules")
-        cp_values = ws_cp.get_all_values()
-    except Exception as e:
-        print("❌ ChainPrayerSchedules sync failed:", e)
-        cp_values = []
-
-    cur.execute("DELETE FROM sheet_chain_prayer_schedule_cache")
-
-    if cp_values and len(cp_values) >= 2:
-        headers = cp_values[0]
-
-        i_church_name_assigned = _find_col(headers, "ChurchNameAssigned")
-        i_pastor_name = _find_col(headers, "Pastor")
-        i_prayer_date = _find_col(headers, "Date")
-
-        def cp_cell(row, idx):
-            if idx is None:
-                return ""
-            return row[idx].strip() if idx < len(row) else ""
-
-        for rnum, row in enumerate(cp_values[1:], start=2):
-            church_name_assigned = cp_cell(row, i_church_name_assigned)
-            pastor_name = cp_cell(row, i_pastor_name)
-            prayer_date = cp_cell(row, i_prayer_date)
-
-            if not church_name_assigned or not prayer_date:
-                continue
-
-            cur.execute(
-                """
-                INSERT INTO sheet_chain_prayer_schedule_cache (
-                    church_name_assigned,
-                    pastor_name,
-                    prayer_date,
-                    sheet_row
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    church_name_assigned,
-                    pastor_name,
-                    prayer_date,
-                    rnum,
-                ),
-            )
-
-    # -----------------------
-    # ANOUNCEMENT
-    # -----------------------
-    try:
-        ws_ann = sh.worksheet("Anouncement")
-        ann_values = ws_ann.get_all_values()
-    except Exception as e:
-        print("❌ Anouncement sync failed:", e)
-        ann_values = []
-
-    cur.execute("DELETE FROM sheet_announcement_cache")
-
-    if ann_values and len(ann_values) >= 2:
-        headers = ann_values[0]
-        i_title = _find_col(headers, "Title")
-        i_announcement = _find_col(headers, "Announcement")
-        i_date = _find_col(headers, "Date")
-        i_area = _find_col(headers, "Area")
-        i_sub = _find_col(headers, "SubArea")
-        if i_sub is None:
-            i_sub = _find_col(headers, "Sub Area")
-        i_author_u = _find_col(headers, "Author Username")
-        i_author_n = _find_col(headers, "Author Name")
-
-        def ann_cell(row, idx):
-            if idx is None:
-                return ""
-            return row[idx].strip() if idx < len(row) else ""
-
-        for rnum, row in enumerate(ann_values[1:], start=2):
-            title = ann_cell(row, i_title)
-            body = ann_cell(row, i_announcement)
-            if not title and not body:
-                continue
-            cur.execute(
-                """
-                INSERT INTO sheet_announcement_cache (
-                    title, announcement, announcement_date, area, sub_area,
-                    author_username, author_name, sheet_row
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    title,
-                    body,
-                    ann_cell(row, i_date),
-                    ann_cell(row, i_area),
-                    ann_cell(row, i_sub),
-                    ann_cell(row, i_author_u),
-                    ann_cell(row, i_author_n),
-                    rnum,
-                ),
-            )
-
-
-    _update_sync_time()
-    print("✅ Sheets cache sync done.")
+        return sync_cache(db, DATABASE, get_gs_client, parse_float, parse_sheet_date,
+                          utc_now_iso, needed, only_missing=not pending)
+    except CacheSyncError:
+        app.logger.exception("Cache bootstrap/recovery failed; existing mirrors retained")
+        return False
 
 
 # ========================
@@ -1716,127 +1286,18 @@ def _sheet_batch_update_report_status_rows(sheet_rows, status_label: str):
         raise RuntimeError("Report sheet missing ReportStatus/status header")
     col_letter = chr(ord('A') + idx)
     requests_body = []
+    source_values = ws.get_all_values()
     for r in sorted(set(int(x) for x in sheet_rows if x)):
+        verify_sheet_row(ws, "Report", r, values=source_values)
         requests_body.append({"range": f"{col_letter}{r}", "values": [[status_label]]})
     if requests_body:
         ws.batch_update(requests_body)
+        queue_sheet_cache_refresh("Report")
 
 
 
 def _sync_report_cache_only():
-    """
-    Refresh only the local Report cache from Google Sheets.
-    Keeps Church Status/print buttons in sync without reloading all sheets.
-    """
-    try:
-        client = get_gs_client()
-        sh = client.open("District4 Data")
-        ws_report = sh.worksheet("Report")
-        rep_values = ws_report.get_all_values()
-    except Exception as e:
-        print("❌ Report-only sync failed:", e)
-        return
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("DELETE FROM sheet_report_cache")
-
-    if rep_values and len(rep_values) >= 2:
-        headers = rep_values[0]
-
-        i_activity = _find_col(headers, "activity_date")
-        i_status = _find_col(headers, "Status")
-        if i_status is None:
-            i_status = _find_col(headers, "status")
-        i_report_status = _find_col(headers, "ReportStatus")
-
-        i_church = _find_col(headers, "church")
-        i_pastor = _find_col(headers, "pastor")
-        i_address = _find_col(headers, "address")
-
-        i_adult = _find_col(headers, "adult")
-        i_youth = _find_col(headers, "youth")
-        i_children = _find_col(headers, "children")
-
-        i_tithes = _find_col(headers, "tithes")
-        i_offering = _find_col(headers, "offering")
-        i_personal = _find_col(headers, "personal tithes")
-        i_mission = _find_col(headers, "mission offering")
-
-        i_recv = _find_col(headers, "received jesus")
-        i_exist = _find_col(headers, "existing bible study")
-        i_new = _find_col(headers, "new bible study")
-        i_water = _find_col(headers, "water baptized")
-        i_holy = _find_col(headers, "holy spirit baptized")
-        i_ded = _find_col(headers, "childrens dedication")
-        i_healed = _find_col(headers, "healed")
-
-        i_send = _find_col(headers, "amount to send")
-
-        def cell(row, idx):
-            if idx is None:
-                return ""
-            return row[idx] if idx < len(row) else ""
-
-        for r in range(1, len(rep_values)):
-            row = rep_values[r]
-            activity = str(cell(row, i_activity)).strip()
-            if not activity:
-                continue
-            d = parse_sheet_date(activity)
-            if not d:
-                continue
-
-            cur.execute(
-                """
-                INSERT INTO sheet_report_cache (
-                    sheet_row, year, month, activity_date,
-                    church, pastor, address,
-                    adult, youth, children,
-                    tithes, offering, personal_tithes, mission_offering,
-                    received_jesus, existing_bible_study, new_bible_study,
-                    water_baptized, holy_spirit_baptized, childrens_dedication, healed,
-                    amount_to_send, status, report_status
-                ) VALUES (
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?
-                )
-                """,
-                (
-                    r + 1,
-                    d.year,
-                    d.month,
-                    d.isoformat(),
-                    str(cell(row, i_church)).strip(),
-                    str(cell(row, i_pastor)).strip(),
-                    str(cell(row, i_address)).strip(),
-                    parse_float(cell(row, i_adult)),
-                    parse_float(cell(row, i_youth)),
-                    parse_float(cell(row, i_children)),
-                    parse_float(cell(row, i_tithes)),
-                    parse_float(cell(row, i_offering)),
-                    parse_float(cell(row, i_personal)),
-                    parse_float(cell(row, i_mission)),
-                    parse_float(cell(row, i_recv)),
-                    parse_float(cell(row, i_exist)),
-                    parse_float(cell(row, i_new)),
-                    parse_float(cell(row, i_water)),
-                    parse_float(cell(row, i_holy)),
-                    parse_float(cell(row, i_ded)),
-                    parse_float(cell(row, i_healed)),
-                    parse_float(cell(row, i_send)),
-                    str(cell(row, i_status)).strip(),
-                    str(cell(row, i_report_status)).strip(),
-                ),
-            )
-
-    db.commit()
-    _update_sync_time()
+    return refresh_after_sheet_write("Report")
 
 
 def _reset_report_status_for_scope(year: int, month: int, area_number: str, sub_area: str = ""):
@@ -2654,7 +2115,7 @@ def sheet_batch_update_status_for_church_month(year: int, month: int, church_key
 
     sheet_rows = [int(r["sheet_row"]) for r in rows if r["sheet_row"]]
     if not sheet_rows:
-        return
+        raise RuntimeError("No matching report rows to approve.")
 
     client = get_gs_client()
     sh = client.open("District4 Data")
@@ -2662,20 +2123,21 @@ def sheet_batch_update_status_for_church_month(year: int, month: int, church_key
 
     values = ws.get_all_values()
     if not values:
-        return
+        raise RuntimeError("The Report sheet has no headers.")
     headers = values[0]
     idx_status = _find_col(headers, "status")
     if idx_status is None:
-        print("❌ Report sheet missing status header")
-        return
+        raise RuntimeError("The Report sheet is missing its status header.")
 
     requests_body = []
     col_letter = chr(ord("A") + idx_status)
     for r in sheet_rows:
+        verify_sheet_row(ws, "Report", r, values=values)
         a1 = f"{col_letter}{r}"
         requests_body.append({"range": a1, "values": [[status_label]]})
 
     ws.batch_update(requests_body)
+    queue_sheet_cache_refresh("Report")
 
 
 # ========================
@@ -2715,10 +2177,14 @@ def _delete_report_rows_for_month_in_sheet(year: int, month: int, church_key: st
     sh = client.open("District4 Data")
     ws = sh.worksheet("Report")
 
+    source_values = ws.get_all_values()
+    for r in sheet_rows:
+        verify_sheet_row(ws, "Report", r, values=source_values)
     # Delete from bottom to top so row numbers stay correct
     for r in sheet_rows:
         if r > 1:  # never delete header row
             ws.delete_rows(r)
+            queue_sheet_cache_refresh("Report")
 
 
 def _ensure_accounts_headers(ws):
@@ -2860,6 +2326,7 @@ def append_report_to_sheet(report_data: dict):
 
     # ✅ Force writing starting at column A by using a fixed range "A:..."
     ws.append_rows([row], value_input_option="USER_ENTERED", table_range="A1")
+    queue_sheet_cache_refresh("Report")
 
 
 
@@ -3023,7 +2490,7 @@ def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
         (request_id,),
     ).fetchone()
     if not cached or not cached["sheet_row"]:
-        return False
+        raise RuntimeError("The prayer request is missing from the cache.")
 
     sheet_row = int(cached["sheet_row"])
 
@@ -3033,9 +2500,10 @@ def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
 
     values = ws.get_all_values()
     if not values:
-        return False
+        raise RuntimeError("The PrayerRequest sheet has no headers.")
     headers = values[0]
 
+    verify_sheet_row(ws, "PrayerRequest", sheet_row, values=values)
     col_map = {
         "church_name": "Church Name",
         "submitted_by": "Submitted By",
@@ -3055,12 +2523,12 @@ def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
             continue
         idx = _find_col(headers, header)
         if idx is None:
-            continue
+            raise RuntimeError(f"The PrayerRequest sheet is missing its {header} header.")
         col_letter = chr(ord("A") + idx)
         body.append({"range": f"{col_letter}{sheet_row}", "values": [[v]]})
 
     if not body:
-        return False
+        raise RuntimeError("The PrayerRequest sheet is missing the required update headers.")
 
     ws.batch_update(body)
     return True
@@ -3073,16 +2541,17 @@ def _delete_prayer_request_row_in_sheet(request_id):
         (request_id,),
     ).fetchone()
     if not cached or not cached["sheet_row"]:
-        return False
+        raise RuntimeError("The prayer request is missing from the cache.")
 
     sheet_row = int(cached["sheet_row"])
     if sheet_row <= 1:
-        return False
+        raise RuntimeError("Invalid prayer request row.")
 
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet(PRAYER_SHEET_NAME)
 
+    verify_sheet_row(ws, "PrayerRequest", sheet_row)
     ws.delete_rows(sheet_row)
     return True
 
@@ -3674,7 +3143,9 @@ def generate_pastor_credentials(full_name: str, age: int):
     suffix = 1
     while True:
         cursor.execute("SELECT 1 FROM pastors WHERE username = ?", (username,))
-        if cursor.fetchone() is None:
+        local_exists = cursor.fetchone() is not None
+        cached_exists = db.execute("SELECT 1 FROM sheet_accounts_cache WHERE LOWER(TRIM(username)) = LOWER(?)", (username,)).fetchone()
+        if not local_exists and not cached_exists:
             break
         suffix += 1
         username = f"{base}{suffix}"
@@ -3848,6 +3319,8 @@ def _record_pastor_login_event(row):
 @app.before_request
 def before_request():
     init_db()
+    if request.endpoint != "static":
+        sync_from_sheets_if_needed()
     _log_visit_if_needed()
 
 
@@ -3856,6 +3329,23 @@ def close_connection(exception):
     db = getattr(g, "_database", None)
     if db is not None:
         db.close()
+
+
+@app.after_request
+def cache_public_images(response):
+    # Only Flask's public static image route receives shared browser caching.
+    # Private Drive streams and verification photos retain their own headers.
+    if request.endpoint == "static" and response.status_code in (200, 304):
+        extension = os.path.splitext((request.view_args or {}).get("filename", ""))[1].lower()
+        if extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".avif"}:
+            if not response.cache_control.no_store and not response.cache_control.private:
+                response.cache_control.public = True
+                response.cache_control.max_age = 864000
+                response.cache_control.no_cache = None
+                response.expires = datetime.fromtimestamp(utc_now().timestamp() + 864000, timezone.utc)
+    if request.endpoint in {"temp_edit_selfie", "pledge_selfie", "ao_download_local_db", "ao_full_cache_sync"}:
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -3876,8 +3366,8 @@ def splash():
         if not username or not password:
             error = "Username and password are required."
         else:
-            # Force refresh on login so role/password changes in Accounts are honored.
-            sync_from_sheets_if_needed(force=True)
+            # Website account changes refresh this mirror; manual Sheet edits need developer sync.
+            sync_from_sheets_if_needed()
             row = get_db().execute(
                 """
                 SELECT username, password, name, church_address, sex, age, position, sub_area, contact, birthday
@@ -4490,7 +3980,7 @@ def bulletin_pray(request_id):
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    sync_from_sheets_if_needed(force=True)
+    sync_from_sheets_if_needed()
 
     area_number = _current_user_area_number()
     if not area_number:
@@ -4542,7 +4032,7 @@ def bulletin_pray(request_id):
             request_id,
             {"pastors_praying": ", ".join(cleaned_existing)},
         )
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
 
     return redirect(url_for("bulletin"))
 
@@ -4558,6 +4048,8 @@ def pastor_login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
+
+        sync_from_sheets_if_needed()
 
         if not username or not password:
             error = "Username and password are required."
@@ -4580,48 +4072,7 @@ def pastor_login():
                 _record_pastor_login_event(row)
                 return redirect(url_for("bulletin"))
 
-            try:
-                client = get_gs_client()
-                sh = client.open("District4 Data")
-                ws = sh.worksheet("Accounts")
-                records = ws.get_all_records()
-
-                matched = None
-                for rec in records:
-                    u = str(rec.get("UserName", "")).strip()
-                    p = str(rec.get("Password", "")).strip()
-                    if username == u and password == p:
-                        matched = rec
-                        break
-
-                if matched:
-                    session["pledge_actor"] = username
-                    session["pastor_logged_in"] = True
-                    session["pastor_username"] = username
-                    session["pastor_name"] = matched.get("Name", "")
-                    session["pastor_church_address"] = matched.get("Church Address", "")
-                    session["pastor_church_id"] = matched.get("Church ID", "") or matched.get("Sex", "")
-                    session["pastor_area_number"] = str(matched.get("Area Number", "") or matched.get("Age", "")).strip()
-                    session["selected_position"] = "pastor"
-                    session.permanent = True
-
-                    login_event_row = {
-                        "username": username,
-                        "name": matched.get("Name", ""),
-                        "church_address": matched.get("Church Address", ""),
-                        "sex": matched.get("Church ID", "") or matched.get("Sex", ""),
-                        "age": matched.get("Area Number", "") or matched.get("Age", ""),
-                        "position": matched.get("Position", "Pastor") or "Pastor",
-                        "sub_area": matched.get("Sub Area", "") or matched.get("SubArea", ""),
-                    }
-                    _record_pastor_login_event(login_event_row)
-
-                    sync_from_sheets_if_needed(force=True)
-                    return redirect(url_for("bulletin"))
-
-                error = "Invalid username or password."
-            except Exception as e:
-                error = f"Error accessing Google Sheets: {e}"
+            error = "Invalid username or password."
 
     return render_template("pastor_login.html", error=error, next_url=next_url)
 
@@ -4782,7 +4233,7 @@ def _export_month_to_sheet_for_pastor(pastor_username: str, year: int, month: in
     if not sunday_rows:
         return False
 
-    sync_from_sheets_if_needed(force=True)
+    sync_from_sheets_if_needed()
     acc = _get_cached_pastor_account(pastor_username)
     if not acc:
         return False
@@ -4898,7 +4349,7 @@ def _process_submit_report_job(job_id: str):
     db.commit()
 
     try:
-        sync_from_sheets_if_needed(force=True)
+        refresh_sheet_cache("Report")
         if _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
             db.execute(
                 """
@@ -4917,8 +4368,9 @@ def _process_submit_report_job(job_id: str):
         )
         db.commit()
 
+        if not _export_month_to_sheet_for_pastor(pastor_username, year, month, 'Pending AO approval'):
+            raise RuntimeError("No complete local report or pastor account was available to submit.")
         set_month_submitted(year, month, pastor_username)
-        _export_month_to_sheet_for_pastor(pastor_username, year, month, 'Pending AO approval')
 
         db.execute(
             "UPDATE submit_report_jobs SET progress_message = ? WHERE id = ?",
@@ -4926,7 +4378,7 @@ def _process_submit_report_job(job_id: str):
         )
         db.commit()
 
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("Report")
         exists_now = _report_exists_for_pastor_month_from_cache(pastor_username, year, month)
         final_message = 'Submission complete.' if exists_now else 'Submitted. Waiting for cache refresh.'
 
@@ -4949,7 +4401,7 @@ def _process_submit_report_job(job_id: str):
             (utc_now_iso(), str(e), 'Submission failed.', job_id),
         )
         db.commit()
-        print('❌ Error processing submit report job:', e)
+        app.logger.exception("Error processing submit report job")
 
 
 @app.route("/pastor-tool/submit/start", methods=["POST"])
@@ -5230,15 +4682,17 @@ def pastor_tool():
 
         if can_submit:
             try:
-                sync_from_sheets_if_needed(force=True)
+                refresh_sheet_cache("Report")
                 if not _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
+                    if not _export_month_to_sheet_for_pastor(pastor_username, year, month, "Pending AO approval"):
+                        raise RuntimeError("No complete local report or pastor account was available to submit.")
                     set_month_submitted(year, month, pastor_username)
-                    _export_month_to_sheet_for_pastor(pastor_username, year, month, "Pending AO approval")
                     clear_month_dirty(year, month)
-                    sync_from_sheets_if_needed(force=True)
+                    refresh_after_sheet_write("Report")
                     sync_local_month_from_cache_for_pastor(year, month)
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)
+                flash("The report could not be submitted to Google Sheets. Please try again.", "error")
 
         if ao_mode and selected_church:
             return redirect(url_for("pastor_tool", year=year, month=month, church=selected_church))
@@ -5549,8 +5003,8 @@ def ao_login():
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "").strip()
 
-        # Ensure cache is fresh enough for login
-        sync_from_sheets_if_needed(force=True)
+        # Authenticate against the SQLite mirror.
+        sync_from_sheets_if_needed()
 
         row = get_db().execute(
             """
@@ -5578,6 +5032,83 @@ def ao_login():
         error = "Invalid username or password."
 
     return render_template("ao_login.html", error=error, next_url=next_url)
+
+
+def is_cache_developer():
+    if not session.get("ao_logged_in"):
+        return False
+    username = str(session.get("ao_username") or "").strip()
+    role = str(session.get("ao_role") or "").strip().lower()
+    if username.lower() != "pijeme" or role != "area overseer":
+        return False
+    # Also honor role revocation in the current Accounts mirror.
+    row = get_db().execute(
+        "SELECT position FROM sheet_accounts_cache WHERE LOWER(TRIM(username)) = ?", ("pijeme",)
+    ).fetchone()
+    return bool(row and str(row["position"] or "").strip().lower() == "area overseer")
+
+
+def cache_control_token():
+    token = session.get("cache_control_token")
+    if not token:
+        token = session["cache_control_token"] = secrets.token_urlsafe(32)
+    return token
+
+
+def _require_cache_developer():
+    if not is_cache_developer():
+        abort(403)
+    expected = str(session.get("cache_control_token") or "")
+    supplied = str(request.form.get("cache_control_token") or "")
+    if not expected or not hmac.compare_digest(expected, supplied):
+        abort(400)
+
+
+@app.route("/ao-tool/cache/full-sync", methods=["POST"])
+def ao_full_cache_sync():
+    _require_cache_developer()
+    try:
+        counts = refresh_sheet_cache()
+        summary = ", ".join(f"{name}: {count}" for name, count in counts.items())
+        flash(f"Google Sheets synced to Local DB. {summary}", "success")
+    except CacheSyncError as exc:
+        app.logger.exception("Developer full cache sync failed")
+        flash(f"Sync failed. {exc} Existing cached data was kept.", "error")
+    return redirect(url_for("ao_tool"))
+
+
+@app.route("/ao-tool/cache/download-db", methods=["POST"])
+def ao_download_local_db():
+    _require_cache_developer()
+    download = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+    try:
+        # backup() creates a consistent snapshot, including committed WAL data.
+        # Clean up the named snapshot before streaming; the response owns download.
+        with tempfile.TemporaryDirectory(prefix="district4_backup_") as directory:
+            snapshot_path = os.path.join(directory, "snapshot.db")
+            source = sqlite3.connect(Path(DATABASE).resolve().as_uri() + "?mode=ro", uri=True)
+            target = sqlite3.connect(snapshot_path)
+            try:
+                source.backup(target, pages=256)
+            finally:
+                target.close()
+                source.close()
+            with open(snapshot_path, "rb") as snapshot:
+                shutil.copyfileobj(snapshot, download)
+        size = download.tell()
+        download.seek(0)
+        timestamp = datetime.now(PH_TZ).strftime("%Y%m%d_%H%M%S")
+        response = send_file(download, mimetype="application/vnd.sqlite3", as_attachment=True,
+                             download_name=f"district4_app_v2_backup_{timestamp}.db", conditional=False)
+        response.content_length = size
+        response.headers["Cache-Control"] = "private, no-store"
+        response.call_on_close(download.close)
+        return response
+    except Exception:
+        download.close()
+        app.logger.exception("Local DB snapshot download failed")
+        flash("Unable to create the database backup. Please try again.", "error")
+        return redirect(url_for("ao_tool"))
 
 
 @app.route("/ao-tool")
@@ -5611,6 +5142,8 @@ def ao_tool():
         ao_is_sub_area=ao_is_sub_area_overseer(),
         ao_sub_area=(session.get("ao_sub_area") or "").strip(),
         announcement_rows=announcement_rows,
+        is_cache_developer=is_cache_developer(),
+        cache_control_token=cache_control_token() if is_cache_developer() else "",
     )
 
 def _get_account_cache_row(username: str):
@@ -5667,7 +5200,7 @@ def ao_edit_account_save():
 
     try:
         _update_account_in_sheet(original_username, payload)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write('Accounts')
         flash("Account updated successfully.", "success")
         return redirect(url_for("ao_tool", edit_username=username))
     except Exception as e:
@@ -5689,7 +5222,7 @@ def ao_edit_account_delete():
 
     try:
         _delete_account_row_in_sheet(username)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write('Accounts')
         flash("Account deleted successfully.", "success")
     except Exception as e:
         print("❌ Delete account failed:", e)
@@ -5717,7 +5250,7 @@ def ao_announcement_create():
     }
     try:
         _append_announcement_to_sheet(payload)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write('Anouncement')
         flash("Announcement submitted successfully.", "success")
     except Exception as e:
         print("❌ Error creating announcement:", e)
@@ -5751,7 +5284,7 @@ def ao_announcement_update():
         return redirect(url_for("ao_tool"))
     try:
         _update_announcement_in_sheet(sheet_row, payload)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write('Anouncement')
         flash("Announcement updated successfully.", "success")
     except Exception as e:
         print("❌ Error updating announcement:", e)
@@ -5773,7 +5306,7 @@ def ao_announcement_delete():
         abort(403)
     try:
         _delete_announcement_in_sheet(sheet_row)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write('Anouncement')
         flash("Announcement deleted successfully.", "success")
     except Exception as e:
         print("❌ Error deleting announcement:", e)
@@ -5843,6 +5376,23 @@ def ao_create_account():
                 else:
                     username, password = generate_pastor_credentials(full_name, age_int)
 
+                    pastor_data = {
+                        "full_name": full_name, "age": age_int, "sex": sex,
+                        "church_address": church_address, "contact_number": contact_number,
+                        "birthday": birthday_raw, "username": username, "password": password,
+                        "position": "Pastor",
+                        "sub_area": (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "",
+                    }
+                    try:
+                        append_account_to_sheet(pastor_data)
+                    except Exception:
+                        app.logger.exception("Account source write failed")
+                        error = "Unable to save the account to Google Sheets. Please try again."
+                        return render_template("ao_create_account.html", ao_area_number=session.get("ao_area_number"),
+                                               error=error, success=None, values=values,
+                                               generated_username=None, generated_password=None)
+
+                    refresh_after_sheet_write("Accounts")
                     try:
                         cursor.execute(
                             """
@@ -5866,26 +5416,12 @@ def ao_create_account():
                         generated_username = username
                         generated_password = password
 
-                        pastor_data = {
-                            "full_name": full_name,
-                            "age": age_int,
-                            "sex": sex,
-                            "church_address": church_address,
-                            "contact_number": contact_number,
-                            "birthday": birthday_raw,
-                            "username": username,
-                            "password": password,
-                            "position": "Pastor",
-                            "sub_area": (session.get("ao_sub_area") or "").strip() if ao_is_sub_area_overseer() else "",
-                        }
-                        try:
-                            append_account_to_sheet(pastor_data)
-                            sync_from_sheets_if_needed(force=True)
-                        except Exception as e:
-                            print("Error sending account to Google Sheets:", e)
-
                     except sqlite3.IntegrityError:
-                        error = "Unable to create account (username conflict). Please try again."
+                        db.rollback()
+                        success = "Account saved to Google Sheets."
+                        generated_username = username
+                        generated_password = password
+                        flash("Account saved, but its local pastor record could not update. Run developer sync before creating another account.", "error")
 
     return render_template(
        "ao_create_account.html",
@@ -6052,6 +5588,7 @@ def ao_aopt_submit():
 
             if cached and cached["sheet_row"]:
                 sheet_row = int(cached["sheet_row"])
+                verify_sheet_row(ws, "AOPT", sheet_row, headers=headers)
                 end_col = chr(ord('A') + max(idx_month, idx_amount, idx_area, idx_sub))
                 row_values = [""] * (max(idx_month, idx_amount, idx_area, idx_sub) + 1)
                 row_values[idx_month] = month_label
@@ -6071,10 +5608,11 @@ def ao_aopt_submit():
                 row_values[idx_sub] = sub_area
                 ws.append_row(row_values, value_input_option="USER_ENTERED")
 
-            sync_from_sheets_if_needed(force=True)
+            refresh_after_sheet_write('AOPT')
 
     except Exception as e:
-        print("❌ Error saving AOPT:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("ao_church_status", year=year, open_month=month))
 
@@ -6092,7 +5630,7 @@ def ao_church_status_approve():
     if year and month and church and _church_in_current_ao_scope(church):
         try:
             sheet_batch_update_status_for_church_month(year, month, church, "Approved")
-            cache_update_status_for_church_month(year, month, church, "Approved")
+            refresh_after_sheet_write("Report")
             ok = True
         except Exception as e:
             print("Error approving church month:", e)
@@ -6306,9 +5844,10 @@ def prayer_request_write():
                 request_date=req_date,
                 request_text=body,
             )
-            sync_from_sheets_if_needed(force=True)
+            refresh_after_sheet_write("PrayerRequest")
         except Exception as e:
-            print("❌ Error submitting prayer request:", e)
+            app.logger.exception("Google Sheets action failed")
+            flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
         return redirect(url_for("prayer_request_status"))
 
@@ -6324,8 +5863,8 @@ def prayer_request_status():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    # ✅ Force refresh so newly submitted requests always show immediately
-    sync_from_sheets_if_needed(force=True)
+    # Website writes refresh this dataset before redirecting here.
+    sync_from_sheets_if_needed()
 
     submitted_by = _current_user_key()
     rows = get_prayer_requests_for_user(submitted_by, include_answered=False)
@@ -6354,8 +5893,8 @@ def prayer_request_answered():
     if not any_user_logged_in():
         return redirect(url_for("pastor_login", next=request.path))
 
-    # ✅ Refresh so answered requests show immediately
-    sync_from_sheets_if_needed(force=True)
+    # Read the mirror refreshed by the write flow.
+    sync_from_sheets_if_needed()
 
     submitted_by = _current_user_key()
     rows = get_answered_prayer_requests_for_user(submitted_by)
@@ -6422,9 +5961,10 @@ def prayer_request_edit(request_id):
                 request_id,
                 {"title": title, "request_text": body},
             )
-            sync_from_sheets_if_needed(force=True)
+            refresh_after_sheet_write("PrayerRequest")
         except Exception as e:
-            print("❌ Error editing prayer request:", e)
+            app.logger.exception("Google Sheets action failed")
+            flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
         return redirect(url_for("prayer_request_status"))
 
@@ -6458,9 +5998,10 @@ def prayer_request_delete(request_id):
 
     try:
         _delete_prayer_request_row_in_sheet(request_id)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
     except Exception as e:
-        print("❌ Error deleting prayer request:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("prayer_request_status"))
 
@@ -6496,9 +6037,10 @@ def prayer_request_mark_answered(request_id):
             request_id,
             {"status": "Answered", "answered_date": date.today().isoformat()},
         )
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
     except Exception as e:
-        print("❌ Error marking answered:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("prayer_request_status"))
 
@@ -6512,8 +6054,8 @@ def ao_prayer_requests():
     if not ao_logged_in():
         return redirect(url_for("ao_login", next=request.path))
 
-    # ✅ Always refresh so AO sees latest submissions
-    sync_from_sheets_if_needed(force=True)
+    # Read locally; submissions and approvals refresh this dataset.
+    sync_from_sheets_if_needed()
 
     rows = get_pending_prayers_for_ao()
     items = []
@@ -6543,9 +6085,10 @@ def ao_prayer_requests_approve(request_id):
         if not _prayer_in_current_ao_manage_scope(prayer_row):
             abort(403)
         _update_prayer_request_cells_in_sheet(request_id, {"status": "Approved"})
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
     except Exception as e:
-        print("❌ Error approving prayer request:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("ao_prayer_requests"))
 
@@ -6561,9 +6104,10 @@ def ao_prayer_requests_reject(request_id):
         if not _prayer_in_current_ao_manage_scope(prayer_row):
             abort(403)
         _delete_prayer_request_row_in_sheet(request_id)
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
     except Exception as e:
-        print("❌ Error rejecting prayer request:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("ao_prayer_requests"))
 
@@ -6575,7 +6119,7 @@ def ao_prayer_requests_approve_all():
 
     try:
         # refresh then approve everything still pending
-        sync_from_sheets_if_needed(force=True)
+        sync_from_sheets_if_needed()
         rows = get_pending_prayers_for_ao()
 
         for r in rows:
@@ -6584,9 +6128,10 @@ def ao_prayer_requests_approve_all():
                 continue
             _update_prayer_request_cells_in_sheet(req_id, {"status": "Approved"})
 
-        sync_from_sheets_if_needed(force=True)
+        refresh_after_sheet_write("PrayerRequest")
     except Exception as e:
-        print("❌ Error approving all prayer requests:", e)
+        app.logger.exception("Google Sheets action failed")
+        flash("The change could not be saved to Google Sheets. Reload the page and try again.", "error")
 
     return redirect(url_for("ao_prayer_requests"))
 
@@ -6647,6 +6192,7 @@ def _update_announcement_in_sheet(sheet_row: int, payload: dict):
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet("Anouncement")
+    verify_sheet_row(ws, "Anouncement", int(sheet_row))
     headers = _ensure_announcement_sheet_headers(ws)
     row = [""] * len(headers)
     mapping = {
@@ -6668,10 +6214,11 @@ def _update_announcement_in_sheet(sheet_row: int, payload: dict):
 
 def _delete_announcement_in_sheet(sheet_row: int):
     if int(sheet_row) <= 1:
-        return False
+        raise ValueError("Invalid announcement row.")
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet("Anouncement")
+    verify_sheet_row(ws, "Anouncement", int(sheet_row))
     ws.delete_rows(int(sheet_row))
     return True
 
@@ -6725,7 +6272,7 @@ def _update_account_in_sheet(original_username: str, payload: dict):
         (original_username,),
     ).fetchone()
     if not cached or not cached["sheet_row"]:
-        return False
+        raise RuntimeError("The account is missing from the cache.")
 
     sheet_row = int(cached["sheet_row"])
 
@@ -6733,6 +6280,7 @@ def _update_account_in_sheet(original_username: str, payload: dict):
     sh = client.open("District4 Data")
     ws = sh.worksheet("Accounts")
     headers = _ensure_accounts_headers(ws)
+    verify_sheet_row(ws, "Accounts", sheet_row, headers=headers)
     row = [_build_account_row_from_headers(headers, payload)]
     end_col = chr(ord('A') + len(headers) - 1)
     ws.update(f"A{sheet_row}:{end_col}{sheet_row}", row, value_input_option="USER_ENTERED")
@@ -6746,16 +6294,17 @@ def _delete_account_row_in_sheet(username: str):
         (username,),
     ).fetchone()
     if not cached or not cached["sheet_row"]:
-        return False
+        raise RuntimeError("The account is missing from the cache.")
 
     sheet_row = int(cached["sheet_row"])
     if sheet_row <= 1:
-        return False
+        raise ValueError("Invalid account row.")
 
     client = get_gs_client()
     sh = client.open("District4 Data")
     ws = sh.worksheet("Accounts")
 
+    verify_sheet_row(ws, "Accounts", sheet_row)
     ws.delete_rows(sheet_row)
     return True
 
