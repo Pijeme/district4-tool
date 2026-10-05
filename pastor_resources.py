@@ -7,6 +7,7 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
@@ -70,6 +71,7 @@ SYNC_LOCK = threading.Lock()
 # to SQLite. This makes the progress dialog reliable across page refreshes
 # and across separate web workers on hosted deployments such as Render.
 RESOURCE_SYNC_STATE_LOCK = threading.Lock()
+RESOURCE_SYNC_LAST_PERSISTED = 0.0
 RESOURCE_SYNC_STATE = {
     "running": False,
     "stage": "idle",
@@ -80,6 +82,8 @@ RESOURCE_SYNC_STATE = {
     "changed_files": 0,
     "unchanged_files": 0,
     "duplicates": 0,
+    "removed_files": 0,
+    "errors": 0,
     "current_file": "",
     "last_error": "",
     "started_at": "",
@@ -220,6 +224,8 @@ def _read_persisted_resource_sync_state():
             "started_at": str(row["started_at"] or ""),
             "finished_at": str(row["finished_at"] or ""),
             "stats": stats if isinstance(stats, dict) else {},
+            "removed_files": int(stats.get("removed_files") or 0) if isinstance(stats, dict) else 0,
+            "errors": int(stats.get("errors") or 0) if isinstance(stats, dict) else 0,
         }
 
     finally:
@@ -227,15 +233,30 @@ def _read_persisted_resource_sync_state():
 
 
 def update_resource_sync_state(**changes):
+    global RESOURCE_SYNC_LAST_PERSISTED
     with RESOURCE_SYNC_STATE_LOCK:
+        previous_stage = RESOURCE_SYNC_STATE.get("stage")
         RESOURCE_SYNC_STATE.update(changes)
+        for key in ("removed_files", "errors"):
+            if key in changes:
+                RESOURCE_SYNC_STATE["stats"] = {
+                    **(RESOURCE_SYNC_STATE.get("stats") or {}), key: changes[key]}
         state = dict(RESOURCE_SYNC_STATE)
         state["stats"] = dict(
             RESOURCE_SYNC_STATE.get("stats") or {}
         )
 
+        # Persist at most twice a second during a pass, plus every stage
+        # transition. Per-ebook SQLite writes dominate otherwise cheap scans.
+        tick = time.monotonic()
+        persist = (state.get("stage") != previous_stage
+                   or not state.get("running")
+                   or tick - RESOURCE_SYNC_LAST_PERSISTED >= 0.5)
+        if persist:
+            RESOURCE_SYNC_LAST_PERSISTED = tick
     try:
-        _persist_resource_sync_state(state)
+        if persist:
+            _persist_resource_sync_state(state)
     except Exception as error:
         # Do not stop a working Drive synchronization merely because the
         # status mirror could not be written for one update. The next
@@ -1111,6 +1132,15 @@ def get_category(folder_path):
 # RECURSIVE DRIVE SCANNER
 # =========================================================
 
+def _catalog_file_unchanged(old, item):
+    """Metadata equality includes moves/renames, size and all available hashes."""
+    if not old:
+        return False
+    keys = ('name', 'format', 'mime_type', 'size', 'folder_path', 'created_time',
+            'modified_time', 'md5_checksum', 'sha1_checksum', 'sha256_checksum')
+    return all(str(old[key] or '') == str(item[key] or '') for key in keys)
+
+
 def scan_drive_library(progress_callback=None):
     """
     Recursively discover supported PDF/EPUB files in Google Drive.
@@ -1135,6 +1165,17 @@ def scan_drive_library(progress_callback=None):
     drive_session = (
         get_drive_session()
     )
+
+    # Read the previous snapshot once. Still list every Drive folder so new,
+    # missing and moved files are detected; reuse recognition only on equality.
+    db = get_resource_db()
+    try:
+        catalog = {row['drive_file_id']: dict(row) for row in db.execute("""
+            SELECT f.*,b.book_key,b.title,b.author,b.category
+            FROM pastor_library_files f LEFT JOIN pastor_library_books b ON b.id=f.book_id
+        """)}
+    finally:
+        db.close()
 
     files = []
 
@@ -1257,84 +1298,25 @@ def scan_drive_library(progress_callback=None):
                 file_format = "EPUB"
                 epub_count += 1
 
-            title, author = (
-                get_title_and_author(
-                    name,
-                    folder_path,
-                )
-            )
-
-            files.append(
-                {
-                    "drive_file_id":
-                        file_id,
-
-                    "name":
-                        name,
-
-                    "title":
-                        title,
-
-                    "author":
-                        author,
-
-                    "category":
-                        get_category(
-                            folder_path
-                        ),
-
-                    "book_key":
-                        create_book_key(
-                            title,
-                            author,
-                        ),
-
-                    "format":
-                        file_format,
-
-                    "mime_type":
-                        mime_type,
-
-                    "size":
-                        int(
-                            item.get("size")
-                            or 0
-                        ),
-
-                    "folder_path":
-                        folder_path,
-
-                    "created_time":
-                        item.get(
-                            "createdTime"
-                        )
-                        or "",
-
-                    "modified_time":
-                        item.get(
-                            "modifiedTime"
-                        )
-                        or "",
-
-                    "md5_checksum":
-                        item.get(
-                            "md5Checksum"
-                        )
-                        or "",
-
-                    "sha1_checksum":
-                        item.get(
-                            "sha1Checksum"
-                        )
-                        or "",
-
-                    "sha256_checksum":
-                        item.get(
-                            "sha256Checksum"
-                        )
-                        or "",
-                }
-            )
+            file_item = {
+                "drive_file_id": file_id, "name": name, "format": file_format,
+                "mime_type": mime_type, "size": int(item.get("size") or 0),
+                "folder_path": folder_path, "created_time": item.get("createdTime") or "",
+                "modified_time": item.get("modifiedTime") or "",
+                "md5_checksum": item.get("md5Checksum") or "",
+                "sha1_checksum": item.get("sha1Checksum") or "",
+                "sha256_checksum": item.get("sha256Checksum") or "",
+            }
+            old = catalog.get(file_id)
+            if (_catalog_file_unchanged(old, file_item) and old.get("book_key")
+                    and not old.get("is_duplicate")):
+                file_item.update({key: old[key] for key in ("title", "author", "category", "book_key")})
+            else:
+                title, author = get_title_and_author(name, folder_path)
+                file_item.update(title=title, author=author,
+                                 category=get_category(folder_path),
+                                 book_key=create_book_key(title, author))
+            files.append(file_item)
 
             # During recursive discovery there is no truthful final
             # denominator yet. Report the real filename and the number of
@@ -1590,12 +1572,9 @@ def sync_library_to_database(progress_callback=None):
     ensure_resource_tables()
 
     # -----------------------------------------------------
-    # This is the intentionally slow operation.
-    # It is run ONLY from the private Sync Books button.
-    #
-    # progress_callback is optional. The normal database logic
-    # remains the same, but the live Pastor's Resources sync UI
-    # can now see which file is being processed.
+    # Scan Drive metadata from the private Sync Books button, then update
+    # only new/changed catalog metadata. Unchanged records still participate
+    # in duplicate detection and last-seen/active-state tracking.
     # -----------------------------------------------------
 
     def progress(**values):
@@ -1610,6 +1589,8 @@ def sync_library_to_database(progress_callback=None):
         new_files=0,
         changed_files=0,
         unchanged_files=0,
+        removed_files=0,
+        errors=0,
         duplicates=0,
         current_file="",
         last_error="",
@@ -1665,17 +1646,11 @@ def sync_library_to_database(progress_callback=None):
             ).fetchall()
         }
 
-        old_active_files = {
-            str(row["drive_file_id"])
-            for row
-            in db.execute(
-                """
-                SELECT drive_file_id
-                FROM pastor_library_files
-                WHERE is_active = 1
-                """
-            ).fetchall()
-        }
+        existing_files = {row['drive_file_id']: dict(row) for row in db.execute(
+            "SELECT * FROM pastor_library_files")}
+        old_active_files = {drive_id for drive_id, row in existing_files.items() if row['is_active']}
+        books_by_key = {row['book_key']: dict(row) for row in db.execute(
+            "SELECT * FROM pastor_library_books")}
 
         # Everything becomes inactive temporarily.
         # Anything found during this scan is reactivated.
@@ -1744,31 +1719,14 @@ def sync_library_to_database(progress_callback=None):
                 drive_file_id
             )
 
-            old_file = db.execute(
-                """
-                SELECT
-                    book_id,
-                    modified_time
-                FROM pastor_library_files
-                WHERE drive_file_id = ?
-                """,
-                (
-                    drive_file_id,
-                ),
-            ).fetchone()
-
+            old_file = existing_files.get(drive_file_id)
+            unchanged = _catalog_file_unchanged(old_file, item)
             if old_file is None:
                 new_files += 1
-            elif str(
-                old_file["modified_time"]
-                or ""
-            ) != str(
-                item["modified_time"]
-                or ""
-            ):
-                changed_files += 1
-            else:
+            elif unchanged:
                 unchanged_files += 1
+            else:
+                changed_files += 1
 
             checksum_key = (
                 get_file_checksum_key(
@@ -1830,64 +1788,71 @@ def sync_library_to_database(progress_callback=None):
                         book_key
                     )
 
-                db.execute(
-                    """
-                    INSERT INTO pastor_library_books (
-                        book_key,
-                        title,
-                        author,
-                        category,
-                        folder_path,
-                        created_time,
-                        modified_time,
-                        is_active,
-                        first_seen_at,
-                        last_seen_at
+                cached_book = books_by_key.get(book_key)
+                if unchanged and cached_book:
+                    book_id = int(cached_book['id'])
+                    db.execute("UPDATE pastor_library_books SET is_active=1,last_seen_at=? WHERE id=?",
+                               (now_iso, book_id))
+                else:
+                    db.execute(
+                        """
+                        INSERT INTO pastor_library_books (
+                            book_key,
+                            title,
+                            author,
+                            category,
+                            folder_path,
+                            created_time,
+                            modified_time,
+                            is_active,
+                            first_seen_at,
+                            last_seen_at
+                        )
+                        VALUES (
+                            ?, ?, ?, ?, ?, ?, ?,
+                            1, ?, ?
+                        )
+
+                        ON CONFLICT(book_key)
+                        DO UPDATE SET
+                            title = excluded.title,
+                            author = excluded.author,
+                            category = excluded.category,
+                            folder_path = excluded.folder_path,
+                            created_time = excluded.created_time,
+                            modified_time = excluded.modified_time,
+                            is_active = 1,
+                            last_seen_at = excluded.last_seen_at
+                        """,
+                        (
+                            book_key,
+                            item["title"],
+                            item["author"],
+                            item["category"],
+                            item["folder_path"],
+                            item["created_time"],
+                            item["modified_time"],
+                            now_iso,
+                            now_iso,
+                        ),
                     )
-                    VALUES (
-                        ?, ?, ?, ?, ?, ?, ?,
-                        1, ?, ?
+
+                    book_row = db.execute(
+                        """
+                        SELECT id
+                        FROM pastor_library_books
+                        WHERE book_key = ?
+                        """,
+                        (
+                            book_key,
+                        ),
+                    ).fetchone()
+
+                    book_id = int(
+                        book_row["id"]
                     )
 
-                    ON CONFLICT(book_key)
-                    DO UPDATE SET
-                        title = excluded.title,
-                        author = excluded.author,
-                        category = excluded.category,
-                        folder_path = excluded.folder_path,
-                        created_time = excluded.created_time,
-                        modified_time = excluded.modified_time,
-                        is_active = 1,
-                        last_seen_at = excluded.last_seen_at
-                    """,
-                    (
-                        book_key,
-                        item["title"],
-                        item["author"],
-                        item["category"],
-                        item["folder_path"],
-                        item["created_time"],
-                        item["modified_time"],
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-
-                book_row = db.execute(
-                    """
-                    SELECT id
-                    FROM pastor_library_books
-                    WHERE book_key = ?
-                    """,
-                    (
-                        book_key,
-                    ),
-                ).fetchone()
-
-                book_id = int(
-                    book_row["id"]
-                )
-
+                    books_by_key[book_key] = {"id": book_id}
                 if checksum_key:
                     checksum_owners[
                         checksum_key
@@ -1903,95 +1868,79 @@ def sync_library_to_database(progress_callback=None):
             # Insert/update actual Drive file.
             # ---------------------------------------------
 
-            db.execute(
-                """
-                INSERT INTO pastor_library_files (
-                    drive_file_id,
-                    book_id,
-                    name,
-                    format,
-                    mime_type,
-                    size,
-                    folder_path,
-                    created_time,
-                    modified_time,
-                    md5_checksum,
-                    sha1_checksum,
-                    sha256_checksum,
-                    is_active,
-                    is_duplicate,
-                    duplicate_of_drive_file_id,
-                    first_seen_at,
-                    last_seen_at
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    1, ?, ?, ?, ?
+            if unchanged:
+                db.execute("""UPDATE pastor_library_files
+                    SET book_id=?,is_active=1,is_duplicate=?,duplicate_of_drive_file_id=?,last_seen_at=?
+                    WHERE drive_file_id=?""",
+                    (book_id, 1 if duplicate else 0, duplicate_of, now_iso, drive_file_id))
+            else:
+                db.execute(
+                    """
+                    INSERT INTO pastor_library_files (
+                        drive_file_id,
+                        book_id,
+                        name,
+                        format,
+                        mime_type,
+                        size,
+                        folder_path,
+                        created_time,
+                        modified_time,
+                        md5_checksum,
+                        sha1_checksum,
+                        sha256_checksum,
+                        is_active,
+                        is_duplicate,
+                        duplicate_of_drive_file_id,
+                        first_seen_at,
+                        last_seen_at
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        1, ?, ?, ?, ?
+                    )
+
+                    ON CONFLICT(drive_file_id)
+                    DO UPDATE SET
+                        book_id = excluded.book_id,
+                        name = excluded.name,
+                        format = excluded.format,
+                        mime_type = excluded.mime_type,
+                        size = excluded.size,
+                        folder_path = excluded.folder_path,
+                        created_time = excluded.created_time,
+                        modified_time = excluded.modified_time,
+                        md5_checksum = excluded.md5_checksum,
+                        sha1_checksum = excluded.sha1_checksum,
+                        sha256_checksum = excluded.sha256_checksum,
+                        is_active = 1,
+                        is_duplicate = excluded.is_duplicate,
+                        duplicate_of_drive_file_id =
+                            excluded.duplicate_of_drive_file_id,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (
+                        drive_file_id,
+                        book_id,
+                        item["name"],
+                        item["format"],
+                        item["mime_type"],
+                        item["size"],
+                        item["folder_path"],
+                        item["created_time"],
+                        item["modified_time"],
+                        item["md5_checksum"],
+                        item["sha1_checksum"],
+                        item["sha256_checksum"],
+                        1 if duplicate else 0,
+                        duplicate_of,
+                        now_iso,
+                        now_iso,
+                    ),
                 )
 
-                ON CONFLICT(drive_file_id)
-                DO UPDATE SET
-                    book_id = excluded.book_id,
-                    name = excluded.name,
-                    format = excluded.format,
-                    mime_type = excluded.mime_type,
-                    size = excluded.size,
-                    folder_path = excluded.folder_path,
-                    created_time = excluded.created_time,
-                    modified_time = excluded.modified_time,
-                    md5_checksum = excluded.md5_checksum,
-                    sha1_checksum = excluded.sha1_checksum,
-                    sha256_checksum = excluded.sha256_checksum,
-                    is_active = 1,
-                    is_duplicate = excluded.is_duplicate,
-                    duplicate_of_drive_file_id =
-                        excluded.duplicate_of_drive_file_id,
-                    last_seen_at = excluded.last_seen_at
-                """,
-                (
-                    drive_file_id,
-                    book_id,
-                    item["name"],
-                    item["format"],
-                    item["mime_type"],
-                    item["size"],
-                    item["folder_path"],
-                    item["created_time"],
-                    item["modified_time"],
-                    item["md5_checksum"],
-                    item["sha1_checksum"],
-                    item["sha256_checksum"],
-                    1 if duplicate else 0,
-                    duplicate_of,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-
-            # If this file is new or changed, remove only
-            # this book's cached thumbnail so it can be
-            # recreated on the next visible page.
-            if (
-                book_id
-                and (
-                    old_file is None
-                    or str(
-                        old_file[
-                            "modified_time"
-                        ]
-                        or ""
-                    )
-                    != str(
-                        item[
-                            "modified_time"
-                        ]
-                        or ""
-                    )
-                )
-            ):
-                invalidate_thumbnail_cache(
-                    book_id
-                )
+                if book_id:
+                    invalidate_thumbnail_cache(book_id)
 
             progress(
                 stage="syncing",
@@ -2174,6 +2123,7 @@ def sync_library_to_database(progress_callback=None):
 
             "unchanged_files":
                 unchanged_files,
+            "errors": 0,
         }
 
         progress(
@@ -2191,6 +2141,8 @@ def sync_library_to_database(progress_callback=None):
             duplicates=exact_duplicates,
             current_file="",
             stats=result,
+            removed_files=removed_files,
+            errors=0,
         )
 
         return result
@@ -2202,6 +2154,7 @@ def sync_library_to_database(progress_callback=None):
             stage="error",
             message="Library synchronization stopped because of an error.",
             last_error=str(error),
+            errors=1,
             current_file="",
         )
 
@@ -6692,10 +6645,13 @@ def search_library_database_v3(
                 placeholders = ",".join("?" for _ in book_ids)
                 page_rows = db.execute(
                     f"""
-                    SELECT book_id, MAX(COALESCE(page_count,0)) AS page_count
-                    FROM aidb.pij_library_documents
-                    WHERE source_type='public_ebook' AND LOWER(COALESCE(format,''))='pdf' AND book_id IN ({placeholders})
-                    GROUP BY book_id
+                    SELECT f.book_id, MAX(COALESCE(d.page_count,0)) AS page_count
+                    FROM aidb.pij_library_documents d
+                    JOIN pastor_library_files f ON f.drive_file_id=d.drive_file_id
+                    WHERE d.source_type='public_ebook' AND LOWER(COALESCE(d.format,''))='pdf'
+                      AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
+                      AND f.book_id IN ({placeholders})
+                    GROUP BY f.book_id
                     """,
                     tuple(book_ids),
                 ).fetchall()
@@ -9756,7 +9712,8 @@ function renderPijIndexProgress(state) {
 
     const total = Math.max(0, safeNumber(state.total));
     const processed = Math.max(0, safeNumber(state.processed));
-    const indexed = Math.max(0, safeNumber(state.indexed));
+    const indexed = Math.max(0, safeNumber(state.newly_indexed));
+    const reindexed = Math.max(0, safeNumber(state.reindexed));
     const skipped = Math.max(0, safeNumber(state.skipped));
     const errors = Math.max(0, safeNumber(state.errors));
     const chunks = Math.max(0, safeNumber(state.chunks));
@@ -16985,6 +16942,8 @@ def start_resource_library_sync(app):
         new_files=0,
         changed_files=0,
         unchanged_files=0,
+        removed_files=0,
+        errors=0,
         duplicates=0,
         current_file="",
         last_error="",
@@ -17054,6 +17013,7 @@ def start_resource_library_sync(app):
                 message="Pastor's Resources synchronization stopped because of an error.",
                 current_file="",
                 last_error=error_text,
+                errors=1,
                 finished_at=utc_now_iso(),
             )
 
@@ -17488,41 +17448,27 @@ def get_database_details_payload(
                 COALESCE(b.hidden_at, '') AS hidden_at,
                 COALESCE(b.hidden_by, '') AS hidden_by,
 
-                COALESCE((
-                    SELECT MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END)
-                    FROM aidb.pij_library_documents d
-                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
-                ),0) AS ai_indexed,
-
-                COALESCE((
-                    SELECT MAX(d.page_count)
-                    FROM aidb.pij_library_documents d
-                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
-                ),0) AS ai_page_count,
-
-                COALESCE((
-                    SELECT SUM(d.chunk_count)
-                    FROM aidb.pij_library_documents d
-                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
-                ),0) AS ai_chunk_count,
-
-                COALESCE((
-                    SELECT MAX(d.indexed_at)
-                    FROM aidb.pij_library_documents d
-                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
-                ),'') AS ai_indexed_at,
-
-                COALESCE((
-                    SELECT MAX(d.extract_error)
-                    FROM aidb.pij_library_documents d
-                    WHERE d.source_type='public_ebook' AND d.book_id=b.id
-                      AND COALESCE(d.extract_error,'')<>''
-                ),'') AS ai_extract_error
+                COALESCE(ai.ai_indexed,0) AS ai_indexed,
+                COALESCE(ai.ai_page_count,0) AS ai_page_count,
+                COALESCE(ai.ai_chunk_count,0) AS ai_chunk_count,
+                COALESCE(ai.ai_indexed_at,'') AS ai_indexed_at,
+                COALESCE(ai.ai_extract_error,'') AS ai_extract_error
 
             FROM pastor_library_files f
-
-            LEFT JOIN pastor_library_books b
-              ON b.id = f.book_id
+            LEFT JOIN pastor_library_books b ON b.id=f.book_id
+            LEFT JOIN (
+                SELECT af.book_id,
+                    MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END) AS ai_indexed,
+                    MAX(d.page_count) AS ai_page_count,
+                    SUM(d.chunk_count) AS ai_chunk_count,
+                    MAX(d.indexed_at) AS ai_indexed_at,
+                    MAX(NULLIF(d.extract_error,'')) AS ai_extract_error
+                FROM pastor_library_files af
+                JOIN aidb.pij_library_documents d ON d.drive_file_id=af.drive_file_id
+                    AND d.source_type='public_ebook'
+                WHERE af.is_active=1 AND COALESCE(af.is_duplicate,0)=0
+                GROUP BY af.book_id
+            ) ai ON ai.book_id=b.id
             """
         ).fetchall()
 
@@ -19730,5 +19676,3 @@ def register_pastor_resources_routes(app):
             storage="SQLite database",
             stats=database_status,
         )
-
-
