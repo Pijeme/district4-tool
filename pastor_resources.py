@@ -5777,7 +5777,7 @@ def register_pastor_resources_routes(
                 mimetype=
                     cached_mime,
                 max_age=
-                    604800,
+                    864000,
                 conditional=
                     True,
             )
@@ -5797,7 +5797,7 @@ def register_pastor_resources_routes(
                     "image/svg+xml",
                 headers={
                     "Cache-Control":
-                        "public, max-age=3600",
+                        "public, max-age=864000",
                 },
             )
 
@@ -5814,7 +5814,7 @@ def register_pastor_resources_routes(
                     mimetype=
                         mime_type,
                     max_age=
-                        604800,
+                        864000,
                     conditional=
                         True,
                 )
@@ -5830,7 +5830,7 @@ def register_pastor_resources_routes(
                 "image/svg+xml",
             headers={
                 "Cache-Control":
-                    "public, max-age=3600",
+                    "public, max-age=864000",
             },
         )
 
@@ -18669,7 +18669,7 @@ def register_pastor_resources_routes(app):
             return send_file(
                 cached_path,
                 mimetype=cached_mime,
-                max_age=604800,
+                max_age=864000,
                 conditional=True,
             )
 
@@ -18684,7 +18684,7 @@ def register_pastor_resources_routes(app):
                 return send_file(
                     path,
                     mimetype=mime_type,
-                    max_age=604800,
+                    max_age=864000,
                     conditional=True,
                 )
 
@@ -18698,7 +18698,7 @@ def register_pastor_resources_routes(app):
             mimetype="image/svg+xml",
             headers={
                 "Cache-Control":
-                    "private, max-age=3600",
+                    "private, max-age=864000",
             },
         )
 
