@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 import string
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -99,7 +100,7 @@ def _get_members_ws():
 
     try:
         ws = sh.worksheet(MEMBERS_SHEET_NAME)
-    except Exception:
+    except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=MEMBERS_SHEET_NAME, rows=1000, cols=len(MEMBER_HEADERS))
 
     _ensure_members_headers(ws)
@@ -130,46 +131,16 @@ def _ensure_members_headers(ws):
     return current[: len(MEMBER_HEADERS)]
 
 
-def _members_from_sheet(church: dict[str, Any]) -> list[dict[str, Any]]:
-    try:
-        ws = _get_members_ws()
-        values = ws.get_all_values()
-    except Exception:
-        return []
-
-    if len(values) < 2:
-        return []
-
-    church_id = str(church.get("church_name") or "").strip()
-    church_address = str(church.get("church_address") or "").strip()
-
-    members = []
-
-    for row_num, row in enumerate(values[1:], start=2):
-        padded = row + [""] * (len(MEMBER_HEADERS) - len(row))
-
-        member = {
-            "sheet_row": row_num,
-            "name": str(padded[0] or "").strip(),
-            "bday": str(padded[1] or "").strip(),
-            "church_id": str(padded[2] or "").strip(),
-            "church_address": str(padded[3] or "").strip(),
-            "area_number": str(padded[4] or "").strip(),
-            "pastor": str(padded[5] or "").strip(),
-            "username": str(padded[6] or "").strip(),
-            "password": str(padded[7] or "").strip(),
-        }
-
-        if not member["name"] and not member["username"]:
-            continue
-
-        if (
-            _normalize(member["church_id"]) == _normalize(church_id)
-            or _normalize(member["church_address"]) == _normalize(church_address)
-        ):
-            members.append(member)
-
-    members.sort(key=lambda x: _normalize(x["name"]))
+def _members_from_cache(church: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read the Members Account mirror; page views never change or fetch Sheets."""
+    with closing(_connect()) as conn:
+        rows = conn.execute("SELECT * FROM sheet_members_account_cache ORDER BY sheet_row").fetchall()
+    church_id = _normalize(church.get("church_name"))
+    church_address = _normalize(church.get("church_address"))
+    members = [dict(row) for row in rows if
+               _normalize(row["church_id"]) == church_id or
+               _normalize(row["church_address"]) == church_address]
+    members.sort(key=lambda member: _normalize(member["name"]))
     return members
 
 def _now_ph() -> datetime:
@@ -646,7 +617,7 @@ def _build_progress_payload(church: dict[str, Any], selected_year: int) -> dict[
         "No Report": sum(1 for r in report_faithfulness if r["status"] == "No Report"),
     }
 
-    members = _members_from_sheet(church)
+    members = _members_from_cache(church)
 
     return {
         "church": church,
@@ -1735,7 +1706,7 @@ PAGE_HTML = r"""
 
       const data = await postJson(createUrl, formToObject(form));
       closeModal("createMemberModal");
-      showSuccess("Member account created successfully.", data.username, data.password, "Account Created");
+      showSuccess(data.cache_refreshed === false ? "Member account saved. The list will refresh when the connection recovers." : "Member account created successfully.", data.username, data.password, "Account Created");
     } catch (err) {
       showError("createError", err.message);
     } finally {
@@ -1769,7 +1740,7 @@ PAGE_HTML = r"""
 
       const data = await postJson(editUrl, formToObject(form));
       closeModal("editMemberModal");
-      showSuccess("Member account updated successfully.", data.username, data.password, "Account Updated");
+      showSuccess(data.cache_refreshed === false ? "Member account saved. The list will refresh when the connection recovers." : "Member account updated successfully.", data.username, data.password, "Account Updated");
     } catch (err) {
       showError("editError", err.message);
     } finally {
@@ -1806,9 +1777,9 @@ PAGE_HTML = r"""
         button.textContent = "Deleting...";
       }
 
-      await postJson(deleteUrl, formToObject(form));
+      const data = await postJson(deleteUrl, formToObject(form));
       closeModal("deleteMemberModal");
-      showSuccess("Member account deleted successfully.", "", "", "Account Deleted");
+      showSuccess(data.cache_refreshed === false ? "Member account deleted. The list will refresh when the connection recovers." : "Member account deleted successfully.", "", "", "Account Deleted");
     } catch (err) {
       showError("deleteError", err.message);
     } finally {
@@ -1881,8 +1852,8 @@ def _all_member_usernames() -> set[str]:
     try:
         ws = _get_members_ws()
         values = ws.get_all_values()
-    except Exception:
-        return set()
+    except Exception as exc:
+        raise RuntimeError("Unable to check member usernames in Google Sheets.") from exc
 
     usernames = set()
 
@@ -1940,7 +1911,10 @@ def member_create(church_id: str):
     if not bday:
         return jsonify({"ok": False, "error": "Birthday is required."}), 400
 
-    username = _generate_username(name)
+    try:
+        username = _generate_username(name)
+    except Exception:
+        return jsonify({"ok": False, "error": "Unable to check account availability. Please try again."}), 503
     password = _generate_password()
 
     row = [
@@ -1960,8 +1934,11 @@ def member_create(church_id: str):
     except Exception as e:
         return jsonify({"ok": False, "error": f"Failed to save account: {e}"}), 500
 
+    import app as appmod
+    cache_refreshed = appmod.refresh_after_sheet_write("Members Account")
     return jsonify({
         "ok": True,
+        "cache_refreshed": cache_refreshed,
         "username": username,
         "password": password,
     })
@@ -1987,6 +1964,13 @@ def _member_row_belongs_to_church(sheet_row: int, church: dict[str, Any]) -> boo
 
     row_church_id = str(padded[2] or "").strip()
     row_church_address = str(padded[3] or "").strip()
+
+    with closing(_connect()) as conn:
+        cached = conn.execute("SELECT username,name FROM sheet_members_account_cache WHERE sheet_row = ?", (sheet_row,)).fetchone()
+    if not cached or str(padded[6] or "").strip() != str(cached["username"] or "").strip() or str(padded[0] or "").strip() != str(cached["name"] or "").strip():
+        import app as appmod
+        appmod.queue_sheet_cache_refresh("Members Account")
+        return False
 
     return (
         _normalize(row_church_id) == _normalize(church.get("church_name"))
@@ -2040,8 +2024,11 @@ def member_update(church_id: str):
     except Exception as e:
         return jsonify({"ok": False, "error": f"Failed to update account: {e}"}), 500
 
+    import app as appmod
+    cache_refreshed = appmod.refresh_after_sheet_write("Members Account")
     return jsonify({
         "ok": True,
+        "cache_refreshed": cache_refreshed,
         "username": username,
         "password": password,
     })
@@ -2077,7 +2064,9 @@ def member_delete(church_id: str):
     except Exception as e:
         return jsonify({"ok": False, "error": f"Failed to delete account: {e}"}), 500
 
-    return jsonify({"ok": True})
+    import app as appmod
+    cache_refreshed = appmod.refresh_after_sheet_write("Members Account")
+    return jsonify({"ok": True, "cache_refreshed": cache_refreshed})
 
 
 def register_church_progress(app):
