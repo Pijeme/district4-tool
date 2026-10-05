@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "ui_icons.html" import icon %}
 {% block title %}Church Status - District 4 Tool{% endblock %}
 
 {% block content %}
-<section class="card">
-  <h2>Church Status</h2>
+<section class="card ui-church-status">
+  <h2 class="ui-page-title">Church Status</h2>
   <p class="muted small">
     Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
   </p>
@@ -231,18 +232,18 @@
   </style>
 
   <form method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
-    <label class="small"><b>Year:</b></label>
+    <label class="ui-year-control">{{ icon("calendar") }}<span>Report year</span>
     <select name="year" onchange="this.form.submit()">
       {% for y in year_options %}
         <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
       {% endfor %}
-    </select>
+    </select></label>
   </form>
 
   <div class="form-vertical">
     {% for m in months %}
       <button type="button"
-              class="btn-secondary"
+              class="btn-secondary ui-month-toggle"
               onclick="toggleMonth('{{ m.month }}')"
               style="
                 width:100%;
@@ -254,14 +255,14 @@
                 {% endif %}
               ">
         <span style="display:flex; justify-content:space-between; align-items:center;">
-          <span><b>{{ m.name }} {{ m.year }}</b></span>
-          <span style="font-size:18px;">▾</span>
+          <span class="ui-month-name">{{ icon("calendar") }}<b>{{ m.name }} {{ m.year }}</b></span>
+          <span class="ui-month-chevron">{{ icon("chevron") }}</span>
         </span>
       </button>
 
-      <div id="month-{{ m.month }}" style="display:{% if open_month == m.month %}block{% else %}none{% endif %}; margin: 10px 0 16px 0;">
+      <div id="month-{{ m.month }}" class="ui-month-body" style="display:{% if open_month == m.month %}block{% else %}none{% endif %}; margin: 10px 0 16px 0;">
 
-        <div class="card" style="margin: 10px 0; border:2px solid #111;">
+        <div class="card ui-month-tools" style="margin: 10px 0; border:2px solid #111;">
           <div style="display:flex; gap:12px; align-items:center; justify-content:flex-start; flex-wrap:wrap;">
             <form method="POST"
                   action="{{ url_for('ao_aopt_submit') }}"
@@ -302,7 +303,7 @@
                     data-late-enabled="{{ '1' if m.print_state.late_enabled else '0' }}"
                     data-refresh-enabled="{{ '1' if m.print_state.refresh_enabled else '0' }}"
                     onclick="openPrintOptions(this)">
-              Print Report
+              {{ icon("print") }} Print Report
             </button>
           </div>
 
@@ -311,7 +312,7 @@
           </div>
         </div>
 
-        <div class="card" style="margin:10px 0; border:2px solid #111;">
+        <div class="card ui-area-summary" style="margin:10px 0; border:2px solid #111;">
           <h3 style="margin-top:0; margin-bottom:12px;">{% if ao_is_sub_area %}Sub Area Summary{% else %}Area Summary{% endif %}</h3>
 
           <div style="display:grid; gap:14px;">
@@ -374,7 +375,7 @@
           </div>
         </div>
 
-        <div class="card" style="margin:10px 0; border:2px solid #111;">
+        <div class="card ui-church-list-card" style="margin:10px 0; border:2px solid #111;">
           <h3 style="margin-top:0; margin-bottom:10px;">Church List</h3>
           <div class="church-list">
             {% for c in m.churches %}
@@ -385,7 +386,8 @@
                 onclick="openChurchModal('modal-{{ m.month }}-{{ loop.index }}')"
               >
                 <div class="church-list-btn-inner">
-                  <div>
+                  <span class="ui-church-avatar" aria-hidden="true">{% for word in (c.church or "Church").split()[:2] %}{{ word[:1]|upper }}{% endfor %}</span>
+                  <div class="ui-church-row-copy">
                     <div><b>{{ c.church }}</b></div>
                     <div class="church-list-meta">
                       {% if c.rows > 0 %}
@@ -406,6 +408,7 @@
                   {% else %}
                     <span class="status-pill pending" id="status-pill-{{ m.month }}-{{ loop.index }}">Submitted</span>
                   {% endif %}
+                  {{ icon("chevron", "ui-church-chevron") }}
                 </div>
               </button>
 
@@ -498,7 +501,7 @@
   </div>
 
 
-<div id="printOptionsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001;">
+<div id="printOptionsModal" class="ui-print-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001;">
   <div style="background:#fff; max-width:420px; margin:120px auto; padding:20px; border-radius:18px; border:2px solid #111;">
     <h3 style="margin-top:0;">Print Options</h3>
     <input type="hidden" id="po-year">
@@ -513,7 +516,7 @@
   </div>
 </div>
 
-<div id="printConfirmModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002;">
+<div id="printConfirmModal" class="ui-print-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002;">
   <div style="background:#fff; max-width:420px; margin:140px auto; padding:20px; border-radius:18px; border:2px solid #111;">
     <h3 style="margin-top:0;">Confirm Action</h3>
     <p id="printConfirmText" class="small"></p>
