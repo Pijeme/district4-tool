@@ -217,6 +217,7 @@ def _update_account_in_sheet(old_row: dict, new_values: dict):
     sh = client.open("District4 Data")
     ws = sh.worksheet("Accounts")
     headers = _ensure_accounts_headers(ws)
+    _appmod().verify_sheet_row(ws, "Accounts", int(old_row['sheet_row']), headers=headers)
     payload = {
         "full_name": new_values.get("name", old_row.get("name", "")),
         "age": old_row.get("area_number", ""),
@@ -1108,10 +1109,16 @@ def register_temp_edit_routes(app):
                 "SELECT * FROM temp_edit_requests WHERE decision IN ('approved', 'rejected') ORDER BY id ASC"
             ).fetchall()
 
+            processed_ids = []
+            approved_any = False
+            failed_any = False
             for item in process_rows:
                 if str(item["decision"]) == "approved":
                     account = _find_account(item["area_number"], item["church_id"])
-                    if account:
+                    if not account:
+                        failed_any = True
+                        continue
+                    try:
                         _update_account_in_sheet(
                             account,
                             {
@@ -1122,16 +1129,23 @@ def register_temp_edit_routes(app):
                                 "google_pin_location": item["new_google_pin_location"],
                             },
                         )
+                        _appmod().queue_sheet_cache_refresh("Accounts")
+                        approved_any = True
+                    except Exception as exc:
+                        print("Account approval failed; request kept:", exc)
+                        failed_any = True
+                        continue
+                processed_ids.append(int(item["id"]))
 
-            if process_rows:
-                db.execute("DELETE FROM temp_edit_requests WHERE decision IN ('approved', 'rejected')")
+            if processed_ids:
+                db.executemany("DELETE FROM temp_edit_requests WHERE id = ?", [(item_id,) for item_id in processed_ids])
                 db.commit()
-                try:
-                    sync_from_sheets_if_needed(force=True)
-                except Exception as e:
-                    print("❌ Sync after temp edit approval failed:", e)
-                flash("Approved changes were applied to Google Sheets. Rejected items were discarded.", "success")
-            else:
+                if approved_any:
+                    _appmod().refresh_after_sheet_write("Accounts")
+                flash("Processed changes were saved to Google Sheets. Rejected items were discarded.", "success")
+            if failed_any:
+                flash("Some approvals could not be saved to Google Sheets. Those requests were kept for retry.", "error")
+            elif not process_rows:
                 flash("No approved or rejected items to process.", "error")
 
             return redirect(url_for("temp_edit_admin", token=token))
@@ -1158,9 +1172,11 @@ def register_temp_edit_routes(app):
         if not row or not row["selfie_blob"]:
             abort(404)
 
-        return send_file(
+        response = send_file(
             io.BytesIO(row["selfie_blob"]),
             mimetype=str(row["selfie_mime"] or "image/jpeg"),
             as_attachment=False,
             download_name=f"{batch_id}.jpg",
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
