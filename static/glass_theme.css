@@ -1,0 +1,156 @@
+/* Approved glass theme. Presentation only; About Developer does not load this file. */
+.district-glass, .glass-splash {
+  --glass-surface: linear-gradient(135deg, rgba(255,255,255,.86), rgba(241,246,255,.68));
+  --glass-edge: rgba(255,255,255,.93);
+  --glass-shadow: inset 0 1px 0 #ffffff, 0 8px 26px rgba(52,78,138,.09);
+  --glass-text: #14234a;
+  --glass-muted: #526386;
+  --ui-glass: var(--glass-surface);
+  --ui-border: #ffffffdb;
+  color: var(--glass-text);
+  background: radial-gradient(ellipse at 8% 3%, #c3deff 0, transparent 48%), radial-gradient(ellipse at 97% 18%, #ddd2fa 0, transparent 46%), linear-gradient(150deg, #edf4ff, #e8edfc 52%, #e1edfc);
+}
+.district-glass .app-header { background: linear-gradient(120deg, #0c235beF, #0b1548f5); border-bottom: 1px solid #ffffff35; box-shadow: 0 4px 22px #263d791c; }
+.district-glass .header-text { min-width: 0; }
+.district-glass .app-main { padding-bottom: 36px; }
+.district-glass .side-drawer {
+  background: linear-gradient(140deg, #eef6fff5, #e6ebfaf2);
+  border: 1px solid #ffffffef;
+  box-shadow: inset 0 1px 0 #fff, inset 1px 0 0 #ffffff70, 0 20px 55px #203f7c26;
+}
+.district-glass .drawer-header { color: #435c89; }
+.district-glass .drawer-close { background: linear-gradient(135deg, #ffffffc7, #eef3ff8c); border-color: #fff; box-shadow: inset 0 1px 0 #fff, 0 3px 10px #415e9712; }
+.district-glass .drawer-greeting { background: linear-gradient(130deg, #ffffffb0, #e7efff70); box-shadow: inset 0 1px 0 #ffffffed, 0 4px 12px #3a5b9310; border-color: #ffffffe0; }
+.district-glass .drawer-avatar { border-radius: 50%; background: linear-gradient(135deg, #419afa, #8953ea); box-shadow: inset 0 1px 1px #ffffff70, 0 6px 14px #6a66d226; }
+.district-glass .side-drawer a { background: linear-gradient(130deg, #ffffffa8, #f4f7ff55); border-color: #ffffffdb; box-shadow: inset 0 1px 0 #ffffffd9, 0 3px 10px #3b589e0a; color: #203458; }
+.district-glass .side-drawer a:hover { background: linear-gradient(130deg, #ffffffdb, #eef5ffad); box-shadow: inset 0 1px 0 #fff, 0 5px 15px #365b9b18; }
+.district-glass .side-drawer a[aria-current="page"] { background: linear-gradient(110deg, #9450ef, #267eee); border-color: #ffffff9c; color: #fff; box-shadow: inset 0 1px 0 #ffffff65, 0 6px 16px #5966df30; }
+.district-glass .menu-logout a { color: #b72f4e; background: linear-gradient(135deg, #ffffffa8, #ffeaf070); }
+.district-glass .backdrop { background: #182c5326; }
+
+/* Shared surfaces also cover pages whose templates are embedded in Python. */
+.district-glass .app-main :is(.card, .bb-post, .church-finder-card, .church-card, .cp-card, .pr-card, .pr-book-card, .pr-search-card, .pr-continue-card, .ml-card, .ml-panel, .db-stat, .db-browser, .db-detail, .stat, .insight) {
+  background: var(--glass-surface);
+  border: 1px solid var(--glass-edge);
+  border-radius: 22px;
+  box-shadow: var(--glass-shadow);
+}
+.district-glass .app-main > .card { margin-top: 8px; }
+.district-glass .app-main :is(h1, h2, .pr-title, .ml-title, .db-title) { color: #101f49; letter-spacing: -.035em; }
+.district-glass .app-main > .card > :is(h1, h2), .district-glass .church-finder-card > h1 { font-size: clamp(25px, 3vw, 32px); line-height: 1.25; margin-top: 0; margin-bottom: 17px; }
+.district-glass .app-main > .card > :is(h1, h2)::after, .district-glass .church-finder-card > h1::after { content: ''; display: block; width: 46px; height: 4px; border-radius: 4px; margin-top: 12px; background: linear-gradient(90deg, #8e51ea, #4d8af1); }
+.district-glass .app-main > .ui-church-status.card { background: transparent; border: 0; box-shadow: none; }
+.district-glass .ui-church-status > .ui-page-title::after { margin-top: 12px; }
+.district-glass .app-main .muted { color: var(--glass-muted); }
+.district-glass .app-main :is(input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=range]):not([type=color]):not([type=file]), select, textarea) { border-color: #cad7ed; border-radius: 12px; color: #213659; box-shadow: inset 0 1px 1px #4973b509; }
+.district-glass .app-main :is(input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=range]):not([type=color]):not([type=file]), select, textarea):not([readonly]):not(:disabled) { background-color: #ffffffad; }
+.district-glass .app-main :is(input, select, textarea):focus { border-color: #8a79d8; }
+.district-glass .app-main :is(.btn-primary, .btn-secondary) { min-height: 44px; border-radius: 13px; white-space: normal; line-height: 1.4; }
+.district-glass .app-main .btn-primary { box-shadow: inset 0 1px 0 #ffffff45, 0 4px 12px #2864e823; }
+.district-glass .app-main .btn-secondary:not([style*="background"]):not(.ui-utility):not(.ui-month-toggle) { background: linear-gradient(135deg, #ffffffdb, #e9efffa3); border: 1px solid #ffffffed; color: #344c79; box-shadow: inset 0 1px 0 #fff, 0 3px 10px #345a9a0b; }
+.district-glass .app-main :is(button:disabled, .btn-disabled) { box-shadow: none; opacity: .7; cursor: not-allowed; }
+.district-glass .app-main .btn-disabled { background: #acbcd6; color: #fff; }
+.district-glass .ui-ao-intro, .district-glass .ui-year-control, .district-glass .ui-cache-tools { background: var(--glass-surface); border-color: var(--glass-edge); box-shadow: var(--glass-shadow); }
+.district-glass .ui-utility-grid .ui-utility { background: var(--glass-surface) !important; border-color: var(--glass-edge) !important; box-shadow: var(--glass-shadow); }
+.district-glass .ui-utility-icon { box-shadow: inset 0 1px 1px #ffffff60, 0 6px 14px var(--utility-shadow); }
+.district-glass .bb-post { border-left: 4px solid #b9c8ef; }
+.district-glass .bb-post.bb-type-prayer_request { border-left-color: #50c6a4; }
+.district-glass .bb-post.bb-type-birthday { border-left-color: #e5b05c; }
+.district-glass .bb-post.bb-type-answered_prayer { border-left-color: #649afa; }
+.district-glass .bb-post:is(.bb-type-announcement, .bb-type-schedule_notice) { border-left-color: #a383e8; }
+.district-glass .ui-church-status .ui-month-body > .card { background: var(--glass-surface); border-color: #fff !important; box-shadow: var(--glass-shadow); }
+.district-glass .ui-church-status .church-list-btn:is(.status-approved, .status-pending, .status-not-submitted) { background: var(--glass-surface); border-color: #dce6f7; border-left-color: var(--status-accent); box-shadow: inset 0 1px 0 #fff, 0 4px 12px #45699c09; }
+.district-glass .ui-church-status .ui-month-toggle { border-color: #ffffffdb !important; box-shadow: inset 0 1px 0 #ffffffed, 0 4px 12px #45699c0c; }
+
+/* Pastor reporting: keep the existing completion and approval color meanings. */
+.district-glass .month-picker { padding: 13px; gap: 12px; border: 1px solid #fff; border-radius: 16px; background: #ffffff60; box-shadow: inset 0 1px 0 #fff; }
+.district-glass .month-picker .field-group { flex: 1; min-width: 95px; }
+.district-glass .sunday-list { gap: 10px; }
+.district-glass .sunday-card { padding: 15px; border-radius: 16px; gap: 12px; flex-wrap: wrap; box-shadow: inset 0 1px 0 #ffffffd9, 0 3px 10px #375b9709; }
+.district-glass .sunday-card.complete { background: linear-gradient(135deg, #ffffffad, #ddf6e5c9); border-color: #b9e4cd; color: #195741; }
+.district-glass .sunday-card.incomplete { background: linear-gradient(135deg, #ffffffad, #ffe9edba); border-color: #f0cbd2; color: #81384c; }
+.district-glass .sunday-card .status-pill { background: #ffffff85; font-weight: 650; padding: 5px 9px; }
+.district-glass .peso-box { display: flex; align-items: center; gap: 8px; }
+.district-glass .peso-box input { min-width: 0; max-width: 100%; }
+.district-glass .status-box { border: 1px solid #ffffffac; box-shadow: inset 0 1px 0 #ffffffac; }
+.district-glass .app-main :is(.monthly-report-card, .church-modal, .cp-modal-card, .modal-card, .pr-modal, .pr-sync-card, .pr-download-card, .loading-box, .print-progress-card) { background: linear-gradient(135deg, #fafcfff7, #edf3fff5); border: 1px solid #fff; border-radius: 22px; box-shadow: inset 0 1px 0 #fff, 0 18px 50px #1d376b28; }
+.district-glass .ui-ao-modal > div, .district-glass .ui-print-modal > div { background: linear-gradient(135deg, #fafcfff7, #edf3fff5) !important; border-color: #fff !important; box-shadow: inset 0 1px 0 #fff, 0 18px 50px #1d376b28; }
+
+/* Church Finder: style the surrounding controls without covering the map/markers. */
+.district-glass .church-finder-wrap { padding: 0; margin: 8px auto; }
+.district-glass .church-finder-card { padding: 22px; }
+.district-glass .church-finder-sub { color: var(--glass-muted); line-height: 1.6; font-size: 14px; }
+.district-glass .church-finder-card .view-tabs { padding: 8px; gap: 8px; background: #ffffff55; border: 1px solid #ffffffb3; border-radius: 16px; }
+.district-glass .church-finder-card :is(.view-tab, .download-map-btn, .church-map-btn, .nearest-btn) { min-height: 44px; border-radius: 12px; box-shadow: inset 0 1px 0 #ffffff65, 0 4px 12px #405f9410; font: inherit; font-size: 13px; font-weight: 650; }
+.district-glass .church-finder-card .view-tab { background: #ffffff9c; border: 1px solid #ffffffdb; color: #3e527d; }
+.district-glass .church-finder-card .view-tab.active { background: linear-gradient(110deg, #7849df, #367fed); color: #fff; border-color: #ffffff85; }
+.district-glass .church-finder-card .church-card { border-left: 3px solid #93b9ee; padding: 17px; }
+.district-glass .church-finder-card .church-card-title { color: #162b55; }
+.district-glass .church-finder-card .legend-item { border-color: #ffffffdc; background: #ffffff94; color: #435779; }
+.district-glass .church-finder-card #churchMap { border: 1px solid #fff; border-radius: 18px; box-shadow: 0 5px 18px #375a9314; }
+
+/* Schedules: existing event colors, calendar geometry, views and modal state remain. */
+.district-glass .schedule-wrap .calendar-grid { border-color: #ffffffdb; border-radius: 18px; background: #ffffff7a; box-shadow: inset 0 1px 0 #fff, 0 5px 18px #375a9311; }
+.district-glass .schedule-wrap .weekday { background: #e9f0ffbd; color: #536487; }
+.district-glass .schedule-wrap .day-cell { background: #ffffff75; border-color: #e1e8f3; }
+.district-glass .schedule-wrap .day-cell.day-muted { background: #eaf0fb80; }
+.district-glass .schedule-wrap .day-cell.day-today { background: #e5edffce; box-shadow: inset 0 0 0 2px #9fb5ef; }
+.district-glass .schedule-wrap .schedule-nav-title { color: #172b56; }
+.district-glass .schedule-wrap .search-result-card { border-radius: 17px; box-shadow: inset 0 1px 0 #ffffffdd, 0 4px 14px #345c960c; }
+.district-glass .schedule-wrap .manage-item, .district-glass .schedule-wrap .day-item { border-radius: 15px; border-color: #dce6f5; box-shadow: inset 0 1px 0 #fff; }
+.district-glass .schedule-wrap :is(.month-picker-btn, .secretary-menu) { border-color: #ffffffdb; box-shadow: inset 0 1px 0 #fff; }
+.district-glass :is(.modal-card, .cp-modal-card) :is(input, select, textarea) { border-color: #cad7ed; border-radius: 12px; }
+
+/* Progress, member lists and resource libraries share the same glass surfaces. */
+.district-glass .app-main :is(.cp-hero, .pr-hero, .ml-hero, .db-hero, .apm-hero-card) { background: linear-gradient(125deg, #ffffffb8, #e7eeffc2 60%, #ede6fbb8); border: 1px solid #fff; border-radius: 23px; box-shadow: var(--glass-shadow); color: #24385f; }
+.district-glass .cp-hero :is(.cp-hero-sub, .cp-year-label), .district-glass .apm-hero-card .subtitle { color: #4e6288; }
+.district-glass .app-main :is(.cp-stat, .cp-insight, .cp-create-box, .cp-fixed-box, .pr-download-bar, .ml-stat, .ml-note, .db-summary) { background: var(--glass-surface); border-color: #ffffffdb; border-radius: 17px; box-shadow: inset 0 1px 0 #fff, 0 3px 12px #3b5d990c; }
+.district-glass .app-main :is(.cp-table-wrap, .table-wrap) { border-radius: 15px; border-color: #ffffffdb; }
+.district-glass .app-main :is(.pr-btn, .pr-admin-btn, .pr-nav-btn, .ml-btn, .cp-action-btn, .cp-pill, .pill) { border-radius: 12px; }
+.district-glass .pr-page :is(.pr-filter-select, .pr-search-input), .district-glass .cp-wrap .cp-field { border-color: #cad7ed; border-radius: 12px; }
+.district-glass .pr-page .pr-cover, .district-glass .pr-page .pr-mini-cover { box-shadow: 0 6px 17px #233d7421; }
+.district-glass .se-page { background: transparent; }
+.district-glass .app-main :is(.se-hero, .se-tools, .se-item, .se-bible-directory, .se-book-btn) { background: var(--glass-surface); border-color: #ffffffdb; border-radius: 20px; box-shadow: var(--glass-shadow); }
+.district-glass .se-page :is(.se-btn, .se-field, .se-select) { border-radius: 12px; }
+.district-glass .se-modal, .district-glass .se-loading-card { background: linear-gradient(135deg, #fafcfff7, #edf3fff5); border-color: #fff; box-shadow: var(--glass-shadow); }
+.district-glass .pledge-page :is(.pledge-filters, .pledge-table-wrap, .pledge-review) { background: var(--glass-surface); border: 1px solid #fff; border-radius: 20px; box-shadow: var(--glass-shadow); }
+.district-glass .pledge-page .pledge-summary { background: linear-gradient(125deg, #172d5e, #30487e); border: 1px solid #ffffff6b; border-radius: 22px; box-shadow: inset 0 1px 0 #ffffff38, 0 8px 24px #254c8020; }
+.district-glass .pledge-page .pledge-hero h1 { color: #fff; }
+.district-glass .pledge-page .pledge-dialog { background: linear-gradient(135deg, #fafcfff7, #edf3fff5); border-color: #fff; border-radius: 22px; box-shadow: inset 0 1px 0 #fff, 0 18px 50px #1d376b28; }
+.district-glass .pledge-page .pledge-button { border-radius: 12px; }
+
+/* Standalone login page uses the same palette without changing form text/actions. */
+.glass-splash { color: #14234a; min-height: 100vh; padding: 28px 18px; }
+.glass-splash .splash-container { width: min(440px, 100%); padding: 30px 24px; border-radius: 28px; border: 1px solid #fff; background: var(--glass-surface); box-shadow: var(--glass-shadow); }
+.glass-splash .splash-logo { width: 130px; max-width: 45vw; margin-bottom: 16px; }
+.glass-splash .splash-title { color: #14234a; font-size: 26px; letter-spacing: -.025em; margin: 0 0 24px; }
+.glass-splash .splash-container > div[style] { background: #ffffff65 !important; border-color: #ffffffd9 !important; border-radius: 18px !important; }
+.glass-splash :is(input[type=text], input[type=password]) { background: #ffffffb8 !important; color: #203659 !important; border-color: #c7d5ed !important; min-height: 46px; }
+.glass-splash button[type=submit] { min-height: 46px; box-shadow: inset 0 1px 0 #ffffff55, 0 4px 13px #22a76420; }
+.glass-splash :is(input, button, a):focus-visible { outline: 3px solid #8062d6; outline-offset: 3px; }
+.glass-splash div[style*="#fecaca"] { color: #a33751 !important; }
+
+@supports ((backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px))) {
+  .district-glass .side-drawer { background: linear-gradient(140deg, #f5f9ff94, #e8eefb8c); -webkit-backdrop-filter: blur(18px) saturate(1.15); backdrop-filter: blur(18px) saturate(1.15); }
+  .district-glass .backdrop.visible { -webkit-backdrop-filter: blur(1px); backdrop-filter: blur(1px); }
+  .district-glass .app-header { -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .glass-splash .splash-container { -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+}
+@media (max-width: 600px) {
+  .district-glass .app-main > .card, .district-glass .church-finder-card { padding: 18px 16px; }
+  .district-glass .app-main > .ui-church-status.card { padding: 0; }
+  .district-glass .church-finder-card .view-tabs { gap: 7px; }
+  .district-glass .month-picker { gap: 10px; }
+  .district-glass .month-picker .field-group { min-width: 120px; }
+  .district-glass .month-picker > button { width: 100%; }
+  .district-glass .sunday-card { padding: 14px 12px; font-size: 14px; }
+  .glass-splash .splash-container { padding: 25px 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .district-glass .side-drawer, .district-glass .backdrop { transition: none; }
+  .district-glass .side-drawer.open .menu-list li { animation: none; }
+}
+@media print {
+  .district-glass, .glass-splash { background: #fff; }
+  .district-glass .app-main :is(.card, .cp-card, .church-finder-card, .church-card, .pr-card) { background: #fff; box-shadow: none; }
+}

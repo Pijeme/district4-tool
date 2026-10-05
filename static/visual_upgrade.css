@@ -1,0 +1,226 @@
+/* District 4 visual layer. Existing backend, forms and application scripts are preserved. */
+:root {
+  --ui-navy: #091747;
+  --ui-text: #14234a;
+  --ui-muted: #586789;
+  --ui-blue: #2864e8;
+  --ui-purple: #7741db;
+  --ui-glass: rgba(255, 255, 255, .9);
+  --ui-border: #dfe7f5;
+  --ui-radius: 22px;
+  --ui-shadow: 0 8px 28px rgba(35, 61, 117, .07);
+  --ui-fast: 220ms;
+}
+.district-ui {
+  background: radial-gradient(ellipse at 0 0, #e4edff 0, transparent 42%), radial-gradient(ellipse at 100% 30%, #f0eaff 0, transparent 40%), #f5f7fd;
+  color: var(--ui-text);
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+}
+.district-ui .app-header { background: linear-gradient(115deg, #0c2055, #070f38); padding: 12px 18px; box-shadow: 0 3px 18px #14254b18; }
+.district-ui .header-left { min-height: 40px; gap: 10px; max-width: 1120px; margin: auto; }
+.district-ui .logo-wrap { width: 42px; height: 42px; flex: 0 0 42px; background: transparent; margin: 0; }
+.district-ui .app-title { font-weight: 730; letter-spacing: -.025em; font-size: 17px; }
+.district-ui .app-subtitle { color: #bdcbed; font-size: 11px; margin-top: 2px; }
+.ui-icon { flex: 0 0 auto; vertical-align: middle; }
+.district-ui :is(a, button, input, select, textarea):focus-visible { outline: 3px solid #7449d5; outline-offset: 3px; }
+.district-ui .menu-toggle { width: 44px; height: 44px; padding: 10px; margin: 0; display: grid; place-items: center; border-radius: 12px; }
+.district-ui .menu-toggle:hover { background: #ffffff12; }
+.burger-lines { display: flex; flex-direction: column; gap: 5px; width: 23px; }
+.burger-lines span { height: 2px; width: 23px; border-radius: 2px; background: #fff; transform-origin: center; transition: transform var(--ui-fast), opacity var(--ui-fast); }
+.is-open .burger-lines span:first-child { transform: translateY(7px) rotate(45deg); }
+.is-open .burger-lines span:nth-child(2) { opacity: 0; }
+.is-open .burger-lines span:last-child { transform: translateY(-7px) rotate(-45deg); }
+.district-ui .side-drawer {
+  left: 0; top: 12px; width: min(338px, calc(100vw - 24px)); height: calc(100vh - 24px); height: calc(100dvh - 24px);
+  padding: 12px; margin-left: 12px; overflow-y: auto; overscroll-behavior: contain;
+  color: var(--ui-text); background: #f3f6fff5; border: 1px solid #ffffff; border-radius: 26px;
+  box-shadow: 0 18px 50px #09174730; transform: translateX(calc(-100% - 24px)); visibility: hidden;
+  transition: transform 240ms ease, visibility 240ms; z-index: 17001;
+}
+.district-ui .side-drawer.open { transform: translateX(0); visibility: visible; transition: transform 240ms ease; }
+.district-ui .drawer-header { padding: 2px 6px 12px; border: 0; font-size: 12px; font-weight: 800; color: #536388; letter-spacing: .14em; }
+.district-ui .drawer-close { width: 42px; height: 42px; display: grid; place-items: center; color: #42557f; background: #ffffffa6; border: 1px solid #dfe7f5; border-radius: 12px; }
+.drawer-greeting { display: flex; align-items: center; gap: 12px; padding: 17px 14px; margin: 0 3px 12px; border: 1px solid #fff; border-radius: 20px; background: linear-gradient(135deg, #e2eeff, #ffffffcc); }
+.drawer-avatar { width: 50px; height: 50px; flex: 0 0 50px; border-radius: 18px; display: grid; place-items: center; font-size: 23px; font-weight: 750; color: #fff; background: linear-gradient(135deg, #368adf, #7051cd); }
+.drawer-greeting > div { min-width: 0; }
+.drawer-greeting strong { display: block; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
+.drawer-hello { display: block; color: var(--ui-muted); font-size: 13px; margin-bottom: 3px; }
+.drawer-role { display: block; font-size: 12px; color: #553fa4; margin-top: 5px; line-height: 1.5; }
+.district-ui .side-drawer ul { padding: 0; }
+.district-ui .menu-list li { margin: 4px 0; }
+.district-ui .side-drawer a { display: flex; align-items: center; gap: 13px; padding: 12px 13px; min-height: 50px; color: #263859; background: #ffffff85; border: 1px solid #ffffffcc; border-radius: 14px; font-size: 14px; font-weight: 550; transition: background 160ms, box-shadow 160ms; }
+.district-ui .side-drawer a > span:not(.menu-pending) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.district-ui .side-drawer a .ui-icon { width: 21px; height: 21px; color: #53688d; }
+.district-ui .side-drawer a:hover { background: #fff; box-shadow: 0 4px 13px #6681bc13; }
+.district-ui .side-drawer a:active { background: #e5edff; }
+.district-ui .side-drawer a[aria-current="page"] { background: linear-gradient(110deg, #7344d8, #3578d9); color: #fff; border-color: #ffffffaa; box-shadow: 0 5px 15px #6251d025; }
+.district-ui .side-drawer a[aria-current="page"] .ui-icon { color: #fff; }
+.menu-pending { padding: 3px 6px; border-radius: 7px; font-size: 9px; text-transform: uppercase; font-weight: 750; letter-spacing: .04em; color: #5e6484; background: #edf0f9; }
+.district-ui .menu-list .menu-logout { border-top: 1px solid #dce4f2; margin-top: 12px; padding-top: 12px; }
+.district-ui .menu-logout a, .district-ui .menu-logout a .ui-icon { color: #bd364e; }
+.district-ui .menu-logout a { background: #fff1f480; }
+.district-ui .backdrop { background: #08183d66; z-index: 17000; transition: opacity 240ms; }
+@supports ((backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px))) {
+  .district-ui .side-drawer { background: #f2f6ffdf; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  .district-ui .backdrop.visible { -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+}
+@keyframes ui-menu-reveal { from { opacity: 0; transform: translateX(-7px); } to { opacity: 1; transform: translateX(0); } }
+.district-ui .side-drawer.open .menu-list li { animation: ui-menu-reveal 170ms both; animation-delay: var(--menu-delay, 0ms); }
+@media (max-width: 480px) { .district-ui .app-header { padding: 10px 12px; } .district-ui .app-subtitle { font-size: 10px; max-width: 225px; line-height: 1.4; } }
+@media (prefers-reduced-motion: reduce) {
+  .district-ui .side-drawer, .district-ui .backdrop, .burger-lines span, .district-ui .side-drawer a { transition: none; }
+  .district-ui .side-drawer.open .menu-list li { animation: none; }
+}
+
+/* Bulletin Board: one readable feed at every screen size. */
+.ui-page-title { margin: 0; color: var(--ui-navy); font-size: clamp(25px, 3vw, 32px); line-height: 1.2; letter-spacing: -.04em; }
+.ui-page-title::after { content: ''; display: block; width: 46px; height: 4px; margin-top: 12px; border-radius: 4px; background: linear-gradient(90deg, #7440df, #4178e5); }
+.district-ui .ui-bulletin { max-width: 760px; margin: 8px auto 30px; }
+.ui-bulletin .bb-area { display: inline-block; margin-top: 14px; font-size: 13px; font-weight: 600; line-height: 1.5; color: #586789; }
+.ui-bulletin .verse-card { position: relative; padding: 22px; min-height: 248px; border-radius: 22px; overflow: hidden; background: linear-gradient(90deg, #071b39e8, #122544a3 65%, #12254455), url('img/thanksgiving-hero.jpg') right center / cover; color: #fff; box-shadow: var(--ui-shadow); }
+.ui-bulletin .verse-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; color: #fff; }
+.verse-label { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #ffffff50; border-radius: 10px; background: #ffffff18; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+.verse-label .ui-icon { width: 18px; height: 18px; }
+.ui-bulletin .verse-date { font-size: 12px; color: #edf4ff; }
+.ui-bulletin .verse-text { max-width: 570px; margin: 24px 0 15px; color: #fff; font-size: clamp(20px, 3vw, 27px); line-height: 1.5; font-weight: 650; letter-spacing: -.02em; }
+.ui-bulletin .verse-ref { margin: 0; color: #d5e7ff; font-size: 14px; font-weight: 700; }
+.ui-bulletin .bb-intro > .muted { font-size: 11px; color: #64718c; margin: 10px 2px 20px; }
+.ui-bulletin .bb-feed { display: flex; flex-direction: column; gap: 14px; }
+.ui-bulletin .bb-post { position: relative; padding: 20px; border: 1px solid var(--ui-border); border-left: 4px solid #b9c8ef; border-radius: 19px; background: var(--ui-glass); box-shadow: var(--ui-shadow); overflow-wrap: anywhere; }
+.ui-bulletin .bb-header-row { display: flex; align-items: center; flex-wrap: wrap; gap: 11px; margin-bottom: 14px; }
+.bb-avatar { width: 46px; height: 46px; flex: 0 0 46px; display: grid; place-items: center; border-radius: 16px; background: linear-gradient(135deg, #477bd6, #6148b4); color: #fff; font-size: 15px; font-weight: 750; }
+.bb-post-identity { flex: 1; min-width: 130px; }
+.ui-bulletin .bb-church { font-weight: 750; font-size: 15px; color: var(--ui-navy); }
+.ui-bulletin .bb-date { margin-top: 4px; font-size: 12px; color: var(--ui-muted); }
+.ui-bulletin .bb-title { margin: 7px 0; font-weight: 700; font-size: 16px; line-height: 1.5; color: var(--ui-text); }
+.ui-bulletin .bb-body { margin-top: 12px; line-height: 1.7; white-space: pre-wrap; color: #33435d; font-size: 15px; }
+.ui-bulletin .bb-pill { display: inline-block; padding: 5px 8px; border-radius: 8px; font-size: 10px; line-height: 1.4; font-weight: 700; }
+.ui-bulletin .pill-prayer { background: #dcf8ed; color: #176c48; }
+.ui-bulletin .pill-birthday { background: #fff0df; color: #924911; }
+.ui-bulletin .pill-answered { background: #e2edff; color: #245aba; }
+.ui-bulletin .pill-recognition { background: #fff5d8; color: #805c12; }
+.ui-bulletin .pill-schedule { background: #eee7ff; color: #6741aa; }
+.ui-bulletin .bb-type-prayer_request { border-left-color: #50c6a4; }
+.ui-bulletin .bb-type-prayer_request .bb-avatar { background: linear-gradient(135deg, #17a8ad, #067a90); }
+.ui-bulletin .bb-type-birthday { border-left-color: #e5b05c; }
+.ui-bulletin .bb-type-answered_prayer { border-left-color: #649afa; }
+.ui-bulletin .bb-type-announcement, .ui-bulletin .bb-type-schedule_notice { border-left-color: #a383e8; }
+.ui-bulletin .bb-badge { margin-top: 7px; color: #176c48; font-weight: 600; font-size: 13px; }
+.ui-bulletin details { border-top: 1px solid #e7ecf6; padding-top: 12px; }
+.ui-bulletin summary { color: #3c4a78; font-size: 13px; min-height: 30px; padding: 5px 0; }
+.ui-bulletin .bb-pray-list { margin-top: 12px; padding: 13px; background: #f1f7fc; border: 1px solid #dee9f1; border-radius: 12px; font-size: 13px; line-height: 1.6; }
+.ui-bulletin .bb-footer-note { font-size: 12px; color: var(--ui-muted); margin-top: 10px; font-style: italic; }
+.ui-bulletin .bb-empty { text-align: center; padding: 30px; color: var(--ui-muted); }
+
+/* AO tools: preserve the six existing destinations and their identifying colors. */
+.ui-ao-dashboard { max-width: 920px; margin: 8px auto 30px; }
+.ui-ao-dashboard > .muted { color: var(--ui-muted); font-size: 12px; margin-top: 15px !important; }
+.ui-ao-intro { display: flex; align-items: center; gap: 18px; padding: 24px; margin: 20px 0; border: 1px solid #dce7f8; border-radius: 22px; background: linear-gradient(120deg, #e2eeff, #f3edff); }
+.ui-ao-intro-icon { display: grid; place-items: center; width: 66px; height: 66px; flex: 0 0 66px; color: #4d6fc5; background: #ffffff8c; border: 1px solid #fff; border-radius: 20px; }
+.ui-ao-intro-icon .ui-icon { width: 36px; height: 36px; }
+.ui-ao-intro h3 { margin: 0; font-size: 18px; color: var(--ui-navy); }
+.ui-ao-intro p { margin: 8px 0 0 !important; font-size: 13px; line-height: 1.7; color: #495c82; }
+.ui-cache-tools { display: flex; gap: 10px; padding: 12px; margin: 0 0 18px; background: #ffffff8c; border: 1px dashed #bdcbe6; border-radius: 16px; }
+.ui-cache-tools form { flex: 1; min-width: 0; }
+.ui-cache-tools button { border-radius: 11px; font-size: 12px; min-height: 44px; color: #41577f; border: 1px solid #d6e0f2; background: #f6f8fd; }
+.ui-utility-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.ui-utility-grid .ui-utility { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 10px; min-height: 196px; padding: 23px 14px; border-radius: 22px; border: 1px solid var(--ui-border) !important; background: var(--ui-glass) !important; color: var(--ui-navy) !important; text-align: center; white-space: normal; box-shadow: var(--ui-shadow); transition: transform 180ms, border-color 180ms, box-shadow 180ms; font-family: inherit; }
+.ui-utility:hover { transform: translateY(-2px); border-color: #b7c8e7 !important; box-shadow: 0 12px 24px #45659514; }
+.ui-utility:active { transform: translateY(0); }
+.ui-utility-icon { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 17px; color: #fff; background: var(--utility-color); box-shadow: 0 5px 12px var(--utility-shadow); }
+.ui-utility-icon .ui-icon { width: 30px; height: 30px; }
+.ui-utility-title { font-weight: 750; font-size: 15px; line-height: 1.35; }
+.ui-utility-description { font-size: 12px; line-height: 1.5; color: var(--ui-muted); font-weight: 400; max-width: 180px; }
+.ui-utility-status { --utility-color: linear-gradient(145deg, #a16cf3, #7939da); --utility-shadow: #8b5cf62c; }
+.ui-utility-progress { --utility-color: linear-gradient(145deg, #229b91, #0f766e); --utility-shadow: #0f766e2c; }
+.ui-utility-create { --utility-color: linear-gradient(145deg, #5198fa, #2563eb); --utility-shadow: #2563eb2c; }
+.ui-utility-edit { --utility-color: linear-gradient(145deg, #ffbf38, #e59105); --utility-shadow: #f59e0b2c; }
+.ui-utility-prayer { --utility-color: linear-gradient(145deg, #43d97f, #19964d); --utility-shadow: #22c55e2c; }
+.ui-utility-announcement { --utility-color: linear-gradient(145deg, #36d4c1, #0e9a89); --utility-shadow: #14b8a62c; }
+.ui-ao-modal > div { border: 1px solid var(--ui-border); color: var(--ui-text); }
+.ui-ao-modal :is(input, select, textarea) { min-width: 0; padding: 12px; border: 1px solid #cad7ee; border-radius: 11px; font: inherit; font-size: 14px; }
+.ui-ao-modal .btn-secondary { border: 1px solid #d7e1f0; border-radius: 11px; background: #f3f6fc; color: #405579; }
+.ui-ao-modal .btn-primary { border-radius: 11px; }
+@media (max-width: 600px) {
+  .ui-utility-grid { gap: 11px; }
+  .ui-utility-grid .ui-utility { min-height: 186px; padding: 17px 8px; border-radius: 18px; }
+  .ui-utility-title { font-size: 13px; }
+  .ui-utility-description { font-size: 11px; }
+  .ui-utility-icon { width: 52px; height: 52px; border-radius: 15px; }
+  .ui-ao-intro { padding: 19px; gap: 12px; }
+  .ui-ao-intro-icon { width: 48px; height: 48px; flex-basis: 48px; border-radius: 14px; }
+  .ui-ao-intro-icon .ui-icon { width: 28px; height: 28px; }
+  .ui-cache-tools { flex-direction: column; }
+  .ui-ao-modal { padding: 12px !important; }
+  .ui-ao-modal > div { padding: 18px !important; margin-top: 12px !important; }
+  .ui-ao-modal form[action$="edit-account/save"] { grid-template-columns: 1fr !important; }
+}
+@media (max-width: 359px) { .ui-utility-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .ui-utility-grid .ui-utility { transition: none; transform: none; } }
+
+/* Church Status: all existing month, report, approval and print states stay intact. */
+.district-ui .ui-church-status.card { margin: 8px auto 30px; padding: 0; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.ui-church-status > p { color: var(--ui-muted); line-height: 1.65; font-size: 13px; margin: 16px 0 20px; }
+.ui-year-control { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border: 1px solid var(--ui-border); border-radius: 15px; background: var(--ui-glass); color: #506287; font-size: 13px; box-shadow: var(--ui-shadow); }
+.ui-year-control > .ui-icon { color: #7449d5; width: 22px; height: 22px; }
+.ui-year-control select { flex: 1; min-width: 90px; padding: 9px 12px; margin: 0; background: #f5f7fd; border: 1px solid #d7e2f4; border-radius: 10px; color: var(--ui-navy); font: inherit; font-size: 15px; font-weight: 600; }
+.ui-church-status .ui-month-toggle { padding: 15px 17px; border: 1px solid #cbdcf2 !important; border-radius: 15px; color: #243d69; box-shadow: 0 3px 10px #405f9410; }
+.ui-month-name { display: inline-flex; align-items: center; gap: 11px; font-size: 15px; }
+.ui-month-name .ui-icon { width: 21px; height: 21px; }
+.ui-month-chevron { display: grid; place-items: center; }
+.ui-month-chevron .ui-icon { width: 20px; height: 20px; transform: rotate(90deg); }
+.ui-church-status .ui-month-body > .card { border: 1px solid var(--ui-border) !important; border-radius: 19px; background: var(--ui-glass); padding: 20px; box-shadow: var(--ui-shadow); }
+.ui-church-status h3 { color: var(--ui-navy); font-size: 17px; letter-spacing: -.02em; }
+.ui-month-tools .aopt-form { flex: 1; min-width: 0; }
+.ui-month-tools .aopt-form label { flex-basis: 100%; margin-right: 0 !important; font-size: 15px !important; color: var(--ui-navy); }
+.ui-month-tools .aopt-input { flex: 1; width: 180px; min-width: 120px !important; max-width: 100%; border-color: #cad7ee !important; background: #f7f9ff; color: var(--ui-text); font: inherit; }
+.ui-month-tools :is(.aopt-toggle, .print-report-btn) { min-width: 100px !important; min-height: 44px; border-radius: 11px; font-size: 13px; }
+.ui-month-tools .print-report-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #eee7ff; border: 1px solid #ddd1f9; color: #62419b; }
+.ui-month-tools .print-report-btn .ui-icon { width: 18px; height: 18px; }
+.ui-month-tools > .muted { color: var(--ui-muted); }
+.ui-area-summary .small[style*="display:grid"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)) !important; gap: 10px 16px !important; font-size: 13px; line-height: 1.6; color: #4c5d7b; }
+.ui-area-summary .small b { color: #2d4164; font-weight: 650; }
+.ui-area-summary hr { border-color: #e5ebf5 !important; }
+.ui-church-status .church-list { gap: 11px; }
+.ui-church-status .church-list-btn { padding: 15px; border: 1px solid #e0e7f4; border-left: 4px solid var(--status-accent); border-radius: 16px; background: #fff; color: var(--ui-text); font-family: inherit; box-shadow: 0 3px 10px #2b45770a; transition: background 180ms, border-color 180ms; }
+.ui-church-status .church-list-btn:hover { transform: none; box-shadow: 0 4px 15px #2b457715; background: #f8faff; }
+.ui-church-status .church-list-btn.status-approved { --status-accent: #49ba85; --status-avatar: #168d70; }
+.ui-church-status .church-list-btn.status-pending { --status-accent: #e4b043; --status-avatar: #bf8621; }
+.ui-church-status .church-list-btn.status-not-submitted { --status-accent: #e68b97; --status-avatar: #bf546b; }
+.ui-church-status .church-list-btn:is(.status-approved, .status-pending, .status-not-submitted) { background: #fff; }
+.ui-church-status .church-list-btn-inner { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto 18px; gap: 12px; align-items: center; }
+.ui-church-avatar { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 16px; background: var(--status-avatar, #516aa9); color: #fff; font-size: 14px; font-weight: 750; }
+.ui-church-row-copy { min-width: 0; overflow-wrap: anywhere; font-size: 14px; line-height: 1.45; }
+.ui-church-status .church-list-meta { font-size: 12px; color: var(--ui-muted); line-height: 1.6; }
+.ui-church-chevron { width: 18px; height: 18px; color: #7283a5; }
+.ui-church-status .status-pill { border: 0; border-radius: 8px; padding: 6px 9px; font-size: 11px; font-weight: 650; line-height: 1.4; }
+.ui-church-status .status-pill.approved { color: #167449; background: #dcf6e9; }
+.ui-church-status .status-pill.pending { color: #865c12; background: #fff1d0; }
+.ui-church-status .status-pill.not-submitted { color: #a33a50; background: #ffe7ec; }
+.ui-church-status .status-pill:is(.approved, .pending, .not-submitted) { border: 0; }
+.ui-church-status .church-modal { border: 1px solid var(--ui-border); border-radius: 22px; color: var(--ui-text); }
+.ui-church-status .church-modal .btn-secondary { border: 1px solid #d7e1f0; border-radius: 11px; background: #f3f6fc; color: #405579; }
+.ui-church-status .church-modal-grid { line-height: 1.6; color: #4c5d7b; }
+.ui-print-modal { padding: 16px; overflow-y: auto; }
+.ui-print-modal > div { border: 1px solid var(--ui-border) !important; color: var(--ui-text); }
+@media (max-width: 600px) {
+  .ui-church-status .ui-month-body > .card { padding: 16px; }
+  .ui-church-status .church-list-btn { padding: 13px 11px; }
+  .ui-church-status .church-list-btn-inner { grid-template-columns: 42px minmax(0, 1fr) 16px; gap: 5px 10px; }
+  .ui-church-avatar { width: 42px; height: 42px; grid-column: 1; grid-row: 1 / 3; border-radius: 14px; }
+  .ui-church-row-copy { grid-column: 2; grid-row: 1; }
+  .ui-church-status .church-list-btn-inner > .status-pill { grid-column: 2; grid-row: 2; justify-self: start; }
+  .ui-church-chevron { grid-column: 3; grid-row: 1 / 3; }
+  .ui-church-status .church-modal-overlay { padding: 12px; }
+  .ui-church-status .church-modal { padding: 16px; }
+  .ui-church-status .church-modal-header { flex-wrap: wrap; }
+  .ui-church-status .church-modal-header > div:last-child { flex-wrap: wrap; }
+  .ui-print-modal > div { margin: 40px auto !important; }
+}
+@media (prefers-reduced-motion: reduce) { .ui-church-status .church-list-btn { transition: none; } }
+@media (max-width: 480px) {
+  .ui-bulletin .verse-card { padding: 18px; }
+  .ui-bulletin .bb-post { padding: 16px 14px; }
+  .ui-bulletin .bb-header-row > div:last-child { margin-left: 57px; }
+}
