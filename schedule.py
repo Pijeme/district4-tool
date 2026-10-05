@@ -168,9 +168,11 @@ def _append_district_schedule_row(payload: dict):
         payload.get("theme", ""),
         payload.get("text", ""),
     ], value_input_option="USER_ENTERED")
+    _appmod().queue_sheet_cache_refresh("DistrictSchedule")
 
 def _update_district_schedule_row(sheet_row: int, payload: dict):
     ws = _ensure_district_schedule_headers()
+    _appmod().verify_sheet_row(ws, "DistrictSchedule", int(sheet_row))
     ws.update(f"A{sheet_row}:K{sheet_row}", [[
         payload.get("church_name", ""),
         payload.get("church_address", ""),
@@ -184,11 +186,16 @@ def _update_district_schedule_row(sheet_row: int, payload: dict):
         payload.get("theme", ""),
         payload.get("text", ""),
     ]], value_input_option="USER_ENTERED")
+    _appmod().queue_sheet_cache_refresh("DistrictSchedule")
 
 def _delete_district_schedule_row(sheet_row: int):
     ws = _ensure_district_schedule_headers()
     if int(sheet_row) > 1:
+        _appmod().verify_sheet_row(ws, "DistrictSchedule", int(sheet_row))
         ws.delete_rows(int(sheet_row))
+        _appmod().queue_sheet_cache_refresh("DistrictSchedule")
+    else:
+        raise ValueError("Invalid schedule row.")
 
 def _get_schedule_row_from_cache(sheet_row: int):
     db = get_db()
@@ -242,9 +249,11 @@ def _update_account_google_pin(area_number: str, church_name: str, google_pin_lo
     sh = client.open("District4 Data")
     ws = sh.worksheet("Accounts")
     headers = _ensure_accounts_headers(ws)
+    _appmod().verify_sheet_row(ws, "Accounts", int(acct['sheet_row']), headers=headers)
     row = [_build_account_row_from_headers(headers, payload)]
     end_col = chr(ord('A') + len(headers) - 1)
     ws.update(f"A{int(acct['sheet_row'])}:{end_col}{int(acct['sheet_row'])}", row, value_input_option="USER_ENTERED")
+    _appmod().queue_sheet_cache_refresh("Accounts")
     return True
 
 def get_schedule_search_accounts():
@@ -535,7 +544,7 @@ def register_schedule_routes(app):
                         }
                         _append_district_schedule_row(payload)
                         _update_account_google_pin('', church_name, google_pin_location)
-                    sync_from_sheets_if_needed(force=True)
+                    _appmod().refresh_after_sheet_write("DistrictSchedule", "Accounts")
                     flash('Schedule created successfully.', 'success')
                 except Exception as e:
                     print('❌ Create schedule failed:', e)
@@ -574,7 +583,7 @@ def register_schedule_routes(app):
                 try:
                     _update_district_schedule_row(sheet_row, payload)
                     _update_account_google_pin('', payload['church_name'], google_pin_location)
-                    sync_from_sheets_if_needed(force=True)
+                    _appmod().refresh_after_sheet_write("DistrictSchedule", "Accounts")
                     flash('Schedule updated successfully.', 'success')
                 except Exception as e:
                     print('❌ Edit schedule failed:', e)
@@ -604,7 +613,7 @@ def register_schedule_routes(app):
                 }
                 try:
                     _update_district_schedule_row(sheet_row, payload)
-                    sync_from_sheets_if_needed(force=True)
+                    _appmod().refresh_after_sheet_write("DistrictSchedule")
                     flash('Schedule details updated successfully.', 'success')
                 except Exception as e:
                     print('❌ Public schedule edit failed:', e)
@@ -621,7 +630,7 @@ def register_schedule_routes(app):
                 view = (request.form.get('view') or 'district').strip()
                 try:
                     _delete_district_schedule_row(sheet_row)
-                    sync_from_sheets_if_needed(force=True)
+                    _appmod().refresh_after_sheet_write("DistrictSchedule")
                     flash('Schedule deleted successfully.', 'success')
                 except Exception as e:
                     print('❌ Delete schedule failed:', e)
@@ -640,9 +649,10 @@ def register_schedule_routes(app):
                     flash('Name is required to join this activity.', 'error')
                     return redirect(url_for('schedules', year=year, month=month, view=view))
                 try:
-                    _join_schedule(sheet_row, effective_name)
+                    if not _join_schedule(sheet_row, effective_name):
+                        raise ValueError("Schedule not found.")
                     session['schedule_join_name'] = effective_name
-                    sync_from_sheets_if_needed(force=True)
+                    _appmod().refresh_after_sheet_write("DistrictSchedule")
                     flash('You have been added as joining.', 'success')
                 except Exception as e:
                     print('❌ Join schedule failed:', e)
