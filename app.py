@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 from datetime import datetime, date, timezone
 import calendar
@@ -12,6 +13,7 @@ import shutil
 from pathlib import Path
 
 from sheet_cache import DATASETS, CacheSyncError, init_cache_tables, sync_cache
+from login_events import ensure_login_event_schema, insert_login_event
 
 from zoneinfo import ZoneInfo
 
@@ -24,6 +26,7 @@ from flask import (
     Flask,
     g,
     render_template,
+    render_template_string,
     request,
     redirect,
     url_for,
@@ -478,56 +481,7 @@ def init_db():
     )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_dev_logs_created_at ON developer_visit_logs(created_at)")
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_login_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            username TEXT NOT NULL,
-            full_name TEXT,
-            role TEXT,
-            church_id TEXT,
-            church_address TEXT,
-            area_number TEXT,
-            sub_area TEXT,
-            ip_address TEXT,
-            user_agent TEXT
-        )
-        """
-    )
-    # Migrate older login tables before indexing or recording new logins.
-    columns = {
-        row[1]
-        for row in cursor.execute(
-            "PRAGMA table_info(user_login_events)"
-        ).fetchall()
-    }
-    if "created_at" not in columns:
-        try:
-            if "logged_in_at" in columns:
-                cursor.execute(
-                    "ALTER TABLE user_login_events "
-                    "RENAME COLUMN logged_in_at TO created_at"
-                )
-            else:
-                cursor.execute(
-                    "ALTER TABLE user_login_events "
-                    "ADD COLUMN created_at TEXT"
-                )
-        except sqlite3.OperationalError:
-            # Another worker may have completed the same migration.
-            columns = {
-                row[1]
-                for row in cursor.execute(
-                    "PRAGMA table_info(user_login_events)"
-                ).fetchall()
-            }
-            if "created_at" not in columns:
-                raise
-
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_created ON user_login_events(created_at)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username)")
+    ensure_login_event_schema(db)
 
     # -----------------------
     # ✅ PRAYER REQUEST CACHE (PrayerRequest sheet → local cache)
@@ -3253,6 +3207,16 @@ def _log_visit_if_needed():
 
 
 def _record_pastor_login_event(row):
+    # Credentials have already been verified. Optional history must not turn
+    # a successful login into a 500 response with an authenticated session.
+    try:
+        _insert_pastor_login_event(row)
+    except sqlite3.Error:
+        get_db().rollback()
+        app.logger.exception("Could not record pastor login history")
+
+
+def _insert_pastor_login_event(row):
     """Record ONLY real Pastor account logins.
 
     This is intentionally separate from developer_visit_logs so AO actions,
@@ -3293,25 +3257,20 @@ def _record_pastor_login_event(row):
     if recent:
         return
 
-    get_db().execute(
-        """
-        INSERT INTO user_login_events (
-            created_at, username, full_name, role, church_id, church_address,
-            area_number, sub_area, ip_address, user_agent
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            now_iso,
-            username,
-            str((row["name"] if "name" in row.keys() else "") or "").strip(),
-            role or "Pastor",
-            str((row["sex"] if "sex" in row.keys() else "") or "").strip(),
-            str((row["church_address"] if "church_address" in row.keys() else "") or "").strip(),
-            str((row["age"] if "age" in row.keys() else "") or "").strip(),
-            str((row["sub_area"] if "sub_area" in row.keys() else "") or "").strip(),
-            ip_address,
-            user_agent,
-        ),
+    insert_login_event(
+        get_db(),
+        {
+            "created_at": now_iso,
+            "username": username,
+            "full_name": str((row["name"] if "name" in row.keys() else "") or "").strip(),
+            "role": role or "Pastor",
+            "church_id": str((row["sex"] if "sex" in row.keys() else "") or "").strip(),
+            "church_address": str((row["church_address"] if "church_address" in row.keys() else "") or "").strip(),
+            "area_number": str((row["age"] if "age" in row.keys() else "") or "").strip(),
+            "sub_area": str((row["sub_area"] if "sub_area" in row.keys() else "") or "").strip(),
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+        },
     )
     get_db().commit()
 
@@ -3345,6 +3304,47 @@ def cache_public_images(response):
                 response.expires = datetime.fromtimestamp(utc_now().timestamp() + 864000, timezone.utc)
     if request.endpoint in {"temp_edit_selfie", "pledge_selfie", "ao_download_local_db", "ao_full_cache_sync"}:
         response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.after_request
+def add_page_loading_screen(response):
+    """Give standalone HTML pages the same loading UI as base.html pages."""
+    if (response.status_code != 200 or response.mimetype != "text/html" or response.is_streamed
+            or response.direct_passthrough
+            or response.headers.get("Content-Disposition")):
+        return response
+
+    html = response.get_data(as_text=True)
+    if re.search(r'\bid=[\"\']globalLoadingOverlay[\"\']', html):
+        return response
+    body = re.search(r"<body\b[^>]*>", html, re.IGNORECASE)
+    if not body:
+        return response
+
+    # The legacy login, account edit, map export, log and pending pages do
+    # not extend base.html. Reuse its UI macros without adding project files.
+    head_ui = render_template_string(
+        "{% from 'ui_icons.html' import loading_head %}{{ loading_head() }}"
+    )
+    body_ui = render_template_string(
+        "{% from 'ui_icons.html' import loading_overlay %}{{ loading_overlay() }}"
+    )
+    html = html[:body.end()] + body_ui + html[body.end():]
+    head = re.search(r"<head\b[^>]*>", html, re.IGNORECASE)
+    head_end = re.search(r"</head\s*>", html, re.IGNORECASE)
+    if head and head_end:
+        # Keep standalone pages' own styles after the common stylesheet so
+        # their login, map and account-edit layouts retain precedence.
+        asset = re.search(r"<(?:link|style|script)\b",
+                          html[head.end():head_end.start()], re.IGNORECASE)
+        position = head.end() + asset.start() if asset else head_end.start()
+        html = html[:position] + head_ui + html[position:]
+    else:
+        # The developer log is a minimal document without a head element.
+        body = re.search(r"<body\b[^>]*>", html, re.IGNORECASE)
+        html = html[:body.start()] + "<head>" + head_ui + "</head>" + html[body.start():]
+    response.set_data(html)
     return response
 
 

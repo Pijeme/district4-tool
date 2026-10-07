@@ -27,3 +27,236 @@
 } %}
 <svg class="ui-icon {{ class_name }}" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">{{ paths.get(name, paths['info'])|safe }}</svg>
 {%- endmacro %}
+
+{# Shared loading UI, also used by standalone pages through app.py. #}
+{% macro loading_head() -%}
+<link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20261006-loading-compact') }}">
+<link rel="preload" as="image" href="{{ url_for('static', filename='img/Pij Loading.png') }}">
+<script>
+(function () {
+  'use strict';
+  if (window.districtLoadingInstalled) return;
+  window.districtLoadingInstalled = true;
+  const root = document.documentElement;
+  let startedAt = Date.now();
+  const minimumDisplayMs = 650;
+  let mode = 'initial';
+  let revealTimer = null;
+  let fallbackTimer = null;
+  let navigationTimer = null;
+  root.classList.add('district-page-loading');
+
+  // More specific subpages precede their parent pages.
+  const pages = [
+    [/^\/$/, 'District 4 Login', 'Sign in to access District 4 tools, reports, schedules and resources.'],
+    [/^\/logout\/?$/, 'District 4 Login', 'Signing out and returning to the login page.'],
+    [/^\/bulletin(?:\/|$)/, 'Bulletin Board', 'View district announcements, prayer requests and community updates.'],
+    [/^\/pastor-login(?:\/|$)/, 'Pastor Login', 'Sign in to manage your church reports and ministry records.'],
+    [/^\/ao-login(?:\/|$)/, 'Area Overseer Login', 'Sign in to manage area accounts and review church reports.'],
+    [/^\/pastor-tool\/\d+\/\d+\/progress\/?$/, 'Church Progress Form', 'Update the church progress information for the selected reporting month.'],
+    [/^\/pastor-tool\/\d+\/\d+\/\d+\/?$/, 'Sunday Report', 'Enter attendance, offerings and ministry activities for the selected Sunday.'],
+    [/^\/pastor-tool(?:\/|$)/, "Pastor's Tool", 'Prepare Sunday reports, review monthly progress and submit your church report.'],
+    [/^\/church-progress(?:\/|$)/, 'Church Progress', 'Review church attendance, finances, ministry progress and member records.'],
+    [/^\/ao-tool\/area-progress-monitor(?:\/|$)/, 'Area Progress Monitor', 'Compare church performance, reporting progress and ministry trends across your area.'],
+    [/^\/ao-tool\/create-account(?:\/|$)/, 'Create Pastor Account', 'Create an account and record the pastor and church information.'],
+    [/^\/ao-tool\/church-status(?:\/|$)/, 'Church Report Status', 'Review monthly church submissions, approve reports and prepare printable reports.'],
+    [/^\/ao-tool\/prayer-requests(?:\/|$)/, 'Prayer Request Approval', 'Review submitted prayer requests and approve or reject them for publication.'],
+    [/^\/ao-tool(?:\/|$)/, 'AO Tool', 'Manage area accounts, announcements and church reporting activities.'],
+    [/^\/prayer-request\/write(?:\/|$)/, 'Write Prayer Request', 'Share a prayer request for review and support from the community.'],
+    [/^\/prayer-request\/edit(?:\/|$)/, 'Edit Prayer Request', 'Update the details of your existing prayer request.'],
+    [/^\/prayer-request\/status(?:\/|$)/, 'Prayer Request Status', 'Track your prayer requests and manage their status.'],
+    [/^\/prayer-request\/answered(?:\/|$)/, 'Answered Prayer Requests', 'View prayer requests that have been marked as answered.'],
+    [/^\/prayer-request(?:\/|$)/, 'Prayer Requests', 'Write a prayer request, check its status or view answered prayers.'],
+    [/^\/schedules(?:\/|$)/, 'Schedules', 'Browse district activities, view event details and manage schedules.'],
+    [/^\/church-finder\/export-map(?:\/|$)/, 'District Church Map', 'View the district church location map and prepare a map image for export.'],
+    [/^\/church-finder(?:\/|$)/, 'Church Finder', 'Find district churches, view their locations and discover nearby churches.'],
+    [/^\/pastor-resources\/sermon-ebooks\/read(?:\/|$)/, 'Sermon PDF Reader', 'Open the selected sermon PDF and use the reading and study tools.'],
+    [/^\/pastor-resources\/sermon-ebooks(?:\/|$)/, 'Sermon eBooks', 'Browse sermon PDFs and open the sermon reading tools.'],
+    [/^\/pastor-resources\/read(?:\/|$)/, 'eBook Reader', 'Open the selected book with bookmarks, highlights, notes and reading progress.'],
+    [/^\/pastor-resources\/admin\/database-details(?:\/|$)/, 'Library Database Details', 'Inspect library files, synchronization details and AI indexing status.'],
+    [/^\/pastor-resources\/my-library(?:\/|$)/, 'My Library', 'View your saved books, bookmarks, highlights, notes and reading progress.'],
+    [/^\/(?:pastor-resources|download-resources)(?:\/|$)/, "Pastor's Resources", 'Browse ministry books and study resources, and open the ebook library.'],
+    [/^\/thanksgiving-pledges\/pending(?:\/|$)/, 'Pending Thanksgiving Pledges', 'Review submitted pledges and approve or reject pending entries.'],
+    [/^\/thanksgiving-pledges(?:\/|$)/, '2027 Thanksgiving Pledges', 'View thanksgiving pledges and submit your pledge with a verification photo.'],
+    [/^\/temp-edit-admin(?:\/|$)/, 'Temporary Edit Approval', 'Review proposed account changes and save approved corrections.'],
+    [/^\/temp-edit(?:\/|$)/, 'Temporary Account Edit', 'Request corrections to church account details and provide a verification photo.'],
+    [/^\/about-developer(?:\/|$)/, 'About Developer', 'Meet the developers of District 4 Tool and view their contact information.'],
+    [/^\/event-registration(?:\/|$)/, 'Event Registration', 'View the current availability of district event registration.'],
+    [/^\/do-tool(?:\/|$)/, 'DO Tool', 'View the current availability of the District Overseer tools.'],
+    [/^\/sync-area-data-log(?:\/|$)/, 'Developer Visit Log', 'View recorded page visits and activity in District 4 Tool.']
+  ];
+
+  function pageInfo(url, label) {
+    const match = pages.find(function (page) { return page[0].test(url.pathname); });
+    let title = match ? match[1] : (label || document.title || 'District 4 Tool');
+    let description = match ? match[2] : 'Prepare the selected page and its information.';
+    if (url.pathname === '/pastor-resources/my-library') {
+      const tabs = {
+        favorites: ['My Library', 'Browse your favorite books and continue reading.'],
+        bookmarks: ['Bookmarks', 'Return to passages you have bookmarked in your books.'],
+        highlights: ['Highlights / Notes', 'Review your saved highlights and study notes.'],
+        sermon: ['Sermon Notes', 'Review the sermon notes saved in your library.'],
+        progress: ['Reading Progress', 'Check your reading progress and continue unfinished books.'],
+        hidden: ['Hidden Books', 'Review library books that are hidden from the main catalog.']
+      };
+      const tab = tabs[url.searchParams.get('tab')];
+      if (tab) { title = tab[0]; description = tab[1]; }
+    }
+    const sunday = url.pathname.match(/^\/pastor-tool\/(\d+)\/(\d+)\/(\d+)\/?$/);
+    if (sunday) {
+      const date = new Date(Date.UTC(Number(sunday[1]), Number(sunday[2]) - 1, Number(sunday[3])));
+      title += ' · ' + date.toLocaleDateString('en', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    }
+    return { title: title, description: description };
+  }
+
+  function display(title, description, loadingMode) {
+    clearTimeout(revealTimer);
+    clearTimeout(fallbackTimer);
+    mode = loadingMode;
+    const overlay = document.getElementById('globalLoadingOverlay');
+    if (!overlay) return;
+    // Recover from older page scripts that hid the overlay using inline styles.
+    overlay.style.removeProperty('display');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    overlay.setAttribute('aria-busy', 'true');
+    document.getElementById('globalLoadingTitle').textContent = title;
+    document.getElementById('globalLoadingDescription').textContent = description;
+    document.getElementById('globalLoadingStatus').textContent = loadingMode === 'operation'
+      ? 'Please keep this page open while your request is processed.'
+      : 'Preparing the page, please wait…';
+  }
+
+  window.showGlobalLoading = function (text) {
+    display(text || 'Please wait…', 'Your request is being processed.', 'operation');
+  };
+  window.showPageLoading = function (href, label, initial) {
+    if (initial) startedAt = Date.now();
+    const info = pageInfo(new URL(href, window.location.href), label);
+    display('Opening ' + info.title, info.description, initial ? 'initial' : 'navigation');
+  };
+  window.hideGlobalLoading = function (options) {
+    if (options && options.operationsOnly && mode !== 'operation') return;
+    clearTimeout(revealTimer);
+    clearTimeout(fallbackTimer);
+    const overlay = document.getElementById('globalLoadingOverlay');
+    if (overlay) {
+      overlay.classList.remove('show', 'hidden');
+      overlay.style.removeProperty('display');
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.setAttribute('aria-busy', 'false');
+    }
+    root.classList.remove('district-page-loading');
+    mode = null;
+  };
+
+  function pageReady() {
+    if (mode !== 'initial') return;
+    clearTimeout(revealTimer);
+    revealTimer = setTimeout(function () {
+      if (mode === 'initial') window.hideGlobalLoading();
+    }, Math.max(0, minimumDisplayMs - (Date.now() - startedAt)));
+  }
+  window.addEventListener('load', pageReady);
+  document.addEventListener('DOMContentLoaded', function () {
+    // A failed or slow third-party asset must not indefinitely cover the page.
+    if (mode === 'initial') fallbackTimer = setTimeout(pageReady, 10000);
+    if (document.readyState === 'complete') pageReady();
+  });
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) {
+      clearTimeout(navigationTimer);
+      navigationTimer = null;
+      window.hideGlobalLoading();
+    }
+  });
+
+  function isPageUrl(url) {
+    return url.origin === window.location.origin && /^https?:$/.test(url.protocol)
+      && !/\.(?:pdf|epub|zip|db|png|jpe?g|webp|svg|csv|xlsx?)$/i.test(url.pathname)
+      && !/(?:^|\/)(?:api|static|media|download|selfie|thumbnail)(?:\/|$)/i.test(url.pathname);
+  }
+  window.navigateWithLoading = function (href, label) {
+    const url = new URL(href, window.location.href);
+    if (!isPageUrl(url)) { window.location.assign(url.href); return; }
+    if (navigationTimer !== null) return;
+    window.showPageLoading(url.href, label);
+    // Let the browser paint the destination information before requesting it.
+    navigationTimer = setTimeout(function () { window.location.assign(url.href); }, 120);
+  };
+  window.reloadWithLoading = function () {
+    if (navigationTimer !== null) return;
+    window.showPageLoading(window.location.href);
+    navigationTimer = setTimeout(function () { window.location.reload(); }, 120);
+  };
+
+  // Delegation includes links/forms rendered later by library and other page scripts.
+  // Window bubbling lets page-specific cancellation and handlers finish first.
+  window.addEventListener('click', function (event) {
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const link = event.target.closest ? event.target.closest('a[href]') : null;
+    if (!link || link.hasAttribute('download') || link.hasAttribute('data-no-loading')) return;
+    const target = link.getAttribute('target') || document.querySelector('base[target]')?.getAttribute('target') || '';
+    if (target && target.toLowerCase() !== '_self') return;
+    const href = link.getAttribute('href');
+    if (!href || href.startsWith('#')) return;
+    const url = new URL(link.href, window.location.href);
+    if (!isPageUrl(url)) return;
+    if (url.pathname === window.location.pathname && url.search === window.location.search && url.hash) return;
+    event.preventDefault();
+    window.navigateWithLoading(url.href, link.dataset.loadingTitle || link.textContent.trim());
+  });
+
+  window.addEventListener('submit', function (event) {
+    const form = event.target;
+    if (event.defaultPrevented || !form || form.id === 'pastor-submit-form'
+      || form.dataset.skipGlobalLoading === 'true' || form.hasAttribute('data-no-loading')) return;
+    const submitter = event.submitter;
+    const target = submitter?.getAttribute('formtarget') || form.getAttribute('target') || '';
+    if (target && target.toLowerCase() !== '_self') return;
+    const url = new URL(submitter?.getAttribute('formaction') || form.action || window.location.href, window.location.href);
+    if (!isPageUrl(url)) return;
+    const method = (submitter?.getAttribute('formmethod') || form.method || 'get').toLowerCase();
+    if (method === 'dialog') return;
+    if (method === 'get') {
+      const data = new FormData(form);
+      if (submitter?.name) data.append(submitter.name, submitter.value);
+      url.search = new URLSearchParams(data).toString();
+      window.showPageLoading(url.href);
+    } else {
+      const action = form.querySelector('input[name="action"]')?.value || '';
+      const actions = {
+        district_secretary_access: 'Verifying access, please wait…',
+        create_schedule: 'Creating schedule, please wait…',
+        edit_schedule: 'Updating schedule, please wait…',
+        delete_schedule: 'Deleting schedule, please wait…',
+        join_schedule: 'Joining schedule, please wait…'
+      };
+      window.showGlobalLoading(form.dataset.loadingText || actions[action] || 'Processing your request, please wait…');
+    }
+    // Keep named submit buttons enabled so their values reach the server.
+  });
+})();
+</script>
+{%- endmacro %}
+
+{% macro loading_overlay() -%}
+<div class="global-loading-overlay" id="globalLoadingOverlay" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true" aria-busy="false">
+  <div class="global-loading-card">
+    <div class="global-loading-visual" aria-hidden="true">
+      <img class="global-loading-pij" src="{{ url_for('static', filename='img/Pij Loading.png') }}" alt="" width="1254" height="1254" fetchpriority="high" decoding="async">
+      <div class="global-loading-bubble"><span class="global-loading-gear">&#9881;</span><span class="global-loading-gear-small">&#9881;</span></div>
+    </div>
+    <div class="global-loading-copy">
+      <div class="global-loading-eyebrow">DISTRICT 4 TOOL</div>
+      <div class="global-loading-title" id="globalLoadingTitle">Opening page…</div>
+      <div class="global-loading-sub" id="globalLoadingDescription">Preparing your page information.</div>
+      <div class="global-loading-track" aria-hidden="true"><div class="global-loading-fill"></div></div>
+      <div class="global-loading-status" id="globalLoadingStatus">Preparing the page, please wait…</div>
+    </div>
+  </div>
+</div>
+<script>window.showPageLoading(window.location.href, null, true);</script>
+{%- endmacro %}

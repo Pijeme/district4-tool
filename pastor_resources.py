@@ -66,6 +66,23 @@ RESOURCE_SYNC_STATE_DB = os.path.join(
 
 SYNC_LOCK = threading.Lock()
 
+# A persisted sync that has not written progress for this long is treated as
+# interrupted instead of being shown forever after a server/container restart.
+# The user explicitly chose 15 minutes for this recovery window.
+RESOURCE_SYNC_STALE_SECONDS = 15 * 60
+
+# Cancellation is persisted in the tiny sync-state database so a cancel request
+# works even when the HTTP request and the background worker land on different
+# Gunicorn workers. The in-memory values below only reduce repeated SQLite reads.
+RESOURCE_SYNC_CANCEL_CACHE_LOCK = threading.Lock()
+RESOURCE_SYNC_CANCEL_LAST_CHECK = 0.0
+RESOURCE_SYNC_CANCEL_LAST_VALUE = False
+
+
+class ResourceSyncCancelled(Exception):
+    """Raised at safe checkpoints when the developer cancels a library sync."""
+
+
 # Live synchronization status for the Pastor's Resources page.
 # A memory copy is kept for speed, while every update is also persisted
 # to SQLite. This makes the progress dialog reliable across page refreshes
@@ -111,10 +128,30 @@ def _ensure_resource_sync_runtime_table(db):
             started_at TEXT NOT NULL DEFAULT '',
             finished_at TEXT NOT NULL DEFAULT '',
             stats_json TEXT NOT NULL DEFAULT '{}',
-            updated_at TEXT NOT NULL DEFAULT ''
+            updated_at TEXT NOT NULL DEFAULT '',
+            cancel_requested INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+
+    # Safe migration for an existing pastor_resource_sync_state.db created by
+    # an older version of this module.
+    columns = {
+        str(row["name"])
+        for row in db.execute(
+            "PRAGMA table_info(pastor_library_sync_runtime)"
+        ).fetchall()
+    }
+    if "updated_at" not in columns:
+        db.execute(
+            "ALTER TABLE pastor_library_sync_runtime "
+            "ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+        )
+    if "cancel_requested" not in columns:
+        db.execute(
+            "ALTER TABLE pastor_library_sync_runtime "
+            "ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
+        )
 
     db.execute(
         """
@@ -136,6 +173,7 @@ def _open_resource_sync_state_db():
 
 
 def _persist_resource_sync_state(state):
+    """Persist progress without overwriting the independent cancel flag."""
     db = _open_resource_sync_state_db()
 
     try:
@@ -223,6 +261,8 @@ def _read_persisted_resource_sync_state():
             "last_error": str(row["last_error"] or ""),
             "started_at": str(row["started_at"] or ""),
             "finished_at": str(row["finished_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "cancel_requested": bool(row["cancel_requested"]),
             "stats": stats if isinstance(stats, dict) else {},
             "removed_files": int(stats.get("removed_files") or 0) if isinstance(stats, dict) else 0,
             "errors": int(stats.get("errors") or 0) if isinstance(stats, dict) else 0,
@@ -230,6 +270,141 @@ def _read_persisted_resource_sync_state():
 
     finally:
         db.close()
+
+
+def _parse_utc_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _resource_sync_state_is_stale(state):
+    if not state or not state.get("running"):
+        return False
+    heartbeat = (
+        _parse_utc_datetime(state.get("updated_at"))
+        or _parse_utc_datetime(state.get("started_at"))
+    )
+    if heartbeat is None:
+        return True
+    age = (datetime.now(timezone.utc) - heartbeat).total_seconds()
+    return age >= RESOURCE_SYNC_STALE_SECONDS
+
+
+def _set_resource_sync_cancel_requested(requested):
+    global RESOURCE_SYNC_CANCEL_LAST_CHECK
+    global RESOURCE_SYNC_CANCEL_LAST_VALUE
+
+    db = _open_resource_sync_state_db()
+    try:
+        _ensure_resource_sync_runtime_table(db)
+        db.execute(
+            """
+            UPDATE pastor_library_sync_runtime
+            SET cancel_requested = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (1 if requested else 0, utc_now_iso()),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with RESOURCE_SYNC_CANCEL_CACHE_LOCK:
+        RESOURCE_SYNC_CANCEL_LAST_VALUE = bool(requested)
+        RESOURCE_SYNC_CANCEL_LAST_CHECK = time.monotonic()
+
+
+def clear_resource_sync_cancel_request():
+    _set_resource_sync_cancel_requested(False)
+
+
+def request_resource_sync_cancel():
+    """Request a safe stop. The worker acknowledges it at the next checkpoint."""
+    global RESOURCE_SYNC_CANCEL_LAST_CHECK
+    global RESOURCE_SYNC_CANCEL_LAST_VALUE
+
+    db = _open_resource_sync_state_db()
+    try:
+        _ensure_resource_sync_runtime_table(db)
+        db.execute(
+            """
+            UPDATE pastor_library_sync_runtime
+            SET cancel_requested = 1,
+                message = CASE
+                    WHEN running = 1 THEN 'Cancellation requested. Stopping safely after the current step...'
+                    ELSE message
+                END,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (utc_now_iso(),),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with RESOURCE_SYNC_CANCEL_CACHE_LOCK:
+        RESOURCE_SYNC_CANCEL_LAST_VALUE = True
+        RESOURCE_SYNC_CANCEL_LAST_CHECK = time.monotonic()
+
+    return get_resource_sync_state()
+
+
+def resource_sync_cancel_requested(force=False):
+    """Cross-worker cancellation check with a short local read cache."""
+    global RESOURCE_SYNC_CANCEL_LAST_CHECK
+    global RESOURCE_SYNC_CANCEL_LAST_VALUE
+
+    now = time.monotonic()
+    with RESOURCE_SYNC_CANCEL_CACHE_LOCK:
+        if (
+            not force
+            and now - RESOURCE_SYNC_CANCEL_LAST_CHECK < 0.5
+        ):
+            return bool(RESOURCE_SYNC_CANCEL_LAST_VALUE)
+
+    requested = False
+    try:
+        db = _open_resource_sync_state_db()
+        try:
+            _ensure_resource_sync_runtime_table(db)
+            db.commit()
+            row = db.execute(
+                """
+                SELECT cancel_requested
+                FROM pastor_library_sync_runtime
+                WHERE id = 1
+                """
+            ).fetchone()
+            requested = bool(row and row["cancel_requested"])
+        finally:
+            db.close()
+    except Exception:
+        # Failure to read the tiny status DB must not abort a healthy sync.
+        requested = False
+
+    with RESOURCE_SYNC_CANCEL_CACHE_LOCK:
+        RESOURCE_SYNC_CANCEL_LAST_VALUE = bool(requested)
+        RESOURCE_SYNC_CANCEL_LAST_CHECK = now
+
+    return bool(requested)
+
+
+def _raise_if_resource_sync_cancelled(cancel_callback=None):
+    checker = cancel_callback or resource_sync_cancel_requested
+    if checker and checker():
+        raise ResourceSyncCancelled(
+            "Synchronization cancelled by the developer."
+        )
 
 
 def update_resource_sync_state(**changes):
@@ -275,6 +450,30 @@ def get_resource_sync_state():
         persisted = _read_persisted_resource_sync_state()
     except Exception:
         persisted = None
+
+    # A background Python thread cannot survive a process/container restart.
+    # Therefore a persisted running state with no heartbeat for 15 minutes is
+    # stale and must not reopen the progress popup forever.
+    if persisted and _resource_sync_state_is_stale(persisted):
+        interrupted = dict(persisted)
+        interrupted.update(
+            running=False,
+            stage="interrupted",
+            message=(
+                "The previous synchronization was interrupted or the server "
+                "was restarted. Click Sync Books when you are ready to run it again."
+            ),
+            current_file="",
+            last_error="",
+            finished_at=utc_now_iso(),
+            cancel_requested=False,
+        )
+        try:
+            _persist_resource_sync_state(interrupted)
+            _set_resource_sync_cancel_requested(False)
+        except Exception:
+            pass
+        persisted = interrupted
 
     with RESOURCE_SYNC_STATE_LOCK:
         if persisted:
@@ -1141,7 +1340,7 @@ def _catalog_file_unchanged(old, item):
     return all(str(old[key] or '') == str(item[key] or '') for key in keys)
 
 
-def scan_drive_library(progress_callback=None):
+def scan_drive_library(progress_callback=None, cancel_callback=None):
     """
     Recursively discover supported PDF/EPUB files in Google Drive.
 
@@ -1155,6 +1354,11 @@ def scan_drive_library(progress_callback=None):
     def progress(**values):
         if progress_callback:
             progress_callback(**values)
+
+    def check_cancel():
+        _raise_if_resource_sync_cancelled(cancel_callback)
+
+    check_cancel()
 
     if not drive_library_configured():
         raise RuntimeError(
@@ -1191,6 +1395,8 @@ def scan_drive_library(progress_callback=None):
         folder_id,
         folder_path="",
     ):
+        check_cancel()
+
         nonlocal folders_scanned
         nonlocal total_files_seen
         nonlocal unsupported_files
@@ -1223,7 +1429,10 @@ def scan_drive_library(progress_callback=None):
             folder_id,
         )
 
+        check_cancel()
+
         for item in items:
+            check_cancel()
             name = str(
                 item.get("name") or ""
             ).strip()
@@ -1568,7 +1777,7 @@ def save_thumbnail_bytes(
 # SYNC GOOGLE DRIVE → DATABASE
 # =========================================================
 
-def sync_library_to_database(progress_callback=None):
+def sync_library_to_database(progress_callback=None, cancel_callback=None):
     ensure_resource_tables()
 
     # -----------------------------------------------------
@@ -1580,6 +1789,11 @@ def sync_library_to_database(progress_callback=None):
     def progress(**values):
         if progress_callback:
             progress_callback(**values)
+
+    def check_cancel():
+        _raise_if_resource_sync_cancelled(cancel_callback)
+
+    check_cancel()
 
     progress(
         stage="scanning",
@@ -1598,9 +1812,12 @@ def sync_library_to_database(progress_callback=None):
 
     scan_result = (
         scan_drive_library(
-            progress_callback=progress
+            progress_callback=progress,
+            cancel_callback=cancel_callback,
         )
     )
+
+    check_cancel()
 
     total_supported = int(
         scan_result.get(
@@ -1689,6 +1906,8 @@ def sync_library_to_database(progress_callback=None):
             scan_result["files"],
             start=1,
         ):
+            check_cancel()
+
             drive_file_id = str(
                 item["drive_file_id"]
             )
@@ -2066,6 +2285,7 @@ def sync_library_to_database(progress_callback=None):
             ),
         )
 
+        check_cancel()
         db.commit()
 
         result = {
@@ -2146,6 +2366,18 @@ def sync_library_to_database(progress_callback=None):
         )
 
         return result
+
+    except ResourceSyncCancelled:
+        db.rollback()
+
+        progress(
+            stage="cancelled",
+            message="Synchronization cancelled safely. Existing catalog data was kept.",
+            current_file="",
+            last_error="",
+            errors=0,
+        )
+        raise
 
     except Exception as error:
         db.rollback()
@@ -5655,6 +5887,10 @@ def register_pastor_resources_routes(
                 }
             ), 403
 
+        # The Database Details manual sync is also an explicit new run.
+        # Clear any cancellation flag left by an interrupted older process.
+        clear_resource_sync_cancel_request()
+
         if not SYNC_LOCK.acquire(
             blocking=False
         ):
@@ -8652,6 +8888,28 @@ Pastor's Resources - District 4 Tool
     line-height:1.4;
 }
 
+.pr-sync-actions {
+    display:flex;
+    justify-content:center;
+    margin-top:16px;
+}
+
+.pr-sync-cancel {
+    border:0;
+    border-radius:11px;
+    min-height:40px;
+    padding:9px 16px;
+    background:#fff0f2;
+    color:#b4233e;
+    font:900 11px "Nunito Sans",Arial,sans-serif;
+    cursor:pointer;
+}
+
+.pr-sync-cancel:disabled {
+    opacity:.55;
+    cursor:default;
+}
+
 .pr-sync-progress-line {
     display:flex;
     align-items:center;
@@ -8909,7 +9167,18 @@ Pastor's Resources - District 4 Tool
         </div>
 
         <div class="pr-sync-stage" id="resourceSyncStage">
-            Please keep this page open while the library is being updated.
+            You may leave this page while the server continues the update.
+        </div>
+
+        <div class="pr-sync-actions">
+            <button
+                class="pr-sync-cancel"
+                id="resourceSyncCancel"
+                type="button"
+                onclick="cancelResourceSync()"
+            >
+                ✕ Cancel Sync
+            </button>
         </div>
     </div>
 </div>
@@ -9510,6 +9779,7 @@ let pijIndexPollTimer = null;
 function setResourceSyncUiRunning(running) {
     const button = document.getElementById("syncButton");
     const overlay = document.getElementById("resourceSyncOverlay");
+    const cancelButton = document.getElementById("resourceSyncCancel");
 
     if (button) {
         button.disabled = Boolean(running);
@@ -9520,6 +9790,57 @@ function setResourceSyncUiRunning(running) {
 
     if (overlay) {
         overlay.classList.toggle("show", Boolean(running));
+    }
+
+    if (cancelButton && !running) {
+        cancelButton.disabled = false;
+        cancelButton.textContent = "✕ Cancel Sync";
+    }
+}
+
+async function cancelResourceSync() {
+    const cancelButton = document.getElementById("resourceSyncCancel");
+    const stage = document.getElementById("resourceSyncStage");
+
+    if (!confirm(
+        "Cancel the current Pastor's Resources / Pij AI update?\n\n"
+        + "The server will stop safely after the current file or Drive request finishes."
+    )) {
+        return;
+    }
+
+    if (cancelButton) {
+        cancelButton.disabled = true;
+        cancelButton.textContent = "Stopping…";
+    }
+
+    if (stage) {
+        stage.textContent =
+            "Cancellation requested. Stopping safely after the current step...";
+    }
+
+    try {
+        const response = await fetch(
+            "/pastor-resources/sync-books-cancel",
+            {method:"POST", cache:"no-store"}
+        );
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(
+                data.error || "Unable to request cancellation."
+            );
+        }
+
+        showToast(
+            "Cancellation requested. The current file/request will finish first."
+        );
+    } catch (error) {
+        if (cancelButton) {
+            cancelButton.disabled = false;
+            cancelButton.textContent = "✕ Cancel Sync";
+        }
+        showToast("Cancel failed: " + error.message);
     }
 }
 
@@ -9791,7 +10112,10 @@ function renderPijIndexProgress(state) {
         + chunks.toLocaleString()
         + " searchable chunks";
 
-    if (queued) {
+    if (String(state.stage || "") === "cancelled") {
+        stage.textContent =
+            state.message || "Pij AI indexing was cancelled safely.";
+    } else if (queued) {
         stage.textContent =
             "Pij is still indexing. Another incremental pass is queued so newly synced books are not missed.";
     } else if (state.running) {
@@ -9823,6 +10147,18 @@ async function pollPijIndexProgress() {
                 pollPijIndexProgress,
                 650
             );
+            return;
+        }
+
+        if (String(state.stage || "") === "cancelled") {
+            document.getElementById("statusText").textContent =
+                "Pij AI indexing was cancelled.";
+            document.getElementById("syncDetail").textContent =
+                "You can run Sync Books again whenever you are ready.";
+            showToast("Pij AI indexing cancelled safely.");
+            setTimeout(() => {
+                setResourceSyncUiRunning(false);
+            }, 1400);
             return;
         }
 
@@ -9902,6 +10238,27 @@ async function pollResourceSyncProgress() {
                 400
             );
 
+            return;
+        }
+
+        if (state.stage === "cancelled") {
+            document.getElementById("statusText").textContent =
+                "Synchronization cancelled.";
+            document.getElementById("syncDetail").textContent =
+                state.message || "Existing catalog data was kept.";
+            showToast("Pastor's Resources synchronization cancelled safely.");
+            setTimeout(() => {
+                setResourceSyncUiRunning(false);
+            }, 1400);
+            return;
+        }
+
+        if (state.stage === "interrupted") {
+            document.getElementById("statusText").textContent =
+                "Previous synchronization was interrupted.";
+            document.getElementById("syncDetail").textContent =
+                "No active sync is running. Click Sync Books when you want to try again.";
+            setResourceSyncUiRunning(false);
             return;
         }
 
@@ -10110,6 +10467,13 @@ async function resumeResourceSyncIfRunning() {
             renderResourceSyncProgress(state);
             pollResourceSyncProgress();
             return;
+        }
+
+        if (String(state.stage || "") === "interrupted") {
+            document.getElementById("statusText").textContent =
+                "Previous synchronization was interrupted.";
+            document.getElementById("syncDetail").textContent =
+                "It was inactive for more than 15 minutes. Click Sync Books when you are ready.";
         }
 
         // A browser refresh must not make an active Pij indexing pass look
@@ -12250,7 +12614,7 @@ html, body { overflow:hidden !important; }
                 <span id="readerLoadPercent"></span>
             </div>
             <div class="reader-load-actions" id="readerLoadActions">
-                <button class="primary" type="button" onclick="location.reload()">Retry</button>
+                <button class="primary" type="button" onclick="window.reloadWithLoading()">Retry</button>
                 <a href="{{ download_url }}">Download Book</a>
                 <button type="button" id="alternateFormatButton" onclick="tryAlternateFormat()" style="display:none;">Try Other Format</button>
             </div>
@@ -12553,7 +12917,7 @@ function setPageBusy(show, text="Loading page…") {
 
 function tryAlternateFormat() {
     const other = AVAILABLE_FORMATS.find(fmt => String(fmt).toUpperCase() !== READER_FORMAT);
-    if (other) window.location.href = READ_BASE_URL + "?format=" + encodeURIComponent(other);
+    if (other) window.navigateWithLoading(READ_BASE_URL + "?format=" + encodeURIComponent(other));
 }
 
 function returnToLibrary() {
@@ -12561,12 +12925,12 @@ function returnToLibrary() {
     try { returnUrl = sessionStorage.getItem(READER_RETURN_URL_KEY) || ""; } catch (error) {}
 
     if (returnUrl && returnUrl.startsWith("/pastor-resources/my-library")) {
-        window.location.href = returnUrl;
+        window.navigateWithLoading(returnUrl);
         return;
     }
 
     try { sessionStorage.setItem(LIBRARY_RESTORE_KEY, "1"); } catch (error) {}
-    window.location.href = PASTOR_RESOURCES_URL;
+    window.navigateWithLoading(PASTOR_RESOURCES_URL);
 }
 
 function updateReaderPageControls(current, total, kind="Page", enabled=true) {
@@ -13039,7 +13403,7 @@ async function toggleFinished() {
 }
 
 function switchFormat(format) {
-    window.location.href = READ_BASE_URL + "?format=" + encodeURIComponent(format);
+    window.navigateWithLoading(READ_BASE_URL + "?format=" + encodeURIComponent(format));
 }
 
 function setReaderTheme(theme) {
@@ -16819,14 +17183,15 @@ def decorate_annotation_payload(item):
     return value
 
 
-def sync_library_to_database_v3(progress_callback=None):
+def sync_library_to_database_v3(progress_callback=None, cancel_callback=None):
     """
     Reuse the tested Drive scanner/sync, then report the
     visible book count after private hidden books are removed.
     """
 
     result = sync_library_to_database(
-        progress_callback=progress_callback
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
     )
 
     if progress_callback:
@@ -16926,12 +17291,19 @@ def start_resource_library_sync(app):
     Start one live Pastor's Resources synchronization in a background
     thread so the browser can poll real progress without waiting for one
     long POST request.
+
+    Cancellation is cooperative: it is checked between Drive folders/files
+    and between catalog records. The current HTTP/Drive operation is allowed
+    to finish, then the worker rolls back any unfinished catalog transaction.
     """
 
     if not SYNC_LOCK.acquire(
         blocking=False
     ):
         return False, get_resource_sync_state()
+
+    # Every explicit Sync Books run starts with a clean cancellation flag.
+    clear_resource_sync_cancel_request()
 
     update_resource_sync_state(
         running=True,
@@ -16956,13 +17328,18 @@ def start_resource_library_sync(app):
         try:
             with app.app_context():
                 stats = sync_library_to_database_v3(
-                    progress_callback=update_resource_sync_state
+                    progress_callback=update_resource_sync_state,
+                    cancel_callback=resource_sync_cancel_requested,
+                )
+
+                _raise_if_resource_sync_cancelled(
+                    resource_sync_cancel_requested
                 )
 
                 # Keep Pij's searchable ebook text in step with the visible
-                # library. If another AI index is already running, the helper
-                # queues one more incremental pass instead of starting a
-                # competing writer.
+                # library. The AI pass itself also observes the same persisted
+                # cancellation flag, so the Cancel button continues to work
+                # while the popup transitions from Drive sync to AI indexing.
                 pij_index = trigger_pij_library_index()
                 stats = dict(stats or {})
                 stats["pij_index_started"] = bool(
@@ -16998,6 +17375,21 @@ def start_resource_library_sync(app):
                 stats=stats,
             )
 
+        except ResourceSyncCancelled:
+            update_resource_sync_state(
+                running=False,
+                stage="cancelled",
+                message=(
+                    "Synchronization cancelled safely. "
+                    "Existing catalog data was kept."
+                ),
+                current_file="",
+                last_error="",
+                errors=0,
+                finished_at=utc_now_iso(),
+            )
+            clear_resource_sync_cancel_request()
+
         except Exception as error:
             error_text = str(error)
 
@@ -17016,6 +17408,7 @@ def start_resource_library_sync(app):
                 errors=1,
                 finished_at=utc_now_iso(),
             )
+            clear_resource_sync_cancel_request()
 
         finally:
             SYNC_LOCK.release()
@@ -18578,6 +18971,45 @@ def register_pastor_resources_routes(app):
         return jsonify(
             ok=True,
             state=get_resource_sync_state(),
+        )
+
+    @app.route(
+        "/pastor-resources/sync-books-cancel",
+        methods=["POST"],
+    )
+    def pastor_resources_sync_books_cancel():
+        if not any_user_logged_in():
+            return jsonify(ok=False, error="Unauthorized"), 401
+
+        if not is_resource_admin():
+            return jsonify(
+                ok=False,
+                error="Administrator access required.",
+            ), 403
+
+        state = request_resource_sync_cancel()
+
+        # Also signal the in-memory AI worker when this HTTP request happens to
+        # land in the same process. The persisted flag above is the cross-worker
+        # fallback and is what makes cancellation reliable on hosted deployments.
+        try:
+            from pij_library_knowledge import (
+                request_public_library_index_cancel,
+            )
+            request_public_library_index_cancel()
+        except Exception as error:
+            print(
+                "[Pij AI Cancel WARNING] " + str(error),
+                flush=True,
+            )
+
+        return jsonify(
+            ok=True,
+            message=(
+                "Cancellation requested. The current file or Drive request "
+                "will finish before the worker stops safely."
+            ),
+            state=state,
         )
 
     # -----------------------------------------------------

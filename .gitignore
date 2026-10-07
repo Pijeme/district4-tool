@@ -1,0 +1,12 @@
+ai_index.db
+district4-tool-main_2026-10-06-final.tar
+book_thumbnail_cache/
+__pycache__/
+*.pyc
+.cache_optimization_work/
+.visual_upgrade/
+.vscode/
+app.py.bak
+app_v2.db.sheet-cache.lock
+.env
+service_account.json

@@ -62,7 +62,7 @@
   {% if logged_in %}
   <script>
     setTimeout(function () {
-      window.location.href = "{{ url_for('bulletin') }}";
+      window.navigateWithLoading("{{ url_for('bulletin') }}");
     }, 800);
   </script>
   {% endif %}

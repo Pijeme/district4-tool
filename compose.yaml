@@ -1,0 +1,33 @@
+services:
+  district4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: district4-local
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: Asia/Manila
+      PYTHONUNBUFFERED: "1"
+
+    ports:
+      - "5000:8000"
+
+    volumes:
+      - .:/app
+
+    command: >
+      gunicorn
+      --bind 0.0.0.0:8000
+      --workers 1
+      --threads 4
+      --timeout 180
+      --reload
+      --access-logfile -
+      --error-logfile -
+      app:app
+
+    restart: unless-stopped

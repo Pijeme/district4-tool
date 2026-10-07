@@ -1,0 +1,4 @@
+# Ignore Google service account credentials
+service_account.json
+*.json
+.env

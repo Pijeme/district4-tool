@@ -460,7 +460,7 @@
           setProgress(fakeProgress);
           stopTimers();
           setTimeout(function () {
-            window.location.href = data.redirect_url;
+            window.navigateWithLoading(data.redirect_url);
           }, 700);
           return;
         }

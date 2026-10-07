@@ -1547,42 +1547,8 @@ PAGE_HTML = r"""
   }
 
   function stopGlobalLoadingBar() {
-    const candidates = [
-      "loadingOverlay",
-      "globalLoadingOverlay",
-      "global-loading-overlay",
-      "loadingModal",
-      "loadingScreen",
-      "pageLoadingOverlay"
-    ];
-
-    candidates.forEach(function(id) {
-      const el = document.getElementById(id);
-      if (el) {
-        el.style.display = "none";
-        el.classList.add("hidden");
-        el.classList.remove("show", "active", "open");
-      }
-    });
-
-    document.querySelectorAll(".loading-overlay, .global-loading, .loading-screen, .loading-modal").forEach(function(el) {
-      el.style.display = "none";
-      el.classList.add("hidden");
-      el.classList.remove("show", "active", "open");
-    });
-
-    document.body.classList.remove("loading", "is-loading", "global-loading-active");
-
-    if (window.hideLoadingOverlay && typeof window.hideLoadingOverlay === "function") {
-      try { window.hideLoadingOverlay(); } catch (err) {}
-    }
-
-    if (window.hideLoading && typeof window.hideLoading === "function") {
-      try { window.hideLoading(); } catch (err) {}
-    }
-
-    if (window.stopLoading && typeof window.stopLoading === "function") {
-      try { window.stopLoading(); } catch (err) {}
+    if (typeof window.hideGlobalLoading === "function") {
+      window.hideGlobalLoading({operationsOnly: true});
     }
   }
 
@@ -1671,7 +1637,7 @@ PAGE_HTML = r"""
 
   function reloadPage() {
     stopGlobalLoadingBar();
-    window.location.reload();
+    window.reloadWithLoading();
   }
 
   function fillEditMember() {

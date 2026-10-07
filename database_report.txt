@@ -1,0 +1,982 @@
+======================================================================
+DISTRICT 4 TOOL - SQLITE DATABASE REPORT
+======================================================================
+
+Generated: 2026-10-03 17:21:07.795261
+Database: C:\Users\user\Desktop\Programming\district4-tool-main\app_v2.db
+Database file size: 28.01 MB
+
+DATABASE INFORMATION
+----------------------------------------------------------------------
+Page size: 4,096 bytes
+Page count: 7,171
+Calculated DB size: 28.01 MB
+Free pages: 0
+Potential reusable/free space: 0.00 B
+
+TABLE SUMMARY
+----------------------------------------------------------------------
+Total application tables: 48
+
+TABLES BY ROW COUNT
+----------------------------------------------------------------------
+developer_visit_logs                                   20,451 rows
+sermon_library_pages                                    2,253 rows
+sermon_library_pages_fts                                2,246 rows
+sermon_library_pages_fts_content                        2,246 rows
+sermon_library_pages_fts_docsize                        2,246 rows
+pastor_library_books                                    2,157 rows
+pastor_library_files                                    1,266 rows
+sermon_library_pages_fts_data                             983 rows
+sermon_library_pages_fts_idx                              921 rows
+sermon_library_files                                      512 rows
+sheet_report_cache                                        431 rows
+sunday_reports                                            233 rows
+sheet_chain_prayer_schedule_cache                         194 rows
+sheet_accounts_cache                                      170 rows
+sheet_district_schedule_cache                             160 rows
+pastor_reading_sessions                                   138 rows
+print_report_jobs                                         121 rows
+church_progress                                            52 rows
+monthly_reports                                            52 rows
+pastor_reader_state                                        38 rows
+area_monitor_seen_notifications                            33 rows
+area_monitor_chart_ceiling                                 27 rows
+verses                                                     23 rows
+pastors                                                    16 rows
+submit_report_jobs                                         11 rows
+sheet_prayer_request_cache                                 10 rows
+sheet_aopt_cache                                            8 rows
+sermon_reader_state                                         4 rows
+user_login_events                                           4 rows
+area_monitor_member_events                                  3 rows
+area_monitor_member_snapshot                                1 rows
+pastor_library_sync                                         1 rows
+pastor_resource_sync_state                                  1 rows
+pt2027_cache                                                1 rows
+pt2027_throttle                                             1 rows
+sermon_library_pages_fts_config                             1 rows
+sermon_library_sync                                         1 rows
+sheet_announcement_cache                                    1 rows
+sync_state                                                  1 rows
+area_monitor_remarks                                        0 rows
+pastor_book_annotations                                     0 rows
+pastor_book_bookmarks                                       0 rows
+pastor_resource_books                                       0 rows
+pastor_resource_files                                       0 rows
+sermon_hidden_items                                         0 rows
+sermon_reader_annotations                                   0 rows
+sermon_reader_bookmarks                                     0 rows
+temp_edit_requests                                          0 rows
+
+APPROXIMATE STORAGE BY TABLE / INDEX
+----------------------------------------------------------------------
+dbstat is not available in this SQLite build.
+Row counts are still included in this report.
+
+TABLE SCHEMAS
+======================================================================
+
+TABLE: area_monitor_chart_ceiling
+----------------------------------------------------------------------
+  0: scope_key | type=TEXT | notnull=1 | default=None | pk=1
+  1: metric_key | type=TEXT | notnull=1 | default=None | pk=2
+  2: ceiling_value | type=REAL | notnull=1 | default=0 | pk=0
+  3: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: area_monitor_member_events
+----------------------------------------------------------------------
+  0: event_id | type=TEXT | notnull=0 | default=None | pk=1
+  1: scope_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: event_type | type=TEXT | notnull=1 | default=None | pk=0
+  3: title | type=TEXT | notnull=1 | default=None | pk=0
+  4: message | type=TEXT | notnull=1 | default=None | pk=0
+  5: church_name | type=TEXT | notnull=0 | default=None | pk=0
+  6: created_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: area_monitor_member_snapshot
+----------------------------------------------------------------------
+  0: scope_key | type=TEXT | notnull=1 | default=None | pk=1
+  1: member_key | type=TEXT | notnull=1 | default=None | pk=2
+  2: name | type=TEXT | notnull=0 | default=None | pk=0
+  3: birthday | type=TEXT | notnull=0 | default=None | pk=0
+  4: church_name | type=TEXT | notnull=0 | default=None | pk=0
+  5: username | type=TEXT | notnull=0 | default=None | pk=0
+  6: pastor | type=TEXT | notnull=0 | default=None | pk=0
+  7: signature | type=TEXT | notnull=0 | default=None | pk=0
+  8: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: area_monitor_remarks
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: scope_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: church_key | type=TEXT | notnull=1 | default=None | pk=0
+  3: category | type=TEXT | notnull=1 | default=None | pk=0
+  4: remark_text | type=TEXT | notnull=1 | default='' | pk=0
+  5: created_by | type=TEXT | notnull=0 | default=None | pk=0
+  6: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  7: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: area_monitor_seen_notifications
+----------------------------------------------------------------------
+  0: user_key | type=TEXT | notnull=1 | default=None | pk=1
+  1: scope_key | type=TEXT | notnull=1 | default=None | pk=2
+  2: notification_id | type=TEXT | notnull=1 | default=None | pk=3
+  3: seen_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: church_progress
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: monthly_report_id | type=INTEGER | notnull=1 | default=None | pk=0
+  2: bible_new | type=INTEGER | notnull=0 | default=None | pk=0
+  3: bible_existing | type=INTEGER | notnull=0 | default=None | pk=0
+  4: received_christ | type=INTEGER | notnull=0 | default=None | pk=0
+  5: baptized_water | type=INTEGER | notnull=0 | default=None | pk=0
+  6: baptized_holy_spirit | type=INTEGER | notnull=0 | default=None | pk=0
+  7: healed | type=INTEGER | notnull=0 | default=None | pk=0
+  8: child_dedication | type=INTEGER | notnull=0 | default=None | pk=0
+  9: is_complete | type=INTEGER | notnull=0 | default=0 | pk=0
+
+TABLE: developer_visit_logs
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  2: ip_address | type=TEXT | notnull=0 | default=None | pk=0
+  3: user_agent | type=TEXT | notnull=0 | default=None | pk=0
+  4: actor_username | type=TEXT | notnull=0 | default=None | pk=0
+  5: actor_name | type=TEXT | notnull=0 | default=None | pk=0
+  6: actor_role | type=TEXT | notnull=0 | default=None | pk=0
+  7: request_path | type=TEXT | notnull=0 | default=None | pk=0
+  8: page_label | type=TEXT | notnull=0 | default=None | pk=0
+  9: method | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: monthly_reports
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: year | type=INTEGER | notnull=1 | default=None | pk=0
+  2: month | type=INTEGER | notnull=1 | default=None | pk=0
+  3: pastor_username | type=TEXT | notnull=1 | default=None | pk=0
+  4: submitted | type=INTEGER | notnull=0 | default=0 | pk=0
+  5: approved | type=INTEGER | notnull=0 | default=0 | pk=0
+  6: submitted_at | type=TEXT | notnull=0 | default=None | pk=0
+  7: approved_at | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: pastor_book_annotations
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: user_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: book_id | type=INTEGER | notnull=1 | default=None | pk=0
+  3: format | type=TEXT | notnull=1 | default=None | pk=0
+  4: annotation_type | type=TEXT | notnull=1 | default=None | pk=0
+  5: selected_text | type=TEXT | notnull=0 | default=None | pk=0
+  6: locator | type=TEXT | notnull=1 | default=None | pk=0
+  7: page | type=INTEGER | notnull=0 | default=None | pk=0
+  8: color | type=TEXT | notnull=0 | default=None | pk=0
+  9: note | type=TEXT | notnull=0 | default=None | pk=0
+  10: tags | type=TEXT | notnull=0 | default=None | pk=0
+  11: is_sermon_note | type=INTEGER | notnull=1 | default=0 | pk=0
+  12: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  13: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_book_bookmarks
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: user_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: book_id | type=INTEGER | notnull=1 | default=None | pk=0
+  3: format | type=TEXT | notnull=1 | default=None | pk=0
+  4: locator | type=TEXT | notnull=0 | default=None | pk=0
+  5: page | type=INTEGER | notnull=0 | default=None | pk=0
+  6: label | type=TEXT | notnull=0 | default=None | pk=0
+  7: excerpt | type=TEXT | notnull=0 | default=None | pk=0
+  8: created_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_library_books
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: book_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: title | type=TEXT | notnull=1 | default=None | pk=0
+  3: author | type=TEXT | notnull=0 | default=None | pk=0
+  4: category | type=TEXT | notnull=0 | default=None | pk=0
+  5: folder_path | type=TEXT | notnull=0 | default=None | pk=0
+  6: created_time | type=TEXT | notnull=0 | default=None | pk=0
+  7: modified_time | type=TEXT | notnull=0 | default=None | pk=0
+  8: is_active | type=INTEGER | notnull=1 | default=1 | pk=0
+  9: first_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  10: last_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  11: manual_title | type=TEXT | notnull=0 | default=None | pk=0
+  12: manual_author | type=TEXT | notnull=0 | default=None | pk=0
+  13: manual_category | type=TEXT | notnull=0 | default=None | pk=0
+  14: is_hidden | type=INTEGER | notnull=1 | default=0 | pk=0
+  15: hidden_at | type=TEXT | notnull=0 | default=None | pk=0
+  16: hidden_by | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: pastor_library_files
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: drive_file_id | type=TEXT | notnull=1 | default=None | pk=0
+  2: book_id | type=INTEGER | notnull=0 | default=None | pk=0
+  3: name | type=TEXT | notnull=1 | default=None | pk=0
+  4: format | type=TEXT | notnull=0 | default=None | pk=0
+  5: mime_type | type=TEXT | notnull=0 | default=None | pk=0
+  6: size | type=INTEGER | notnull=0 | default=0 | pk=0
+  7: folder_path | type=TEXT | notnull=0 | default=None | pk=0
+  8: created_time | type=TEXT | notnull=0 | default=None | pk=0
+  9: modified_time | type=TEXT | notnull=0 | default=None | pk=0
+  10: md5_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  11: sha1_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  12: sha256_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  13: is_active | type=INTEGER | notnull=1 | default=1 | pk=0
+  14: is_duplicate | type=INTEGER | notnull=1 | default=0 | pk=0
+  15: duplicate_of_drive_file_id | type=TEXT | notnull=0 | default=None | pk=0
+  16: first_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  17: last_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_library_sync
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: last_sync_at | type=TEXT | notnull=0 | default=None | pk=0
+  2: folders_scanned | type=INTEGER | notnull=0 | default=0 | pk=0
+  3: total_files_seen | type=INTEGER | notnull=0 | default=0 | pk=0
+  4: supported_files | type=INTEGER | notnull=0 | default=0 | pk=0
+  5: pdf_count | type=INTEGER | notnull=0 | default=0 | pk=0
+  6: epub_count | type=INTEGER | notnull=0 | default=0 | pk=0
+  7: unsupported_files | type=INTEGER | notnull=0 | default=0 | pk=0
+  8: exact_duplicates | type=INTEGER | notnull=0 | default=0 | pk=0
+  9: unique_books | type=INTEGER | notnull=0 | default=0 | pk=0
+  10: new_books | type=INTEGER | notnull=0 | default=0 | pk=0
+  11: removed_files | type=INTEGER | notnull=0 | default=0 | pk=0
+
+TABLE: pastor_reader_state
+----------------------------------------------------------------------
+  0: user_key | type=TEXT | notnull=1 | default=None | pk=1
+  1: book_id | type=INTEGER | notnull=1 | default=None | pk=2
+  2: favorite | type=INTEGER | notnull=1 | default=0 | pk=0
+  3: last_format | type=TEXT | notnull=0 | default=None | pk=0
+  4: pdf_page | type=INTEGER | notnull=1 | default=1 | pk=0
+  5: pdf_scale | type=REAL | notnull=1 | default=1.15 | pk=0
+  6: furthest_pdf_page | type=INTEGER | notnull=1 | default=0 | pk=0
+  7: epub_cfi | type=TEXT | notnull=0 | default=None | pk=0
+  8: progress_percent | type=REAL | notnull=1 | default=0 | pk=0
+  9: total_active_seconds | type=INTEGER | notnull=1 | default=0 | pk=0
+  10: last_opened_at | type=TEXT | notnull=0 | default=None | pk=0
+  11: completed_at | type=TEXT | notnull=0 | default=None | pk=0
+  12: theme | type=TEXT | notnull=1 | default='light' | pk=0
+  13: epub_font_size | type=INTEGER | notnull=1 | default=100 | pk=0
+  14: epub_font_family | type=TEXT | notnull=1 | default='Georgia, serif' | pk=0
+  15: epub_line_height | type=REAL | notnull=1 | default=1.6 | pk=0
+  16: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  17: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_reading_sessions
+----------------------------------------------------------------------
+  0: id | type=TEXT | notnull=0 | default=None | pk=1
+  1: user_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: book_id | type=INTEGER | notnull=1 | default=None | pk=0
+  3: format | type=TEXT | notnull=0 | default=None | pk=0
+  4: started_at | type=TEXT | notnull=1 | default=None | pk=0
+  5: ended_at | type=TEXT | notnull=0 | default=None | pk=0
+  6: active_seconds | type=INTEGER | notnull=1 | default=0 | pk=0
+  7: last_ping_at | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: pastor_resource_books
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: book_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: display_title | type=TEXT | notnull=1 | default=None | pk=0
+  3: folder_path | type=TEXT | notnull=0 | default=None | pk=0
+  4: author_hint | type=TEXT | notnull=0 | default=None | pk=0
+  5: is_active | type=INTEGER | notnull=1 | default=1 | pk=0
+  6: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  7: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_resource_files
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: drive_file_id | type=TEXT | notnull=1 | default=None | pk=0
+  2: book_id | type=INTEGER | notnull=0 | default=None | pk=0
+  3: name | type=TEXT | notnull=1 | default=None | pk=0
+  4: normalized_name | type=TEXT | notnull=0 | default=None | pk=0
+  5: format | type=TEXT | notnull=0 | default=None | pk=0
+  6: mime_type | type=TEXT | notnull=0 | default=None | pk=0
+  7: size | type=INTEGER | notnull=0 | default=0 | pk=0
+  8: folder_path | type=TEXT | notnull=0 | default=None | pk=0
+  9: created_time | type=TEXT | notnull=0 | default=None | pk=0
+  10: modified_time | type=TEXT | notnull=0 | default=None | pk=0
+  11: md5_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  12: sha1_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  13: sha256_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  14: is_active | type=INTEGER | notnull=1 | default=1 | pk=0
+  15: is_duplicate | type=INTEGER | notnull=1 | default=0 | pk=0
+  16: duplicate_of_file_id | type=INTEGER | notnull=0 | default=None | pk=0
+  17: first_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  18: last_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: pastor_resource_sync_state
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: last_sync_at | type=TEXT | notnull=0 | default=None | pk=0
+  2: folders_scanned | type=INTEGER | notnull=0 | default=0 | pk=0
+  3: total_files_seen | type=INTEGER | notnull=0 | default=0 | pk=0
+  4: supported_files | type=INTEGER | notnull=0 | default=0 | pk=0
+  5: pdf_count | type=INTEGER | notnull=0 | default=0 | pk=0
+  6: epub_count | type=INTEGER | notnull=0 | default=0 | pk=0
+  7: unsupported_files | type=INTEGER | notnull=0 | default=0 | pk=0
+  8: exact_duplicates | type=INTEGER | notnull=0 | default=0 | pk=0
+  9: unique_books | type=INTEGER | notnull=0 | default=0 | pk=0
+
+TABLE: pastors
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: full_name | type=TEXT | notnull=1 | default=None | pk=0
+  2: age | type=INTEGER | notnull=0 | default=None | pk=0
+  3: sex | type=TEXT | notnull=0 | default=None | pk=0
+  4: church_address | type=TEXT | notnull=0 | default=None | pk=0
+  5: contact_number | type=TEXT | notnull=0 | default=None | pk=0
+  6: birthday | type=TEXT | notnull=0 | default=None | pk=0
+  7: username | type=TEXT | notnull=0 | default=None | pk=0
+  8: password | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: print_report_jobs
+----------------------------------------------------------------------
+  0: id | type=TEXT | notnull=0 | default=None | pk=1
+  1: user_area | type=TEXT | notnull=1 | default=None | pk=0
+  2: year | type=INTEGER | notnull=1 | default=None | pk=0
+  3: month | type=INTEGER | notnull=1 | default=None | pk=0
+  4: status | type=TEXT | notnull=1 | default='queued' | pk=0
+  5: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  6: started_at | type=TEXT | notnull=0 | default=None | pk=0
+  7: finished_at | type=TEXT | notnull=0 | default=None | pk=0
+  8: error_message | type=TEXT | notnull=0 | default=None | pk=0
+  9: result_path | type=TEXT | notnull=0 | default=None | pk=0
+  10: sub_area | type=TEXT | notnull=0 | default=None | pk=0
+  11: report_type | type=TEXT | notnull=1 | default='ao' | pk=0
+  12: print_action | type=TEXT | notnull=1 | default='main' | pk=0
+
+TABLE: pt2027_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: payload | type=TEXT | notnull=1 | default=None | pk=0
+  2: updated | type=REAL | notnull=1 | default=None | pk=0
+  3: attempted | type=REAL | notnull=1 | default=None | pk=0
+
+TABLE: pt2027_throttle
+----------------------------------------------------------------------
+  0: key | type=TEXT | notnull=0 | default=None | pk=1
+  1: started | type=REAL | notnull=1 | default=None | pk=0
+  2: count | type=INTEGER | notnull=1 | default=None | pk=0
+
+TABLE: sermon_hidden_items
+----------------------------------------------------------------------
+  0: sermon_id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: hidden_at | type=TEXT | notnull=1 | default=None | pk=0
+  2: hidden_by | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_files
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: drive_file_id | type=TEXT | notnull=1 | default=None | pk=0
+  2: filename | type=TEXT | notnull=1 | default=None | pk=0
+  3: folder_path | type=TEXT | notnull=0 | default=None | pk=0
+  4: mime_type | type=TEXT | notnull=0 | default=None | pk=0
+  5: size | type=INTEGER | notnull=1 | default=0 | pk=0
+  6: md5_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  7: sha256_checksum | type=TEXT | notnull=0 | default=None | pk=0
+  8: drive_created_time | type=TEXT | notnull=0 | default=None | pk=0
+  9: drive_modified_time | type=TEXT | notnull=0 | default=None | pk=0
+  10: pdf_creation_date | type=TEXT | notnull=0 | default=None | pk=0
+  11: pdf_modification_date | type=TEXT | notnull=0 | default=None | pk=0
+  12: effective_created_date | type=TEXT | notnull=0 | default=None | pk=0
+  13: date_source | type=TEXT | notnull=0 | default=None | pk=0
+  14: detected_text | type=TEXT | notnull=0 | default=None | pk=0
+  15: detected_theme | type=TEXT | notnull=0 | default=None | pk=0
+  16: manual_text | type=TEXT | notnull=0 | default=None | pk=0
+  17: manual_theme | type=TEXT | notnull=0 | default=None | pk=0
+  18: manual_created_date | type=TEXT | notnull=0 | default=None | pk=0
+  19: canonical_book_index | type=INTEGER | notnull=1 | default=999 | pk=0
+  20: canonical_chapter | type=INTEGER | notnull=1 | default=999 | pk=0
+  21: canonical_verse | type=INTEGER | notnull=1 | default=999 | pk=0
+  22: page_count | type=INTEGER | notnull=1 | default=0 | pk=0
+  23: searchable | type=INTEGER | notnull=1 | default=0 | pk=0
+  24: extract_error | type=TEXT | notnull=0 | default=None | pk=0
+  25: is_active | type=INTEGER | notnull=1 | default=1 | pk=0
+  26: first_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  27: last_seen_at | type=TEXT | notnull=1 | default=None | pk=0
+  28: indexed_at | type=TEXT | notnull=0 | default=None | pk=0
+  29: is_hidden | type=INTEGER | notnull=1 | default=0 | pk=0
+
+TABLE: sermon_library_pages
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: sermon_id | type=INTEGER | notnull=1 | default=None | pk=0
+  2: page_number | type=INTEGER | notnull=1 | default=None | pk=0
+  3: page_text | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts
+----------------------------------------------------------------------
+  0: sermon_id | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+  1: page_number | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+  2: page_text | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts_config
+----------------------------------------------------------------------
+  0: k | type=UNSPECIFIED | notnull=1 | default=None | pk=1
+  1: v | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts_content
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: c0 | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+  2: c1 | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+  3: c2 | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts_data
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: block | type=BLOB | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts_docsize
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: sz | type=BLOB | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_pages_fts_idx
+----------------------------------------------------------------------
+  0: segid | type=UNSPECIFIED | notnull=1 | default=None | pk=1
+  1: term | type=UNSPECIFIED | notnull=1 | default=None | pk=2
+  2: pgno | type=UNSPECIFIED | notnull=0 | default=None | pk=0
+
+TABLE: sermon_library_sync
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: last_sync_at | type=TEXT | notnull=0 | default=None | pk=0
+  2: folders_scanned | type=INTEGER | notnull=1 | default=0 | pk=0
+  3: pdf_files_seen | type=INTEGER | notnull=1 | default=0 | pk=0
+  4: indexed_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+  5: searchable_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+  6: unreadable_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+  7: new_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+  8: changed_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+  9: removed_pdfs | type=INTEGER | notnull=1 | default=0 | pk=0
+
+TABLE: sermon_reader_annotations
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: user_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: sermon_id | type=INTEGER | notnull=1 | default=None | pk=0
+  3: annotation_type | type=TEXT | notnull=1 | default='highlight' | pk=0
+  4: selected_text | type=TEXT | notnull=0 | default=None | pk=0
+  5: locator | type=TEXT | notnull=1 | default=None | pk=0
+  6: page | type=INTEGER | notnull=0 | default=None | pk=0
+  7: color | type=TEXT | notnull=0 | default=None | pk=0
+  8: note | type=TEXT | notnull=0 | default=None | pk=0
+  9: tags | type=TEXT | notnull=0 | default=None | pk=0
+  10: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  11: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: sermon_reader_bookmarks
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: user_key | type=TEXT | notnull=1 | default=None | pk=0
+  2: sermon_id | type=INTEGER | notnull=1 | default=None | pk=0
+  3: page | type=INTEGER | notnull=1 | default=None | pk=0
+  4: label | type=TEXT | notnull=0 | default=None | pk=0
+  5: created_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: sermon_reader_state
+----------------------------------------------------------------------
+  0: user_key | type=TEXT | notnull=1 | default=None | pk=1
+  1: sermon_id | type=INTEGER | notnull=1 | default=None | pk=2
+  2: pdf_page | type=INTEGER | notnull=1 | default=1 | pk=0
+  3: pdf_scale | type=REAL | notnull=1 | default=1.15 | pk=0
+  4: progress_percent | type=REAL | notnull=1 | default=0 | pk=0
+  5: theme | type=TEXT | notnull=1 | default='light' | pk=0
+  6: updated_at | type=TEXT | notnull=1 | default=None | pk=0
+
+TABLE: sheet_accounts_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: username | type=TEXT | notnull=0 | default=None | pk=0
+  2: name | type=TEXT | notnull=0 | default=None | pk=0
+  3: church_address | type=TEXT | notnull=0 | default=None | pk=0
+  4: password | type=TEXT | notnull=0 | default=None | pk=0
+  5: age | type=TEXT | notnull=0 | default=None | pk=0
+  6: sex | type=TEXT | notnull=0 | default=None | pk=0
+  7: contact | type=TEXT | notnull=0 | default=None | pk=0
+  8: birthday | type=TEXT | notnull=0 | default=None | pk=0
+  9: position | type=TEXT | notnull=0 | default=None | pk=0
+  10: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  11: sub_area | type=TEXT | notnull=0 | default=None | pk=0
+  12: google_pin_location | type=TEXT | notnull=0 | default=None | pk=0
+  13: latitude | type=TEXT | notnull=0 | default=None | pk=0
+  14: longitude | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sheet_announcement_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: title | type=TEXT | notnull=0 | default=None | pk=0
+  2: announcement | type=TEXT | notnull=0 | default=None | pk=0
+  3: announcement_date | type=TEXT | notnull=0 | default=None | pk=0
+  4: area | type=TEXT | notnull=0 | default=None | pk=0
+  5: sub_area | type=TEXT | notnull=0 | default=None | pk=0
+  6: author_username | type=TEXT | notnull=0 | default=None | pk=0
+  7: author_name | type=TEXT | notnull=0 | default=None | pk=0
+  8: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+
+TABLE: sheet_aopt_cache
+----------------------------------------------------------------------
+  0: month | type=TEXT | notnull=0 | default=None | pk=1
+  1: amount | type=REAL | notnull=0 | default=None | pk=0
+  2: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  3: area_number | type=TEXT | notnull=1 | default='' | pk=0
+  4: sub_area | type=TEXT | notnull=1 | default='' | pk=0
+
+TABLE: sheet_chain_prayer_schedule_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: church_name_assigned | type=TEXT | notnull=0 | default=None | pk=0
+  2: prayer_date | type=TEXT | notnull=0 | default=None | pk=0
+  3: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  4: pastor_name | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sheet_district_schedule_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: church_name | type=TEXT | notnull=0 | default=None | pk=0
+  2: church_address | type=TEXT | notnull=0 | default=None | pk=0
+  3: pastor_name | type=TEXT | notnull=0 | default=None | pk=0
+  4: contact_number | type=TEXT | notnull=0 | default=None | pk=0
+  5: activity_date_start | type=TEXT | notnull=0 | default=None | pk=0
+  6: activity_date_end | type=TEXT | notnull=0 | default=None | pk=0
+  7: activity_type | type=TEXT | notnull=0 | default=None | pk=0
+  8: note | type=TEXT | notnull=0 | default=None | pk=0
+  9: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  10: joining | type=TEXT | notnull=0 | default=None | pk=0
+  11: theme | type=TEXT | notnull=0 | default=None | pk=0
+  12: text | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sheet_prayer_request_cache
+----------------------------------------------------------------------
+  0: request_id | type=TEXT | notnull=0 | default=None | pk=1
+  1: church_name | type=TEXT | notnull=0 | default=None | pk=0
+  2: submitted_by | type=TEXT | notnull=0 | default=None | pk=0
+  3: title | type=TEXT | notnull=0 | default=None | pk=0
+  4: request_date | type=TEXT | notnull=0 | default=None | pk=0
+  5: request_text | type=TEXT | notnull=0 | default=None | pk=0
+  6: status | type=TEXT | notnull=0 | default=None | pk=0
+  7: pastors_praying | type=TEXT | notnull=0 | default=None | pk=0
+  8: answered_date | type=TEXT | notnull=0 | default=None | pk=0
+  9: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  10: area_number | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sheet_report_cache
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: sheet_row | type=INTEGER | notnull=0 | default=None | pk=0
+  2: year | type=INTEGER | notnull=0 | default=None | pk=0
+  3: month | type=INTEGER | notnull=0 | default=None | pk=0
+  4: activity_date | type=TEXT | notnull=0 | default=None | pk=0
+  5: church | type=TEXT | notnull=0 | default=None | pk=0
+  6: pastor | type=TEXT | notnull=0 | default=None | pk=0
+  7: address | type=TEXT | notnull=0 | default=None | pk=0
+  8: adult | type=REAL | notnull=0 | default=None | pk=0
+  9: youth | type=REAL | notnull=0 | default=None | pk=0
+  10: children | type=REAL | notnull=0 | default=None | pk=0
+  11: tithes | type=REAL | notnull=0 | default=None | pk=0
+  12: offering | type=REAL | notnull=0 | default=None | pk=0
+  13: personal_tithes | type=REAL | notnull=0 | default=None | pk=0
+  14: mission_offering | type=REAL | notnull=0 | default=None | pk=0
+  15: received_jesus | type=REAL | notnull=0 | default=None | pk=0
+  16: existing_bible_study | type=REAL | notnull=0 | default=None | pk=0
+  17: new_bible_study | type=REAL | notnull=0 | default=None | pk=0
+  18: water_baptized | type=REAL | notnull=0 | default=None | pk=0
+  19: holy_spirit_baptized | type=REAL | notnull=0 | default=None | pk=0
+  20: childrens_dedication | type=REAL | notnull=0 | default=None | pk=0
+  21: healed | type=REAL | notnull=0 | default=None | pk=0
+  22: amount_to_send | type=REAL | notnull=0 | default=None | pk=0
+  23: status | type=TEXT | notnull=0 | default=None | pk=0
+  24: area_number | type=TEXT | notnull=0 | default=None | pk=0
+  25: report_status | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: submit_report_jobs
+----------------------------------------------------------------------
+  0: id | type=TEXT | notnull=0 | default=None | pk=1
+  1: pastor_username | type=TEXT | notnull=1 | default=None | pk=0
+  2: year | type=INTEGER | notnull=1 | default=None | pk=0
+  3: month | type=INTEGER | notnull=1 | default=None | pk=0
+  4: status | type=TEXT | notnull=1 | default='queued' | pk=0
+  5: progress_message | type=TEXT | notnull=0 | default=None | pk=0
+  6: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  7: started_at | type=TEXT | notnull=0 | default=None | pk=0
+  8: finished_at | type=TEXT | notnull=0 | default=None | pk=0
+  9: error_message | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: sunday_reports
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: monthly_report_id | type=INTEGER | notnull=1 | default=None | pk=0
+  2: date | type=TEXT | notnull=1 | default=None | pk=0
+  3: is_complete | type=INTEGER | notnull=0 | default=0 | pk=0
+  4: attendance_adult | type=REAL | notnull=0 | default=None | pk=0
+  5: attendance_youth | type=REAL | notnull=0 | default=None | pk=0
+  6: attendance_children | type=REAL | notnull=0 | default=None | pk=0
+  7: attendance_total | type=REAL | notnull=0 | default=None | pk=0
+  8: tithes_church | type=REAL | notnull=0 | default=None | pk=0
+  9: offering | type=REAL | notnull=0 | default=None | pk=0
+  10: mission | type=REAL | notnull=0 | default=None | pk=0
+  11: tithes_personal | type=REAL | notnull=0 | default=None | pk=0
+
+TABLE: sync_state
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: last_sync | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: temp_edit_requests
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: batch_id | type=TEXT | notnull=1 | default=None | pk=0
+  2: editor_name | type=TEXT | notnull=1 | default=None | pk=0
+  3: selfie_blob | type=BLOB | notnull=1 | default=None | pk=0
+  4: selfie_mime | type=TEXT | notnull=1 | default=None | pk=0
+  5: submitted_date | type=TEXT | notnull=1 | default=None | pk=0
+  6: submitted_time | type=TEXT | notnull=1 | default=None | pk=0
+  7: area_number | type=TEXT | notnull=1 | default=None | pk=0
+  8: church_id | type=TEXT | notnull=1 | default=None | pk=0
+  9: church_address | type=TEXT | notnull=0 | default=None | pk=0
+  10: old_name | type=TEXT | notnull=0 | default=None | pk=0
+  11: new_name | type=TEXT | notnull=0 | default=None | pk=0
+  12: old_contact | type=TEXT | notnull=0 | default=None | pk=0
+  13: new_contact | type=TEXT | notnull=0 | default=None | pk=0
+  14: old_birthday | type=TEXT | notnull=0 | default=None | pk=0
+  15: new_birthday | type=TEXT | notnull=0 | default=None | pk=0
+  16: old_google_pin_location | type=TEXT | notnull=0 | default=None | pk=0
+  17: new_google_pin_location | type=TEXT | notnull=0 | default=None | pk=0
+  18: decision | type=TEXT | notnull=1 | default='pending' | pk=0
+  19: old_church_address | type=TEXT | notnull=0 | default=None | pk=0
+  20: new_church_address | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: user_login_events
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: created_at | type=TEXT | notnull=1 | default=None | pk=0
+  2: username | type=TEXT | notnull=1 | default=None | pk=0
+  3: full_name | type=TEXT | notnull=0 | default=None | pk=0
+  4: role | type=TEXT | notnull=0 | default=None | pk=0
+  5: church_id | type=TEXT | notnull=0 | default=None | pk=0
+  6: church_address | type=TEXT | notnull=0 | default=None | pk=0
+  7: area_number | type=TEXT | notnull=0 | default=None | pk=0
+  8: sub_area | type=TEXT | notnull=0 | default=None | pk=0
+  9: ip_address | type=TEXT | notnull=0 | default=None | pk=0
+  10: user_agent | type=TEXT | notnull=0 | default=None | pk=0
+
+TABLE: verses
+----------------------------------------------------------------------
+  0: id | type=INTEGER | notnull=0 | default=None | pk=1
+  1: date | type=TEXT | notnull=1 | default=None | pk=0
+  2: reference | type=TEXT | notnull=1 | default=None | pk=0
+  3: text | type=TEXT | notnull=1 | default=None | pk=0
+
+INDEXES
+======================================================================
+
+INDEX: idx_apm_member_events_scope
+TABLE: area_monitor_member_events
+SQL: CREATE INDEX idx_apm_member_events_scope ON area_monitor_member_events(scope_key, created_at)
+
+INDEX: idx_area_monitor_remarks_scope_church
+TABLE: area_monitor_remarks
+SQL: CREATE INDEX idx_area_monitor_remarks_scope_church ON area_monitor_remarks(scope_key, church_key)
+
+INDEX: idx_apm_seen_notifications_user_scope
+TABLE: area_monitor_seen_notifications
+SQL: CREATE INDEX idx_apm_seen_notifications_user_scope ON area_monitor_seen_notifications(user_key, scope_key)
+
+INDEX: idx_dev_logs_created_at
+TABLE: developer_visit_logs
+SQL: CREATE INDEX idx_dev_logs_created_at ON developer_visit_logs(created_at)
+
+INDEX: idx_pastor_annotations_user_book
+TABLE: pastor_book_annotations
+SQL: CREATE INDEX idx_pastor_annotations_user_book
+            ON pastor_book_annotations(user_key, book_id)
+            
+
+INDEX: idx_pastor_bookmarks_user_book
+TABLE: pastor_book_bookmarks
+SQL: CREATE INDEX idx_pastor_bookmarks_user_book
+            ON pastor_book_bookmarks(user_key, book_id)
+            
+
+INDEX: idx_pastor_library_books_active
+TABLE: pastor_library_books
+SQL: CREATE INDEX idx_pastor_library_books_active
+            ON pastor_library_books(is_active)
+            
+
+INDEX: idx_pastor_library_books_author
+TABLE: pastor_library_books
+SQL: CREATE INDEX idx_pastor_library_books_author
+            ON pastor_library_books(author)
+            
+
+INDEX: idx_pastor_library_books_category
+TABLE: pastor_library_books
+SQL: CREATE INDEX idx_pastor_library_books_category
+            ON pastor_library_books(category)
+            
+
+INDEX: idx_pastor_library_books_title
+TABLE: pastor_library_books
+SQL: CREATE INDEX idx_pastor_library_books_title
+            ON pastor_library_books(title)
+            
+
+INDEX: idx_pastor_library_files_active
+TABLE: pastor_library_files
+SQL: CREATE INDEX idx_pastor_library_files_active
+            ON pastor_library_files(is_active)
+            
+
+INDEX: idx_pastor_library_files_book
+TABLE: pastor_library_files
+SQL: CREATE INDEX idx_pastor_library_files_book
+            ON pastor_library_files(book_id)
+            
+
+INDEX: idx_pastor_library_files_md5
+TABLE: pastor_library_files
+SQL: CREATE INDEX idx_pastor_library_files_md5
+            ON pastor_library_files(md5_checksum)
+            
+
+INDEX: idx_pastor_library_files_sha256
+TABLE: pastor_library_files
+SQL: CREATE INDEX idx_pastor_library_files_sha256
+            ON pastor_library_files(sha256_checksum)
+            
+
+INDEX: idx_pastor_reader_state_recent
+TABLE: pastor_reader_state
+SQL: CREATE INDEX idx_pastor_reader_state_recent
+            ON pastor_reader_state(user_key, last_opened_at)
+            
+
+INDEX: idx_pastor_reader_state_user
+TABLE: pastor_reader_state
+SQL: CREATE INDEX idx_pastor_reader_state_user
+            ON pastor_reader_state(user_key)
+            
+
+INDEX: idx_pastor_reading_sessions_user
+TABLE: pastor_reading_sessions
+SQL: CREATE INDEX idx_pastor_reading_sessions_user
+            ON pastor_reading_sessions(user_key, started_at)
+            
+
+INDEX: idx_pastor_resource_books_active
+TABLE: pastor_resource_books
+SQL: CREATE INDEX idx_pastor_resource_books_active
+        ON pastor_resource_books(is_active)
+        
+
+INDEX: idx_pastor_resource_books_title
+TABLE: pastor_resource_books
+SQL: CREATE INDEX idx_pastor_resource_books_title
+        ON pastor_resource_books(display_title)
+        
+
+INDEX: idx_pastor_resource_files_active
+TABLE: pastor_resource_files
+SQL: CREATE INDEX idx_pastor_resource_files_active
+        ON pastor_resource_files(is_active)
+        
+
+INDEX: idx_pastor_resource_files_book
+TABLE: pastor_resource_files
+SQL: CREATE INDEX idx_pastor_resource_files_book
+        ON pastor_resource_files(book_id)
+        
+
+INDEX: idx_pastor_resource_files_md5
+TABLE: pastor_resource_files
+SQL: CREATE INDEX idx_pastor_resource_files_md5
+        ON pastor_resource_files(md5_checksum)
+        
+
+INDEX: idx_pastor_resource_files_sha256
+TABLE: pastor_resource_files
+SQL: CREATE INDEX idx_pastor_resource_files_sha256
+        ON pastor_resource_files(sha256_checksum)
+        
+
+INDEX: idx_print_report_jobs_status_created
+TABLE: print_report_jobs
+SQL: CREATE INDEX idx_print_report_jobs_status_created ON print_report_jobs(status, created_at)
+
+INDEX: idx_sermon_library_active
+TABLE: sermon_library_files
+SQL: CREATE INDEX idx_sermon_library_active
+            ON sermon_library_files(is_active)
+            
+
+INDEX: idx_sermon_library_bible_sort
+TABLE: sermon_library_files
+SQL: CREATE INDEX idx_sermon_library_bible_sort
+            ON sermon_library_files(
+                canonical_book_index,
+                canonical_chapter,
+                canonical_verse
+            )
+            
+
+INDEX: idx_sermon_library_created
+TABLE: sermon_library_files
+SQL: CREATE INDEX idx_sermon_library_created
+            ON sermon_library_files(effective_created_date)
+            
+
+INDEX: idx_sermon_library_hidden
+TABLE: sermon_library_files
+SQL: CREATE INDEX idx_sermon_library_hidden
+            ON sermon_library_files(is_active, is_hidden)
+            
+
+INDEX: idx_sermon_pages_sermon
+TABLE: sermon_library_pages
+SQL: CREATE INDEX idx_sermon_pages_sermon
+            ON sermon_library_pages(sermon_id, page_number)
+            
+
+INDEX: idx_sermon_reader_annotations_user_sermon
+TABLE: sermon_reader_annotations
+SQL: CREATE INDEX idx_sermon_reader_annotations_user_sermon
+            ON sermon_reader_annotations(user_key, sermon_id)
+            
+
+INDEX: idx_sermon_reader_bookmarks_user_sermon
+TABLE: sermon_reader_bookmarks
+SQL: CREATE INDEX idx_sermon_reader_bookmarks_user_sermon
+            ON sermon_reader_bookmarks(user_key, sermon_id)
+            
+
+INDEX: idx_accounts_area
+TABLE: sheet_accounts_cache
+SQL: CREATE INDEX idx_accounts_area ON sheet_accounts_cache(age)
+
+INDEX: idx_accounts_church
+TABLE: sheet_accounts_cache
+SQL: CREATE INDEX idx_accounts_church ON sheet_accounts_cache(sex)
+
+INDEX: idx_accounts_username
+TABLE: sheet_accounts_cache
+SQL: CREATE INDEX idx_accounts_username ON sheet_accounts_cache(username)
+
+INDEX: idx_announcement_scope
+TABLE: sheet_announcement_cache
+SQL: CREATE INDEX idx_announcement_scope ON sheet_announcement_cache(area, sub_area)
+
+INDEX: idx_aopt_month_area
+TABLE: sheet_aopt_cache
+SQL: CREATE UNIQUE INDEX idx_aopt_month_area ON sheet_aopt_cache(month, area_number)
+
+INDEX: idx_aopt_month_area_sub
+TABLE: sheet_aopt_cache
+SQL: CREATE UNIQUE INDEX idx_aopt_month_area_sub ON sheet_aopt_cache(month, area_number, sub_area)
+
+INDEX: idx_chain_prayer_date
+TABLE: sheet_chain_prayer_schedule_cache
+SQL: CREATE INDEX idx_chain_prayer_date ON sheet_chain_prayer_schedule_cache(prayer_date)
+
+INDEX: idx_district_schedule_start
+TABLE: sheet_district_schedule_cache
+SQL: CREATE INDEX idx_district_schedule_start ON sheet_district_schedule_cache(activity_date_start)
+
+INDEX: idx_apm_prayer_church
+TABLE: sheet_prayer_request_cache
+SQL: CREATE INDEX idx_apm_prayer_church ON sheet_prayer_request_cache(church_name)
+
+INDEX: idx_apm_prayer_date
+TABLE: sheet_prayer_request_cache
+SQL: CREATE INDEX idx_apm_prayer_date ON sheet_prayer_request_cache(request_date)
+
+INDEX: idx_prayer_area_status
+TABLE: sheet_prayer_request_cache
+SQL: CREATE INDEX idx_prayer_area_status ON sheet_prayer_request_cache(area_number, status)
+
+INDEX: idx_prayer_status
+TABLE: sheet_prayer_request_cache
+SQL: CREATE INDEX idx_prayer_status ON sheet_prayer_request_cache(status)
+
+INDEX: idx_prayer_submitted_by
+TABLE: sheet_prayer_request_cache
+SQL: CREATE INDEX idx_prayer_submitted_by ON sheet_prayer_request_cache(submitted_by)
+
+INDEX: idx_report_area_ym
+TABLE: sheet_report_cache
+SQL: CREATE INDEX idx_report_area_ym ON sheet_report_cache(area_number, year, month)
+
+INDEX: idx_report_ym
+TABLE: sheet_report_cache
+SQL: CREATE INDEX idx_report_ym ON sheet_report_cache(year, month)
+
+INDEX: idx_report_ym_addr
+TABLE: sheet_report_cache
+SQL: CREATE INDEX idx_report_ym_addr ON sheet_report_cache(year, month, address)
+
+INDEX: idx_report_ym_church
+TABLE: sheet_report_cache
+SQL: CREATE INDEX idx_report_ym_church ON sheet_report_cache(year, month, church)
+
+INDEX: idx_submit_report_jobs_user_month
+TABLE: submit_report_jobs
+SQL: CREATE INDEX idx_submit_report_jobs_user_month ON submit_report_jobs(pastor_username, year, month, status)
+
+INDEX: idx_temp_edit_batch
+TABLE: temp_edit_requests
+SQL: CREATE INDEX idx_temp_edit_batch ON temp_edit_requests(batch_id)
+
+INDEX: idx_temp_edit_decision
+TABLE: temp_edit_requests
+SQL: CREATE INDEX idx_temp_edit_decision ON temp_edit_requests(decision)
+
+INDEX: idx_user_login_events_created
+TABLE: user_login_events
+SQL: CREATE INDEX idx_user_login_events_created ON user_login_events(created_at)
+
+INDEX: idx_user_login_events_scope
+TABLE: user_login_events
+SQL: CREATE INDEX idx_user_login_events_scope ON user_login_events(area_number, sub_area, role)
+
+INDEX: idx_user_login_events_username
+TABLE: user_login_events
+SQL: CREATE INDEX idx_user_login_events_username ON user_login_events(username)
+
+POSSIBLE AI / INDEXING TABLES
+======================================================================
+
+pastor_book_annotations - 0 rows
+pastor_book_bookmarks - 0 rows
+pastor_library_books - 2,157 rows
+pastor_library_files - 1,266 rows
+pastor_library_sync - 1 rows
+pastor_resource_books - 0 rows
+pastor_resource_files - 0 rows
+pastor_resource_sync_state - 1 rows
+sermon_hidden_items - 0 rows
+sermon_library_files - 512 rows
+sermon_library_pages - 2,253 rows
+sermon_library_pages_fts - 2,246 rows
+sermon_library_pages_fts_config - 1 rows
+sermon_library_pages_fts_content - 2,246 rows
+sermon_library_pages_fts_data - 983 rows
+sermon_library_pages_fts_docsize - 2,246 rows
+sermon_library_pages_fts_idx - 921 rows
+sermon_library_sync - 1 rows
+sermon_reader_annotations - 0 rows
+sermon_reader_bookmarks - 0 rows
+sermon_reader_state - 4 rows
+sheet_chain_prayer_schedule_cache - 194 rows
+
+SQLITE SETTINGS
+======================================================================
+
+Journal mode: wal

@@ -4149,7 +4149,7 @@ function openSermonReader(id, pageNumber=null) {
     if (pageNumber) {
         url += "?page=" + encodeURIComponent(pageNumber);
     }
-    window.location.href = url;
+    window.navigateWithLoading(url);
 }
 
 function renderList(data) {
@@ -4900,7 +4900,7 @@ html, body { overflow:hidden !important; }
 
     <div class="sr-selection" id="selectionBar"><button class="sr-selection-btn" type="button" onclick="copySelectedText()">Copy</button><button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('underline','#e5962d',false)">Underline</button><button class="sr-selection-btn" type="button" onclick="savePendingAnnotation('highlight','#ffe66d',true)">Note</button><button class="sr-selection-btn sr-color" type="button" style="background:#ffe66d" onclick="savePendingAnnotation('highlight','#ffe66d',false)" title="Yellow highlight"></button><button class="sr-selection-btn sr-color" type="button" style="background:#9ee6b8" onclick="savePendingAnnotation('highlight','#9ee6b8',false)" title="Green highlight"></button><button class="sr-selection-btn sr-color" type="button" style="background:#9ed3ff" onclick="savePendingAnnotation('highlight','#9ed3ff',false)" title="Blue highlight"></button><button class="sr-selection-btn" type="button" onclick="clearPendingSelection()">Close</button></div>
 
-    <div class="sr-load-overlay" id="readerLoadOverlay"><div class="sr-load-card"><div class="sr-load-title" id="readerLoadTitle">Opening sermon PDF…</div><div class="sr-load-detail" id="readerLoadDetail">Preparing your reader.</div><div class="sr-load-track"><div class="sr-load-fill" id="readerLoadFill"></div></div><div class="sr-load-meta"><span id="readerLoadBytes">Please wait…</span><span id="readerLoadPercent"></span></div><div class="sr-load-actions" id="readerLoadActions"><button class="primary" type="button" onclick="location.reload()">Retry</button><a href="{{ download_url }}">Download PDF</a><button type="button" onclick="returnToSermonLibrary()">Back to Sermon eBooks</button></div></div></div>
+    <div class="sr-load-overlay" id="readerLoadOverlay"><div class="sr-load-card"><div class="sr-load-title" id="readerLoadTitle">Opening sermon PDF…</div><div class="sr-load-detail" id="readerLoadDetail">Preparing your reader.</div><div class="sr-load-track"><div class="sr-load-fill" id="readerLoadFill"></div></div><div class="sr-load-meta"><span id="readerLoadBytes">Please wait…</span><span id="readerLoadPercent"></span></div><div class="sr-load-actions" id="readerLoadActions"><button class="primary" type="button" onclick="window.reloadWithLoading()">Retry</button><a href="{{ download_url }}">Download PDF</a><button type="button" onclick="returnToSermonLibrary()">Back to Sermon eBooks</button></div></div></div>
     <div class="sr-toast" id="readerToast"></div>
 </div>
 
@@ -5027,9 +5027,9 @@ function returnToSermonLibrary() {
         returnUrl.startsWith("/pastor-resources/sermon-ebooks") &&
         !returnUrl.includes("/read/")
     ) {
-        window.location.href = returnUrl;
+        window.navigateWithLoading(returnUrl);
     } else {
-        window.location.href = SERMON_HOME_URL;
+        window.navigateWithLoading(SERMON_HOME_URL);
     }
 }
 

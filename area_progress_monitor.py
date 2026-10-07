@@ -12,6 +12,7 @@ from typing import Any
 import gspread
 from google.oauth2.service_account import Credentials
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template_string, request, session, url_for
+from login_events import ensure_login_event_schema
 
 bp = Blueprint("area_progress_monitor", __name__)
 
@@ -433,25 +434,7 @@ def ensure_area_progress_monitor_tables() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_prayer_church ON sheet_prayer_request_cache(church_name)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_apm_prayer_date ON sheet_prayer_request_cache(request_date)")
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_login_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            name TEXT,
-            role TEXT,
-            church_id TEXT,
-            church_address TEXT,
-            area_number TEXT,
-            sub_area TEXT,
-            logged_in_at TEXT NOT NULL,
-            ip_address TEXT,
-            user_agent TEXT
-        )
-        """
-    )
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_scope ON user_login_events(area_number, sub_area, logged_in_at)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_username ON user_login_events(username, logged_in_at)")
+    ensure_login_event_schema(conn)
 
     cur.execute(
         """
@@ -1340,13 +1323,13 @@ def _pastor_login_notifications(scope: Scope, churches: dict[str, dict[str, Any]
     try:
         rows = conn.execute(
             f"""
-            SELECT id, username, name, role, church_id, church_address,
-                   area_number, sub_area, logged_in_at
+            SELECT id, username, full_name, role, church_id, church_address,
+                   area_number, sub_area, created_at
             FROM user_login_events
             WHERE LOWER(TRIM(COALESCE(role,''))) = 'pastor'
               AND TRIM(COALESCE(area_number,'')) = TRIM(?)
               {sub_sql}
-            ORDER BY datetime(logged_in_at) DESC, id DESC
+            ORDER BY datetime(created_at) DESC, id DESC
             LIMIT 40
             """,
             tuple(params),
@@ -1373,9 +1356,9 @@ def _pastor_login_notifications(scope: Scope, churches: dict[str, dict[str, Any]
         if not church:
             continue
 
-        pastor_name = str(row["name"] or church.get("pastor_name") or username).strip()
+        pastor_name = str(row["full_name"] or church.get("pastor_name") or username).strip()
         church_name = str(church.get("church_name") or row["church_id"] or "").strip()
-        login_time = _format_login_time_ph(row["logged_in_at"])
+        login_time = _format_login_time_ph(row["created_at"])
 
         # Stable per real login row; once seen it disappears.
         notification_id = f"pastor-login-{row['id']}"

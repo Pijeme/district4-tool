@@ -46,6 +46,34 @@ INDEX_STATE = {
     "queued_force": False,
 }
 
+# Same-process fast signal. The authoritative cross-worker cancel request is
+# stored by pastor_resources in pastor_resource_sync_state.db.
+INDEX_CANCEL_EVENT = threading.Event()
+
+
+def request_public_library_index_cancel():
+    """Request a cooperative stop without deleting any completed AI chunks."""
+    INDEX_CANCEL_EVENT.set()
+    with INDEX_STATE_LOCK:
+        INDEX_STATE["queued"] = False
+        INDEX_STATE["queued_force"] = False
+        if INDEX_STATE.get("running"):
+            INDEX_STATE["stage"] = "cancelling"
+            INDEX_STATE["message"] = (
+                "Cancellation requested. Stopping after the current ebook step..."
+            )
+    return True
+
+
+def _public_library_index_cancel_requested():
+    if INDEX_CANCEL_EVENT.is_set():
+        return True
+    try:
+        return bool(pastor_resources.resource_sync_cancel_requested())
+    except Exception:
+        return False
+
+
 MAX_FILE_BYTES = int(os.getenv("PIJ_LIBRARY_MAX_FILE_MB", "300")) * 1024 * 1024
 CHUNK_TARGET_CHARS = int(os.getenv("PIJ_LIBRARY_CHUNK_CHARS", "4200"))
 CHUNK_OVERLAP_CHARS = int(os.getenv("PIJ_LIBRARY_CHUNK_OVERLAP", "500"))
@@ -478,62 +506,213 @@ def _store_index_error(row, error):
 
 
 def index_public_library(force=False):
-    """Index new/changed public Pastor's Resources ebooks. Safe to run repeatedly."""
+    """Index new/changed public ebooks and stop safely when cancellation is requested."""
     ensure_ai_library_tables()
     if not INDEX_LOCK.acquire(blocking=False):
         return {"ok": False, "error": "An AI library indexing job is already running."}
+
     try:
         rows = _public_files_to_index()
         with INDEX_STATE_LOCK:
-            INDEX_STATE.update(running=True, stage="indexing", message="Checking existing Drive IDs and content fingerprints...", total=len(rows), processed=0, indexed=0, newly_indexed=0, reindexed=0, skipped=0, errors=0, current_file="", started_at=_now(), finished_at="", last_error="")
-        # One metadata snapshot, no connection/authentication per skipped file.
+            INDEX_STATE.update(
+                running=True,
+                stage="indexing",
+                message="Checking existing Drive IDs and content fingerprints...",
+                total=len(rows),
+                processed=0,
+                indexed=0,
+                newly_indexed=0,
+                reindexed=0,
+                skipped=0,
+                errors=0,
+                current_file="",
+                started_at=_now(),
+                finished_at="",
+                last_error="",
+            )
+
+        # One metadata snapshot: unchanged books can be skipped without opening
+        # a new DB connection or Google Drive session for every ebook.
         db = _db()
         try:
             documents = {}
-            for doc in db.execute("""SELECT * FROM pij_library_documents WHERE source_type='public_ebook'
-                    ORDER BY searchable DESC,chunk_count DESC,id"""):
-                documents.setdefault(doc['drive_file_id'], doc)
+            for doc in db.execute(
+                """
+                SELECT *
+                FROM pij_library_documents
+                WHERE source_type='public_ebook'
+                ORDER BY searchable DESC, chunk_count DESC, id
+                """
+            ):
+                documents.setdefault(doc["drive_file_id"], doc)
         finally:
             db.close()
+
         drive = None
         indexed = newly_indexed = reindexed = skipped = errors = 0
+
         for number, row in enumerate(rows, start=1):
+            if _public_library_index_cancel_requested():
+                with INDEX_STATE_LOCK:
+                    INDEX_STATE.update(
+                        running=False,
+                        stage="cancelled",
+                        message="Pij AI indexing cancelled safely.",
+                        current_file="",
+                        finished_at=_now(),
+                        queued=False,
+                        queued_force=False,
+                    )
+                try:
+                    pastor_resources.clear_resource_sync_cancel_request()
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "cancelled": True,
+                    "total": len(rows),
+                    "checked": number - 1,
+                    "indexed": indexed,
+                    "newly_indexed": newly_indexed,
+                    "reindexed": reindexed,
+                    "skipped": skipped,
+                    "errors": errors,
+                }
+
             with INDEX_STATE_LOCK:
-                INDEX_STATE.update(processed=number - 1, current_file=_clean(row["name"]))
-            old = documents.get(row['drive_file_id'])
+                INDEX_STATE.update(
+                    processed=number - 1,
+                    current_file=_clean(row["name"]),
+                )
+
+            old = documents.get(row["drive_file_id"])
             if not force and not _document_needs_reindex(old, row):
                 skipped += 1
                 with INDEX_STATE_LOCK:
-                    INDEX_STATE.update(processed=number, skipped=skipped)
+                    INDEX_STATE.update(
+                        processed=number,
+                        skipped=skipped,
+                    )
                 continue
+
             try:
                 if int(row["size"] or 0) > MAX_FILE_BYTES:
-                    raise ValueError(f"File exceeds AI indexing limit of {MAX_FILE_BYTES // (1024*1024)} MB")
+                    raise ValueError(
+                        f"File exceeds AI indexing limit of "
+                        f"{MAX_FILE_BYTES // (1024*1024)} MB"
+                    )
+
                 if drive is None:
                     drive = pastor_resources.get_drive_session()
-                data = pastor_resources.download_drive_file_bytes(drive, row["drive_file_id"])
+
+                if _public_library_index_cancel_requested():
+                    continue
+
+                data = pastor_resources.download_drive_file_bytes(
+                    drive,
+                    row["drive_file_id"],
+                )
+
+                # A blocking Drive download cannot be interrupted mid-request,
+                # but cancellation is honored before CPU-heavy extraction begins.
+                if _public_library_index_cancel_requested():
+                    with INDEX_STATE_LOCK:
+                        INDEX_STATE.update(processed=number - 1)
+                    continue
+
                 fmt = _clean(row["format"]).lower()
                 sections = _extract_pdf(data) if fmt == "pdf" else _extract_epub(data)
+
+                if _public_library_index_cancel_requested():
+                    with INDEX_STATE_LOCK:
+                        INDEX_STATE.update(processed=number - 1)
+                    continue
+
                 chunks = _make_chunks(sections)
                 if not chunks:
                     raise ValueError("No searchable text extracted from ebook")
+
+                if _public_library_index_cancel_requested():
+                    with INDEX_STATE_LOCK:
+                        INDEX_STATE.update(processed=number - 1)
+                    continue
+
                 _store_public_document(row, chunks, len(sections))
                 indexed += 1
-                if old and old['searchable'] and int(old['chunk_count'] or 0) > 0:
+                if old and old["searchable"] and int(old["chunk_count"] or 0) > 0:
                     reindexed += 1
                 else:
                     newly_indexed += 1
+
             except Exception as exc:
+                # Do not turn a deliberate cancellation into an index error.
+                if _public_library_index_cancel_requested():
+                    continue
                 errors += 1
                 _store_index_error(row, exc)
                 with INDEX_STATE_LOCK:
-                    INDEX_STATE["last_error"] = f"{_clean(row['name'])}: {_clean(exc)}"
+                    INDEX_STATE["last_error"] = (
+                        f"{_clean(row['name'])}: {_clean(exc)}"
+                    )
+
             with INDEX_STATE_LOCK:
-                INDEX_STATE.update(processed=number, indexed=indexed, newly_indexed=newly_indexed, reindexed=reindexed, skipped=skipped, errors=errors)
+                INDEX_STATE.update(
+                    processed=number,
+                    indexed=indexed,
+                    newly_indexed=newly_indexed,
+                    reindexed=reindexed,
+                    skipped=skipped,
+                    errors=errors,
+                )
+
+        # A cancellation may have been requested during the final ebook.
+        if _public_library_index_cancel_requested():
+            with INDEX_STATE_LOCK:
+                INDEX_STATE.update(
+                    running=False,
+                    stage="cancelled",
+                    message="Pij AI indexing cancelled safely.",
+                    current_file="",
+                    finished_at=_now(),
+                    queued=False,
+                    queued_force=False,
+                )
+            try:
+                pastor_resources.clear_resource_sync_cancel_request()
+            except Exception:
+                pass
+            return {
+                "ok": True,
+                "cancelled": True,
+                "total": len(rows),
+                "checked": int(INDEX_STATE.get("processed") or 0),
+                "indexed": indexed,
+                "newly_indexed": newly_indexed,
+                "reindexed": reindexed,
+                "skipped": skipped,
+                "errors": errors,
+            }
+
         with INDEX_STATE_LOCK:
-            INDEX_STATE.update(running=False, stage="complete", message="AI library indexing complete.", current_file="", finished_at=_now())
-        return {"ok": True, "total": len(rows), "checked": len(rows), "indexed": indexed,
-                "newly_indexed": newly_indexed, "reindexed": reindexed, "skipped": skipped, "errors": errors}
+            INDEX_STATE.update(
+                running=False,
+                stage="complete",
+                message="AI library indexing complete.",
+                current_file="",
+                finished_at=_now(),
+            )
+
+        return {
+            "ok": True,
+            "total": len(rows),
+            "checked": len(rows),
+            "indexed": indexed,
+            "newly_indexed": newly_indexed,
+            "reindexed": reindexed,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
     finally:
         with INDEX_STATE_LOCK:
             INDEX_STATE["running"] = False
@@ -544,10 +723,9 @@ def start_public_library_index(force=False, queue_if_running=True):
     """
     Start one background Pastor's Resources AI indexing pass.
 
-    If a pass is already running (for example while the visible library is
-    being synchronized), queue one more incremental pass. This guarantees
-    that books added late in a Drive sync are not missed merely because the
-    earlier AI indexing snapshot was already in progress.
+    If a pass is already running, queue at most one additional incremental
+    pass. A developer cancellation clears that queue and stops safely between
+    ebook operations.
     """
     with INDEX_STATE_LOCK:
         if INDEX_STATE.get("running"):
@@ -560,12 +738,16 @@ def start_public_library_index(force=False, queue_if_running=True):
                 )
             return False
 
+        # A new explicit/triggered run may proceed after an earlier cancellation.
+        INDEX_CANCEL_EVENT.clear()
         INDEX_STATE.update(
             running=True,
             stage="starting",
             message="Starting AI library index...",
             started_at=_now(),
             finished_at="",
+            queued=False,
+            queued_force=False,
         )
 
     def worker():
@@ -584,9 +766,12 @@ def start_public_library_index(force=False, queue_if_running=True):
         finally:
             rerun = False
             rerun_force = False
+            cancelled = _public_library_index_cancel_requested()
+
             with INDEX_STATE_LOCK:
-                rerun = bool(INDEX_STATE.get("queued"))
-                rerun_force = bool(INDEX_STATE.get("queued_force"))
+                if not cancelled and INDEX_STATE.get("stage") != "cancelled":
+                    rerun = bool(INDEX_STATE.get("queued"))
+                    rerun_force = bool(INDEX_STATE.get("queued_force"))
                 INDEX_STATE["queued"] = False
                 INDEX_STATE["queued_force"] = False
 
@@ -597,6 +782,8 @@ def start_public_library_index(force=False, queue_if_running=True):
                     force=rerun_force,
                     queue_if_running=False,
                 )
+            else:
+                INDEX_CANCEL_EVENT.clear()
 
     thread = threading.Thread(
         target=worker,
@@ -1584,6 +1771,7 @@ def register_pij_library_routes(app):
         if not sermon_ebooks.is_sermon_admin():
             return jsonify(ok=False, error="Forbidden"), 403
         data = __import__("flask").request.get_json(silent=True) or {}
+        pastor_resources.clear_resource_sync_cancel_request()
         started = start_public_library_index(force=bool(data.get("force", False)))
         return jsonify(ok=True, started=started, state=get_index_state())
 

@@ -1,0 +1,35 @@
+services:
+  district4:
+    image: pijeme/district4-tool-main:latest
+
+    container_name: district4-production
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: Asia/Manila
+      PYTHONUNBUFFERED: "1"
+
+    ports:
+      - "5000:8000"
+
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./service_account.json:/app/service_account.json:ro
+      - ./app_v2.db:/app/app_v2.db
+      - ./ai_index.db:/app/ai_index.db
+      - ./pastor_resource_sync_state.db:/app/pastor_resource_sync_state.db
+      - ./generated_reports:/app/generated_reports
+
+    command: >
+      gunicorn
+      --bind 0.0.0.0:8000
+      --workers 1
+      --threads 4
+      --timeout 180
+      --access-logfile -
+      --error-logfile -
+      app:app
+
+    restart: unless-stopped

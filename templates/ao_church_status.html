@@ -971,7 +971,7 @@ printProgressState.currentJobId = null;
             setTimeout(function() {
               button.disabled = false;
               closePrintProgress();
-              window.location.reload();
+              window.reloadWithLoading();
             }, 700);
             return;
           }
@@ -992,7 +992,7 @@ printProgressState.currentJobId = null;
             .finally(function() {
               button.disabled = false;
               closePrintProgress();
-              setTimeout(function() { window.location.reload(); }, 300);
+              setTimeout(function() { window.reloadWithLoading(); }, 300);
             });
           }, 900);
           return;

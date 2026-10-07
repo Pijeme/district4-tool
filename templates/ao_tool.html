@@ -231,7 +231,7 @@
 
 <script>
   function openEditModal() { document.getElementById('editAccountModal').style.display = 'block'; }
-  function closeEditModal() { document.getElementById('editAccountModal').style.display = 'none'; window.location.href = "{{ url_for('ao_tool') }}"; }
+  function closeEditModal() { document.getElementById('editAccountModal').style.display = 'none'; window.navigateWithLoading("{{ url_for('ao_tool') }}"); }
   function autoLoadAccount() { var select = document.getElementById('edit_username'); if (select && select.value) { document.getElementById('editAccountSelectForm').submit(); } }
   function openAnnouncementMenu(){document.getElementById('announcementMenuModal').style.display='block';}
   function closeAnnouncementMenu(){document.getElementById('announcementMenuModal').style.display='none';}

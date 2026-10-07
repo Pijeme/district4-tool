@@ -5,48 +5,14 @@
   <meta charset="UTF-8" />
   <title>{% block title %}District 4 Tool{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  {% from 'ui_icons.html' import icon, loading_head, loading_overlay %}
+  {{ loading_head() }}
   <link rel="stylesheet" href="{{ url_for('static', filename='visual_upgrade.css', v='20261005') }}">
   {% if request.endpoint != 'developer.developer_page' %}
   <link rel="stylesheet" href="{{ url_for('static', filename='glass_theme.css', v='20261005-2') }}">
   {% endif %}
-  {% from 'ui_icons.html' import icon %}
 
   <style>
-    .global-loading-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.45);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 20000;
-      padding: 20px;
-    }
-    .global-loading-overlay.show { display: flex; }
-    .global-loading-card {
-      width: min(460px, 100%);
-      background: #fff;
-      border-radius: 22px;
-      padding: 22px;
-      box-shadow: 0 24px 60px rgba(0,0,0,0.18);
-      border: 2px solid #111827;
-    }
-    .global-loading-title { font-weight: 900; font-size: 18px; color: #111827; }
-    .global-loading-sub { margin-top: 6px; color: #475569; font-size: 14px; }
-    .global-loading-track {
-      width: 100%; height: 14px; margin-top: 14px; background: #e5e7eb; border-radius: 999px; overflow: hidden;
-      border: 1px solid rgba(0,0,0,0.12);
-    }
-    .global-loading-fill {
-      width: 35%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb, #60a5fa);
-      animation: global-loading-slide 1.2s ease-in-out infinite;
-    }
-    @keyframes global-loading-slide {
-      0% { transform: translateX(-120%); }
-      100% { transform: translateX(320%); }
-    }
-
     /* =====================================================
        PIJ — FLOATING DISTRICT 4 AI ASSISTANT
        ===================================================== */
@@ -294,6 +260,7 @@
   </style>
 </head>
 <body class="district-ui{% if request.endpoint != 'developer.developer_page' %} district-glass{% endif %}">
+  {{ loading_overlay() }}
   {% set role_raw = session.get('role') or session.get('ao_role') or '' %}
   {% set role = role_raw|lower|trim %}
   {% set is_logged_in = session.get("pastor_username") or session.get("ao_logged_in") or session.get("member_logged_in") or session.get("username") %}
@@ -525,103 +492,6 @@
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
         }
-      });
-    })();
-  </script>
-
-  <div class="global-loading-overlay" id="globalLoadingOverlay" aria-hidden="true">
-    <div class="global-loading-card">
-      <div class="global-loading-title" id="globalLoadingTitle">Please wait...</div>
-      <div class="global-loading-sub">The request is being processed. Avoid closing or refreshing this page.</div>
-      <div class="global-loading-track"><div class="global-loading-fill"></div></div>
-    </div>
-  </div>
-
-  <script>
-    (function () {
-      const overlay = document.getElementById('globalLoadingOverlay');
-      const titleEl = document.getElementById('globalLoadingTitle');
-
-      function inferLoadingText(form) {
-        if (!form) return 'Please wait...';
-        if (form.dataset.loadingText) return form.dataset.loadingText;
-        const actionInput = form.querySelector('input[name="action"]');
-        const actionValue = actionInput ? (actionInput.value || '').trim() : '';
-        const actionUrl = (form.getAttribute('action') || '').toLowerCase();
-        const submitterText = (form.querySelector('button[type="submit"], input[type="submit"]')?.textContent || '').trim().toLowerCase();
-        const map = {
-          district_secretary_access: 'Verifying access, please wait...',
-          create_schedule: 'Creating schedule, please wait...',
-          edit_schedule: 'Updating schedule, please wait...',
-          delete_schedule: 'Deleting schedule, please wait...',
-          join_schedule: 'Joining schedule, please wait...'
-        };
-        if (map[actionValue]) return map[actionValue];
-        if (actionUrl.includes('/ao-tool/create-account')) return 'Creating account, please wait...';
-        if (actionUrl.includes('/edit-account/save')) return 'Updating account, please wait...';
-        if (actionUrl.includes('/edit-account/delete')) return 'Deleting account, please wait...';
-        if (actionUrl.includes('/ao-tool/church-status/aopt')) return 'Updating amount, please wait...';
-        if (actionUrl.includes('/ao-tool/church-status/approve')) return 'Approving report, please wait...';
-        if (actionUrl.includes('/prayer-request/write')) return 'Submitting prayer request, please wait...';
-        if (actionUrl.includes('/prayer-request/edit/')) return 'Updating prayer request, please wait...';
-        if (actionUrl.includes('/prayer-request/delete/')) return 'Deleting prayer request, please wait...';
-        if (actionUrl.includes('/mark-answered/')) return 'Updating prayer request, please wait...';
-        if (actionUrl.includes('/ao-tool/prayer-requests/approve-all')) return 'Approving prayer requests, please wait...';
-        if (actionUrl.includes('/ao-tool/prayer-requests/approve/')) return 'Approving prayer request, please wait...';
-        if (actionUrl.includes('/ao-tool/prayer-requests/reject/')) return 'Rejecting prayer request, please wait...';
-        if (actionUrl.includes('/ao-tool/announcements/create')) return 'Submitting announcement, please wait...';
-        if (actionUrl.includes('/ao-tool/announcements/update')) return 'Updating announcement, please wait...';
-        if (actionUrl.includes('/ao-tool/announcements/delete')) return 'Deleting announcement, please wait...';
-        if (actionUrl.includes('/bulletin/pray/')) return 'Updating prayer support, please wait...';
-        if (actionUrl.includes('/pastor-tool/') && actionUrl.includes('/progress')) return 'Saving progress, please wait...';
-        if (actionUrl.includes('/pastor-tool/')) return 'Saving report, please wait...';
-        if (submitterText.includes('delete')) return 'Deleting, please wait...';
-        if (submitterText.includes('approve')) return 'Approving, please wait...';
-        if (submitterText.includes('update') || submitterText.includes('save')) return 'Updating, please wait...';
-        if (submitterText.includes('create') || submitterText.includes('submit')) return 'Submitting, please wait...';
-        return 'Please wait...';
-      }
-
-      window.showGlobalLoading = function (text) {
-        if (!overlay || !titleEl) return;
-        titleEl.textContent = text || 'Please wait...';
-        overlay.classList.add('show');
-      };
-
-      document.querySelectorAll('form').forEach(function (form) {
-        if (
-          form.id === 'pastor-submit-form' ||
-          form.dataset.skipGlobalLoading === 'true' ||
-          form.hasAttribute('data-no-loading')
-        ) return;
-
-        form.addEventListener('submit', function () {
-          const text = inferLoadingText(form);
-          window.showGlobalLoading(text);
-          form.querySelectorAll('button, input[type="submit"]').forEach(function (el) {
-            el.disabled = true;
-          });
-        });
-      });
-
-      document.querySelectorAll('.menu-list a').forEach(function (link) {
-        link.addEventListener('click', function () {
-          const href = link.getAttribute('href') || '';
-
-          if (
-            !href ||
-            href.startsWith('#') ||
-            href.startsWith('javascript:') ||
-            link.target === '_blank' ||
-            href === window.location.pathname
-          ) {
-            return;
-          }
-
-          if (typeof window.showGlobalLoading === 'function') {
-            window.showGlobalLoading('Loading page, please wait...');
-          }
-        });
       });
     })();
   </script>
@@ -884,14 +754,6 @@
           bubble.textContent = text;
         } else {
           bubble.innerHTML = formatPijText(text);
-
-          bubble.querySelectorAll('a.pij-internal-link').forEach(function (link) {
-            link.addEventListener('click', function () {
-              if (typeof window.showGlobalLoading === 'function') {
-                window.showGlobalLoading('Opening page, please wait...');
-              }
-            });
-          });
         }
 
         wrap.appendChild(label);

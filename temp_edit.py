@@ -679,7 +679,8 @@ USER_PAGE_HTML = """
       }
       hiddenEditorNameEl.value = editorName;
       editedPayloadEl.value = JSON.stringify(Object.values(editedChanges));
-      formEl.submit();
+      window.showGlobalLoading("Submitting account changes and verification photo, please wait?");
+      setTimeout(function () { formEl.submit(); }, 120);
     }
 
     fillAreas();

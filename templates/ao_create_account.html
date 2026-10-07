@@ -154,9 +154,9 @@
 
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(function() {
-          window.location.href = "{{ url_for('ao_tool') }}";
+          window.navigateWithLoading("{{ url_for('ao_tool') }}");
         }).catch(function() {
-          window.location.href = "{{ url_for('ao_tool') }}";
+          window.navigateWithLoading("{{ url_for('ao_tool') }}");
         });
       } else {
         var temp = document.createElement("textarea");
@@ -167,7 +167,7 @@
           document.execCommand("copy");
         } catch (e) {}
         document.body.removeChild(temp);
-        window.location.href = "{{ url_for('ao_tool') }}";
+        window.navigateWithLoading("{{ url_for('ao_tool') }}");
       }
     }
   </script>
