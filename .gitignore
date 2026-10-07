@@ -10,3 +10,12 @@ app.py.bak
 app_v2.db.sheet-cache.lock
 .env
 service_account.json
+.env.*
+!.env.example
+env ([0-9]*)
+*.db
+*.db-*
+*.db.*
+generated_reports/
+data/
+backups/

@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import gspread
-from google.oauth2.service_account import Credentials
+from runtime_config import data_path, google_credentials
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template_string, request, session, url_for
 from login_events import ensure_login_event_schema
 
@@ -79,7 +79,7 @@ def _database_path() -> str:
     cfg = current_app.config.get("DATABASE")
     if cfg:
         return cfg
-    return os.path.join(current_app.root_path, "app_v2.db")
+    return data_path("app_v2.db")
 
 
 def _connect() -> sqlite3.Connection:
@@ -518,7 +518,7 @@ def get_last_sync_display_ph() -> str:
 
 
 def get_gs_client():
-    creds = Credentials.from_service_account_file(
+    creds = google_credentials(
         GOOGLE_SHEETS_CREDENTIALS_FILE,
         scopes=GOOGLE_SHEETS_SCOPES,
     )

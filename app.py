@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import requests
 import gspread
 
-from google.oauth2.service_account import Credentials
+from runtime_config import data_path, google_credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from flask import (
     Flask,
@@ -50,8 +50,8 @@ from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_
 from ai_assistant import register_ai_assistant
 from developer import register_developer_routes
 
-DATABASE = os.path.join(os.path.dirname(__file__), "app_v2.db")
-AI_DATABASE = os.getenv("AI_DATABASE", os.path.join(os.path.dirname(__file__), "ai_index.db"))
+DATABASE = data_path("app_v2.db")
+AI_DATABASE = os.getenv("AI_DATABASE") or data_path("ai_index.db")
 def init_db():
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -776,7 +776,7 @@ def _prepare_report_print_via_apps_script(area_number: str, year: int, month: in
     return data
 
 def get_gs_client():
-    creds = Credentials.from_service_account_file(
+    creds = google_credentials(
         GOOGLE_SHEETS_CREDENTIALS_FILE,
         scopes=GOOGLE_SHEETS_SCOPES,
     )
@@ -1347,7 +1347,7 @@ def _get_print_button_state(year: int, month: int, area_number: str, sub_area: s
 
 
 def _export_gsheet_worksheet_pdf(spreadsheet_id: str, worksheet_gid: str):
-    creds = Credentials.from_service_account_file(
+    creds = google_credentials(
         GOOGLE_SHEETS_CREDENTIALS_FILE,
         scopes=GOOGLE_SHEETS_SCOPES,
     )
@@ -1509,7 +1509,7 @@ def _process_print_report_job(job_id: str):
         _, sh, ws = _get_report_print_sheet(report_type=report_type, print_action=print_action)
         pdf_bytes = _export_gsheet_worksheet_pdf(sh.id, str(ws.id))
 
-        out_dir = os.path.join(os.path.dirname(__file__), "generated_reports")
+        out_dir = data_path("generated_reports")
         os.makedirs(out_dir, exist_ok=True)
         action_prefix = "Late" if print_action == "late" else "Main"
         prefix = "SubAreaPrint" if str(job["report_type"] or "").strip() == "sub_area" else "AO_Report_Print"
@@ -3123,6 +3123,7 @@ def generate_pastor_credentials(full_name: str, age: int):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
+app.config["DATABASE"] = DATABASE
 
 register_area_progress_monitor(app)
 register_church_progress(app)
@@ -3277,10 +3278,18 @@ def _insert_pastor_login_event(row):
 
 @app.before_request
 def before_request():
+    if request.endpoint == "healthz":
+        return
     init_db()
     if request.endpoint != "static":
         sync_from_sheets_if_needed()
     _log_visit_if_needed()
+
+
+@app.get("/healthz")
+def healthz():
+    # Process liveness must not trigger Sheets sync, schema changes or visit logs.
+    return jsonify(status="ok")
 
 
 @app.teardown_appcontext

@@ -19,7 +19,7 @@ from flask import (
     url_for,
 )
 from google.auth.transport.requests import AuthorizedSession
-from google.oauth2.service_account import Credentials
+from runtime_config import google_credentials
 from pypdf import PdfReader
 
 
@@ -449,15 +449,8 @@ def has_fts5(db):
 # =========================================================
 
 def get_drive_session():
-    if not os.path.exists(
-        GOOGLE_SERVICE_ACCOUNT_FILE
-    ):
-        raise RuntimeError(
-            "service_account.json was not found."
-        )
-
     credentials = (
-        Credentials.from_service_account_file(
+        google_credentials(
             GOOGLE_SERVICE_ACCOUNT_FILE,
             scopes=GOOGLE_DRIVE_SCOPES,
         )

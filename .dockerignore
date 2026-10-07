@@ -8,16 +8,20 @@ __pycache__/
 .git/
 .vscode/
 
-.env
-service_account.json
+.env*
+!.env.example
+env*
+*service*account*.json
+*.pem
+*.key
 
-app_v2.db
-app_v2.db-shm
-app_v2.db-wal
-
-ai_index.db
-ai_index.db-shm
-ai_index.db-wal
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
 
 generated_reports/
 book_thumbnail_cache/
@@ -26,3 +30,10 @@ book_thumbnail_cache/
 *.log
 .DS_Store
 Thumbs.db
+tests/
+docs/
+data/
+backups/
+.deploy.json
+database_report.txt
+.database_maintenance
