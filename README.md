@@ -26,7 +26,7 @@ docker push pijeme/district4-tool-main:1.0.0
 Use your own repository and tag in both commands, matching `DOCKER_IMAGE` and
 `IMAGE_TAG` in `.env`. Build directly with the Dockerfile on your development
 machine. The project's single `compose.yml` pulls the published image, so the
-server only needs `compose.yml` and `.env`.
+server only needs `compose.yml`, `.env` and `service_account.json`.
 
 The Dockerfile installs the pinned dependencies in `requirements.lock.txt`. It
 copies application code, templates and static assets only. Credentials, local
@@ -41,7 +41,7 @@ docker buildx create --name district4-builder --driver docker-container --use
 docker buildx build --platform linux/amd64,linux/arm64 --tag YOUR_USERNAME/district4-tool:1.0.0 --push .
 ```
 
-## Deploy with only two files
+## Deploy with three files
 
 Your server needs Docker Engine and the Docker Compose plugin. Create a directory
 and put only these files inside it:
@@ -50,6 +50,7 @@ and put only these files inside it:
 district4/
   compose.yml
   .env
+  service_account.json
 ```
 
 Copy the repository's `compose.yml`. Create `.env` using `.env.example` as a
@@ -59,9 +60,6 @@ reference. Fill in:
 - `IMAGE_TAG`: the tag you published; defaults to `latest`.
 - `FLASK_SECRET_KEY`: a long random secret; keep it stable across updates.
 - `GEMINI_API_KEY`: required by the application at startup.
-- `GOOGLE_SERVICE_ACCOUNT_BASE64`: your Google service account JSON encoded as
-  a single line of base64. Google Sheets and Drive features require it. Share
-  the spreadsheet and library folders with that service account's email.
 - `PLEDGE_SCRIPT_URL` and `PLEDGE_API_TOKEN`: if you use Thanksgiving Pledges.
 - `TEMP_EDIT_USER_TOKEN` and `TEMP_EDIT_ADMIN_TOKEN`: set private values if you use
   temporary editing. Blank values disable access to the corresponding routes.
@@ -72,17 +70,17 @@ Generate a Flask secret on your development machine:
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Encode your existing `service_account.json` on your development machine, then
-paste the result after `GOOGLE_SERVICE_ACCOUNT_BASE64=` in the server `.env`:
+Copy your existing `service_account.json` to the server directory, or paste its
+complete JSON contents into a file with that name. Compose mounts the file
+read-only at `/app/service_account.json` and configures the application to use
+it. Google Sheets and Drive features require valid service account credentials.
+Share the spreadsheet and library folders with that service account's email.
 
-```sh
-python -c "import base64; from pathlib import Path; print(base64.b64encode(Path('service_account.json').read_bytes()).decode())"
-```
-
-Base64 is an encoding, so treat the value as a credential. Alternatively use
-`GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'` on one line;
-preserve the JSON private key's literal `\n` escapes. Existing local installs
-can continue using `service_account.json` or `GOOGLE_SERVICE_ACCOUNT_FILE`.
+If you previously set `GOOGLE_SERVICE_ACCOUNT_BASE64` or
+`GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`, remove those entries to use the mounted
+file. The file must exist before starting Compose; a missing file causes an
+error instead of creating a directory. Keep it readable by the container's
+UID 10001. The credential file is excluded from Git and the Docker image.
 
 For a private Docker Hub repository, run `docker login` on the server once.
 Then, from the server project directory:
@@ -99,8 +97,8 @@ set `APP_BIND_ADDRESS=127.0.0.1`. The health endpoint is `/healthz`; it checks
 the web process without calling Google services. Inspect logs with
 `docker compose logs --tail=100 -f district4`.
 
-No checkout, Dockerfile, Python installation, credential JSON file, or database
-files are needed on the server for a fresh deployment. The first application
+No checkout, Dockerfile, Python installation, or database files are needed on
+the server for a fresh deployment. The first application
 request creates the SQLite schema and bootstraps the Sheets mirrors. With a
 fresh volume, local-only records and Drive library indexes start empty; use the
 app's sync tools to populate libraries. Existing local-only data requires the

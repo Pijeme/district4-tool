@@ -1,4 +1,4 @@
-# This is the only application file needed on the server, alongside .env.
+# Server files: compose.yml, .env and service_account.json.
 services:
   district4:
     image: ${DOCKER_IMAGE:-pijeme/district4-tool-main}:${IMAGE_TAG:-latest}
@@ -7,6 +7,7 @@ services:
     environment:
       DATA_DIR: /data
       AI_DATABASE: /data/ai_index.db
+      GOOGLE_SERVICE_ACCOUNT_FILE: /app/service_account.json
       TZ: ${TZ:-Asia/Manila}
       FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?Set FLASK_SECRET_KEY in .env}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}
@@ -14,6 +15,12 @@ services:
       - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-5000}:8000"
     volumes:
       - district4-data:/data
+      - type: bind
+        source: ./service_account.json
+        target: /app/service_account.json
+        read_only: true
+        bind:
+          create_host_path: false
     init: true
     restart: unless-stopped
     stop_grace_period: 40s
