@@ -8928,7 +8928,7 @@ Pastor's Resources - District 4 Tool
     font-weight:900;
 }
 
-/* Main-library real download progress overlay. */
+/* Main-library save/share popup and file preparation progress. */
 .pr-download-overlay {
     position:fixed;
     inset:0;
@@ -9025,6 +9025,9 @@ Pastor's Resources - District 4 Tool
 }
 
 .pr-download-actions a.show { display:inline-flex; }
+.pr-download-actions button { min-height:44px; font-size:13px; }
+.pr-download-actions button:disabled { opacity:.5; cursor:default; }
+#libraryDownloadShare { background:#26344d; color:#fff; }
 
 @media (min-width:600px) {
     .pr-page { padding:20px 18px 55px; }
@@ -9184,10 +9187,10 @@ Pastor's Resources - District 4 Tool
 </div>
 {% endif %}
 
-<div class="pr-download-overlay" id="libraryDownloadOverlay" aria-live="polite" aria-busy="true">
-    <div class="pr-download-card">
-        <h3 class="pr-download-title" id="libraryDownloadTitle">Downloading ebook…</h3>
-        <div class="pr-download-name" id="libraryDownloadName">Preparing download…</div>
+<div class="pr-download-overlay" id="libraryDownloadOverlay" aria-hidden="true" aria-busy="false">
+    <div class="pr-download-card" role="dialog" aria-modal="true" aria-labelledby="libraryDownloadTitle" aria-describedby="libraryDownloadStatus">
+        <h3 class="pr-download-title" id="libraryDownloadTitle">Preparing ebook…</h3>
+        <div class="pr-download-name" id="libraryDownloadName">Preparing file…</div>
 
         <div class="pr-download-track">
             <div class="pr-download-bar indeterminate" id="libraryDownloadBar"></div>
@@ -9198,7 +9201,10 @@ Pastor's Resources - District 4 Tool
             <span id="libraryDownloadPercent"></span>
         </div>
 
+        <p class="pr-download-name" id="libraryDownloadStatus" role="status">Choose Save to device or Share file once the ebook is ready.</p>
         <div class="pr-download-actions">
+            <button id="libraryDownloadSave" type="button" disabled>Save to device</button>
+            <button id="libraryDownloadShare" type="button" disabled>Share file</button>
             <a id="libraryDownloadDirect" href="#">Direct download</a>
             <button id="libraryDownloadCancel" type="button" onclick="cancelLibraryDownload()">Cancel</button>
         </div>
@@ -9234,6 +9240,7 @@ Pastor's Resources - District 4 Tool
 </div>
 {% endif %}
 
+<script src="{{ url_for('static', filename='resource_file_actions.js', v=1) }}"></script>
 <script>
 
 const IS_RESOURCE_ADMIN = {{ 'true' if is_admin else 'false' }};
@@ -9278,193 +9285,19 @@ function showToast(message) {
     }, 4800);
 }
 
-let activeLibraryDownloadController = null;
-
-function formatLibraryDownloadBytes(value) {
-    const bytes = Math.max(0, Number(value || 0));
-    if (!bytes) return "0 B";
-
-    const units = ["B","KB","MB","GB"];
-    const exponent = Math.min(
-        units.length - 1,
-        Math.floor(Math.log(bytes) / Math.log(1024))
-    );
-    const amount = bytes / Math.pow(1024, exponent);
-
-    return (
-        amount >= 100 || exponent === 0
-            ? Math.round(amount).toLocaleString()
-            : amount.toFixed(1)
-    ) + " " + units[exponent];
-}
-
-function parseLibraryDownloadFilename(headerValue, fallback="ebook") {
-    const header = String(headerValue || "");
-
-    const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utfMatch) {
-        try {
-            return decodeURIComponent(utfMatch[1].trim().replace(/^"|"$/g,""));
-        } catch (_error) {
-            return utfMatch[1].trim().replace(/^"|"$/g,"");
-        }
-    }
-
-    const normalMatch = header.match(/filename="?([^";]+)"?/i);
-    if (normalMatch) return normalMatch[1].trim();
-
-    return fallback || "ebook";
-}
-
-function updateLibraryDownloadProgress(loaded, total) {
-    const bar = document.getElementById("libraryDownloadBar");
-    const bytes = document.getElementById("libraryDownloadBytes");
-    const percent = document.getElementById("libraryDownloadPercent");
-
-    loaded = Math.max(0, Number(loaded || 0));
-    total = Math.max(0, Number(total || 0));
-
-    if (bytes) {
-        bytes.textContent = total > 0
-            ? formatLibraryDownloadBytes(loaded) + " / " + formatLibraryDownloadBytes(total)
-            : formatLibraryDownloadBytes(loaded) + " downloaded";
-    }
-
-    if (!bar || !percent) return;
-
-    if (total > 0) {
-        const value = Math.min(100, Math.max(0, Math.round((loaded / total) * 100)));
-        bar.classList.remove("indeterminate");
-        bar.style.width = value + "%";
-        percent.textContent = value + "%";
-    } else {
-        bar.style.width = "";
-        bar.classList.add("indeterminate");
-        percent.textContent = "Downloading…";
-    }
-}
-
-function closeLibraryDownloadOverlay() {
-    document.getElementById("libraryDownloadOverlay")?.classList.remove("show");
-}
+const libraryFileActions = createResourceFileActions("libraryDownload");
 
 function cancelLibraryDownload() {
-    if (activeLibraryDownloadController) {
-        activeLibraryDownloadController.abort();
-        activeLibraryDownloadController = null;
-        return;
-    }
-
-    closeLibraryDownloadOverlay();
+    libraryFileActions.close();
 }
 
-async function startLibraryDownload(bookId) {
-    if (activeLibraryDownloadController) return;
-
+function startLibraryDownload(bookId) {
     const book = currentBookMap.get(Number(bookId));
     if (!book?.download_url) {
         showToast("Download file is no longer available. Please refresh the library.");
         return;
     }
-
-    const overlay = document.getElementById("libraryDownloadOverlay");
-    const title = document.getElementById("libraryDownloadTitle");
-    const name = document.getElementById("libraryDownloadName");
-    const cancel = document.getElementById("libraryDownloadCancel");
-    const direct = document.getElementById("libraryDownloadDirect");
-
-    overlay?.classList.add("show");
-    if (title) title.textContent = "Downloading ebook…";
-    if (name) name.textContent = book.title || "Preparing download…";
-    if (cancel) cancel.textContent = "Cancel";
-    if (direct) {
-        direct.href = book.download_url;
-        direct.classList.remove("show");
-    }
-    updateLibraryDownloadProgress(0, 0);
-
-    const controller = new AbortController();
-    activeLibraryDownloadController = controller;
-
-    try {
-        const response = await fetch(book.download_url, {
-            method:"GET",
-            credentials:"same-origin",
-            cache:"no-store",
-            signal:controller.signal
-        });
-
-        if (!response.ok) {
-            throw new Error("Download request failed (HTTP " + response.status + ").");
-        }
-
-        const fallbackName = (book.title || "ebook").trim() || "ebook";
-        const filename = parseLibraryDownloadFilename(
-            response.headers.get("Content-Disposition"),
-            fallbackName
-        );
-        const total = Number(response.headers.get("Content-Length") || 0);
-        const contentType = response.headers.get("Content-Type") || "application/octet-stream";
-
-        if (name) name.textContent = filename;
-
-        const chunks = [];
-        let loaded = 0;
-
-        if (response.body?.getReader) {
-            const reader = response.body.getReader();
-
-            while (true) {
-                const {done, value} = await reader.read();
-                if (done) break;
-                if (!value) continue;
-
-                chunks.push(value);
-                loaded += value.byteLength;
-                updateLibraryDownloadProgress(loaded, total);
-            }
-        } else {
-            const blob = await response.blob();
-            chunks.push(blob);
-            loaded = blob.size;
-            updateLibraryDownloadProgress(loaded, total || loaded);
-        }
-
-        const blob = new Blob(chunks, {type:contentType});
-        updateLibraryDownloadProgress(blob.size, total || blob.size);
-
-        const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = objectUrl;
-        link.download = filename || fallbackName;
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-
-        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-
-        if (title) title.textContent = "Download complete";
-        if (cancel) cancel.textContent = "Close";
-        activeLibraryDownloadController = null;
-
-    } catch (error) {
-        const aborted = error?.name === "AbortError";
-        activeLibraryDownloadController = null;
-
-        if (aborted) {
-            if (title) title.textContent = "Download cancelled";
-            if (name) name.textContent = "The ebook download was cancelled.";
-            if (cancel) cancel.textContent = "Close";
-            return;
-        }
-
-        console.warn(error);
-        if (title) title.textContent = "Download interrupted";
-        if (name) name.textContent = error.message || "Unable to download this ebook.";
-        if (cancel) cancel.textContent = "Close";
-        if (direct) direct.classList.add("show");
-    }
+    libraryFileActions.open(book.download_url, book.title);
 }
 
 function captureLibraryState() {
@@ -12227,6 +12060,7 @@ html, body { overflow:hidden !important; }
 
 .reader-download-actions {
     display:flex;
+    flex-wrap:wrap;
     justify-content:flex-end;
     gap:7px;
     margin-top:13px;
@@ -12247,6 +12081,9 @@ html, body { overflow:hidden !important; }
 
 .reader-download-direct { display:none; }
 .reader-download-direct.show { display:inline-flex; }
+.reader-download-actions button { min-height:44px; font-size:13px; }
+.reader-download-actions button:disabled { opacity:.5; cursor:default; }
+#readerDownloadShare { background:#26344d; color:#fff; }
 
 .reader-page-busy {
     position:absolute;
@@ -12621,10 +12458,10 @@ html, body { overflow:hidden !important; }
         </div>
     </div>
 
-    <div class="reader-download-overlay" id="readerDownloadOverlay" aria-live="polite">
-        <div class="reader-download-card">
-            <div class="reader-download-title" id="readerDownloadTitle">Downloading ebook…</div>
-            <div class="reader-download-name" id="readerDownloadName">Preparing download…</div>
+    <div class="reader-download-overlay" id="readerDownloadOverlay" aria-hidden="true" aria-busy="false">
+        <div class="reader-download-card" role="dialog" aria-modal="true" aria-labelledby="readerDownloadTitle" aria-describedby="readerDownloadStatus">
+            <div class="reader-download-title" id="readerDownloadTitle">Preparing ebook…</div>
+            <div class="reader-download-name" id="readerDownloadName">Preparing file…</div>
             <div class="reader-download-track">
                 <div class="reader-download-bar indeterminate" id="readerDownloadBar"></div>
             </div>
@@ -12632,7 +12469,10 @@ html, body { overflow:hidden !important; }
                 <span id="readerDownloadBytes">Connecting…</span>
                 <span id="readerDownloadPercent"></span>
             </div>
+            <p class="reader-download-name" id="readerDownloadStatus" role="status">Choose Save to device or Share file once the ebook is ready.</p>
             <div class="reader-download-actions">
+                <button type="button" id="readerDownloadSave" disabled>Save to device</button>
+                <button type="button" id="readerDownloadShare" disabled>Share file</button>
                 <button type="button" id="readerDownloadCancel" onclick="cancelReaderDownload()">Cancel</button>
                 <a class="reader-download-direct" id="readerDownloadDirect" href="{{ download_url }}">Direct download</a>
             </div>
@@ -12642,11 +12482,13 @@ html, body { overflow:hidden !important; }
     <div class="reader-toast" id="readerToast"></div>
 </div>
 
+<script src="{{ url_for('static', filename='resource_file_actions.js', v=1) }}"></script>
 <script>
 const BOOK_ID = {{ book.id }};
 const READER_FORMAT = {{ reader_format|tojson }};
 const MEDIA_URL = {{ media_url|tojson }};
 const DOWNLOAD_URL = {{ download_url|tojson }};
+const DOWNLOAD_BOOK_TITLE = {{ book.title|tojson }};
 const READ_BASE_URL = {{ read_base_url|tojson }};
 const STATE = {{ state|tojson }};
 const JUMP_ANNOTATION_ID = {{ jump_annotation_id|tojson }};
@@ -12680,7 +12522,7 @@ let searchMatchIndex = -1;
 let activeSearchQuery = "";
 let classicEpubSearchMarkCfi = "";
 let iosEpubSearchFallbackMarks = [];
-let activeDownloadController = null;
+const readerFileActions = createResourceFileActions("readerDownload");
 let epubLocationTotal = 0;
 let epubLocationCurrent = 1;
 const EPUB_CONTENT_HANDLERS = new WeakSet();
@@ -12758,154 +12600,13 @@ function showReaderLoadError(message) {
     alt.style.display = other ? "inline-flex" : "none";
 }
 
-function parseReaderDownloadFilename(disposition) {
-    const value = String(disposition || "");
-    let match = value.match(/filename\*=UTF-8''([^;]+)/i);
-    if (match && match[1]) {
-        try { return decodeURIComponent(match[1].trim()); } catch (error) { return match[1].trim(); }
-    }
-
-    match = value.match(/filename="?([^";]+)"?/i);
-    return match && match[1] ? match[1].trim() : "ebook";
-}
-
-function closeReaderDownloadProgress() {
-    document.getElementById("readerDownloadOverlay")?.classList.remove("show");
-    document.getElementById("readerDownloadDirect")?.classList.remove("show");
-}
-
 function cancelReaderDownload() {
-    if (activeDownloadController) {
-        activeDownloadController.abort();
-    } else {
-        closeReaderDownloadProgress();
-    }
+    readerFileActions.close();
 }
 
-function updateReaderDownloadProgress(loaded, total) {
-    const bar = document.getElementById("readerDownloadBar");
-    const bytes = document.getElementById("readerDownloadBytes");
-    const percent = document.getElementById("readerDownloadPercent");
-
-    if (!bar || !bytes || !percent) return;
-
-    if (total > 0) {
-        const pct = Math.max(0, Math.min(100, (loaded / total) * 100));
-        bar.classList.remove("indeterminate");
-        bar.style.transform = "none";
-        bar.style.width = pct.toFixed(1) + "%";
-        bytes.textContent = formatReaderBytes(loaded) + " / " + formatReaderBytes(total);
-        percent.textContent = Math.round(pct) + "%";
-    } else {
-        bar.classList.add("indeterminate");
-        bar.style.width = "34%";
-        bytes.textContent = loaded > 0 ? formatReaderBytes(loaded) + " downloaded" : "Connecting…";
-        percent.textContent = "";
-    }
-}
-
-async function startReaderDownload() {
-    if (activeDownloadController) return;
-
+function startReaderDownload() {
     toggleToolsPanel(false);
-
-    const overlay = document.getElementById("readerDownloadOverlay");
-    const title = document.getElementById("readerDownloadTitle");
-    const name = document.getElementById("readerDownloadName");
-    const direct = document.getElementById("readerDownloadDirect");
-    const cancel = document.getElementById("readerDownloadCancel");
-
-    overlay?.classList.add("show");
-    direct?.classList.remove("show");
-    if (title) title.textContent = "Downloading ebook…";
-    if (name) name.textContent = "Preparing download…";
-    if (cancel) cancel.textContent = "Cancel";
-    updateReaderDownloadProgress(0, 0);
-
-    const controller = new AbortController();
-    activeDownloadController = controller;
-
-    try {
-        const response = await fetch(DOWNLOAD_URL, {
-            method:"GET",
-            credentials:"same-origin",
-            cache:"no-store",
-            signal:controller.signal
-        });
-
-        if (!response.ok) {
-            throw new Error("Download request failed (HTTP " + response.status + ").");
-        }
-
-        const filename = parseReaderDownloadFilename(
-            response.headers.get("Content-Disposition")
-        );
-        const total = Number(response.headers.get("Content-Length") || 0);
-        const contentType = response.headers.get("Content-Type") || "application/octet-stream";
-
-        if (name) name.textContent = filename;
-
-        const chunks = [];
-        let loaded = 0;
-
-        if (response.body?.getReader) {
-            const reader = response.body.getReader();
-
-            while (true) {
-                const {done, value} = await reader.read();
-                if (done) break;
-                if (!value) continue;
-
-                chunks.push(value);
-                loaded += value.byteLength;
-                updateReaderDownloadProgress(loaded, total);
-            }
-        } else {
-            const blob = await response.blob();
-            chunks.push(blob);
-            loaded = blob.size;
-            updateReaderDownloadProgress(loaded, total || loaded);
-        }
-
-        const blob = new Blob(chunks, {type:contentType});
-        updateReaderDownloadProgress(blob.size, total || blob.size);
-
-        const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = objectUrl;
-        link.download = filename || "ebook";
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-
-        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-
-        if (title) title.textContent = "Download complete";
-        if (cancel) cancel.textContent = "Close";
-        activeDownloadController = null;
-        showReaderToast("Download complete.");
-
-        setTimeout(() => {
-            closeReaderDownloadProgress();
-        }, 1400);
-
-    } catch (error) {
-        const aborted = error?.name === "AbortError";
-        activeDownloadController = null;
-
-        if (aborted) {
-            closeReaderDownloadProgress();
-            showReaderToast("Download cancelled.");
-            return;
-        }
-
-        if (title) title.textContent = "Download interrupted";
-        if (name) name.textContent = error?.message || "Unable to download this ebook.";
-        if (cancel) cancel.textContent = "Close";
-        direct?.classList.add("show");
-        showReaderToast("Download interrupted. You can try the direct download.");
-    }
+    readerFileActions.open(DOWNLOAD_URL, DOWNLOAD_BOOK_TITLE);
 }
 
 function setPageBusy(show, text="Loading page…") {
