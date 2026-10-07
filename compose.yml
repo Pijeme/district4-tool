@@ -1,7 +1,7 @@
 # Server files: compose.yml, .env and service_account.json.
 services:
   district4:
-    image: ${DOCKER_IMAGE:-pijeme/district4-tool-main}:${IMAGE_TAG:-latest}
+    image: nhardbalansag/iowo-d4-tool-docker-test
     env_file:
       - .env
     environment:
