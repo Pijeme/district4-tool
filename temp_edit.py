@@ -90,8 +90,8 @@ def _ensure_temp_edit_tables():
 def _authorized(token: str, kind: str) -> bool:
     token = str(token or "").strip()
     if kind == "user":
-        return token == TEMP_EDIT_USER_TOKEN
-    return token == TEMP_EDIT_ADMIN_TOKEN
+        return bool(token and TEMP_EDIT_USER_TOKEN) and token == TEMP_EDIT_USER_TOKEN
+    return bool(token and TEMP_EDIT_ADMIN_TOKEN) and token == TEMP_EDIT_ADMIN_TOKEN
 
 
 def _all_account_rows():

@@ -24,7 +24,7 @@ from flask import (
 )
 
 from google.auth.transport.requests import AuthorizedSession
-from google.oauth2.service_account import Credentials
+from runtime_config import data_path, google_credentials
 
 
 # =========================================================
@@ -51,18 +51,12 @@ GOOGLE_DRIVE_FOLDER_MIME = (
     "application/vnd.google-apps.folder"
 )
 
-THUMBNAIL_CACHE_DIR = os.path.join(
-    BASE_DIR,
-    "book_thumbnail_cache",
-)
+THUMBNAIL_CACHE_DIR = data_path("book_thumbnail_cache")
 
 # Keep live sync progress in a tiny separate SQLite file. The main library
 # sync intentionally uses one long transaction in app_v2.db; storing live
 # progress separately avoids write-lock contention with that transaction.
-RESOURCE_SYNC_STATE_DB = os.path.join(
-    BASE_DIR,
-    "pastor_resource_sync_state.db",
-)
+RESOURCE_SYNC_STATE_DB = data_path("pastor_resource_sync_state.db")
 
 SYNC_LOCK = threading.Lock()
 
@@ -802,15 +796,8 @@ def ensure_resource_tables():
 # =========================================================
 
 def get_drive_session():
-    if not os.path.exists(
-        GOOGLE_SERVICE_ACCOUNT_FILE
-    ):
-        raise RuntimeError(
-            "service_account.json was not found."
-        )
-
     credentials = (
-        Credentials.from_service_account_file(
+        google_credentials(
             GOOGLE_SERVICE_ACCOUNT_FILE,
             scopes=GOOGLE_DRIVE_SCOPES,
         )
@@ -17152,10 +17139,7 @@ def _database_detail_same_name_key(filename):
 
 
 
-DATABASE_MAINTENANCE_FLAG = os.path.join(
-    BASE_DIR,
-    ".database_maintenance",
-)
+DATABASE_MAINTENANCE_FLAG = data_path(".database_maintenance")
 
 OLD_AI_INDEX_TABLES = (
     "pij_library_chunks_fts",
@@ -18322,6 +18306,8 @@ def register_pastor_resources_routes(app):
 
     @app.before_request
     def pastor_resources_database_maintenance_guard():
+        if request.endpoint == "healthz":
+            return None
         if not _database_maintenance_active():
             return None
 
