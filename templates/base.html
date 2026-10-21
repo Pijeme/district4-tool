@@ -259,7 +259,7 @@
 
   </style>
 </head>
-<body class="district-ui{% if request.endpoint != 'developer.developer_page' %} district-glass{% endif %}">
+<body class="district-ui{% if request.endpoint != 'developer.developer_page' %} district-glass{% endif %}{% if request.endpoint == 'bible_study.page' %} bible-study-page{% endif %}">
   {{ loading_overlay() }}
   {% set role_raw = session.get('role') or session.get('ao_role') or '' %}
   {% set role = role_raw|lower|trim %}
@@ -285,7 +285,7 @@
       </div>
 
       <div class="header-text">
-        <div class="app-title">District 4 Tool</div>
+        <div class="app-title">District 4 Tool{% if request.endpoint == 'bible_study.page' %}<span class="app-section-title">Bible Study</span>{% endif %}</div>
         <div class="app-subtitle">International One Way Outreach Foundation, Inc.</div>
       </div>
     </div>

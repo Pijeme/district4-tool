@@ -1,6 +1,9 @@
 """Portability and incremental sync checks use temporary databases and fake Drive."""
 
 import copy
+import io
+import json
+import zipfile
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -549,6 +552,199 @@ class LibraryPortabilityTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_complete_drive_scan_deletes_missing_index_and_files_but_keeps_personal_saves(self):
+        keep=self.catalog()
+        missing=self.catalog('missing',843,43,'Missing guide')
+        self.document(keep);missing_id=self.document(missing,source_id=126)
+        db=knowledge._db()
+        db.execute('INSERT INTO pij_library_source_formats VALUES (?,?,?,?,?)',(missing_id,'hash','now',1,'[]'))
+        db.execute("INSERT INTO pij_library_documents(source_type,source_file_id,title,indexed_at) VALUES ('private_sermon',900,'Private sermon','now')")
+        db.commit();db.close()
+        resources.add_bookmark('reader',43,'PDF',locator='',page=2,label='Keep my bookmark',excerpt='My saved excerpt')
+        result=self.sync_drive([self.drive_item()])
+        self.assertEqual(result['removed_index_documents'],1)
+        db=knowledge._db()
+        try:
+            self.assertIsNone(knowledge._find_public_document(db,'missing'))
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pij_library_chunks').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pij_library_chunks_fts').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pij_library_source_formats').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM pij_library_documents WHERE source_type='private_sermon'").fetchone()[0],1)
+        finally:db.close()
+        saved=resources.get_bookmarks('reader')
+        self.assertEqual(saved[0]['excerpt'],'My saved excerpt')
+        self.assertEqual(saved[0]['book_title'],'Missing guide')
+        self.assertEqual(resources.search_library_database_v3('reader')['total'],1)
+
+    def test_failed_or_cancelled_drive_scan_never_prunes_catalog_or_index(self):
+        row=self.catalog();self.document(row)
+        for failure in (RuntimeError('Drive unavailable'),resources.ResourceSyncCancelled()):
+            with (patch.object(resources,'get_drive_session',return_value=object()),
+                  patch.object(resources,'list_drive_folder',side_effect=failure),
+                  patch.object(resources,'_prune_missing_library_sources') as prune):
+                with self.assertRaises(type(failure)):resources.sync_library_to_database_v3()
+                prune.assert_not_called()
+            self.assertEqual(len(self.chunks()[0]),1)
+            self.assertEqual(resources.search_library_database_v3('reader')['total'],1)
+
+    def test_cancel_after_cleanup_rolls_back_both_databases(self):
+        row=self.catalog();self.document(row)
+        original=resources._prune_missing_library_sources
+        def cancel(db,ids):
+            original(db,ids)
+            raise resources.ResourceSyncCancelled()
+        with patch.object(resources,'_prune_missing_library_sources',side_effect=cancel):
+            with self.assertRaises(resources.ResourceSyncCancelled):self.sync_drive([])
+        self.assertEqual(len(self.chunks()[0]),1)
+        self.assertEqual(resources.search_library_database_v3('reader')['total'],1)
+
+    def test_original_epub_typography_keeps_safe_marks_and_paragraph_boundaries(self):
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr('META-INF/container.xml','<container><rootfile full-path="book.opf"/></container>')
+            archive.writestr('book.opf','<package><manifest><item id="body" href="body.xhtml"/></manifest><spine><itemref idref="body"/></spine></package>')
+            archive.writestr('style.css','.emphasis {font-weight:700;} .slant {font-style:italic;}')
+            archive.writestr('body.xhtml','<html><head><style>.extra {font-weight:bold;}</style></head><body><h1>A theme</h1><p>Original <span class="emphasis">bold</span> and <i>italic</i>&nbsp;text.</p><script>unsafe()</script><p class="slant">Second paragraph.</p></body></html>')
+        sections=knowledge._formatted_source_sections(output.getvalue(),'epub')
+        blocks=sections[0]
+        self.assertEqual([b['text'] for b in blocks],['A theme','Original bold and italic\u00a0text.','Second paragraph.'])
+        self.assertIn('strong',next(r for r in blocks[1]['runs'] if r['text']=='bold')['marks'])
+        self.assertIn('em',next(r for r in blocks[1]['runs'] if r['text']=='italic')['marks'])
+        self.assertTrue(all('em' in run['marks'] for run in blocks[2]['runs']))
+        for block in blocks:self.assertEqual(''.join(r['text'] for r in block['runs']),block['text'])
+
+    def test_pdf_typography_reads_font_weight_and_italics(self):
+        from reportlab.pdfgen.canvas import Canvas
+        output=io.BytesIO();canvas=Canvas(output)
+        canvas.setFont('Helvetica-Bold',14);canvas.drawString(20,800,'Original heading')
+        canvas.setFont('Helvetica-Oblique',11);canvas.drawString(20,770,'Original italic paragraph')
+        canvas.save()
+        blocks=knowledge._formatted_source_sections(output.getvalue(),'pdf')[0]
+        self.assertIn('strong',blocks[0]['runs'][0]['marks'])
+        self.assertIn('em',blocks[1]['runs'][0]['marks'])
+
+    def test_epub_outline_preserves_nested_lists_numbers_and_item_continuations(self):
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr('META-INF/container.xml','<container><rootfile full-path="book.opf"/></container>')
+            archive.writestr('book.opf','<package><manifest><item id="body" href="body.xhtml"/></manifest><spine><itemref idref="body"/></spine></package>')
+            archive.writestr('body.xhtml','<html><body><ol start="3" type="I"><li><p>Third point.</p><ul><li><em>Nested support.</em></li></ul><p>Continuation.</p></li><li value="7">Seventh point.</li></ol><p>After outline.</p></body></html>')
+        blocks=knowledge._formatted_source_sections(output.getvalue(),'epub')[0]
+        self.assertEqual([b['text'] for b in blocks],['Third point.','Nested support.','Continuation.','Seventh point.','After outline.'])
+        self.assertEqual((blocks[0]['list_kind'],blocks[0]['list_number'],blocks[0]['list_style']),('ordered',3,'I'))
+        self.assertEqual((blocks[1]['list_kind'],blocks[1]['list_level']),('bullet',2))
+        self.assertEqual(blocks[0]['list_item'],blocks[2]['list_item'])
+        self.assertNotEqual(blocks[0]['list_item'],blocks[3]['list_item'])
+        self.assertEqual(blocks[3]['list_number'],7)
+        self.assertNotIn('list_kind',blocks[4])
+        self.assertIn('em',blocks[1]['runs'][0]['marks'])
+
+    def test_invalid_pdf_surrogate_is_replaced_without_losing_remaining_source_text(self):
+        page=SimpleNamespace(extract_text=lambda visitor_text:visitor_text('Original \ud800 text.\n',None,None,{},12))
+        with patch.object(knowledge,'PdfReader',return_value=SimpleNamespace(pages=[page])):
+            blocks=knowledge._formatted_source_sections(b'fixture','pdf')[0]
+        self.assertEqual(blocks[0]['text'],'Original \ufffd text.')
+        json.dumps(blocks,ensure_ascii=False).encode('utf-8')
+
+    def test_spurgeon_original_outline_hierarchy_and_bullets_survive_lazy_loading(self):
+        import bible_study
+        row=self.catalog(title='Spurgeons Sermon Outlines',fmt='EPUB');docid=self.document(row)
+        def block(text,marks=(),**properties):return dict(text=text,runs=[dict(text=text,marks=list(marks))],**properties)
+        source=[block('1. Hastening Lot',['strong']),block('When the morning arose, then the angels hastened Lot. Genesis 19:15',['em']),
+                block('An original introductory paragraph with sufficient source text to be recognized as a complete message.'),
+                block('I. THE RIGHTEOUS NEED TO BE HASTENED.',['strong']),block('1. In what? In obedience.',['em']),
+                block('In coming out from the world.',list_kind='bullet',list_level=1,list_item=1),
+                block('In seeking the good of their families.',list_kind='bullet',list_level=1,list_item=2),
+                block('II. THE SINNERS NEED TO BE HASTENED.',['strong']),block('An original closing paragraph.')]
+        sections=[[block('Table of Contents'),block('1. Hastening Lot')],source]
+        db=knowledge._db();db.execute('INSERT INTO pij_library_source_formats VALUES (?,?,?,?,?)',
+            (docid,row['checksum'],row['modified_time'],2,json.dumps(sections)));db.commit();db.close()
+        catalogue=bible_study.sermon_catalogue(self.app.AI_DATABASE)
+        self.assertEqual([s['title'] for s in catalogue],['Hastening Lot'])
+        self.assertIn('Charles Spurgeon',catalogue[0]['author']);self.assertIn('Barry L. Davis',catalogue[0]['author'])
+        rich=bible_study._rich_source_blocks(self.app.AI_DATABASE,catalogue[0])
+        self.assertEqual([b['text'] for b in rich],[b['text'] for b in source[1:]])
+        self.assertEqual(rich[0]['role'],'sermon_reference')
+        self.assertEqual(sum(b['role']=='sermon_heading' for b in rich),2)
+        self.assertEqual(sum(b.get('list_kind')=='bullet' for b in rich),2)
+        self.assertIn('em',next(b for b in rich if b['role']=='sermon_subpoint')['runs'][0]['marks'])
+        self.assertEqual(bible_study.scripture_references('II Samuel 7:27')[0]['book_id'],10)
+        self.assertEqual(bible_study.scripture_references('I Chronicles 13:8, 12, 15:25')[-1]['chapter'],15)
+
+    def test_52_sermons_restores_paragraphs_emphasis_and_printed_outline(self):
+        import bible_study
+        for title in ('52 Sermons From the Gospel of John','52 Sermons From the Book of Acts',
+                      '52 Sermons About Jesus','52 Funeral Sermons-1'):
+            self.assertTrue(knowledge._formatted_source_title(title))
+        row=self.catalog(title='52 Sermons From the Gospel of John',fmt='EPUB');docid=self.document(row)
+        def block(text,marks=()):return dict(text=text,runs=[dict(text=text,marks=list(marks))])
+        source=[block('17. CHRIST AND THE HUNGRY MULTITUDE',['strong']),block('John 6:1-14',['strong']),
+                block('ILLUSTRATION:',['strong']),block('A first original paragraph, long enough to be a complete introduction to the sermon.'),
+                block('A separate original paragraph.'),block('1. THE FIRST PRINTED POINT',['strong']),
+                block('A Scripture quotation. John 6:5',['em']),block('2. THE SECOND PRINTED POINT',['strong']),
+                block('The original closing paragraph.')]
+        db=knowledge._db();db.execute('INSERT INTO pij_library_source_formats VALUES (?,?,?,?,?)',
+            (docid,row['checksum'],row['modified_time'],1,json.dumps([[block('Table of Contents'),block('17. CHRIST AND THE HUNGRY MULTITUDE')],source])));db.commit();db.close()
+        catalogue=bible_study.sermon_catalogue(self.app.AI_DATABASE)
+        self.assertEqual(len(catalogue),1)
+        rich=bible_study._rich_source_blocks(self.app.AI_DATABASE,catalogue[0])
+        self.assertEqual([b['text'] for b in rich],[b['text'] for b in source[1:]])
+        self.assertEqual(rich[0]['role'],'sermon_reference')
+        self.assertEqual(sum(b['role']=='sermon_heading' for b in rich),2)
+        self.assertIn('em',rich[5]['runs'][0]['marks'])
+        self.assertTrue(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,6))
+        self.assertFalse(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,5))
+
+    def test_52_sermons_keeps_whole_chapters_parts_and_excludes_closing_contents(self):
+        import bible_study
+        doc=dict(id=1,title='52 Sermons About Jesus',author='Printed author')
+        rows=[(1,'Table of Contents\n1. OUR HOPE – PART 1\n2. OUR HOPE – PART 2'),
+              (2,'1. OUR HOPE – PART 1\nJohn 11\nILLUSTRATION:\nA complete original illustration, followed by the printed sermon explanation and its application.'),
+              (3,'2. OUR HOPE – PART 2\nILLUSTRATION:\nAn incidental quotation mentions John 3:16 while introducing the theme.\n1. A PRINTED POINT\nAn original Scripture quotation. – Acts 2:1\nThe complete original explanation follows the preaching text.'),
+              (4,'INVESTING IN THIS BOOK!\nA publisher advertisement.'),
+              (5,'Table of Contents\n1. OUR HOPE – PART 1\n2. OUR HOPE – PART 2\nTHANK YOU FOR INVESTING IN THIS BOOK!')]
+        sections=bible_study._sermon_sections(doc,rows)
+        self.assertEqual([s['title'] for s in sections],['OUR HOPE – PART 1','OUR HOPE – PART 2'])
+        self.assertEqual(sections[0]['ranges'][0]['chapter'],11)
+        self.assertEqual(sections[1]['ranges'][0]['book_id'],44)
+        self.assertNotIn('advertisement',sections[-1]['text'])
+        self.assertNotIn('Table of Contents',sections[-1]['text'])
+        whole=sections[0]['blocks'][0]
+        self.assertEqual(whole['text'],'John 11');self.assertTrue(whole['references'][0]['chapter_only'])
+
+    def test_bible_sources_follow_live_catalog_even_before_a_cleanup(self):
+        import bible_study
+        row=self.catalog(title='Sermon Resources Vol 1')
+        self.document(row,text='1. A PRINTED THEME\nJohn 3:16\nA complete original sermon introduction with sufficient explanation.\nI. BELIEVE\nThe remaining original preaching outline and its explanation.')
+        self.assertTrue(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,3))
+        db=resources.get_resource_db();db.execute('UPDATE pastor_library_books SET is_hidden=1');db.commit();db.close()
+        self.assertFalse(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,3))
+        db=resources.get_resource_db();db.execute('UPDATE pastor_library_books SET is_hidden=0');db.execute('UPDATE pastor_library_files SET is_active=0');db.commit();db.close()
+        self.assertFalse(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,3))
+        self.assertEqual(len(self.chunks()[0]),1,'Ordinary reading must not delete retained index text')
+
+    def test_pulpit_catalogue_stays_small_and_reads_original_emphasis_for_open_article(self):
+        import bible_study
+        row=self.catalog(title='The Pulpit Commentary Complete Volume 9')
+        docid=self.document(row)
+        def block(text,bold=False):return dict(text=text,runs=[dict(text=text,marks=['strong'] if bold else [])])
+        blocks=[block('HOMILETICS',True),block('Colossians 2:6-7'),block('Walking in Christ.',True),
+                block('The original homily begins here and explains how Christians continue to walk in Christ.'),
+                block('A supporting quotation ends with the following reference:'),block('John 3:16).'),
+                block('(2) An outline subpoint, not another sermon title.',True),
+                block('All the rest of this original homily should remain inside this message and retain its emphasis.')]
+        db=knowledge._db()
+        db.execute('INSERT INTO pij_library_source_formats VALUES (?,?,?,?,?)',
+            (docid,row['checksum'],row['modified_time'],1,json.dumps([blocks])))
+        db.commit();db.close()
+        catalogue=bible_study.sermon_catalogue(self.app.AI_DATABASE)
+        self.assertEqual([s['title'] for s in catalogue],['Walking in Christ.'])
+        self.assertFalse(catalogue[0].get('blocks'),'The whole catalogue must not retain rich article blocks')
+        rich=bible_study._rich_source_blocks(self.app.AI_DATABASE,catalogue[0])
+        self.assertIn('strong',next(b for b in rich if b['text']=='Walking in Christ.')['runs'][0]['marks'])
+        self.assertIn('All the rest',' '.join(b['text'] for b in rich))
+        self.assertFalse(bible_study.sermons_for_chapter(self.app.AI_DATABASE,43,3),'A supporting citation became a sermon suggestion')
+
     def test_sync_detects_new_modified_removed_renamed_and_moved_files(self):
         self.catalog()
         self.catalog('removed', 843, 43, 'Removed Guide')
@@ -561,7 +757,7 @@ class LibraryPortabilityTests(unittest.TestCase):
         self.assertEqual(result['unique_books'], 2)
         db = resources.get_resource_db()
         try:
-            self.assertEqual(db.execute("SELECT is_active FROM pastor_library_files WHERE drive_file_id='removed'").fetchone()[0], 0)
+            self.assertIsNone(db.execute("SELECT is_active FROM pastor_library_files WHERE drive_file_id='removed'").fetchone())
         finally:
             db.close()
         # A folder move without a modified-time change also needs recognition.
@@ -988,6 +1184,86 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + '/api/verse?book=Genesis&chapter=1&verse=2').status_code, 404)
         self.assertEqual(self.client.get(self.base + '/api/chapter?book=Jude&chapter=2').status_code, 400)
         self.assertEqual(self.client.get(self.base + '/api/status').json['indexed_verses'], 1)
+
+    def test_bible_saves_validate_unicode_anchors_and_are_private_csrf_protected_and_versioned(self):
+        headers = self.preview(initialize=True)
+        self.publish_fixture()
+        verse = self.client.get(self.base + '/api/chapter').json['verses'][0]
+        payload = dict(kind='highlight', color='#9ee6b8', note='', ranges=[
+            dict(verse_id=verse['id'], start_offset=6, end_offset=12, selected_text='😀 beta')])
+        self.assertEqual(self.client.post(self.base + '/api/annotations', json=payload).status_code, 400)
+        wrong = {**payload, 'ranges': [{**payload['ranges'][0], 'start_offset': 7}]}
+        self.assertEqual(self.client.post(self.base + '/api/annotations', json=wrong, headers=headers).status_code, 400)
+        wrong = {**payload, 'color': 'url(javascript:alert(1))'}
+        self.assertEqual(self.client.post(self.base + '/api/annotations', json=wrong, headers=headers).status_code, 400)
+        response = self.client.post(self.base + '/api/annotations', json=payload, headers=headers)
+        self.assertEqual(response.status_code, 201, response.json)
+        item = response.json['annotation']; url = item['delete_url']
+        self.assertEqual(item['selected_text'], '😀 beta')
+        self.assertIn('annotation=', item['jump_url'])
+        self.assertEqual(self.client.patch(url, json=dict(note='<script>private note</script>', version=1), headers=headers).status_code, 200)
+        self.assertEqual(self.client.patch(url, json=dict(note='stale', version=1), headers=headers).status_code, 409)
+        bookmark = self.client.post(self.base + '/api/bookmarks', json=dict(verse_id=verse['id']), headers=headers).json['bookmark']
+        again = self.client.post(self.base + '/api/bookmarks', json=dict(verse_id=verse['id']), headers=headers).json['bookmark']
+        self.assertEqual(bookmark['id'], again['id'])
+        self.login('Other Pastor', pastor=True)
+        self.client.get(self.base)
+        with self.client.session_transaction() as account: other_headers = {'X-CSRF-Token': account['bible_study_csrf']}
+        self.assertEqual(self.client.get(self.base + '/api/personal').json['annotations'], [])
+        for method in ('get', 'delete', 'patch'):
+            response = getattr(self.client, method)(url, json={} if method != 'get' else None, headers=other_headers)
+            self.assertEqual(response.status_code, 404)
+        self.login()
+        headers = self.preview()
+        saved = self.client.get(url).json['item']
+        self.assertEqual(saved['note'], '<script>private note</script>')
+        self.assertEqual(saved['version'], 2)
+        self.assertEqual(self.client.delete(url, json={}, headers=headers).status_code, 200)
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.delete(bookmark['delete_url'], json={}, headers=headers).status_code, 200)
+
+    def test_multi_verse_bible_annotations_merge_in_global_library_and_delete_as_one_group(self):
+        headers = self.preview(initialize=True); self.publish_fixture()
+        verse = self.client.get(self.base + '/api/chapter').json['verses'][0]
+        with closing(sqlite3.connect(self.path)) as conn:
+            edition = conn.execute('SELECT edition_id FROM bible_verses WHERE id=?', (verse['id'],)).fetchone()[0]
+            cursor = conn.execute('''INSERT INTO bible_verses(edition_id,book_id,chapter,verse,text,content_hash)
+                VALUES(?,1,1,2,'Gamma.',?)''', (edition, 'e' * 64))
+            second = cursor.lastrowid
+            conn.commit()
+        spans = [dict(verse_id=verse['id'], start_offset=8, end_offset=13, selected_text='beta.'),
+                 dict(verse_id=second, start_offset=0, end_offset=5, selected_text='Gamma')]
+        result = self.client.post(self.base + '/api/annotations', json=dict(kind='note', color=None, note='My note', ranges=spans), headers=headers)
+        self.assertEqual(result.status_code, 201, result.json)
+        item = result.json['annotation']
+        self.assertEqual(len(self.client.get(self.base + '/api/personal').json['annotations']), 1)
+        self.assertEqual(item['reference'], 'Genesis 1:1–2')
+        self.assertEqual(len(item['ranges']), 2)
+        # Exercise the real global collection route with only ebook storage mocked.
+        library = Flask('global_bible_saves'); library.secret_key = self.app.secret_key
+        library.config['BIBLE_STUDY_DATABASE'] = str(self.path)
+        with patch.object(resources, 'ensure_v3_tables'):
+            resources.register_pastor_resources_routes(library)
+        self.bible.register_bible_study_routes(library)
+        client = library.test_client()
+        with client.session_transaction() as account: account.update(ao_logged_in=True, ao_username='Pijeme', ao_role='Area Overseer')
+        with patch.object(resources, 'any_user_logged_in', return_value=True), patch.object(resources, 'get_my_library_payload', return_value=dict(annotations=[], bookmarks=[], favorites=[], currently_reading=[], completed=[])):
+            data = client.get('/pastor-resources/api/my-library').json
+        self.assertEqual(data['annotations'][0]['source'], 'bible')
+        self.assertEqual(data['annotations'][0]['id'], 'bible:' + item['id'])
+        self.assertIn('annotation=', data['annotations'][0]['jump_url'])
+        self.assertEqual(client.delete(data['annotations'][0]['delete_url'], json={}, headers={'X-CSRF-Token': data['bible_csrf_token']}).status_code, 200)
+        with closing(sqlite3.connect(self.path)) as conn: self.assertEqual(conn.execute('SELECT count(*) FROM bible_annotations').fetchone()[0], 0)
+
+    def test_saved_bible_edition_stays_identifiable_after_source_updates(self):
+        headers = self.preview(initialize=True); self.publish_fixture()
+        verse = self.client.get(self.base + '/api/chapter').json['verses'][0]
+        saved = self.client.post(self.base + '/api/bookmarks', json=dict(verse_id=verse['id']), headers=headers).json['bookmark']
+        self.publish_fixture(changed=True)
+        item = self.client.get(saved['delete_url']).json['item']
+        self.assertEqual(item['verse_id'], verse['id'])
+        self.assertFalse(item['available'])
+        self.assertEqual(self.client.post(self.base + '/api/bookmarks', json=dict(verse_id=verse['id']), headers=headers).status_code, 400)
 
     def test_daily_niv_passage_supports_psalm_alias_and_complete_ranges(self):
         self.preview(initialize=True)
@@ -1713,7 +1989,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             report = self.bible.format_thompson_index(self.path,pdf)
             self.assertTrue(Path(report['backup']).is_file())
             result = self.client.get(self.base+'/api/chain/'+str(topic_id)).json['topic']
-            self.assertEqual(result['blocks'],blocks)
+            self.assertEqual([{k:v for k,v in block.items() if k!='_study_texts'} for block in result['blocks']],blocks)
             with closing(sqlite3.connect(self.path)) as conn:
                 for table,rows in before.items():
                     self.assertEqual(conn.execute('SELECT * FROM '+table).fetchall(),rows)
@@ -1837,11 +2113,319 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(parse('1 Kings 8:1—9:9, 25–28')[-1]['chapter'],9)
         self.assertEqual(parse('2 John')[0]['book_id'],63)
         self.assertEqual(parse('Jude 1–7')[0]['end_verse'],7)
+
         self.assertEqual(parse('1 John 3:11–24')[0]['book_id'],62)
         self.assertEqual(parse('Jeremiah 34—39; 52')[-1]['chapter'],52)
         for invalid in ('Introduction to Isaiah','John 3:50–2:4','John 22','Not a source heading'):
             self.assertEqual(parse(invalid),[])
 
+    def test_moody_uses_book_context_and_paragraph_leading_passages(self):
+        doc=dict(id=1,title='The Moody Bible Commentary',author='Source editors')
+        first='2:6-7. Walk in Christ with thanksgiving.'
+        rows=[(1,'COLOSSIANS\nGERALD PETERMAN\nOUTLINE\nI. Christ (1:1-4:18)'),
+              (2,first+'\nAn explanation with an incidental John 3:16 reference that does not change coverage.\n2:8-10. Fullness in Christ.\nOriginal explanation of the following passage, retained without rewriting.'),
+              (3,'ROMANS\nANOTHER CONTRIBUTOR\nOUTLINE\nI. Introduction (1:1-17)'),
+              (4,'1:1-7. Paul introduces his letter.\nAn original explanation of the letter to Rome, without being added to Colossians.')]
+        runs=[dict(text='2:6-7.',marks=['strong']),dict(text=' Walk in Christ with thanksgiving.',marks=[])]
+        sections=self.bible._moody_sections(doc,rows,{first:runs})
+        match=self.bible._commentary_entries(sections,51,2,7)['entries'][0]
+        self.assertEqual(match['passage'],'Colossians 2:6-7')
+        self.assertEqual(match['blocks'][0]['runs'],runs)
+        self.assertFalse(self.bible._commentary_entries(sections,43,3,16)['entries'])
+        self.assertNotIn('Rome',' '.join(block['text'] for block in match['blocks']))
+
+    def test_moody_handles_single_chapter_books_and_shared_kings_outline(self):
+        doc=dict(id=1,title='The Moody Bible Commentary',author='Editors')
+        rows=[(1,'1 KINGS\nHARRY SHIELDS\nOUTLINE FOR 1 AND 2 KINGS\nIntroduction\n1:1-4. The opening of the first book.\nOriginal commentary on the beginning of the first book of Kings.'),
+              (2,'2 KINGS\nHARRY SHIELDS\nIntroduction\n1:1-4. The opening of the second book.\nOriginal commentary on the beginning of the second book of Kings.'),
+              (3,'PHILEMON\nGERALD PETERMAN\nOUTLINE\nIntroduction\n1. An introductory numbered point must not become a commentary entry.\nCOMMENTARY ON PHILEMON\n1. Paul introduces his letter to Philemon.\nThis original paragraph explains the opening verse.\n2-3. Paul greets the church.\nThis original paragraph explains the following verses.')]
+        sections=self.bible._moody_sections(doc,rows)
+        self.assertEqual({r['book_id'] for s in sections for r in s['ranges']},{11,12,57})
+        entry=self.bible._commentary_entries(sections,57,1,2)['entries'][0]
+        self.assertEqual(entry['passage'],'Philemon 2-3')
+        self.assertNotIn('introductory',' '.join(b['text'] for b in entry['blocks']))
+
+    def test_pulpit_lists_only_homiletics_and_homilies_using_their_opening_passage(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 9',author='Source editors')
+        rows=[(1,'EXPOSITION\nColossians 2:1\nVerse explanation.\nNot a sermon section.\nHOMILETICS\nColossians 2:6-7\nWalking in Christ.\nI. ROOTED IN HIM\nA complete original homily with an illustration from John 3:16 that must not change its chapter coverage.\nHOMILIES BY T. CROSKERY\nColossians 2:8-10\nThe fullness of Christ.\nAnother complete original message, with all its supporting explanation and outline retained.\nEXPOSITION\nColossians 3:1\nA commentary paragraph rather than a homily.')]
+        source='I. ROOTED IN HIM'
+        sections=self.bible._sermon_sections(doc,rows,{source:[dict(text=source,marks=['strong'])]})
+        self.assertEqual([s['title'] for s in sections],['Walking in Christ.','The fullness of Christ.'])
+        self.assertEqual(sections[0]['ranges'][0]['book_id'],51)
+        self.assertEqual(sections[1]['author'],'HOMILIES BY T. CROSKERY')
+        self.assertNotIn('A commentary paragraph',sections[1]['text'])
+        self.assertTrue(any(b.get('runs') for b in sections[0]['blocks']))
+
+    def test_pulpit_inline_wrapped_and_plain_titles_keep_complete_original_sections(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 9',author='Editors',format='pdf')
+        combined='1Ti. 2:1-15.—Public worship.'
+        wrapped='1Ti. 2:3, 1Ti. 2:4.—The beneficial and acceptable nature of such'
+        extra='1Ti. 2:5-7.—Prayer and John 3:16.'
+        separate='1Ti. 2:8'
+        styles={'__source_typography__':True,'__source_heading_citations__':{combined,wrapped,extra,separate}}
+        body='A complete original homily paragraph with sufficient exposition, retained exactly as printed in the indexed source.'
+        rows=[(1,'1 Timothy 2:1-15\nEXPOSITION\nAn explanation.\nHOMILETICS\n'+combined+'\n'+body+'\nHOMILIES BY T. CROSKERY\n'+wrapped),
+              (2,'catholic prayer.\n'+body+'\n'+extra+'\n'+body+'\nJohn 3:16).\n2. A supporting subpoint, not another sermon.\n'+separate+'\nThe conduct of public prayer by men.\n'+body)]
+        sections=self.bible._pulpit_sections(doc,rows,styles)
+        self.assertEqual([s['title'] for s in sections],['Public worship.','The beneficial and acceptable nature of such catholic prayer.','Prayer and John 3:16.','The conduct of public prayer by men.'])
+        self.assertEqual(sections[1]['source_end_section'],2)
+        self.assertIn(wrapped+'\ncatholic prayer.',sections[1]['text'])
+        self.assertNotIn(extra,sections[1]['text'])
+        self.assertEqual({r['book_id'] for s in sections for r in s['ranges']},{54})
+        self.assertTrue(all(body in s['text'] for s in sections))
+        self.assertIn('CROSKERY',sections[1]['author'])
+
+    def test_pulpit_relative_and_split_reference_headings_use_explicit_chapter_context(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 9',author='Editors',format='pdf')
+        first,second,relative='1Ti. 2:1,','1Ti. 2:2.—Pray for rulers.','Vers. 3-4.—Prayer for all.'
+        styles={'__source_typography__':True,'__source_heading_citations__':{first,second,relative}}
+        body='An original homily with its complete discussion and practical application, which must stay under this printed heading.'
+        rows=[(1,'1 Timothy 2:1-15\nEXPOSITION\nAn explanation.\nHOMILETICS\n'+first),
+              (2,second+'\n'+body+'\n'+relative+'\n'+body+'\n1 Timothy 3:1-16\nEXPOSITION\nAn explanation of the next chapter.')]
+        sections=self.bible._pulpit_sections(doc,rows,styles)
+        self.assertEqual([s['title'] for s in sections],['Pray for rulers.','Prayer for all.'])
+        self.assertEqual([r['verse'] for r in sections[0]['ranges']],[1,2])
+        self.assertEqual(sections[1]['ranges'][0],dict(book_id=54,chapter=2,verse=3,end_chapter=2,end_verse=4))
+        self.assertNotIn('1 Timothy 3',sections[1]['text'])
+        self.assertFalse(self.bible._pulpit_sections(doc,[(1,'HOMILETICS\n'+relative+'\n'+body)],styles))
+
+    def test_pulpit_uses_citation_emphasis_without_accepting_body_fragments(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 9',author='Editors',format='pdf')
+        header='1Ti. 2:1.—The regulation of public worship.'
+        citation='1Ti. 2:1'
+        styles={'__source_typography__':True,header:[dict(text=citation,marks=['strong']),dict(text=header[len(citation):],marks=[])],
+                'John 3:16.—A normal body sentence.':[dict(text='John 3:16.—A normal body sentence.',marks=[])]}
+        body='Original explanation and application continue here, with an incidental supporting citation rather than another preaching text.'
+        rows=[(1,'HOMILETICS\n'+header+'\n'+body+'\nJohn 3:16.—A normal body sentence.\n'+body+'\n1Ti. 99:1.—An invalid citation.\n'+body)]
+        sections=self.bible._pulpit_sections(doc,rows,styles)
+        self.assertEqual([s['title'] for s in sections],['The regulation of public worship.'])
+        self.assertIn('A normal body sentence',sections[0]['text'])
+
+    def test_pulpit_source_aliases_preserve_isaiah_and_resolve_ecclesiastes_in_context(self):
+        for citation,book_id in [('Isa. 4:1',23),('I Samuel 4:1',9),('Luk. 2:1',42),('Joh. 3:16',43),('Rth. 1:1',8),('Son. 2:1',22)]:
+            self.assertEqual(self.bible.scripture_references(citation)[0]['book_id'],book_id,citation)
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 4',author='Editors',format='pdf')
+        citation='Est. 4:1-3'
+        styles={'__source_typography__':True,'__source_heading_citations__':{citation}}
+        rows=[(1,'Ecclesiastes 4:1-16\nEXPOSITION\nAn explanation.\nHOMILETICS\n'+citation+'\nTwo pessimistic fallacies.\nThis complete source homily concerns oppression and the living and the dead in Ecclesiastes, with its original wording retained.')]
+        section=self.bible._pulpit_sections(doc,rows,styles)[0]
+        self.assertEqual(section['ranges'][0]['book_id'],21)
+        self.assertEqual(section['blocks'][0]['references'][0]['book_id'],21)
+        self.assertTrue(section['text'].startswith(citation))
+        self.assertEqual(self.bible._pulpit_citations(citation)[0]['book_id'],17)
+
+    def test_pulpit_source_chapter_can_locate_a_homily_with_a_misprinted_passage(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 1',author='Editors')
+        rows=[(1,'Exodus 36:1-38\nEXPOSITION\nThe construction continues.\nHOMILETICS\nExo. 35:3-7\nSuperabundant giving.\nA complete original homily in the source chapter for Exodus 36, retaining the passage as the edition printed it. An incidental reference cites John 3:16.')]
+        sections=self.bible._pulpit_sections(doc,rows,with_blocks=False)
+        self.assertEqual(sections[0]['ranges'][0]['chapter'],35)
+        with patch.object(self.bible,'sermon_catalogue',return_value=sections):
+            self.assertEqual(self.bible.sermons_for_chapter('unused',2,36)[0]['title'],'Superabundant giving.')
+            self.assertFalse(self.bible.sermons_for_chapter('unused',43,3))
+
+    def test_pulpit_commentary_separates_exposition_homiletics_and_greek_source_notes(self):
+        self.preview(initialize=True)
+        path=Path(self.directory.name)/'pulpit-commentary.db'
+        def block(text,bold=False):return dict(text=text,runs=[dict(text=text,marks=['strong'] if bold else [])])
+        first=[block('1 Timothy 1:1-20',True),block('EXPOSITION',True),block('1Ti. 1:3',True),
+               block('Exhorted (παρεκάλεσα). This original explanation means to entreat or beseech.'),
+               block('The exact sense of προσμε ῖ ναι is to stay on, or to abide still.')]
+        second=[block('This sentence continues the same original verse explanation across a page boundary.'),
+                block('1Ti. 1:4',True),block('The next verse has a separate explanation with its original wording.'),
+                block('HOMILETICS',True),block('1Ti. 1:3-7',True),block('Faithful teaching.',True),
+                block('A full original homiletics section with practical instruction and a complete application to Christian teaching.'),
+                block('HOMILIES BY T. CROSKERY',True),block('1Ti. 1:3',True),block('A separate homily.',True),
+                block('This original homily belongs in Sermon Outlines and must not leak into the Homiletics commentary section.')]
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute('CREATE TABLE pij_library_documents(id INTEGER,title TEXT,author TEXT,format TEXT,source_type TEXT,searchable INTEGER,checksum TEXT,modified_time TEXT,indexed_at TEXT,chunk_count INTEGER)')
+            conn.execute("INSERT INTO pij_library_documents VALUES(1,'The Pulpit Commentary Complete Volume 9','Editors','pdf','public_ebook',1,'hash','now','now',2)")
+            conn.execute('CREATE TABLE pij_library_chunks(document_id INTEGER,chunk_number INTEGER,page_start INTEGER,content TEXT)')
+            conn.execute('CREATE TABLE pij_library_source_formats(document_id INTEGER,checksum TEXT,modified_time TEXT,version INTEGER,sections_json TEXT)')
+            conn.execute('INSERT INTO pij_library_source_formats VALUES(1,?,?,1,?)',('hash','now',json.dumps([first,second])))
+        self.app.config['AI_DATABASE']=str(path)
+        query=self.base+'/api/commentary?series=pulpit&book=1+Timothy&chapter=1&verse=3'
+        data=self.client.get(query).json
+        self.assertTrue(data['available']);self.assertEqual(len(data['entries']),1)
+        entry=data['entries'][0];text=' '.join(b['text'] for b in entry['blocks'])
+        self.assertIn('continues the same',text);self.assertNotIn('next verse',text);self.assertNotIn('homiletics section',text)
+        greek=next(b for b in entry['blocks'] if b.get('greek_links'))
+        link=greek['greek_links'][0];self.assertEqual(greek['text'][link['start']:link['end']],'παρεκάλεσα')
+        self.assertIn('_study_texts',greek,'Pulpit source selection must retain signed reading anchors')
+        hom=self.client.get(query+'&section=homiletics').json
+        self.assertEqual([e['title'] for e in hom['entries']],['Faithful teaching.'])
+        self.assertNotIn('separate homily',' '.join(b['text'] for b in hom['entries'][0]['blocks']))
+        self.assertEqual(self.client.get(query+'&section=invalid').status_code,400)
+        self.assertFalse(self.client.get(query.replace('verse=3','verse=5')).json['entries'])
+        self.assertIsNone(self.client.get(self.base+'/api/pulpit-greek?word=παρεκάλεσα&book=1+Timothy&chapter=1&verse=3').json['match'])
+
+    def test_pulpit_exposition_keeps_chapter_introductions_and_resolves_relative_headings(self):
+        doc=dict(id=1,title='The Pulpit Commentary Complete Volume 9',author='Editors')
+        rows=[(1,'1 Timothy 2:1-15\nEXPOSITION\nA complete original introduction to this chapter.\nVer. 1.\nAn original explanation of the first verse.\nVers. 2–3\nAn original explanation of the next two verses.\nHOMILETICS\n1Ti. 2:1\nA homiletics title.\nThe homiletics content stays separate.')]
+        sections=self.bible._pulpit_exposition_sections(doc,rows)
+        self.assertEqual([s['ranges'][0]['verse'] for s in sections],[1,1,2])
+        self.assertEqual(sections[-1]['ranges'][0]['end_verse'],3)
+        self.assertTrue(all('homiletics content' not in s['text'] for s in sections))
+
+    def test_pulpit_greek_dictionary_matches_only_unambiguous_original_passage_spelling(self):
+        self.preview(initialize=True);self.publish_dictionaries();self.import_step_fixture()
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory=sqlite3.Row
+            spelling=conn.execute("SELECT spelling FROM bible_original_tokens WHERE book_id=43 AND chapter=1 AND verse=1 AND language='Greek' LIMIT 1").fetchone()[0]
+            result=self.bible.pulpit_greek_dictionary_match(conn,' '.join(spelling),43,1,1)
+            self.assertIsNotNone(result)
+            self.assertIsNone(self.bible.pulpit_greek_dictionary_match(conn,spelling,43,4,16))
+            self.assertIsNone(self.bible.pulpit_greek_dictionary_match(conn,'ανύπαρκτη',43,3,16))
+            self.assertFalse(conn.execute('SELECT 1 FROM bible_niv_alignments').fetchone())
+
+    def test_pulpit_first_timothy_api_returns_chapter_titles_instead_of_filtering_by_verse(self):
+        self.preview(initialize=True)
+        path=Path(self.directory.name)/'pulpit.db'
+        source=[]
+        for chapter in range(1,7):
+            lines=[f'1 Timothy {chapter}:1-15','EXPOSITION','Verse explanation.','HOMILETICS',
+                   f'1Ti. {chapter}:1.—A printed chapter {chapter} theme.',
+                   'A complete original homily for this chapter, with its explanation and practical application retained. A supporting illustration cites John 3:16.']
+            source.append([dict(text=line,runs=[dict(text=line,marks=['strong'] if i in (0,3,4) else [])]) for i,line in enumerate(lines)])
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute('CREATE TABLE pij_library_documents(id INTEGER,title TEXT,author TEXT,format TEXT,source_type TEXT,searchable INTEGER,checksum TEXT,modified_time TEXT,indexed_at TEXT,chunk_count INTEGER)')
+            conn.execute("INSERT INTO pij_library_documents VALUES(1,'The Pulpit Commentary Complete Volume 9','Editors','pdf','public_ebook',1,'hash','now','now',6)")
+            conn.execute('CREATE TABLE pij_library_chunks(document_id INTEGER,chunk_number INTEGER,page_start INTEGER,content TEXT)')
+            conn.execute('CREATE TABLE pij_library_source_formats(document_id INTEGER,checksum TEXT,modified_time TEXT,version INTEGER,sections_json TEXT)')
+            conn.execute('INSERT INTO pij_library_source_formats VALUES(1,?,?,1,?)',('hash','now',json.dumps(source)))
+        self.app.config['AI_DATABASE']=str(path)
+        for chapter in range(1,7):
+            data=self.client.get(self.base+f'/api/sermons?book=1+Timothy&chapter={chapter}').json
+            self.assertEqual([s['title'] for s in data['sermons']],[f'A printed chapter {chapter} theme.'])
+        first=self.client.get(self.base+'/api/sermons?book=1+Timothy&chapter=2&verse=1').json
+        last=self.client.get(self.base+'/api/sermons?book=1+Timothy&chapter=2&verse=15').json
+        self.assertEqual(first,last)
+        self.assertEqual(set(first['sermons'][0]),{'id','title'})
+        article=self.client.get(self.base+'/api/sermons/'+first['sermons'][0]['id']).json['sermon']
+        self.assertTrue(any('complete original homily' in block['text'] for block in article['blocks']))
+        self.assertTrue(any(block.get('runs') for block in article['blocks']))
+
+    def test_apeo_mixed_numbered_and_unnumbered_themes_use_foundational_text(self):
+        doc=dict(id=1,title='Sermon Resources Vol 1',author='William H. Robertson')
+        rows=[(1,'1. JOY IN FELLOWSHIP\nPhilippians 1:1-7\n(KJV)\nPhil 1:1-7\nA complete original introduction and explanation.\nI. FELLOWSHIP\nAn illustration references John 3:16, which is not the main preaching text.'),
+              (2,'Notes\nJOY IN PRAYER\nPhilippians 1:8-11\n(KJV)\nA complete original sermon opening and exposition with enough content to be recognized.\nI. PRAYER\nFurther original outline content.')]
+        sections=self.bible._sermon_sections(doc,rows)
+        self.assertEqual([s['title'] for s in sections],['JOY IN FELLOWSHIP','JOY IN PRAYER'])
+        self.assertEqual(sections[1]['ranges'][0]['verse'],8)
+        self.assertTrue(any(b.get('role')=='commentary_reference' for b in sections[0]['blocks']))
+        self.assertFalse(any(block['text']=='Notes' for section in sections for block in section['blocks']))
+        self.assertFalse(any(block['text']=='1. JOY IN FELLOWSHIP' for block in sections[0]['blocks']))
+
+    def test_apeo_wrapped_theme_stays_one_complete_sermon(self):
+        doc=dict(id=1,title='Sermon Resources Vol 1',author='Printed author')
+        rows=[(1,'1. A LIFE OF\nJOYFUL FELLOWSHIP\nPhilippians 1:1-7\n(KJV)\nThis complete original sermon opening and explanation remains under its full printed theme.\nI. FELLOWSHIP\nAll the following material belongs to this one message.')]
+        sections=self.bible._sermon_sections(doc,rows)
+        self.assertEqual([s['title'] for s in sections],['A LIFE OF JOYFUL FELLOWSHIP'])
+        self.assertEqual(sections[0]['ranges'][0]['book_id'],50)
+
+    def test_sermon_catalogue_matches_chapters_not_incidental_verses_and_keeps_nicoll_last(self):
+        self.preview(initialize=True)
+        path=Path(self.directory.name)/'sermons.db'
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute('''CREATE TABLE pij_library_documents(id INTEGER,title TEXT,author TEXT,format TEXT,
+                source_type TEXT,searchable INTEGER,checksum TEXT,modified_time TEXT,indexed_at TEXT,chunk_count INTEGER)''')
+            conn.execute('CREATE TABLE pij_library_chunks(document_id INTEGER,chunk_number INTEGER,page_start INTEGER,content TEXT)')
+            docs=[(1,'Sermon Resources Vol 1','pdf','public_ebook'),(2,'Sermon Resources Vol 1-unlocked','pdf','public_ebook'),
+                  (3,'The-Shepherds-Staff','pdf','public_ebook'),(4,'The Sermon Outline Bible Commentary','pdf','public_ebook'),
+                  (5,'52 Funeral Sermons','epub','public_ebook'),(6,'Sermon Resources Vol 8','pdf','private_sermon')]
+            for did,title,fmt,scope in docs:
+                conn.execute('INSERT INTO pij_library_documents VALUES(?,?,?, ?,?,1,?,?,?,2)',(did,title,'Unknown Author',fmt,scope,'hash','now','now'))
+            shared='1. ZEALOUS HOPE\nColossians 2:20–3:2\nAn original outline opening that states its preaching passage explicitly and retains its original wording.\nI. EXPOSITION\nAn incidental illustration cites John 3:16; it does not change this sermon’s preaching text.'
+            for did in (1,2,6):
+                conn.execute('INSERT INTO pij_library_chunks VALUES(?,1,1,?)',(did,'By\nWilliam H. Robertson'))
+                conn.execute('INSERT INTO pij_library_chunks VALUES(?,2,2,?)',(did,shared))
+            conn.execute('INSERT INTO pij_library_chunks VALUES(3,1,1,?)',('Chapter 1\nTeaching\nA. NEW LIFE\nJohn 3:1-9\nAn original opening for a teaching section with clearly identified scripture.\n1. EXPLANATION\nThis later illustration mentions Colossians 2:1 and must not become main passage coverage.',))
+            conn.execute('INSERT INTO pij_library_chunks VALUES(4,1,1,?)',('Chapter 2\nColossians 2:1-2\nI. An original sermon outline paragraph long enough to identify an actual article rather than a table of contents or a bibliographic reference.',))
+            conn.execute('INSERT INTO pij_library_chunks VALUES(5,1,1,?)',('Table of Contents\n1. COMFORT FOR THE BEREAVED',))
+            conn.execute('INSERT INTO pij_library_chunks VALUES(5,2,2,?)',('1. COMFORT FOR THE BEREAVED\nRevelation 14:13\nAn original funeral outline whose purpose and scripture are identified in its source, with complete contents retained here.',))
+        self.app.config['AI_DATABASE']=str(path);before=path.read_bytes()
+        first=self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2&verse=1').json
+        second=self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2&verse=23').json
+        self.assertEqual(first,second)
+        self.assertEqual([item['title'] for item in first['sermons']],['ZEALOUS HOPE','Colossians 2:1-2'])
+        self.assertEqual(set(first['sermons'][0]),{'id','title'})
+        detail=self.client.get(self.base+'/api/sermons/'+first['sermons'][0]['id']).json['sermon']
+        self.assertEqual(detail['author'],'William H. Robertson')
+        self.assertIn('John 3:16','\n'.join(block['text'] for block in detail['blocks']))
+        self.assertEqual([item['title'] for item in self.client.get(self.base+'/api/sermons?book=Colossians&chapter=3').json['sermons']],['ZEALOUS HOPE'])
+        john=self.client.get(self.base+'/api/sermons?book=John&chapter=3').json['sermons']
+        self.assertEqual([item['title'] for item in john],['A. NEW LIFE'])
+        staff=self.client.get(self.base+'/api/sermons/'+john[0]['id']).json['sermon']
+        self.assertIn('teaching',staff['purpose']);self.assertIn('editor',staff['author'])
+        funeral=self.client.get(self.base+'/api/sermons?book=Revelation&chapter=14').json['sermons']
+        self.assertEqual(funeral[0]['title'],'COMFORT FOR THE BEREAVED')
+        self.assertEqual(self.client.get(self.base+'/api/sermons?book=bad&chapter=2').status_code,400)
+        self.assertEqual(path.read_bytes(),before)
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute("UPDATE pij_library_documents SET checksum='changed' WHERE id=1")
+            conn.execute("UPDATE pij_library_chunks SET content=replace(content,'ZEALOUS HOPE','CHANGED HOPE') WHERE document_id=1")
+        self.assertEqual(self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2').json['sermons'][0]['title'],'CHANGED HOPE')
+        with self.client.session_transaction() as account:account.clear()
+        self.assertEqual(self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2').status_code,401)
+
+    def test_study_saves_validate_signed_unicode_sources_preserve_order_and_are_account_scoped(self):
+        headers=self.preview(initialize=True)
+        content='Alpha 😀 beta.'
+        provider=dict(available=True,entries=[dict(title='A source article',source_title='Wiersbe fixture',author='Fixture',passage='Colossians 2:1-23',
+            blocks=[dict(type='paragraph',text=content),dict(type='paragraph',text='Second original source paragraph.')])])
+        with patch.object(self.bible,'wiersbe_commentary',return_value=provider):
+            data=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=1').json
+            other=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=23').json
+        anchor=next(anchor for anchor in data['study_anchors'] if anchor['text']==content)
+        self.assertEqual(anchor['key'],next(a for a in other['study_anchors'] if a['text']==content)['key'])
+        span=dict(token=anchor['token'],text=content,start_offset=6,end_offset=12,selected_text='😀 beta')
+        payload=dict(kind='highlight',color='#9ee6b8',note='',ranges=[span])
+        self.assertEqual(self.client.post(self.base+'/api/study-saves',json=payload).status_code,400)
+        for changes in ({'token':anchor['token']+'forged'},{'text':'Changed source'},{'start_offset':7}):
+            invalid={**payload,'ranges':[{**span,**changes}]}
+            self.assertEqual(self.client.post(self.base+'/api/study-saves',json=invalid,headers=headers).status_code,400)
+        result=self.client.post(self.base+'/api/study-saves',json=payload,headers=headers)
+        self.assertEqual(result.status_code,201,result.json)
+        item=result.json['item'];self.assertIn('study=',item['jump_url'])
+        self.assertEqual(item['ranges'][0]['selected_text'],'😀 beta')
+        url=item['delete_url']
+        self.assertEqual(self.client.patch(url,json=dict(note='My source note',version=1),headers=headers).status_code,200)
+        self.assertEqual(self.client.patch(url,json=dict(note='Stale',version=1),headers=headers).status_code,409)
+        bookmark={**payload,'kind':'bookmark'}
+        saved=self.client.post(self.base+'/api/study-saves',json=bookmark,headers=headers).json['item']
+        again=self.client.post(self.base+'/api/study-saves',json=bookmark,headers=headers).json['item']
+        self.assertEqual(saved['id'],again['id'])
+        with self.app.test_request_context():
+            library=self.bible.bible_personal_library(self.app,'area overseer:pijeme')
+            self.assertEqual(library['annotations'][0]['format'],'STUDY')
+        self.login('Other',pastor=True);self.client.get(self.base)
+        with self.client.session_transaction() as account:other_headers={'X-CSRF-Token':account['bible_study_csrf']}
+        self.assertEqual(self.client.get(url).status_code,404)
+
+        self.assertEqual(self.client.delete(url,json={},headers=other_headers).status_code,404)
+        self.assertEqual(self.client.get(self.base+'/api/personal').json['study_annotations'],[])
+        self.login();headers=self.preview()
+        self.assertEqual(self.client.get(url).json['item']['ranges'][0]['block_text'],content)
+        self.assertEqual(self.client.delete(url,json={},headers=headers).status_code,200)
+        self.assertEqual(self.client.get(url).status_code,404)
+
+
+    def test_study_save_upgrade_is_explicit_additive_and_creates_one_recovery_backup(self):
+        headers=self.preview(initialize=True);self.publish_fixture()
+        verse=self.client.get(self.base+'/api/chapter').json['verses'][0]
+        saved=self.client.post(self.base+'/api/bookmarks',json=dict(verse_id=verse['id']),headers=headers).json['bookmark']
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('DROP TABLE bible_study_saves')
+        self.assertEqual(self.client.get(self.base+'/api/personal').json['study_annotations'],[])
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE name='bible_study_saves'").fetchone())
+        report=self.bible.initialize_study_saves(self.path)
+        self.assertEqual(report['status'],'completed');backup=Path(report['backup']);self.assertTrue(backup.is_file())
+        with closing(sqlite3.connect(backup)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE name='bible_study_saves'").fetchone())
+            self.assertEqual(conn.execute('SELECT id FROM bible_bookmarks').fetchone()[0],saved['id'])
+        self.assertEqual(self.client.get(saved['delete_url']).status_code,200)
+        self.assertEqual(self.bible.initialize_study_saves(self.path)['status'],'unchanged')
+        self.assertEqual(len(list(backup.parent.glob('*.db'))),1)
     def test_exalting_outline_formats_body_hierarchy_without_changing_source_text_or_links(self):
         lines=['Main Idea: A source introduction.',
                'I. Our Life in Christ (2:6-7).','A. Walk in him (2:6).','1. Keep trusting (2:6).',
@@ -1927,7 +2511,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             content=dict(blocks=blocks,outline=dict(blocks=[dict(type='paragraph',text='Exact source outline.')],source_page=1888))
             conn.execute("UPDATE bible_thompson_studies SET content_json=? WHERE study_key='book:1'",(json.dumps(content),))
         data=self.client.get(self.base+'/api/book-study?book=Genesis').json['study']
-        self.assertEqual(data['blocks'][0],blocks[0])
+        self.assertEqual({k:v for k,v in data['blocks'][0].items() if k!='_study_texts'},blocks[0])
         rows=data['blocks'][2:];self.assertEqual([r['text'] for r in rows],['Eternal Hope · 1692','Colossae · 4358','Joshua · 1922','Joshua · 4290'])
         self.assertTrue(rows[0]['chain_links'][0]['topic_id']);self.assertIsNone(rows[1]['chain_links'][0]['topic_id'])
         self.assertEqual(data['outline']['blocks'][0]['text'],'Exact source outline.')
@@ -1942,15 +2526,15 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         import time
         self.preview(initialize=True)
         index=self.maxwell_index_fixture()
-        summary=dict(summary='Synthetic supported summary.',expanded='Synthetic expanded explanation.')
-        with patch.object(self.bible,'_summarize_maxwell_note',return_value=summary) as generate:
+        with patch.object(self.bible,'find_maxwell_note',wraps=self.bible.find_maxwell_note) as generate:
             self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21')
             deadline=time.monotonic()+5
             result,pending=None,True
             while pending and time.monotonic()<deadline:
                 time.sleep(.01)
                 result,pending=self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21')
-            self.assertEqual(result['summary'],summary['summary'])
+            self.assertEqual(result['excerpt'],result['content'])
+            self.assertNotIn('summary',result)
             self.assertEqual(result['content'],'Leaders bear responsibility and help others with their burdens.')
             self.assertNotIn('expanded',result)
             self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21')
@@ -1962,7 +2546,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 result,pending=self.bible.daily_maxwell_insight(self.path,index,'John 3:16','Synthetic verse.','2026-10-21')
                 if not pending:break
             self.assertEqual((result,pending),(None,False))
-            self.assertEqual(generate.call_count,1)
+            self.assertEqual(generate.call_count,2)
         from flask import render_template
         with self.app.test_request_context():
             html=render_template('bulletin.html',verse_reference='John 3:16',verse_text='Synthetic verse.',leadership_insight=None,
@@ -1992,7 +2576,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             report=self.bible.sync_sources(self.path,'fixture_folder_id',lambda _:None,drive=Mock())
         self.assertIn('unchanged',report['message'])
 
-    def test_maxwell_pending_lease_prevents_duplicate_ai_requests(self):
+    def test_maxwell_pending_lease_prevents_duplicate_source_reads(self):
         from threading import Event
         import time
         self.preview(initialize=True)
@@ -2001,9 +2585,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         def generate(*_):
             started.set()
             release.wait(timeout=5)
-            return dict(summary='Fixture summary.',expanded='Fixture expanded summary.')
+            return dict(body='Exact indexed fixture content.',title='Fixture',passage='Galatians 6:1-6')
         before=index.read_bytes()
-        with patch.object(self.bible,'_summarize_maxwell_note',side_effect=generate) as model:
+        with patch.object(self.bible,'find_maxwell_note',side_effect=generate) as model:
             try:
                 self.assertEqual(self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21'),(None,True))
                 self.assertTrue(started.wait(timeout=5))
@@ -2020,20 +2604,20 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 self.assertTrue(insight)
         self.assertEqual(index.read_bytes(),before)
 
-    def test_maxwell_summary_requires_support_from_the_retrieved_note(self):
-        import sys,json
-        note=dict(title='Fixture',passage='Galatians 6:1-6',body='Leaders bear responsibility and help others with their burdens in the community.')
-        answer=dict(summary='This is a synthetic supported summary with enough words for the validation check.',
-                    expanded='This is a synthetic extended summary with enough words to satisfy the supported explanation validation.',
-                    supporting_quote='Leaders bear responsibility and help others with their burdens')
-        fake=SimpleNamespace(GEMINI_MODELS=['fixture-model'],ask_model=Mock(return_value=json.dumps(answer)))
+    def test_maxwell_devotional_uses_original_text_without_calling_ai(self):
+        import sys,time
+        self.preview(initialize=True)
+        index=self.maxwell_index_fixture()
+        fake=SimpleNamespace(ask_model=Mock(side_effect=AssertionError('Devotional called AI')))
         with patch.dict(sys.modules,{'ai_assistant':fake}):
-            self.assertTrue(self.bible._summarize_maxwell_note(note,'Galatians 6:2','Synthetic NIV verse.'))
-            fake.ask_model.assert_called_once()
-            self.assertFalse(fake.ask_model.call_args.kwargs['allow_web_fallback'])
-            answer['supporting_quote']='These invented words never appeared anywhere inside this commentary'
-            fake.ask_model.return_value=json.dumps(answer)
-            self.assertIsNone(self.bible._summarize_maxwell_note(note,'Galatians 6:2','Synthetic NIV verse.'))
+            result,pending=self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21')
+            deadline=time.monotonic()+5
+            while pending and time.monotonic()<deadline:
+                time.sleep(.01)
+                result,pending=self.bible.daily_maxwell_insight(self.path,index,'Galatians 6:2','Synthetic verse.','2026-10-21')
+            self.assertTrue(result['content'].startswith(result['excerpt']))
+            self.assertNotIn('summary',result)
+            fake.ask_model.assert_not_called()
 
     def test_bulletin_insight_endpoint_requires_login_and_uses_only_daily_reference(self):
         import ast

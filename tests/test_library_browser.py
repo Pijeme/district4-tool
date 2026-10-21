@@ -296,7 +296,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(root.classList.contains('bs-fullscreen')&&getComputedStyle(bible).display==='none','Study fullscreen fallback failed');
             root.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
             check(root.dataset.mode==='split'&&!root.classList.contains('bs-fullscreen'),'Escape did not restore split view');
-            check([...root.querySelectorAll('.bs-personal-tools button')].every(button=>button.disabled),'Unimplemented annotation tools are enabled');
+            check(!root.querySelector('.bs-personal-tools'),'Disabled annotation placeholder still occupies reading space');
             check(getComputedStyle(document.getElementById('outsideBible')).minHeight!=='38px','Bible CSS changed outside controls');
             check(!document.getElementById('bsVerseDialog').open,'Empty concordance opens a fabricated verse');
             await new Promise(resolve=>setTimeout(resolve,100));
@@ -312,7 +312,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(study.getBoundingClientRect().top>bible.getBoundingClientRect().top,'Mobile panels do not stack');
             check(divider.getAttribute('aria-orientation')==='horizontal','Mobile divider orientation wrong');
             divider.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
-            check(divider.getAttribute('aria-valuenow')==='62','Mobile divider does not resize vertically');
+            check(divider.getAttribute('aria-valuenow')==='52','Mobile divider does not resize vertically');
             const captures=new Set();divider.setPointerCapture=id=>captures.add(id);
             divider.hasPointerCapture=id=>captures.has(id);divider.releasePointerCapture=id=>captures.delete(id);
             const layoutRect=document.getElementById('bsLayout').getBoundingClientRect();
@@ -355,6 +355,233 @@ class BibleStudyBrowserTests(unittest.TestCase):
                 library_index = next(index for index, (_, title) in enumerate(links) if title == 'Library')
                 self.assertEqual(links[library_index+1], ('/pastor-resources/bible-study', 'Bible Study'))
 
+    def personal_setup(self):
+        return '''
+        window.savedAnnotations=[];window.savedBookmarks=[];window.savedPosts=[];window.lookupCount=0;window.copied='';window.prefVersion=0;
+        Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{copied=text}},configurable:true});
+        window.fetch=async(url,options={})=>{
+            const path=String(url);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:31087,message:'Ready'};
+            else if(path.endsWith('/state'))data=options.method==='POST'?{...data,version:++prefVersion}:{...data,storage_available:true,state:{book:'Genesis',chapter:1,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:1,text:'Alpha 😀 beta.',heading:'Fixture heading',edition_label:'NIV 2011 · Thompson',topics:[{id:3,topic_key:'123',title:'Topic'}],tokens:[{text:'Alpha',token_index:0,start_offset:0,end_offset:5},{text:'beta',token_index:1,start_offset:8,end_offset:12}]}];
+            else if(path.includes('/word/')){lookupCount++;data={...data,word:'Alpha',verified:false,sources:[]};}
+            else if(path.includes('/personal?'))data={...data,annotations:savedAnnotations,bookmarks:savedBookmarks};
+            else if(path.endsWith('/annotations')){
+                const body=JSON.parse(options.body);savedPosts.push({body,options});
+                const item={...body,id:'saved-annotation',version:1,reference:'Genesis 1:1',verse:1,verse_id:7,delete_url:'/pastor-resources/bible-study/api/personal/annotations/saved-annotation'};
+                savedAnnotations.push(item);data.annotation=item;
+            }else if(path.endsWith('/bookmarks')){
+                const body=JSON.parse(options.body);savedPosts.push({body,options});
+                const item={...body,id:'saved-bookmark',reference:'Genesis 1:1',verse:1,delete_url:'/pastor-resources/bible-study/api/personal/bookmarks/saved-bookmark'};
+                savedBookmarks=[item];data.bookmark=item;
+            }else if(path.includes('/personal/')){
+                if(options.method==='DELETE'){
+                    if(path.includes('/annotations/'))savedAnnotations=[];else savedBookmarks=[];
+                }else if(options.method==='PATCH'){savedAnnotations[0].note=JSON.parse(options.body).note;savedAnnotations[0].version++;}
+                else data.item={available:true,book:'Genesis',chapter:1,verse:1};
+            }else if(path.endsWith('/history'))data.history=[];
+            else if(path.includes('/book-study?'))data={...data,available:false};
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+
+    def test_global_library_handles_bible_ids_and_protected_deletion_alongside_ebooks(self):
+        app = Flask('saved_library_browser')
+        app.add_url_rule('/pastor-resources', endpoint='pastor_resources', view_func=lambda: '')
+        app.jinja_loader = DictLoader({'base.html': '<html><head></head><body>{% block content %}{% endblock %}</body></html>'})
+        with app.test_request_context():
+            html = app.jinja_env.from_string(resources.PASTOR_MY_LIBRARY_HTML).render(initial_tab='highlights', is_admin=False)
+        self.run_browser(html, '''
+            check(document.querySelector('#annotationsList a').getAttribute('href').includes('annotation=abc'),'Global note lost Bible jump link');
+            check(!document.querySelector('#annotationsList img'),'Saved note executed as HTML');
+            document.querySelector('#annotationsList [data-saved-id="bible:abc"]').click();
+            await new Promise(resolve=>setTimeout(resolve,20));
+            check(deletions[0].url.endsWith('/personal/annotations/abc'),'Bible deletion went to ebook API');
+            check(deletions[0].options.headers['X-CSRF-Token']==='global-token','Global Bible delete lost CSRF');
+            document.querySelector('#bookmarksList [data-saved-id="12"]').click();
+            await new Promise(resolve=>setTimeout(resolve,20));
+            check(deletions[1].url==='/pastor-resources/api/bookmarks/12','Ebook bookmark delete regressed');
+        ''', '''
+            window.deletions=[];window.confirm=()=>true;
+            window.fetch=async(url,options={})=>{
+                if(options.method==='DELETE'){deletions.push({url:String(url),options});return new Response(JSON.stringify({ok:true}));}
+                return new Response(JSON.stringify({ok:true,bible_csrf_token:'global-token',annotations:[{id:'bible:abc',source:'bible',format:'BIBLE',book_title:'Bible · Genesis 1:1',selected_text:'Alpha',note:'<img src=x onerror=alert(1)>',jump_url:'/pastor-resources/bible-study?annotation=abc',delete_url:'/pastor-resources/bible-study/api/personal/annotations/abc'}],bookmarks:[{id:12,book_title:'Ebook',jump_url:'/read/1?bookmark=12'}]}));
+            };
+        ''')
+
+    def test_text_selection_does_not_lookup_words_and_saves_precise_unicode_marks_and_notes(self):
+        self.run_browser(self.render_preview(), '''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
+            const text=document.querySelector('.bs-verse-text'),words=text.querySelectorAll('.bs-word');
+            words[0].click();await wait();check(lookupCount===1,'Word tap no longer opens study');
+            const range=document.createRange();range.setStart(text.childNodes[1],1);range.setEnd(words[1].firstChild,4);
+            const selection=getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait();
+            check(!document.getElementById('bsSelectionToolbar').hidden,'Text selection has no action toolbar');
+            words[1].click();check(lookupCount===1,'Selecting text opened word lookup');
+            document.querySelector('[data-selection-action="highlight"][data-color="#9ee6b8"]').click();await wait();
+            check(savedPosts[0].options.headers['X-CSRF-Token']==='test-csrf','Annotation save lacks CSRF');
+            const span=savedPosts[0].body.ranges[0];
+            check(span.start_offset===6&&span.end_offset===12&&span.selected_text==='😀 beta','UTF-16 offsets corrupted Bible anchor');
+            check(text.textContent==='Alpha 😀 beta.','Highlight changed verse text');
+            check(text.querySelectorAll('mark').length>0,'Saved highlight not painted');
+            check(document.querySelector('.bs-verse-mark'),'No marker opens saved annotation');
+            document.querySelector('.bs-verse-number').click();await wait();
+            check(!document.getElementById('bsSelectionToolbar').hidden,'Verse action menu vanished after selection cleared');
+            document.querySelector('[data-selection-action="copy"]').click();await wait();
+            check(copied==='Genesis 1:1 (NIV)\\nAlpha 😀 beta.','Copy lost text or reference');
+            document.querySelector('.bs-verse-number').click();document.querySelector('[data-selection-action="note"]').click();
+            document.getElementById('bsNoteText').value='<img src=x onerror=alert(1)> My note';
+            document.getElementById('bsNoteForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait();
+            check(savedAnnotations.length===2&&savedAnnotations[1].kind==='note','Selected verse note was not saved');
+            document.querySelector('.bs-verse-mark').click();check(document.getElementById('bsSavedDialog').open,'Saved marker does not open notes');
+            check(!document.querySelector('#bsSavedItems img'),'Note content rendered as HTML');
+            [...document.querySelectorAll('#bsSavedItems button')].find(b=>b.textContent==='Delete').click();await wait();
+            check(!text.querySelector('mark'),'Deleting a highlight left its paint behind');
+            Object.defineProperty(navigator,'clipboard',{value:undefined,configurable:true});
+            document.execCommand=()=>false;
+            document.getElementById('bsCloseSaved').click();document.querySelector('.bs-verse-number').click();
+            document.querySelector('[data-selection-action="copy"]').click();await wait();
+            check(document.getElementById('bsCopyDialog').open&&document.getElementById('bsCopyText').value.includes('Alpha 😀 beta.'),'Local Wi-Fi copy has no usable fallback');
+        ''', self.personal_setup())
+
+    def test_mobile_settings_tabs_panel_space_and_bookmark_are_available_in_all_layouts(self):
+        self.run_browser(self.render_preview(admin=False), '''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
+            const root=document.getElementById('bibleStudyRoot'),bible=document.getElementById('bsBible'),study=document.getElementById('bsStudy');
+            check(root.getBoundingClientRect().bottom<=innerHeight+1,'Mobile reader extends beyond screen');
+            check(bible.clientHeight>200&&study.clientHeight>200,'Reader controls leave too little panel space');
+            check(document.getElementById('bsBookStudyTab').textContent==='Book Study','Book Study tab was lost');
+            check(!document.getElementById('bsSync'),'Ordinary reader can see developer sync');
+            document.getElementById('bsSettings').click();check(document.getElementById('bsSettingsDialog').open,'Gear did not open settings');
+            document.getElementById('bsShowMargins').checked=false;document.getElementById('bsShowMargins').dispatchEvent(new Event('change'));
+            check(getComputedStyle(document.querySelector('.bs-chain-margin')).display==='none','Margin preference failed');
+            check(document.querySelector('#bsSettingsDialog a[href$="tab=highlights"]'),'Global notes link missing');
+            document.querySelector('[data-bs-mode="study"]').click();await wait();
+            check(getComputedStyle(bible).display==='none','Study fullscreen failed');
+            document.getElementById('bsSettings').click();check(document.getElementById('bsSettingsDialog').open,'Gear inaccessible in study fullscreen');
+            document.querySelector('[data-bs-mode="split"]').click();await wait();
+            document.querySelector('.bs-verse-number').click();document.querySelector('[data-selection-action="bookmark"]').click();await wait();
+            check(savedBookmarks.length===1&&savedBookmarks[0].verse_id===7,'Verse bookmark was not saved');
+            document.getElementById('bsBookStudyTab').click();await wait();check(!document.getElementById('bsBookStudyPanel').hidden,'Book Study no longer opens');
+        ''', self.personal_setup(), window_size=(420,900))
+
+    def test_short_slower_diagonal_touch_swipes_survive_pointer_cancel_and_preserve_selection(self):
+        self.run_browser(self.render_preview(), '''
+            const area=document.getElementById('bsScripture'),word=area.querySelector('.bs-word');
+            const touch=(x,y)=>new Touch({identifier:1,target:word,clientX:x,clientY:y});
+            const send=(type,x,y)=>word.dispatchEvent(new TouchEvent(type,{bubbles:true,cancelable:true,touches:type==='touchend'?[]:[touch(x,y)],changedTouches:[touch(x,y)]}));
+            send('touchstart',180,200);send('touchmove',165,205);
+            area.dispatchEvent(new PointerEvent('pointercancel',{pointerId:1,bubbles:true}));
+            await new Promise(resolve=>setTimeout(resolve,550));
+            send('touchend',125,226);await new Promise(resolve=>setTimeout(resolve,40));
+            check(document.getElementById('bsChapter').value==='2','Short, slower diagonal swipe did not navigate');
+            const currentWord=area.querySelector('.bs-word');
+            const t=(x,y)=>new Touch({identifier:2,target:currentWord,clientX:x,clientY:y});
+            currentWord.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,touches:[t(100,200)],changedTouches:[t(100,200)]}));
+            currentWord.dispatchEvent(new TouchEvent('touchmove',{bubbles:true,cancelable:true,touches:[t(105,280)],changedTouches:[t(105,280)]}));
+            currentWord.dispatchEvent(new TouchEvent('touchend',{bubbles:true,touches:[],changedTouches:[t(105,280)]}));
+            check(document.getElementById('bsChapter').value==='2','Vertical reading gesture changed chapters');
+            const range=document.createRange();range.selectNodeContents(currentWord);getSelection().removeAllRanges();getSelection().addRange(range);
+            send('touchstart',180,200);send('touchmove',120,200);send('touchend',110,200);
+            check(document.getElementById('bsChapter').value==='2','Text selection allowed a chapter swipe');
+        ''',self.personal_setup(),window_size=(390,844))
+
+    def test_pulpit_sections_greek_popup_and_selection_work_on_desktop_and_mobile(self):
+        setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
+        window.commentaryQueries=[];window.dictionaryQueries=[];
+        window.greekAnchor={key:'greek-source',category:'commentary',title:'The Pulpit Commentary',label:'Commentary',text:'Exhorted (παρεκάλεσα). An original explanation to entreat or beseech.',token:'signed-source-token'};
+        window.fetch=async(url,options={})=>{''').replace("if(path.endsWith('/history'))data.history=[];",'''
+            if(path.includes('/commentary?')){
+                commentaryQueries.push(path);
+                const hom=path.includes('section=homiletics');
+                data={...data,available:true,reference:'1 Timothy 1:3',study_anchors:[greekAnchor],entries:[{source_title:'The Pulpit Commentary',author:'Printed author',title:hom?'The heretic.':'Exposition',passage:'1 Timothy 1:3',blocks:hom?[{type:'paragraph',text:'Original homiletics text.'}]:[
+                    {type:'paragraph',text:greekAnchor.text,_study_texts:{text:greekAnchor},runs:[{text:'Exhorted',marks:['strong']},{text:greekAnchor.text.slice(8),marks:[]}],greek_links:[{start:10,end:20}],greek_source:{book_id:54,chapter:1,verse:3,source_title:'The Pulpit Commentary',passage:'1 Timothy 1:3',source_section:1145}},
+                    {type:'paragraph',text:'A continuing source explanation with a passage John 3:16.',references:[{start:47,end:56,book:'John',chapter:3,verse:16}]}]}]};
+            }else if(path.includes('/pulpit-greek?')){
+                check(path.includes('book=1+Timothy'),'Greek lookup lost the source passage');data.match={lemma:'παρακαλέω',query:'G3870'};
+            }else if(path.includes('/dictionaries/search?')){dictionaryQueries.push(path);data={...data,query:'G3870',sources:[]};}
+            else if(path.endsWith('/history'))data.history=[];''')
+        verify='''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
+            document.getElementById('bsCommentaryTab').click();await wait();
+            document.querySelector('[data-commentary-series="pulpit"]').click();await wait();
+            check(!document.getElementById('bsPulpitSections').hidden,'Pulpit section choices hidden');
+            const greek=document.querySelector('#bsCommentaryResults .bs-greek-ref');
+            check(greek.textContent==='παρεκάλεσα','Greek source offsets changed');
+            greek.click();await wait();
+            check(document.getElementById('bsGreekDialog').open,'Greek tap did not open source explanation');
+            check(document.querySelector('#bsGreekContent strong').textContent==='Exhorted','Original emphasis lost');
+            const source=document.querySelector('#bsGreekContent [data-study-source]');
+            check(source&&source.textContent===greekAnchor.text,'Greek popup lost the immutable source anchor');
+            const range=document.createRange();range.selectNodeContents(source);getSelection().removeAllRanges();getSelection().addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));await wait();
+            check(!document.getElementById('bsSelectionToolbar').hidden,'Greek explanation cannot use reading actions');
+            getSelection().removeAllRanges();document.getElementById('bsCloseGreek').click();
+            await new Promise(resolve=>setTimeout(resolve,700));greek.click();await wait();
+            document.querySelector('#bsGreekActions button').click();await wait();
+            check(document.getElementById('bsWordTab').getAttribute('aria-selected')==='true','Open Word Study did not switch tabs');
+            check(dictionaryQueries.at(-1).includes('q=G3870'),'Dictionary lookup did not use the matched identifier');
+            document.getElementById('bsCommentaryTab').click();await wait();
+            document.querySelector('[data-pulpit-section="homiletics"]').click();await wait();
+            check(document.getElementById('bsCommentaryResults').textContent.includes('Original homiletics text.'),'Homiletics did not display full text');
+            check(commentaryQueries.at(-1).includes('section=homiletics'),'Pulpit section choice not sent');
+            document.querySelector('[data-commentary-series="moody"]').click();await wait();
+            check(document.getElementById('bsPulpitSections').hidden,'Pulpit controls leaked into another series');
+        '''
+        for size in ((1440,900),(390,844)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_sermon_titles_follow_chapter_only_and_source_selections_save_and_reopen(self):
+        setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
+        window.studyRecords=[];window.sermonQueries=[];
+        window.outlineBlocks=[
+            {type:'heading',role:'sermon_heading',text:'I. A SOURCE HEADING'},
+            {type:'paragraph',role:'sermon_subpoint',text:'1. An italic subpoint.',runs:[{text:'1. An italic subpoint.',marks:['em']}]},
+            {type:'paragraph',text:'A printed bullet.',list_kind:'bullet',list_level:1,list_item:10},
+            {type:'paragraph',text:'A nested supporting bullet.',list_kind:'bullet',list_level:2,list_item:11},
+            {type:'paragraph',text:'Third ordered point.',list_kind:'ordered',list_level:1,list_item:12,list_number:3,list_style:'I'},
+            {type:'paragraph',text:'Nested evidence.',list_kind:'bullet',list_level:2,list_item:13},
+            {type:'paragraph',text:'Continuation of the third point.',list_kind:'ordered',list_level:1,list_item:12,list_number:3,list_style:'I'},
+            {type:'paragraph',text:'Seventh ordered point.',list_kind:'ordered',list_level:1,list_item:14,list_number:7,list_style:'I'}];
+        window.studyAnchor={key:'sermon-source-key',category:'sermon',title:'Fixture Collection',label:'Sermon Outlines',origin:'/pastor-resources/bible-study/api/sermons/fixture',path:['sermon','blocks',0,'text'],text:'An original sermon paragraph with a source citation John 3:16.',token:'fixture-signed-token'};
+        window.fetch=async(url,options={})=>{''')
+        setup=setup.replace("else if(path.includes('/personal?'))data={...data,annotations:savedAnnotations,bookmarks:savedBookmarks};", "else if(path.includes('/personal?'))data={...data,annotations:savedAnnotations,bookmarks:savedBookmarks,study_annotations:studyRecords.filter(i=>i.kind!=='bookmark'),study_bookmarks:studyRecords.filter(i=>i.kind==='bookmark')};")
+        setup=setup.replace("else if(path.endsWith('/history'))data.history=[];",'''else if(path.includes('/sermons?')){sermonQueries.push(path);data.sermons=[{id:'fixture',title:'A chapter sermon'},{id:'last',title:'Nicoll entry'}];}
+            else if(path.includes('/sermons/'))data={...data,study_anchors:[studyAnchor],sermon:{id:'fixture',title:'A chapter sermon',author:'Printed Author',source_title:'Fixture Collection',publisher:'Fixture Publisher',purpose:'Funeral message',source_section:4,ranges:[{book_id:1,chapter:1,verse:1,end_chapter:1,end_verse:23}],blocks:[{type:'paragraph',text:studyAnchor.text,_study_texts:{text:studyAnchor},references:[{start:51,end:60,book:'John',chapter:3,verse:16}]},...outlineBlocks]}};
+            else if(path.endsWith('/study-saves')){
+                const body=JSON.parse(options.body);savedPosts.push({body,options});
+                const item={...body,id:'study-save',format:'STUDY',reference:'Sermon Outlines',book_author:'Fixture Collection',version:1,delete_url:'/pastor-resources/bible-study/api/study-saves/study-save',ranges:body.ranges.map(span=>({...span,source_key:studyAnchor.key,source:studyAnchor,block_text:span.text}))};studyRecords.push(item);data.item=item;
+            }else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
+            document.getElementById('bsSermonTab').click();await wait();
+            check(sermonQueries.length===1&&sermonQueries[0].includes('book=Genesis')&&sermonQueries[0].includes('chapter=1')&&!sermonQueries[0].includes('verse='),'Sermon suggestions do not use chapter-only filtering');
+            check(document.getElementById('bsSermonResults').textContent==='A chapter sermonNicoll entry','Results are not titles only or ordering changed');
+            document.querySelector('.bs-word').click();await wait();
+            check(sermonQueries.length===1&&lookupCount===0,'Word selection refreshed sermon suggestions by verse');
+            document.querySelector('.bs-sermon-title').click();await wait();
+            check(document.getElementById('bsSermonMetadata').textContent.includes('Printed Author')&&document.getElementById('bsSermonMetadata').textContent.includes('Funeral message'),'Author/occasion missing inside opened sermon');
+            const content=document.getElementById('bsSermonContent');
+            check(content.querySelector('h5.bs-sermon-heading'),'Outline Roman heading is not a heading');
+            check(content.querySelector('.bs-sermon-subpoint em'),'Subpoint emphasis lost');
+            check(content.querySelector('ul ul li').textContent==='A nested supporting bullet.','Nested source bullets flattened');
+            const ordered=content.querySelector('ol');
+            check(ordered.start===3&&ordered.type==='I'&&ordered.children.length===2&&ordered.lastElementChild.value===7,'Original list numbering or item continuation lost');
+            check(ordered.firstElementChild.textContent.includes('Continuation of the third point.'),'List item continuation moved outside its item');
+            check(content.scrollWidth<=content.clientWidth+1,'Mobile outline overflows its panel');
+            const source=document.querySelector('#bsSermonContent [data-study-source]');check(source,'Original sermon has no selectable source anchor');
+            const range=document.createRange();range.selectNodeContents(source);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait();
+            check(!document.getElementById('bsSelectionToolbar').hidden,'Sermon text selection has no actions');
+            document.querySelector('[data-selection-action="highlight"][data-color="#9ed3ff"]').click();await wait();
+            check(studyRecords.length===1&&savedPosts[0].body.ranges[0].token==='fixture-signed-token','Study highlight did not save its signed source');
+            check(source.querySelector('mark'),'Study highlight not rendered');
+            document.querySelector('.bs-study-mark').click();await wait();
+            [...document.querySelectorAll('#bsSavedItems button')].find(b=>b.textContent==='Open source').click();await wait();
+            check(document.getElementById('bsSavedStudyDialog').open&&document.getElementById('bsSavedStudyContent').textContent.includes('An original sermon'),'Saved study did not return to its indexed source');
+            check(document.querySelector('#bsSavedStudyContent ul ul li'),'Global source jump flattened the outline');
+            document.getElementById('bsCloseSavedStudy').click();document.getElementById('bsSermonBack').click();
+            document.getElementById('bsNext').click();await wait();check(sermonQueries.length===2&&sermonQueries[1].includes('chapter=2'),'Chapter navigation did not refresh sermons');
+        ''',setup,window_size=(390,844))
+
     def test_developer_sync_dictionary_expansion_reference_preview_and_copy(self):
         setup = '''
         window.synced=false;window.syncPosts=0;window.syncPolls=0;window.copied='';
@@ -381,7 +608,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         self.run_browser(self.render_preview(admin=True), '''
             const sync=document.getElementById('bsSync');
             check(sync&&!sync.disabled,'Developer sync button unavailable');
-            check(sync.closest('.bs-header-actions'),'Sync is not beside the layout buttons');
+            check(sync.closest('#bsSettingsDialog'),'Sync is not inside reading settings');
             check(!document.querySelector('.bs-preview'),'Removed status strip remains');
             check(document.getElementById('bsSyncReport').closest('#bsSyncDialog'),'Sync report still occupies reader space');
             document.getElementById('bsSyncDetails').click();
@@ -573,7 +800,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         verify='''
             const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,25));
             const headings=[...document.querySelectorAll('.bs-banner h2')];
-            check(headings.length===4,'Not all tool headings use banners');
+            check(headings.length===5,'Not all tool headings use banners');
             check(headings.every(h=>getComputedStyle(h).fontStyle==='italic'),'Heading typography differs');
             check(new Set(headings.map(h=>getComputedStyle(h).fontFamily)).size===1,'Heading fonts differ');
             check(getComputedStyle(el('WordPanel')).getPropertyValue('--bs-tool-tint')!==getComputedStyle(el('ConcordancePanel')).getPropertyValue('--bs-tool-tint'),'Tool banner colours identical');
@@ -647,7 +874,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
                 check(document.querySelector('.app-main').getBoundingClientRect().width>innerWidth-40,'Desktop workspace remains narrow');
                 check(el('Layout').getBoundingClientRect().height>innerHeight*.65,'Desktop reading height is underused');
             }
-            el('WordTab').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));await wait();
+            el('CommentaryTab').click();await wait();
             check(el('CommentaryTab').getAttribute('aria-selected')==='true'&&el('WordPanel').hidden,'Commentary tab did not activate');
             check(el('CommentaryResults').textContent.includes('Colossians 2:10'),'Commentary lost selected verse');
             check(!el('CommentaryResults').querySelector('source'),'Indexed markup executed as HTML');
@@ -724,11 +951,12 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!card.hidden&&getComputedStyle(card).display!=='none','Matching insight remains hidden');
             check(!card.textContent.includes('AI-generated summary'),'Removed summary label remains');
             check(card.textContent.includes('Maxwell Leadership Bible'),'Source attribution missing');
+            check(card.querySelector('h3').textContent==='Daily Devotional','Devotional title not updated');
             check(card.querySelector('.maxwell-source-content').textContent==='Exact indexed source.\\nSecond original paragraph.','Read more did not preserve indexed text');
             check(!card.querySelector('img'),'AI text executed as HTML');
             card.querySelector('summary').click();await new Promise(resolve=>setTimeout(resolve,20));
             check(card.querySelector('summary').textContent==='Read less','Expanded article control failed');
-        ''', '''window.fetch=async()=>new Response(JSON.stringify({ok:true,reference:'Genesis 1:1',day:'2026-10-21',insight:{title:'<img src=x onerror=alert(1)>',passage:'Genesis 1:1-2',summary:'Synthetic supported summary.',content:'Exact indexed source.\\nSecond original paragraph.'}}),{headers:{'Content-Type':'application/json'}});''')
+        ''', '''window.fetch=async()=>new Response(JSON.stringify({ok:true,reference:'Genesis 1:1',day:'2026-10-21',insight:{title:'<img src=x onerror=alert(1)>',passage:'Genesis 1:1-2',excerpt:'Exact indexed source.',content:'Exact indexed source.\\nSecond original paragraph.'}}),{headers:{'Content-Type':'application/json'}});''')
 
 
 if __name__ == '__main__':

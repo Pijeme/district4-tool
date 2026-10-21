@@ -16,20 +16,32 @@
     let navigationTestament = "old", readerTab = "bible", bookStudyRequest = 0, bookStudyBook = "";
     const readerScroll = {bible: 0, book: 0};
     let readerPassageChanged = false;
-    let commentaryRequest = 0, commentarySeries = "wiersbe";
-    const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus"};
+    let commentaryRequest = 0, commentarySeries = "wiersbe", pulpitSection = "exposition", greekRequest = 0;
+    const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus", moody: "The Moody Bible Commentary", pulpit: "The Pulpit Commentary"};
     function sizeWorkspace() {
-        if (!root.classList.contains("bs-fullscreen")) root.style.setProperty("--bs-page-top", Math.ceil(root.getBoundingClientRect().top + window.scrollY) + "px");
+        const top = root.getBoundingClientRect().top;
+        root.style.setProperty("--bs-page-top", Math.ceil(top) + "px");
+        root.style.setProperty("--bs-workspace-height", Math.max(140, (window.visualViewport?.height || window.innerHeight) - top) + "px");
     }
     window.addEventListener("resize", sizeWorkspace);
+    window.visualViewport?.addEventListener("resize", sizeWorkspace);
     if (document.querySelector(".app-header")) new ResizeObserver(sizeWorkspace).observe(document.querySelector(".app-header"));
     sizeWorkspace();
-    const readerChromeHeight = () => root.querySelector(".bs-reader-tabs").getBoundingClientRect().height + root.querySelector(".bs-toolbar").getBoundingClientRect().height;
+    const readerChromeHeight = () => root.querySelector(".bs-reader-tabs").getBoundingClientRect().height;
     const readerTabSize = new ResizeObserver(() => root.style.setProperty("--bs-reader-tab-height", root.querySelector(".bs-reader-tabs").offsetHeight + "px"));
     readerTabSize.observe(root.querySelector(".bs-reader-tabs"));
     const chainHistory = [];
     let scrollTimer = null, scrollRestoreUntil = 0;
     const apiBase = config.statusUrl.replace(/\/status$/, "");
+    const verseData = new Map();
+    const studyAnchors = new Map(), boundStudyAnchors = new WeakMap();
+    let studyPersonal = {annotations: [], bookmarks: []}, sermonRequest = 0, sermonChapter = "", hydrationQueued = false;
+    let personal = {annotations: [], bookmarks: []}, pendingSelection = null, editingNote = null;
+    let selectionBusy = false, selectionInteractionUntil = 0, toastTimer, savedVerseFilter = null;
+    const preferenceKey = "bible-reading-" + (config.preferenceKey || "preview");
+    let localSettings = {};
+    try { localSettings = JSON.parse(localStorage.getItem(preferenceKey) || "{}"); } catch (_error) {}
+    function saveLocalSettings() { try { localStorage.setItem(preferenceKey, JSON.stringify(localSettings)); } catch (_error) {} }
 
     function node(tag, text, className) {
         const item = document.createElement(tag);
@@ -45,14 +57,78 @@
         }
         const data = await response.json();
         if (!response.ok || !data.ok) throw Error(data.error || "Bible Study is temporarily unavailable.");
+        for (const anchor of data.study_anchors || []) studyAnchors.set(anchor.category + "|" + anchor.text, anchor);
+        if (studyAnchors.size > 12000) studyAnchors.clear();
+        queueStudyHydration();
         return data;
     }
+
+    function bindStudyText(container, anchor) {
+        if (!anchor?.token || container.textContent !== anchor.text || container.querySelector("img")) return false;
+        container.dataset.studySource = anchor.key; boundStudyAnchors.set(container, anchor);
+        return true;
+    }
+    function queueStudyHydration() {
+        if (hydrationQueued) return;
+        hydrationQueued = true;
+        queueMicrotask(() => {
+            hydrationQueued = false;
+            for (const container of root.querySelectorAll("[data-study-kind] p,[data-study-kind] h3,[data-study-kind] h4,[data-study-kind] h5,[data-study-kind] h6,[data-study-kind] li,[data-study-kind] strong")) {
+                if (container.closest("[data-study-source]") || container.querySelector("[data-study-source]")) continue;
+                const category = container.closest("[data-study-kind]").dataset.studyKind;
+                const anchor = studyAnchors.get(category + "|" + container.textContent);
+                if (bindStudyText(container, anchor)) paintStudyContainer(container);
+            }
+            for(const image of root.querySelectorAll(".bs-chain-chart")) {
+                if(image._studyImageButton||!image.src.includes("/studies/page/"))continue;
+                const button=node("button","Open chart / notes","bs-image-open");button.type="button";
+                button.addEventListener("click",()=>{element("SourceImage").src=image.src;element("SourceTitle").textContent=image.alt||"Thompson study page";element("SourceDialog").showModal();});
+                image.before(button);image._studyImageButton=button;
+            }
+        });
+    }
+    new MutationObserver(queueStudyHydration).observe(root, {childList:true,subtree:true});
+
+    function paintStudyContainer(container) {
+        const anchor = boundStudyAnchors.get(container);
+        if (!anchor) return;
+        container.querySelectorAll("mark[data-study-mark]").forEach(mark => mark.replaceWith(...mark.childNodes)); container.normalize();
+        const spans = studyPersonal.annotations.flatMap(item => (item.ranges || []).filter(span => span.source_key === anchor.key).map(span => ({...span,item})));
+        container._studyMarker?.remove();
+        if (spans.length || studyPersonal.bookmarks.some(item=>item.ranges.some(span=>span.source_key===anchor.key))) {
+            const marker=node("button","✎","bs-study-mark");marker.type="button";marker.setAttribute("aria-label","Open saved notes and marks for this source");
+            marker.addEventListener("click",()=>openSavedItems());container.after(marker);container._studyMarker=marker;
+        }
+        const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT), texts=[];
+        let text; while ((text=walker.nextNode())) texts.push(text);
+        let offset=0;
+        for (const textNode of texts) {
+            const chars=Array.from(textNode.textContent),start=offset,end=offset+chars.length;offset=end;
+            const hits=spans.filter(span=>span.start_offset<end&&span.end_offset>start);
+            if (!hits.length) continue;
+            const bounds=[...new Set([start,end,...hits.flatMap(span=>[Math.max(start,span.start_offset),Math.min(end,span.end_offset)])])].sort((a,b)=>a-b);
+            const fragment=document.createDocumentFragment();
+            for(let i=0;i<bounds.length-1;i++) {
+                const from=bounds[i],to=bounds[i+1],value=chars.slice(from-start,to-start).join("");
+                const active=hits.filter(span=>span.start_offset<to&&span.end_offset>from);
+                if(!active.length){fragment.append(document.createTextNode(value));continue;}
+                const mark=node("mark",value);mark.dataset.studyMark=active[0].item.id;
+                const highlight=active.find(span=>span.item.kind==="highlight");
+                mark.style.backgroundColor=highlight?.item.color||(highlight?"#ffe66d":"transparent");
+                if(active.some(span=>span.item.kind==="underline"))mark.classList.add("bs-underline");
+                mark.title=active.map(span=>span.item.note).filter(Boolean).join("\n");fragment.append(mark);
+            }
+            textNode.replaceWith(fragment);
+        }
+    }
+    function paintStudyMarks() { root.querySelectorAll("[data-study-source]").forEach(paintStudyContainer); }
 
     async function loadChapter() {
         const requestId = ++chapterRequest;
         element("ReaderError").hidden = true;
         ++wordRequest;
         ++concordanceRequest; selectedWord = null;
+        clearSelectionActions(); verseData.clear(); personal = {annotations: [], bookmarks: []};
         element("Verses").replaceChildren();
         element("WordResults").replaceChildren();
         element("ConcordanceResults").replaceChildren(node("p", "Select a Bible word or search the concordance."));
@@ -70,20 +146,28 @@
             element("Empty").hidden = verses.length > 0;
             let lastHeading = "";
             for (const verse of verses) {
+                verseData.set(verse.id, verse);
                 if (verse.heading && verse.heading !== lastHeading) {
                     element("Verses").append(node("h3", verse.heading)); lastHeading = verse.heading;
                 }
                 const row = node("div", undefined, (verse.topics || []).length ? "bs-verse-row" : "");
                 const paragraph = node("p", undefined, "bs-verse" + (["Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Songs"].includes(state.book) ? " bs-poetry" : ""));
                 paragraph.id = "bsVerse" + verse.verse;
-                paragraph.append(node("sup", verse.verse + " ", "bs-verse-number"));
+                paragraph.dataset.verseId = verse.id;
+                const number = node("button", verse.verse, "bs-verse-number"); number.type = "button";
+                number.setAttribute("aria-label", "Actions for " + state.book + " " + state.chapter + ":" + verse.verse);
+                number.addEventListener("click", () => selectWholeVerse(verse)); paragraph.append(number);
+                const textContainer = node("span", undefined, "bs-verse-text"); paragraph.append(textContainer);
                 const characters = Array.from(verse.text);
                 let offset = 0;
                 for (const token of verse.tokens) {
-                    appendScriptureText(paragraph, characters, offset, token.start_offset, verse.red_spans || []);
-                    const button = node("button", token.text, "bs-word"); button.type = "button";
+                    appendScriptureText(textContainer, characters, offset, token.start_offset, verse.red_spans || []);
+                    const button = node("span", token.text, "bs-word");
+                    button.setAttribute("role", "button"); button.tabIndex = 0;
                     if ((verse.red_spans || []).some(span => token.start_offset < span.end_offset && token.end_offset > span.start_offset)) button.classList.add("bs-red-letter");
                     button.addEventListener("click", () => {
+                        if (window.getSelection()?.toString() || performance.now() < suppressWordClickUntil) return;
+                        clearSelectionActions();
                         root.querySelectorAll(".bs-word.is-selected").forEach(item => item.classList.remove("is-selected"));
                         button.classList.add("is-selected"); state.verse = verse.verse;
                         savePreferences();
@@ -92,11 +176,21 @@
                         element("Search").value = element("ConcordanceSearch").value = token.text;
                         if (studyTab === "concordance") loadConcordance(token.text);
                         else if (studyTab === "commentary") loadCommentary();
-                        else loadWord(verse.id, token.token_index);
+                        else if (studyTab === "word") loadWord(verse.id, token.token_index);
+                        if (mobile.matches) requestAnimationFrame(() => {
+                            const pane = element("Bible"), bounds = paragraph.getBoundingClientRect();
+                            const bottom = pane.getBoundingClientRect().bottom - 12;
+                            if (bounds.height < pane.clientHeight - readerChromeHeight() - 24 && bounds.bottom > bottom) {
+                                pane.scrollTop += bounds.bottom - bottom;
+                            }
+                        });
                     });
-                    paragraph.append(button); offset = token.end_offset;
+                    button.addEventListener("keydown", event => {
+                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); button.click(); }
+                    });
+                    textContainer.append(button); offset = token.end_offset;
                 }
-                appendScriptureText(paragraph, characters, offset, characters.length, verse.red_spans || []);
+                appendScriptureText(textContainer, characters, offset, characters.length, verse.red_spans || []);
                 row.append(paragraph);
                 if ((verse.topics || []).length) {
                     const margin = node("aside", undefined, "bs-chain-margin"); margin.setAttribute("aria-label", "Chain topics for verse " + verse.verse);
@@ -116,6 +210,7 @@
                 }
                 element("Verses").append(row);
             }
+            loadPersonal(requestId);
             if (verses.length && storageAvailable) {
                 const target = verses.find(verse => verse.verse === state.verse) || verses[0];
                 api(apiBase + "/history", {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: JSON.stringify({verse_id: target.id})}).catch(() => {});
@@ -142,6 +237,295 @@
             const red = spans.some(span => from < span.end_offset && to > span.start_offset);
             parent.append(red ? node("span", text, "bs-red-letter") : document.createTextNode(text));
         }
+    }
+
+    function toast(message, duration = 4000) {
+        ([...root.querySelectorAll("dialog[open]")].at(-1)||root).append(element("Toast"));
+        clearTimeout(toastTimer); element("Toast").textContent = message; element("Toast").hidden = false;
+        element("SaveStatus").textContent = message;
+        toastTimer = setTimeout(() => { element("Toast").hidden = true; }, duration);
+    }
+    function jsonWrite(method, body) {
+        return {method, headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: JSON.stringify(body)};
+    }
+    function clearSelectionActions() {
+        pendingSelection = null; element("SelectionToolbar").hidden = true;
+    }
+    function placeSelectionToolbar() {
+        const dialog=[...root.querySelectorAll("dialog[open]")].at(-1);
+        (dialog||root).append(element("SelectionToolbar"));
+    }
+    function selectionReference(ranges) {
+        const first = verseData.get(ranges[0]?.verse_id), last = verseData.get(ranges.at(-1)?.verse_id);
+        return first ? state.book + " " + state.chapter + ":" + first.verse + (last && last.verse !== first.verse ? "–" + last.verse : "") : "";
+    }
+    function showSelectionActions(ranges) {
+        pendingSelection = {ranges, reference: selectionReference(ranges)};
+        element("SelectionReference").textContent = pendingSelection.reference;
+        placeSelectionToolbar();
+        element("SelectionToolbar").hidden = false;
+    }
+    function selectWholeVerse(verse) {
+        window.getSelection()?.removeAllRanges();
+        showSelectionActions([{verse_id: verse.id, start_offset: 0, end_offset: Array.from(verse.text).length, selected_text: verse.text}]);
+        pendingSelection.wholeVerse = true;
+    }
+    function captureSelection() {
+        if (selectionBusy || [...root.querySelectorAll("dialog[open]")].some(dialog=>!["bsChainDialog","bsVerseDialog","bsSavedStudyDialog","bsGreekDialog"].includes(dialog.id))) return;
+        const selected = window.getSelection();
+        if (!selected?.rangeCount || selected.isCollapsed) {
+            if (pendingSelection?.wholeVerse) return;
+            if (performance.now() >= selectionInteractionUntil && !element("SelectionToolbar").contains(document.activeElement)) clearSelectionActions();
+            return;
+        }
+        const range = selected.getRangeAt(0);
+        if (!element("Verses").contains(range.startContainer) || !element("Verses").contains(range.endContainer)) {
+            const parent = node => node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+            if (parent(range.startContainer)?.closest("[data-study-source]") && parent(range.endContainer)?.closest("[data-study-source]")) {
+                const spans = [];
+                for (const container of root.querySelectorAll("[data-study-source]")) {
+                    if (!container.getClientRects().length || !range.intersectsNode(container)) continue;
+                    const anchor=boundStudyAnchors.get(container); if(!anchor)continue;
+                    const offsetAt=(boundary,offset,fallback)=>{
+                        if(!container.contains(boundary))return fallback;
+                        const prefix=document.createRange();prefix.selectNodeContents(container);prefix.setEnd(boundary,offset);
+                        return Array.from(prefix.toString()).length;
+                    };
+                    const start=offsetAt(range.startContainer,range.startOffset,0),end=offsetAt(range.endContainer,range.endOffset,Array.from(anchor.text).length);
+                    if(end>start)spans.push({token:anchor.token,text:anchor.text,start_offset:start,end_offset:end,selected_text:Array.from(anchor.text).slice(start,end).join("")});
+                }
+                if(spans.length){
+                    const first=boundStudyAnchors.get(parent(range.startContainer).closest("[data-study-source]"));
+                    pendingSelection={ranges:spans,reference:first.label+" · "+first.title,study:true};
+                    element("SelectionReference").textContent=pendingSelection.reference;placeSelectionToolbar();element("SelectionToolbar").hidden=false;
+                    suppressWordClickUntil=performance.now()+650;swipe=null;return;
+                }
+            }
+            if (performance.now() >= selectionInteractionUntil) clearSelectionActions();
+            return;
+        }
+        const ranges = [];
+        for (const container of element("Verses").querySelectorAll(".bs-verse-text")) {
+            if (!range.intersectsNode(container)) continue;
+            const verse = verseData.get(Number(container.closest(".bs-verse").dataset.verseId));
+            function offsetAt(boundary, offset, fallback) {
+                if (!container.contains(boundary)) return fallback;
+                const prefix = document.createRange(); prefix.selectNodeContents(container); prefix.setEnd(boundary, offset);
+                return Array.from(prefix.toString()).length;
+            }
+            const start = offsetAt(range.startContainer, range.startOffset, 0);
+            const end = offsetAt(range.endContainer, range.endOffset, Array.from(verse.text).length);
+            if (end > start) ranges.push({verse_id: verse.id, start_offset: start, end_offset: end, selected_text: Array.from(verse.text).slice(start, end).join("")});
+        }
+        if (ranges.length) { suppressWordClickUntil = performance.now() + 650; swipe = null; showSelectionActions(ranges); }
+    }
+    let selectionTimer;
+    document.addEventListener("selectionchange", () => { clearTimeout(selectionTimer); selectionTimer = setTimeout(captureSelection, 100); });
+    element("SelectionToolbar").addEventListener("pointerdown", () => { selectionInteractionUntil = performance.now() + 800; });
+    element("DismissSelection").addEventListener("click", () => { window.getSelection()?.removeAllRanges(); clearSelectionActions(); });
+    async function copyScripture(text) {
+        if (navigator.clipboard?.writeText && window.isSecureContext) {
+            try { await navigator.clipboard.writeText(text); toast("Scripture copied with its reference."); return; } catch (_error) {}
+        }
+        // Local Wi-Fi HTTP does not expose the Clipboard API on mobile browsers.
+        const fallback = document.createElement("textarea"); fallback.value = text;
+        fallback.style.cssText = "position:fixed;left:0;top:0;opacity:0;font-size:16px"; root.append(fallback);
+        fallback.focus(); fallback.select(); fallback.setSelectionRange(0, text.length);
+        let copied = false;
+        try { copied = document.execCommand("copy"); } catch (_error) {}
+        fallback.remove();
+        if (copied) toast("Scripture copied with its reference.");
+        else {
+            element("CopyText").value = text; element("CopyDialog").showModal();
+            element("CopyText").focus(); element("CopyText").select(); element("CopyText").setSelectionRange(0, text.length);
+        }
+    }
+    async function loadPersonal(requestId = chapterRequest) {
+        try {
+            const data = await api(apiBase + "/personal?" + new URLSearchParams({book: state.book, chapter: state.chapter}));
+            if (requestId !== chapterRequest) return;
+            personal = {annotations: data.annotations || [], bookmarks: data.bookmarks || []};
+            studyPersonal = {annotations:data.study_annotations || [],bookmarks:data.study_bookmarks || []};
+            paintPersonal();
+            paintStudyMarks();
+            if (element("SavedDialog").open) renderSavedItems();
+        } catch (error) { if (requestId === chapterRequest) toast(error.message); }
+    }
+    function paintPersonal() {
+        for (const paragraph of element("Verses").querySelectorAll(".bs-verse")) {
+            const verseId = Number(paragraph.dataset.verseId), container = paragraph.querySelector(".bs-verse-text");
+            container.querySelectorAll("mark[data-bs-annotation]").forEach(mark => mark.replaceWith(...mark.childNodes)); container.normalize();
+            paragraph.querySelectorAll(".bs-verse-mark").forEach(mark => mark.remove());
+            const items = personal.annotations.flatMap(item => (item.ranges || []).filter(span => span.verse_id === verseId).map(span => ({...span, item})));
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT), texts = [];
+            let text; while ((text = walker.nextNode())) texts.push(text);
+            let offset = 0;
+            for (const textNode of texts) {
+                const chars = Array.from(textNode.textContent), start = offset, end = offset + chars.length; offset = end;
+                const hits = items.filter(span => span.start_offset < end && span.end_offset > start);
+                if (!hits.length) continue;
+                const boundaries = [...new Set([start, end, ...hits.flatMap(span => [Math.max(start, span.start_offset), Math.min(end, span.end_offset)])])].sort((a, b) => a - b);
+                const fragment = document.createDocumentFragment();
+                for (let i = 0; i < boundaries.length - 1; i++) {
+                    const from = boundaries[i], to = boundaries[i + 1], content = chars.slice(from - start, to - start).join("");
+                    const active = hits.filter(span => span.start_offset < to && span.end_offset > from);
+                    if (!active.length) { fragment.append(document.createTextNode(content)); continue; }
+                    const mark = node("mark", content); mark.dataset.bsAnnotation = active[0].item.id;
+                    const highlight = active.find(span => span.item.kind === "highlight");
+                    mark.style.backgroundColor = highlight?.item.color || (highlight ? "#ffe66d" : "transparent");
+                    if (active.some(span => span.item.kind === "underline")) mark.classList.add("bs-underline");
+                    mark.title = active.map(span => span.item.note).filter(Boolean).join("\n"); fragment.append(mark);
+                }
+                textNode.replaceWith(fragment);
+            }
+            for (const [present, label, symbol] of [[items.length, "Saved highlights and notes", "✎"], [personal.bookmarks.some(item => item.verse_id === verseId), "Saved bookmark", "⚑"]]) {
+                if (!present) continue;
+                const button = node("button", symbol, "bs-verse-mark"); button.type = "button";
+                button.setAttribute("aria-label", label + " for verse " + verseData.get(verseId).verse);
+                button.addEventListener("click", () => openSavedItems(verseId)); paragraph.append(button);
+            }
+        }
+    }
+    async function createAnnotation(kind, color, note = "") {
+        if (!pendingSelection || selectionBusy) return;
+        const snapshot = pendingSelection, requestId = chapterRequest;
+        selectionBusy = true;
+        try {
+            await api(apiBase + (snapshot.study ? "/study-saves" : "/annotations"), jsonWrite("POST", {kind, color, note, ranges: snapshot.ranges}));
+            if (requestId === chapterRequest && pendingSelection === snapshot) {
+                window.getSelection()?.removeAllRanges(); clearSelectionActions();
+            }
+            if (requestId === chapterRequest) await loadPersonal(requestId);
+            toast(kind === "note" ? "Note saved to your global notes & highlights." : "Saved to your global notes & highlights.");
+            return true;
+        } catch (error) { toast(error.message); return false; }
+        finally { selectionBusy = false; }
+    }
+    function openNote(item = null) {
+        editingNote = item;
+        element("NoteTitle").textContent = item ? "Edit note" : "Add a note";
+        element("NoteReference").textContent = item?.reference || pendingSelection?.reference || "";
+        element("NoteText").value = item?.note || ""; element("NoteError").textContent = "";
+        element("NoteDialog").showModal(); element("NoteText").focus();
+    }
+    element("NoteForm").addEventListener("submit", async event => {
+        event.preventDefault(); element("SaveNote").disabled = true;
+        try {
+            if (editingNote) {
+                await api(editingNote.delete_url, jsonWrite("PATCH", {note: element("NoteText").value, version: editingNote.version}));
+                await loadPersonal(); toast("Note updated.");
+            } else if (!await createAnnotation("note", null, element("NoteText").value)) {
+                element("NoteError").textContent = element("Toast").textContent; return;
+            }
+            element("NoteDialog").close();
+        } catch (error) { element("NoteError").textContent = error.message; }
+        finally { element("SaveNote").disabled = false; }
+    });
+    element("SelectionToolbar").addEventListener("click", async event => {
+        const button = event.target.closest("[data-selection-action]");
+        if (!button || !pendingSelection || selectionBusy) return;
+        const action = button.dataset.selectionAction;
+        if (action === "copy") {
+            const snapshot = pendingSelection;
+            await copyScripture(snapshot.reference + (snapshot.study ? "" : " (NIV)") + "\n" + snapshot.ranges.map(span => span.selected_text).join("\n"));
+        } else if (action === "note") openNote();
+        else if (action === "bookmark") {
+            button.disabled = true;
+            try {
+                const snapshot=pendingSelection;
+                await api(apiBase + (snapshot.study?"/study-saves":"/bookmarks"), jsonWrite("POST", snapshot.study
+                    ? {kind:"bookmark",note:"",color:null,ranges:[snapshot.ranges[0]]}
+                    : {verse_id:snapshot.ranges[0].verse_id,label:snapshot.reference}));
+                window.getSelection()?.removeAllRanges(); clearSelectionActions(); await loadPersonal(); toast("Bookmark saved to your global bookmarks.");
+            } catch (error) { toast(error.message); }
+            finally { button.disabled = false; }
+        } else await createAnnotation(action, button.dataset.color || "#e5962d");
+    });
+    function openSavedItems(verseId = null) {
+        window.getSelection()?.removeAllRanges(); clearSelectionActions();
+        if (element("SettingsDialog").open) element("SettingsDialog").close();
+        savedVerseFilter = verseId; renderSavedItems(); element("SavedDialog").showModal();
+    }
+    function renderSavedItems() {
+        const list = element("SavedItems"); list.replaceChildren();
+        const visibleKeys=new Set([...root.querySelectorAll("[data-study-source]")].filter(node=>node.getClientRects().length).map(node=>node.dataset.studySource));
+        const items = [...personal.annotations, ...personal.bookmarks,...studyPersonal.annotations,...studyPersonal.bookmarks].filter(item =>
+            item.format === "STUDY" ? !savedVerseFilter&&item.ranges.some(span=>visibleKeys.has(span.source_key))
+            : !savedVerseFilter || item.verse_id === savedVerseFilter || item.ranges?.some(span => span.verse_id === savedVerseFilter));
+        if (!items.length) list.append(node("p", "Tap a verse number or select Scripture to save a highlight, note, or bookmark."));
+        for (const item of items) {
+            const card = node("section", undefined, "bs-saved-item");
+            card.append(node("strong", item.reference + " · " + (item.kind || "bookmark")));
+            if (item.selected_text) card.append(node("p", item.selected_text));
+            if (item.note) card.append(node("p", item.note));
+            const actions = node("div");
+            const jump = node("button", "Go to verse"); jump.type = "button";
+            if(item.format==="STUDY")jump.textContent="Open source";
+            jump.addEventListener("click", () => { element("SavedDialog").close(); item.format==="STUDY"?openSavedStudy(item):jumpToVerse(item.verse); }); actions.append(jump);
+            if (item.kind) {
+                const edit = node("button", "Edit note"); edit.type = "button";
+                edit.addEventListener("click", () => { element("SavedDialog").close(); openNote(item); }); actions.append(edit);
+            }
+            const remove = node("button", "Delete"); remove.type = "button";
+            remove.addEventListener("click", async () => {
+                remove.disabled = true;
+                try { await api(item.delete_url, jsonWrite("DELETE", {})); await loadPersonal(); toast("Saved item deleted."); }
+                catch (error) { toast(error.message); remove.disabled = false; }
+            }); actions.append(remove); card.append(actions); list.append(card);
+        }
+    }
+    function jumpToVerse(number) {
+        if (readerTab !== "bible") selectReaderTab("bible");
+        const target = element("Verse" + number);
+        if (!target) return;
+        state.verse = number;
+        element("Bible").scrollTop += target.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 14;
+        target.classList.add("bs-jump-target"); setTimeout(() => target.classList.remove("bs-jump-target"), 2500);
+    }
+
+    async function openSavedStudy(item) {
+        const dialog=element("SavedStudyDialog"),content=element("SavedStudyContent");
+        content.replaceChildren();element("SavedStudyTitle").textContent=item.reference+" · "+item.book_author;
+        element("SavedStudyNotice").textContent="Loading original source…";
+        dialog.dataset.studyKind=item.ranges[0].source.category;
+        if(!dialog.open)dialog.showModal();
+        const source=item.ranges[0].source;
+        try {
+            const data=await api(source.origin);
+            const current=(data.study_anchors||[]).find(anchor=>anchor.key===source.key)||(data.anchor?.key===source.key?data.anchor:null);
+            if(!current)throw Error("The source has changed. Your saved excerpt is preserved below.");
+            if(data.image) {
+                const image=node("img");image.src=data.image.url;image.alt=data.image.text;image.className="bs-chain-chart";content.append(image);
+                const caption=node("p",data.image.text);bindStudyText(caption,data.anchor);content.append(caption);
+            }
+            const blockIndex=source.path.lastIndexOf("blocks");
+            let blocks=null;
+            if(blockIndex>=0) {
+                let value=data;
+                for(const part of source.path.slice(0,blockIndex+1))value=value?.[part];
+                if(Array.isArray(value))blocks=value;
+            }
+            if(blocks)appendSourceBlocks(content,blocks);
+            else for(const anchor of data.study_anchors||[]) {
+                if(anchor.title!==source.title)continue;
+                const paragraph=node(anchor.block_type==="heading"?"h5":"p",anchor.text);
+                bindStudyText(paragraph,anchor);content.append(paragraph);
+            }
+            element("SavedStudyNotice").textContent="Original indexed source · "+source.title;
+        } catch(error) {element("SavedStudyNotice").textContent=error.message+" Showing your saved text.";}
+        // Preserve the saved excerpt even when a preview and its full paragraph differ.
+        for(const span of item.ranges) {
+            if([...content.querySelectorAll("[data-study-source]")].some(node=>node.dataset.studySource===span.source_key))continue;
+            const excerpt=node("p",span.block_text);
+            const anchor={...span.source,text:span.block_text,key:span.source_key,token:span.token};
+            const fresh=studyAnchors.get(span.source.category+"|"+span.block_text);
+            if(fresh&&fresh.key===span.source_key)bindStudyText(excerpt,fresh);
+            else {excerpt.dataset.studySource=span.source_key;boundStudyAnchors.set(excerpt,anchor);}
+            content.append(excerpt);
+        }
+        paintStudyMarks();
+        const target=[...content.querySelectorAll("[data-study-source]")].find(node=>node.dataset.studySource===source.key);
+        if(target)requestAnimationFrame(()=>target.scrollIntoView({block:"center"}));
     }
 
     async function loadWord(verseId, tokenIndex) {
@@ -181,14 +565,48 @@
         }
     }
 
-    function renderSourceBlock(block) {
+    async function previewGreek(link, block, sourceBlocks) {
+        const requestId=++greekRequest, source=block.greek_source;
+        const spelling=Array.from(block.text).slice(link.start,link.end).join("");
+        element("GreekTitle").textContent=spelling;
+        element("GreekAttribution").textContent=source.source_title+" · "+source.passage+" · Pulpit’s surrounding explanation";
+        const content=element("GreekContent"), actions=element("GreekActions");
+        content.replaceChildren();actions.replaceChildren();
+        const blocks=sourceBlocks || [block], index=Math.max(0,blocks.indexOf(block));
+        // EPUB paragraphs are complete; PDF explanations can continue over lines/pages.
+        let first=index, last=index+1, size=block.text.length;
+        if (size<500) {
+            while(first>0 && index-first<3 && size<1100){first--;size+=blocks[first].text.length;}
+            while(last<blocks.length && last-index<16 && size<1900){size+=blocks[last++].text.length;}
+        }
+        for (const item of blocks.slice(first,last)) content.append(renderSourceBlock({...item,greek_links:[]}));
+        paintStudyMarks();
+        element("GreekDialog").showModal();
+        try {
+            const query=new URLSearchParams({word:spelling,book:books[source.book_id-1].name,chapter:source.chapter,verse:source.verse});
+            const data=await api(apiBase+"/pulpit-greek?"+query);
+            if(requestId!==greekRequest || !element("GreekDialog").open || !data.match)return;
+            const button=node("button","Open Word Study · "+data.match.lemma);button.type="button";
+            button.addEventListener("click",()=>{
+                element("GreekDialog").close();element("Search").value=data.match.query;
+                selectedWord={word:data.match.query};
+                if(studyTab==="word")element("SearchForm").requestSubmit();else selectStudyTab("word");
+            });actions.append(button);
+        } catch (_) { /* The source explanation remains available without dictionary data. */ }
+    }
+    element("CloseGreek").addEventListener("click",()=>element("GreekDialog").close());
+    element("GreekDialog").addEventListener("close",()=>{++greekRequest;});
+
+    function renderSourceBlock(block, sourceBlocks=null) {
         const paragraph = node(block.role === "commentary_heading" && block.level > 1 ? "h6" : block.type === "heading" ? "h5" : "p");
         if (block.role === "major_chain") paragraph.classList.add("bs-major-chain");
-        if (["commentary_main_idea", "commentary_outline", "commentary_outline_continuation", "commentary_heading", "commentary_reference", "commentary_section"].includes(block.role)) {
+        if (["commentary_main_idea", "commentary_outline", "commentary_outline_continuation", "commentary_heading", "commentary_reference", "commentary_section", "sermon_heading", "sermon_subpoint", "sermon_reference", "sermon_paragraph", "sermon_list_item"].includes(block.role)) {
             paragraph.classList.add("bs-" + block.role.replaceAll("_", "-"));
             if ([1, 2, 3].includes(block.level)) paragraph.classList.add("bs-commentary-level-" + block.level);
             if (block.marker) paragraph.append(node("span", block.marker + " ", "bs-commentary-marker"));
         }
+        if (block.source_quote) paragraph.classList.add("bs-source-quote");
+        const sourceText=node("span");paragraph.append(sourceText);
         const runs = block.runs || [{type: "text", text: block.text, marks: []}];
         let position = 0;
         const positioned = runs.map(run => {
@@ -215,18 +633,58 @@
             }
         }
         let offset = 0;
-        const links = [...(block.references || []), ...(block.chain_links || []).map(link => ({...link, chain: true}))].sort((a, b) => a.start - b.start);
+        const links = [...(block.references || []), ...(block.chain_links || []).map(link => ({...link, chain: true})),
+            ...(block.greek_links || []).map(link=>({...link,greek:true}))].sort((a, b) => a.start - b.start);
         for (const reference of links) {
             if (reference.start < offset || reference.end > position) continue;
-            appendSlice(paragraph, offset, reference.start);
-            const button = node("button", undefined, reference.chain ? "bs-chain-ref" : "bs-scripture-ref"); button.type = "button";
+            appendSlice(sourceText, offset, reference.start);
+            const button = node("button", undefined, reference.greek ? "bs-greek-ref" : reference.chain ? "bs-chain-ref" : "bs-scripture-ref"); button.type = "button";
             appendSlice(button, reference.start, reference.end);
-            button.addEventListener("click", () => reference.chain
-                ? previewChain(reference.topic_id, true, reference.key) : previewVerse(reference));
-            paragraph.append(button); offset = reference.end;
+            let pressedAt=0;
+            button.addEventListener("pointerdown",()=>{pressedAt=performance.now();});
+            button.addEventListener("click", event => {
+                if(reference.greek && (performance.now()<suppressWordClickUntil || window.getSelection()?.toString().trim()
+                    || (event.detail && pressedAt && performance.now()-pressedAt>450)))return;
+                if(reference.greek)previewGreek(reference,block,sourceBlocks);
+                else if(reference.chapter_only)navigatePassage(reference.book,reference.chapter,1);
+                else if(reference.chain)previewChain(reference.topic_id,true,reference.key);
+                else previewVerse(reference);
+            });
+            sourceText.append(button); offset = reference.end;
         }
-        appendSlice(paragraph, offset, position);
+        appendSlice(sourceText, offset, position);
+        bindStudyText(sourceText,block._study_texts?.text);
         return paragraph;
+    }
+
+    function appendSourceBlocks(parent, blocks) {
+        const lists = [];
+        for (const block of blocks) {
+            if (!["bullet", "ordered"].includes(block.list_kind)) {
+                lists.length = 0; parent.append(renderSourceBlock(block,blocks)); continue;
+            }
+            const level = Math.max(1, Math.min(6, Number(block.list_level) || 1));
+            while (lists.length > level) lists.pop();
+            if (lists.length === level && lists[level - 1].kind !== block.list_kind) lists.pop();
+            while (lists.length < level) {
+                const owner = lists.length ? lists[lists.length - 1] : null;
+                if (owner && !owner.item) { owner.item = node("li"); owner.list.append(owner.item); }
+                const list = node(block.list_kind === "ordered" ? "ol" : "ul", undefined, "bs-source-list");
+                if (block.list_kind === "ordered") {
+                    if (Number.isInteger(block.list_number)) list.start = block.list_number;
+                    if (["1", "a", "A", "i", "I"].includes(block.list_style)) list.type = block.list_style;
+                }
+                (owner ? owner.item : parent).append(list);
+                lists.push({list, kind: block.list_kind, item: null, key: null});
+            }
+            const current = lists[level - 1];
+            if (!current.item || current.key !== block.list_item || block.list_item == null) {
+                current.item = node("li"); current.key = block.list_item;
+                if (block.list_kind === "ordered" && Number.isInteger(block.list_number)) current.item.value = block.list_number;
+                current.list.append(current.item);
+            }
+            current.item.append(renderSourceBlock(block,blocks));
+        }
     }
 
     function dictionaryEntryCard(entry, ownerRequest) {
@@ -319,17 +777,18 @@
     });
 
     function selectStudyTab(name, focus = false) {
-        if (!["word", "concordance", "commentary"].includes(name)) return;
+        if (!["word", "concordance", "commentary", "sermon"].includes(name)) return;
         const changed = studyTab !== name;
         if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; }
         studyTab = name;
-        for (const [tab, prefix] of [["word", "Word"], ["concordance", "Concordance"], ["commentary", "Commentary"]]) {
+        for (const [tab, prefix] of [["word", "Word"], ["concordance", "Concordance"], ["commentary", "Commentary"], ["sermon", "Sermon"]]) {
             const active = tab === name;
             element(prefix + "Tab").setAttribute("aria-selected", String(active));
             element(prefix + "Tab").tabIndex = active ? 0 : -1;
             element(prefix + "Panel").hidden = !active;
         }
-        if (focus) element(name === "word" ? "WordTab" : name === "concordance" ? "ConcordanceTab" : "CommentaryTab").focus();
+        if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon"})[name]+"Tab").focus();
+        if (name === "sermon") { loadSermons(); return; }
         if (name === "commentary") { loadCommentary(); return; }
         if (!changed || !selectedWord) return;
         element("Search").value = element("ConcordanceSearch").value = selectedWord.word;
@@ -342,16 +801,54 @@
         button.addEventListener("keydown", event => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             event.preventDefault();
-            const tabs = ["word", "concordance", "commentary"];
+            const tabs = ["word", "concordance", "commentary", "sermon"];
             const next = (tabs.indexOf(studyTab) + (event.key === "ArrowLeft" ? -1 : 1) + tabs.length) % tabs.length;
-            selectStudyTab(event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[2] : tabs[next], true);
+            selectStudyTab(event.key === "Home" ? tabs[0] : event.key === "End" ? tabs.at(-1) : tabs[next], true);
         });
+    });
+
+    let sermonListScroll=0;
+    async function loadSermons() {
+        const chapter=state.book+" "+state.chapter;
+        if(sermonChapter===chapter)return;
+        const requestId=++sermonRequest;
+        element("SermonReference").textContent=chapter;
+        element("SermonReader").hidden=true;element("SermonResults").hidden=false;
+        element("SermonResults").replaceChildren(node("p","Finding indexed sermons for this chapter…"));
+        try {
+            const data=await api(apiBase+"/sermons?"+new URLSearchParams({book:state.book,chapter:state.chapter}));
+            if(requestId!==sermonRequest)return;
+            sermonChapter=chapter;element("SermonResults").replaceChildren();
+            if(!data.sermons?.length)element("SermonResults").append(node("p","No indexed sermon or teaching outline was found for this chapter."));
+            for(const sermon of data.sermons||[]) {
+                const button=node("button",sermon.title,"bs-sermon-title");button.type="button";
+                button.addEventListener("click",()=>openSermon(sermon.id));element("SermonResults").append(button);
+            }
+        } catch(error){if(requestId===sermonRequest)element("SermonResults").replaceChildren(node("p",error.message));}
+    }
+    async function openSermon(id) {
+        const requestId=++sermonRequest;
+        sermonListScroll=element("Study").scrollTop;
+        element("SermonResults").hidden=true;element("SermonReader").hidden=false;
+        element("SermonTitle").textContent="Loading sermon…";element("SermonMetadata").textContent="";element("SermonContent").replaceChildren();
+        try {
+            const data=await api(apiBase+"/sermons/"+encodeURIComponent(id));
+            if(requestId!==sermonRequest)return;
+            const sermon=data.sermon;element("SermonTitle").textContent=sermon.title;
+            const passages=(sermon.ranges||[]).map(span=>books[span.book_id-1].name+" "+span.chapter+":"+span.verse+(span.end_chapter!==span.chapter?"–"+span.end_chapter+":"+span.end_verse:span.end_verse!==span.verse?"–"+span.end_verse:""));
+            element("SermonMetadata").textContent=[sermon.author,sermon.source_title,sermon.publisher,sermon.purpose,passages.join("; "),"Source page/section "+sermon.source_section].filter(Boolean).join(" · ");
+            element("SermonContent").replaceChildren();appendSourceBlocks(element("SermonContent"),sermon.blocks);
+            element("Study").scrollTop=0;
+        } catch(error){if(requestId===sermonRequest)element("SermonTitle").textContent=error.message;}
+    }
+    element("SermonBack").addEventListener("click",()=>{
+        ++sermonRequest;element("SermonReader").hidden=true;element("SermonResults").hidden=false;element("Study").scrollTop=sermonListScroll;
     });
 
     async function loadCommentary() {
         const requestId = ++commentaryRequest;
         const results = element("CommentaryResults");
-        const query = new URLSearchParams({book: state.book, chapter: state.chapter, verse: state.verse, series: commentarySeries});
+        const query = new URLSearchParams({book: state.book, chapter: state.chapter, verse: state.verse, series: commentarySeries, section:pulpitSection});
         results.replaceChildren(node("p", "Loading passage commentary…"));
         try {
             const data = await api(apiBase + "/commentary?" + query);
@@ -364,16 +861,17 @@
                 article.append(node("p", entry.source_title, "bs-commentary-volume"), node("h4", entry.title),
                     node("p", "Passage covered: " + entry.passage, "bs-commentary-range"));
                 const content = node("div", undefined, "bs-source-content bs-commentary-text");
+                if (["moody","pulpit"].includes(commentarySeries)) content.classList.add("bs-source-lines");
                 let outline = null;
                 for (const block of entry.blocks) {
-                    if (["commentary_outline", "commentary_outline_continuation"].includes(block.role)) {
+                    if (commentarySeries === "exalting-jesus" && ["commentary_outline", "commentary_outline_continuation"].includes(block.role)) {
                         if (!outline) {
                             outline = node("section", undefined, "bs-commentary-outline-card");
                             outline.setAttribute("aria-label", "Commentary outline");
                             outline.append(node("h5", "Outline")); content.append(outline);
                         }
                         outline.append(renderSourceBlock(block));
-                    } else { outline = null; content.append(renderSourceBlock(block)); }
+                    } else { outline = null; content.append(renderSourceBlock(block,entry.blocks)); }
                 }
                 article.append(content, node("p", entry.author + " · " + entry.source_title, "bs-attribution"));
                 results.append(article);
@@ -387,8 +885,15 @@
         const series = button.dataset.commentarySeries;
         if (!commentaryNames[series] || series === commentarySeries) return;
         commentarySeries = series;
+        element("PulpitSections").hidden=series!=="pulpit";
         root.querySelectorAll("[data-commentary-series]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
         if (studyTab === "commentary") loadCommentary();
+    }));
+
+    root.querySelectorAll("[data-pulpit-section]").forEach(button=>button.addEventListener("click",()=>{
+        pulpitSection=button.dataset.pulpitSection;
+        root.querySelectorAll("[data-pulpit-section]").forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
+        if(studyTab==="commentary" && commentarySeries==="pulpit")loadCommentary();
     }));
 
     async function loadConcordance(query, offset = 0, ownerRequest = null) {
@@ -528,6 +1033,7 @@
     }
     function selectReaderTab(name, focus = false) {
         if (!["bible", "book"].includes(name) || name === readerTab) return;
+        window.getSelection()?.removeAllRanges(); clearSelectionActions();
         readerScroll[readerTab] = element("Bible").scrollTop;
         readerTab = name; scrollRestoreUntil = performance.now() + 500;
         element("ReaderPanel").hidden = name !== "bible"; element("BookStudyPanel").hidden = name !== "book";
@@ -622,6 +1128,10 @@
     element("ChainDialog").addEventListener("close", () => { ++chainRequest; currentChain = null; chainHistory.length = 0; });
     element("VerseDialog").addEventListener("close", () => { ++verseRequest; });
     root.querySelectorAll("dialog").forEach(dialog => {
+        dialog.addEventListener("close",()=>{
+            if(element("SelectionToolbar").parentElement===dialog){root.append(element("SelectionToolbar"));clearSelectionActions();}
+            if(element("Toast").parentElement===dialog)([...root.querySelectorAll("dialog[open]")].at(-1)||root).append(element("Toast"));
+        });
         let outside = false;
         function isOutside(event) {
             const bounds = dialog.getBoundingClientRect();
@@ -635,13 +1145,23 @@
     });
 
     element("CopyVerse").addEventListener("click", async () => {
-        try {
-            await navigator.clipboard.writeText(copiedVerse);
-            element("CopyVerse").textContent = "Copied";
-        } catch (_error) {
-            element("CopyVerse").textContent = "Select the verse text to copy";
-        }
+        await copyScripture(copiedVerse);
     });
+
+    root.querySelectorAll("[data-study-image-action]").forEach(button=>button.addEventListener("click",async()=>{
+        const match=element("SourceImage").src.match(/\/studies\/page\/(\d+)/);
+        if(!match)return;
+        button.disabled=true;
+        try {
+            const data=await api(apiBase+"/study-image?page="+match[1]);const anchor=data.anchor;
+            pendingSelection={study:true,reference:anchor.title,ranges:[{token:anchor.token,text:anchor.text,start_offset:0,end_offset:Array.from(anchor.text).length,selected_text:anchor.text}]};
+            if(button.dataset.studyImageAction==="note")openNote();
+            else {
+                await api(apiBase+"/study-saves",jsonWrite("POST",{kind:"bookmark",note:"",color:null,ranges:pendingSelection.ranges}));
+                clearSelectionActions();await loadPersonal();toast("Study page bookmarked.");
+            }
+        } catch(error){toast(error.message);}finally{button.disabled=false;}
+    }));
 
     function showSyncReport(report) {
         syncBusy = report.status === "running";
@@ -678,7 +1198,10 @@
     }
 
     if (element("Sync") && config.syncUrl) {
-        element("SyncDetails").addEventListener("click", () => element("SyncDialog").showModal());
+        element("SyncDetails").addEventListener("click", () => {
+            if (element("SettingsDialog").open) element("SettingsDialog").close();
+            element("SyncDialog").showModal();
+        });
         element("CloseSync").addEventListener("click", () => element("SyncDialog").close());
         element("Sync").addEventListener("click", async () => {
             if (syncBusy) return;
@@ -751,12 +1274,18 @@
         loadChapter();
         ++commentaryRequest;
         if (studyTab === "commentary") loadCommentary();
+        if (sermonChapter !== state.book+" "+state.chapter) { ++sermonRequest; sermonChapter=""; }
+        if (studyTab === "sermon") loadSermons();
     }
 
     function applyAppearance() {
         root.dataset.theme = state.theme;
         root.style.setProperty("--bs-font", state.font_size + "px");
         element("Theme").value = state.theme;
+        element("FontSize").value = state.font_size;
+        element("FontSizeValue").textContent = state.font_size;
+        root.dataset.margins = localSettings.margins === false ? "hidden" : "shown";
+        element("ShowMargins").checked = localSettings.margins !== false;
         element("Smaller").disabled = state.font_size <= 14;
         element("Larger").disabled = state.font_size >= 30;
     }
@@ -773,6 +1302,7 @@
         state.layout_mode = mode;
         root.dataset.mode = mode;
         root.classList.toggle("bs-fullscreen", mode !== "split");
+        element("LayoutMode").value = mode;
         root.querySelectorAll("[data-bs-mode]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.bsMode === mode)));
         if (mode === "split") {
             if (document.fullscreenElement === root) {
@@ -781,12 +1311,9 @@
             if (userAction) previousFocus?.focus?.();
         } else if (userAction) {
             previousFocus = document.activeElement;
-            // Keep a full-window CSS mode if the browser has no Fullscreen API.
-            if (!document.fullscreenElement && root.requestFullscreen) {
-                try { await root.requestFullscreen(); } catch (_error) {}
-            }
             element(mode === "bible" ? "Bible" : "Study").focus();
         }
+        sizeWorkspace();
         if (userAction) savePreferences();
     }
 
@@ -804,9 +1331,10 @@
 
     // Horizontal touch gestures stay inside the Bible. Native vertical scrolling,
     // text selection and pinch zoom remain available.
-    let swipe = null, suppressWordClickUntil = 0;
+    let swipe = null, suppressWordClickUntil = 0, wordPress = null, touchSwipe = null, nativeTouch = false;
     const scripture = element("Scripture");
     scripture.addEventListener("pointerdown", event => {
+        if (event.isPrimary && event.target.closest(".bs-word")) wordPress = {id: event.pointerId, time: performance.now()};
         if (!event.isPrimary) { swipe = null; return; }
         if (!mobile.matches || event.pointerType !== "touch" || readerTab !== "bible"
                 || root.querySelector("dialog[open]") || window.getSelection()?.toString()) return;
@@ -817,21 +1345,54 @@
     scripture.addEventListener("pointermove", event => {
         if (swipe?.id !== event.pointerId) return;
         const dx = Math.abs(event.clientX - swipe.x), dy = Math.abs(event.clientY - swipe.y);
-        if (dy > 20 && dy > dx) swipe = null;
+        if (dy > 18 && dy > dx * 1.25) swipe = null;
     }, {passive: true});
     scripture.addEventListener("pointercancel", () => { swipe = null; });
     scripture.addEventListener("pointerup", event => {
+        if (wordPress?.id === event.pointerId && performance.now() - wordPress.time > 400) suppressWordClickUntil = performance.now() + 650;
+        wordPress = null;
         const gesture = swipe; swipe = null;
-        if (!gesture || gesture.id !== event.pointerId || performance.now() - gesture.time > 700
+        if (nativeTouch || !gesture || gesture.id !== event.pointerId || performance.now() - gesture.time > 1100
                 || window.getSelection()?.toString() || root.querySelector("dialog[open]")) return;
         const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
-        if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 2) return;
+        if (Math.abs(dx) < 42 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
         suppressWordClickUntil = performance.now() + 400;
         stepChapter(dx < 0 ? 1 : -1);
+        toast(state.book+" "+state.chapter,1200);
     }, {passive: true});
+    // Touch events continue on iOS when the browser cancels pointer events.
+    scripture.addEventListener("touchstart", event => {
+        nativeTouch=true;touchSwipe=null;
+        if(!mobile.matches||readerTab!=="bible"||event.touches.length!==1||root.querySelector("dialog[open]")||window.getSelection()?.toString())return;
+        const control=event.target.closest("button,a,input,select,textarea,summary");
+        if(control&&!control.classList.contains("bs-word"))return;
+        const touch=event.touches[0];touchSwipe={x:touch.clientX,y:touch.clientY,time:performance.now(),horizontal:false};
+    },{passive:true});
+    scripture.addEventListener("touchmove", event => {
+        if(!touchSwipe||event.touches.length!==1||window.getSelection()?.toString()){touchSwipe=null;return;}
+        const touch=event.touches[0],dx=Math.abs(touch.clientX-touchSwipe.x),dy=Math.abs(touch.clientY-touchSwipe.y);
+        if(!touchSwipe.horizontal&&performance.now()-touchSwipe.time>450){touchSwipe=null;return;}
+        if(dy>18&&dy>dx*1.25){touchSwipe=null;return;}
+        if(dx>12&&dx>dy*1.15)touchSwipe.horizontal=true;
+        if(touchSwipe.horizontal&&event.cancelable)event.preventDefault();
+    },{passive:false});
+    scripture.addEventListener("touchend", event => {
+        const gesture=touchSwipe;touchSwipe=null;
+        setTimeout(()=>{nativeTouch=false;},0);
+        if(!gesture||event.touches.length||performance.now()-gesture.time>1100||window.getSelection()?.toString()||!event.changedTouches.length)return;
+        const touch=event.changedTouches[0],dx=touch.clientX-gesture.x,dy=touch.clientY-gesture.y;
+        if(Math.abs(dx)<42||Math.abs(dx)<Math.abs(dy)*1.15)return;
+        suppressWordClickUntil=performance.now()+650;swipe=null;stepChapter(dx<0?1:-1);toast(state.book+" "+state.chapter,1200);
+    },{passive:true});
+    scripture.addEventListener("touchcancel",()=>{touchSwipe=null;nativeTouch=false;swipe=null;},{passive:true});
     scripture.addEventListener("click", event => {
-        if (performance.now() < suppressWordClickUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
+        if (event.target.closest(".bs-word") && (performance.now() < suppressWordClickUntil || window.getSelection()?.toString())) {
+            event.preventDefault(); event.stopImmediatePropagation();
+        }
     }, true);
+    root.addEventListener("click",event=>{
+        if(event.target.closest(".bs-scripture-ref,.bs-chain-ref")&&(window.getSelection()?.toString()||(pendingSelection?.study&&performance.now()<suppressWordClickUntil))){event.preventDefault();event.stopImmediatePropagation();}
+    },true);
 
     element("Book").addEventListener("change", event => {
         state.book = event.target.value; state.chapter = 1; state.verse = 1; updateChapter(); savePreferences();
@@ -946,7 +1507,19 @@
     element("Theme").addEventListener("change", event => {
         state.theme = event.target.value; applyAppearance(); savePreferences();
     });
-    root.querySelectorAll("[data-bs-mode]").forEach(button => button.addEventListener("click", () => setMode(button.dataset.bsMode, true)));
+    element("Settings").addEventListener("click", () => {
+        window.getSelection()?.removeAllRanges(); clearSelectionActions(); element("SettingsDialog").showModal();
+    });
+    for (const name of ["Settings", "Saved", "Note", "Copy", "SavedStudy"]) element("Close" + name).addEventListener("click", () => element(name + "Dialog").close());
+    element("OpenSaved").addEventListener("click", () => openSavedItems());
+    element("FontSize").addEventListener("input", event => { state.font_size = Number(event.target.value); applyAppearance(); });
+    element("FontSize").addEventListener("change", savePreferences);
+    element("ShowMargins").addEventListener("change", event => { localSettings.margins = event.target.checked; saveLocalSettings(); applyAppearance(); });
+    element("LayoutMode").addEventListener("change", event => setMode(event.target.value, true));
+    root.querySelectorAll("[data-bs-mode]").forEach(button => button.addEventListener("click", () => {
+        if (element("SettingsDialog").open) element("SettingsDialog").close();
+        setMode(button.dataset.bsMode, true);
+    }));
     document.addEventListener("fullscreenchange", () => {
         if (!document.fullscreenElement && state.layout_mode !== "split") setMode("split", true);
     });
@@ -972,6 +1545,7 @@
         if (dragging !== event.pointerId) return;
         dragging = null;
         if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+        if (mobile.matches) { localSettings.mobileRatio = state.split_ratio; saveLocalSettings(); }
         savePreferences();
     }
     divider.addEventListener("pointerup", finishDrag);
@@ -1001,7 +1575,21 @@
             element("Status").textContent = error.message;
             element("SaveStatus").textContent = "Reading preferences have not been saved.";
         }
-        updateChapter(); applyAppearance(); setRatio(state.split_ratio); setMode(state.layout_mode);
+        const query = new URLSearchParams(location.search);
+        const kind = query.has("annotation") ? "annotations" : query.has("bookmark") ? "bookmarks" : null;
+        if (kind) {
+            try {
+                const data = await api(apiBase + "/personal/" + kind + "/" + encodeURIComponent(query.get(kind.slice(0, -1))));
+                if (!data.item.available) throw Error("This saved item belongs to a Bible edition that is currently unavailable.");
+                state.book = data.item.book; state.chapter = data.item.chapter; state.verse = data.item.verse;
+                if (state.layout_mode === "study") state.layout_mode = "split";
+            } catch (error) { toast(error.message); }
+        }
+        updateChapter(); applyAppearance(); setRatio(mobile.matches ? (localSettings.mobileRatio || 50) : state.split_ratio); setMode(state.layout_mode);
+        if(query.has("study")) {
+            try { const saved=await api(apiBase+"/study-saves/"+encodeURIComponent(query.get("study")));await openSavedStudy(saved.item); }
+            catch(error){toast(error.message);}
+        }
         if (element("Sync") && config.syncUrl) pollSync();
     })();
 })();

@@ -56,6 +56,31 @@
 @media(max-width:700px){.bs-study-tabs{padding:8px 6px 0;gap:1px}.bs-root .bs-study-tabs button{font-size:11px;padding:12px 5px}.bs-study-header h2.bs-handwritten{font-size:32px}.bs-chain-dialog .bs-dialog-head{gap:7px}}
 /* Shared heading system: every tool uses the same font and source banner. */
 .bs-tool-word{--bs-tool-tint:#c4a052}.bs-tool-concordance{--bs-tool-tint:#8fa58a}.bs-tool-commentary{--bs-tool-tint:#839eb9}.bs-tool-book{--bs-tool-tint:#bf907b}
+.bs-tool-sermon{--bs-tool-tint:#a48fa7}#bsSermonTab{--bs-tab-accent:#a48fa7}
+.bs-study>.bs-study-tabs{overflow-x:auto;scrollbar-width:thin}.bs-root .bs-study>.bs-study-tabs button{min-width:91px;flex:1 0 auto}
+.bs-root .bs-sermon-title{display:block;width:100%;text-align:left;margin:0;padding:13px 8px;border:0;border-bottom:1px solid var(--bs-line);border-radius:0;font:16px/1.6 Georgia,serif}
+#bsSermonContent{font:16px/1.8 Georgia,serif;overflow-wrap:anywhere}#bsSermonContent p{white-space:pre-wrap;margin:3px 0}#bsSermonContent h5{margin:18px 0 6px;font-size:17px}
+#bsSermonContent .bs-commentary-reference{font-style:italic;font-weight:600;color:var(--bs-accent);margin:6px 0 18px}
+.bs-commentary-text.bs-source-lines p{margin:3px 0}
+#bsGreekDialog{width:min(94vw,640px)}
+#bsGreekContent{font:16px/1.75 Georgia,serif;overflow-wrap:break-word}
+#bsGreekContent p{margin:3px 0}
+#bsGreekActions:not(:empty){margin:12px 0}
+.bs-root button.bs-greek-ref{display:inline;min-height:0;padding:0;border:0;border-radius:0;background:none;color:#16748b;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;font:inherit;white-space:normal;touch-action:pan-y;user-select:text;-webkit-user-select:text}
+.bs-root[data-theme=dark] button.bs-greek-ref{color:#8dd6ef}
+.bs-root button.bs-greek-ref:focus-visible{outline:2px solid var(--bs-accent);outline-offset:3px}
+.bs-source-list{margin:6px 0 12px;padding-left:26px}.bs-source-list li{padding-left:3px;margin:5px 0}
+.bs-source-list .bs-source-list{margin:5px 0 8px}.bs-source-list li>p{margin:3px 0!important}
+.bs-source-content .bs-sermon-heading{font-size:19px!important;font-weight:700;margin:25px 0 10px!important;line-height:1.5}
+.bs-source-content .bs-sermon-subpoint{padding-left:16px;margin:16px 0 8px!important}
+.bs-source-content .bs-sermon-reference{margin:0 0 18px!important;line-height:1.6}
+.bs-source-content .bs-sermon-paragraph{margin:10px 0!important;white-space:normal!important}
+.bs-source-quote{padding-left:16px;border-left:2px solid var(--bs-line);font-style:italic}
+@media(max-width:700px){.bs-source-list{padding-left:22px}.bs-source-content .bs-sermon-heading{font-size:18px!important}.bs-source-content .bs-sermon-subpoint{padding-left:10px}}
+[data-study-source]{user-select:text;-webkit-user-select:text}[data-study-source] mark{color:inherit;padding:0;border-radius:2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+[data-study-source] .bs-underline{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.bs-root .bs-study-mark{display:inline;min-height:24px;padding:0 5px;margin-left:4px;color:var(--bs-accent);font-size:13px;vertical-align:super}
+.bs-image-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 .bs-study-header.bs-banner{position:relative;isolation:isolate;min-height:106px;padding:20px 24px;display:flex;align-items:center;justify-content:center;border-bottom:0;margin:8px 10px 0}
 .bs-banner::before,.bs-banner::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:url('img/BibleStudyBanner.png') center/100% 100% no-repeat}
 .bs-banner::after{background:var(--bs-tool-tint,#c4a052);opacity:.42;mask:url('img/BibleStudyBanner.png') center/100% 100% no-repeat;-webkit-mask:url('img/BibleStudyBanner.png') center/100% 100% no-repeat;mix-blend-mode:multiply}
@@ -126,3 +151,59 @@
 .bs-commentary-text .bs-commentary-reference{margin:0 0 18px;font-size:14px;font-style:italic}
 .bs-commentary-text .bs-commentary-section{font:700 19px/1.5 Georgia,serif;margin:28px 0 12px}
 @media(max-width:700px){.bs-commentary-outline-card{padding:12px}.bs-commentary-text .bs-commentary-heading{font-size:20px}.bs-commentary-text .bs-commentary-heading.bs-commentary-level-2{font-size:17px;padding-left:8px}}
+/* The shared site header and one compact toolbar leave the screen for reading. */
+.bible-study-page{overflow:hidden}.bible-study-page .app-header{padding:8px 12px}
+.bible-study-page .app-subtitle{display:none}.bible-study-page .app-title{display:flex;align-items:center;gap:16px;white-space:nowrap}
+.app-section-title{font:600 15px/1.3 Georgia,serif;padding-left:16px;border-left:1px solid #ffffff65}
+.bible-study-page .pij-launcher{width:42px;height:42px;right:10px;bottom:max(8px,env(safe-area-inset-bottom))}
+.app-main:has(>.bs-root),.district-glass .app-main:has(>.bs-root){width:100%;max-width:none;margin:0;padding:0}
+.bs-root,.bs-root.bs-fullscreen{position:relative;inset:auto;z-index:auto;max-width:none;margin:0;padding:0;height:var(--bs-workspace-height,calc(100dvh - 62px));min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bs-paper)}
+.bs-root .bs-layout,.bs-root.bs-fullscreen .bs-layout{flex:1;height:auto;min-height:0;border-radius:0;border-left:0;border-right:0;grid-template-columns:minmax(0,calc(var(--bs-split)*1%)) 12px minmax(0,1fr)}
+.bs-root:not([data-mode=split]) .bs-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.bs-root .bs-toolbar{position:relative;top:auto;z-index:4;flex-shrink:0;display:flex;flex-wrap:nowrap;gap:12px;padding:7px 12px;background:var(--bs-panel)}
+.bs-toolbar-main,.bs-toolbar-secondary{display:flex;align-items:center;gap:6px;min-width:0}.bs-toolbar-main{flex:1}
+.bs-toolbar-main #bsNavigate{min-width:140px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bs-toolbar-secondary{justify-content:space-between}.bs-toolbar-secondary select{font-size:12px;max-width:150px}
+.bs-toolbar-main button{flex-shrink:0}.bs-root .bs-reader-tabs{top:0}.bs-root .bs-study-tabs{padding-top:6px}
+.bs-toolbar-main .ui-icon{width:20px;height:20px;vertical-align:middle}.bs-icon-previous{transform:rotate(180deg)}
+.bs-root .bs-word:focus-visible{outline:2px solid #7094cf;outline-offset:2px}
+.bs-root .bs-scripture{line-height:1.65}.bs-root .bs-scripture h2{font-size:1.65em}.bs-root .bs-kicker{display:none}
+.bs-root .bs-chapter-heading{font-size:.85em;margin:4px 0 15px}.bs-root .bs-scripture h2{margin-top:0}
+.bs-root .bs-verse-number{display:inline;min-height:0;border:0;background:transparent;padding:0 6px 0 0;border-radius:3px;font:700 .75em/1.6 Arial,sans-serif;color:var(--bs-accent);vertical-align:super}
+.bs-root .bs-word{user-select:text;-webkit-user-select:text;touch-action:pan-y pinch-zoom}
+.bs-verse-text{user-select:text;-webkit-user-select:text}.bs-verse-text ::selection{background:#bcd5f5}
+.bs-root[data-margins=hidden] .bs-chain-margin{display:none}.bs-root[data-margins=hidden] .bs-verse-row{grid-template-columns:minmax(0,1fr)}
+.bs-root .bs-verse-mark{display:inline;padding:0 3px;min-height:0;border:0;background:transparent;font:14px/1.5 Arial,sans-serif;vertical-align:super;color:var(--bs-accent)}
+.bs-verse-text mark{color:inherit;border-radius:2px;padding:0;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.bs-verse-text .bs-underline{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.bs-settings-dialog{width:min(94vw,480px)}.bs-settings-content{display:grid;gap:12px;padding-top:16px;font-size:14px}
+.bs-settings-content fieldset{min-width:0;margin:0;padding:12px;border:1px solid var(--bs-line);border-radius:9px}
+.bs-settings-content legend{font-weight:700;padding:0 5px}.bs-settings-content a{display:block;color:var(--bs-accent);padding:8px 0}
+.bs-setting-check{display:flex;align-items:center;gap:10px;line-height:1.5}.bs-setting-check input{width:20px;height:20px}
+.bs-settings-content input[type=range]{width:100%;accent-color:var(--bs-accent)}
+.bs-settings-dialog .bs-modes{flex-direction:column}.bs-settings-dialog .bs-modes button{text-align:left}
+.bs-selection-toolbar{position:fixed;left:50%;bottom:max(14px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40020;width:max-content;max-width:calc(100vw - 16px);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px;padding:8px;background:var(--bs-panel);color:var(--bs-ink);border:1px solid var(--bs-line);border-radius:12px;box-shadow:0 6px 25px #18243140}
+.bs-selection-toolbar>span{width:100%;font-size:12px;font-weight:700;text-align:center}.bs-selection-toolbar button{min-height:36px;padding:6px 8px}
+.bs-selection-toolbar #bsDismissSelection{position:absolute;top:3px;right:4px;min-height:25px;width:25px;padding:1px}
+.bs-selection-toolbar #bsSelectionReference{padding:0 22px}
+.bs-root .bs-chain-margin button{width:100%;max-width:100%;min-width:0}
+.bs-root .bs-color-yellow{color:#9b7610;background:#ffe66d}.bs-root .bs-color-green{color:#226a3c;background:#9ee6b8}.bs-root .bs-color-blue{color:#245e9c;background:#9ed3ff}
+.bs-toast{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);z-index:40030;max-width:90vw;padding:10px 16px;background:#302c25;color:white;border-radius:9px;font-size:13px;text-align:center;pointer-events:none}
+.bs-root textarea{width:100%;resize:vertical;padding:12px;border:1px solid var(--bs-line);border-radius:8px;background:var(--bs-paper);color:var(--bs-ink);font:16px/1.6 Arial,sans-serif}
+.bs-saved-items{padding-top:12px;max-height:58dvh;overflow:auto}.bs-saved-item{padding:12px 0;border-bottom:1px solid var(--bs-line)}
+.bs-saved-item p{white-space:pre-wrap;font:15px/1.6 Georgia,serif}.bs-saved-item div{display:flex;gap:7px;flex-wrap:wrap}.bs-jump-target{outline:2px solid var(--bs-accent);outline-offset:5px}
+@media(max-width:700px){
+ .bible-study-page .app-header{padding:6px 9px}.bible-study-page .header-left{min-height:44px}.bible-study-page .logo-wrap{width:34px;height:34px;flex-shrink:0}
+ .bible-study-page .menu-toggle{margin-right:8px}.bible-study-page .app-title{font-size:15px;gap:8px}.app-section-title{font-size:12px;padding-left:8px}
+ .bs-root .bs-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,calc((100% - 16px)*var(--bs-split)/100)) 16px minmax(0,1fr)}
+ .bs-root .bs-toolbar{display:block;padding:6px 8px}.bs-toolbar-main{display:grid;grid-template-columns:minmax(0,1fr) repeat(6,32px);gap:4px}
+ .bs-root .bs-toolbar-main button{min-width:0;min-height:36px;padding:5px 3px;font-size:12px}.bs-root .bs-toolbar-main #bsNavigate{min-width:0;padding-left:7px}
+ .bs-toolbar-secondary{margin-top:5px;gap:6px}.bs-root .bs-toolbar-secondary select{min-height:30px;padding:3px 6px;font-size:12px}.bs-translation{font-size:10px;padding:2px}
+ .bs-root .bs-study-tabs button{padding:9px 5px;min-height:35px;font-size:11px}.bs-root .bs-study-tabs{padding-top:4px}
+ .bs-root .bs-scripture{padding:14px 13px 28px}.bs-root .bs-verse-row{grid-template-columns:minmax(0,1fr) 62px;gap:9px}.bs-root .bs-chain-margin{font-size:10px}
+ .bs-root .bs-study-header.bs-banner{min-height:72px;padding:10px 16px;margin-top:4px}.bs-root .bs-study-content{padding:12px 14px 44px}
+ .bs-root .bs-search-form{margin-bottom:14px}.bs-search-form input{font-size:16px}.bs-root .bs-divider span{width:42px;height:4px}
+ .bs-root .bs-entry{padding:11px;margin:10px 0}.bs-root .bs-study-content h3{font-size:20px}
+ .bs-selection-toolbar{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 16px)}
+ .bs-settings-dialog select{font-size:16px}.bs-root .bs-settings-dialog{width:100%;max-width:none;max-height:86dvh;overflow:auto}
+}

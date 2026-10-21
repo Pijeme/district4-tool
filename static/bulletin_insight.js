@@ -26,16 +26,16 @@
                 const summary = node("summary", "Read more");
                 details.append(summary, node("div", insight.content, "maxwell-source-content"));
                 details.addEventListener("toggle", () => { summary.textContent = details.open ? "Read less" : "Read more"; });
-                card.replaceChildren(node("h3", "Leadership Insight"),
-                    node("p", "Maxwell Leadership Bible", "muted small"),
+                card.replaceChildren(node("h3", "Daily Devotional"),
+                    node("p", "From the Maxwell Leadership Bible", "muted small"),
                     node("strong", insight.title), node("p", insight.passage, "muted small"),
-                    node("p", insight.summary), details);
+                    node("p", insight.excerpt), details);
                 card.hidden = false;
                 card.style.removeProperty("display");
             } else if (data.pending && attempt < 40) {
                 setTimeout(() => poll(attempt + 1), 2000);
             }
-            // No matching note or a generation failure leaves the area invisible.
+            // No matching note or a source-loading failure leaves the area invisible.
         } catch (_error) {}
     }
     if (config.pending) poll();

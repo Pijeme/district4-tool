@@ -4,6 +4,7 @@ requests
 gspread
 google-auth
 pypdf
+fonttools
 pypdfium2>=5.14,<6
 reportlab
 python-dotenv

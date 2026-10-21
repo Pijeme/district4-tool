@@ -10,6 +10,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from flask import (
@@ -1764,6 +1765,41 @@ def save_thumbnail_bytes(
 # SYNC GOOGLE DRIVE → DATABASE
 # =========================================================
 
+def _prune_missing_library_sources(db, scanned_drive_ids):
+    """Only called inside the transaction of a complete, successful Drive scan.
+
+    Hidden and duplicate files are still present in the scan and are retained.
+    Personal reading records and the minimal book metadata they need survive.
+    No cleanup is inferred from an AI indexing failure or an incomplete scan.
+    """
+    db.execute('CREATE TEMP TABLE IF NOT EXISTS scanned_library_ids (id TEXT PRIMARY KEY)')
+    db.execute('DELETE FROM scanned_library_ids')
+    db.executemany('INSERT OR IGNORE INTO scanned_library_ids VALUES (?)',((item,) for item in scanned_drive_ids))
+    removed_documents=0
+    ai_path=Path(_appmod().AI_DATABASE)
+    if ai_path.is_file():
+        db.execute('ATTACH DATABASE ? AS cleanup_ai',(str(ai_path.resolve()),))
+        tables={row[0] for row in db.execute("SELECT name FROM cleanup_ai.sqlite_master WHERE type='table'")}
+        if 'pij_library_documents' in tables:
+            db.execute('''CREATE TEMP TABLE removed_library_documents AS SELECT id FROM cleanup_ai.pij_library_documents
+                WHERE source_type='public_ebook' AND COALESCE(drive_file_id,'')<>''
+                AND drive_file_id NOT IN (SELECT id FROM scanned_library_ids)''')
+            removed_documents=db.execute('SELECT COUNT(*) FROM removed_library_documents').fetchone()[0]
+            for table in ('pij_library_chunks_fts','pij_library_source_formats','pij_library_chunks'):
+                if table in tables:
+                    db.execute(f'DELETE FROM cleanup_ai.{table} WHERE document_id IN (SELECT id FROM removed_library_documents)')
+            db.execute('DELETE FROM cleanup_ai.pij_library_documents WHERE id IN (SELECT id FROM removed_library_documents)')
+            db.execute('DROP TABLE removed_library_documents')
+    db.execute('DELETE FROM pastor_library_files WHERE drive_file_id NOT IN (SELECT id FROM scanned_library_ids)')
+    tables={row[0] for row in db.execute("SELECT name FROM main.sqlite_master WHERE type='table'")}
+    personal=('pastor_reader_state','pastor_book_annotations','pastor_book_bookmarks','pastor_reading_sessions')
+    references=''.join(f' AND NOT EXISTS (SELECT 1 FROM {table} p WHERE p.book_id=pastor_library_books.id)'
+                       for table in personal if table in tables)
+    db.execute('''DELETE FROM pastor_library_books WHERE NOT EXISTS
+        (SELECT 1 FROM pastor_library_files f WHERE f.book_id=pastor_library_books.id)'''+references)
+    return removed_documents
+
+
 def sync_library_to_database(progress_callback=None, cancel_callback=None):
     ensure_resource_tables()
 
@@ -2273,6 +2309,8 @@ def sync_library_to_database(progress_callback=None, cancel_callback=None):
         )
 
         check_cancel()
+        removed_index_documents = _prune_missing_library_sources(db, scanned_drive_ids)
+        check_cancel()
         db.commit()
 
         result = {
@@ -2320,6 +2358,8 @@ def sync_library_to_database(progress_callback=None, cancel_callback=None):
 
             "removed_files":
                 removed_files,
+
+            "removed_index_documents": removed_index_documents,
 
             # Live UI details; safe extras for existing callers.
             "new_files":
@@ -8063,7 +8103,8 @@ def get_bookmarks(
 
             WHERE m.user_key = ?
               {extra}
-              AND b.is_active = 1
+              AND (b.is_active = 1 OR NOT EXISTS
+                   (SELECT 1 FROM pastor_library_files f WHERE f.book_id=b.id))
 
             ORDER BY datetime(m.created_at) DESC
             """,
@@ -8193,7 +8234,8 @@ def get_annotations(
 
             WHERE a.user_key = ?
               {extra}
-              AND b.is_active = 1
+              AND (b.is_active = 1 OR NOT EXISTS
+                   (SELECT 1 FROM pastor_library_files f WHERE f.book_id=b.id))
 
             ORDER BY datetime(a.created_at) DESC
             """,
@@ -10771,7 +10813,7 @@ function renderData(data) {
                 <div class="ml-note-text">${escapeHtml(item.label || (item.format === "PDF" ? "Page " + (item.page || "") : "Saved location"))}</div>
                 <div class="ml-actions">
                     <a class="ml-btn primary" href="${escapeHtml(item.jump_url)}">Open</a>
-                    <button class="ml-btn danger" onclick="deleteBookmark(${item.id})">Delete</button>
+                    <button class="ml-btn danger" data-saved-kind="bookmarks" data-saved-id="${escapeHtml(String(item.id))}">Delete</button>
                 </div>
             </article>
         `).join("")
@@ -10793,7 +10835,7 @@ function renderData(data) {
                 ${item.tags ? '<div class="ml-tags"># ' + escapeHtml(item.tags) + '</div>' : ''}
                 <div class="ml-actions">
                     <a class="ml-btn primary" href="${escapeHtml(item.jump_url)}">Open Passage</a>
-                    <button class="ml-btn danger" onclick="deleteAnnotation(${item.id})">Delete</button>
+                    <button class="ml-btn danger" data-saved-kind="annotations" data-saved-id="${escapeHtml(String(item.id))}">Delete</button>
                 </div>
             </article>
         `;
@@ -10860,7 +10902,8 @@ async function loadMyLibrary() {
 
 async function deleteBookmark(id) {
     if (!confirm("Delete this bookmark?")) return;
-    const response = await fetch("/pastor-resources/api/bookmarks/" + id, {method:"DELETE"});
+    const item = (libraryData.bookmarks || []).find(item => String(item.id) === String(id));
+    const response = await fetch(item?.delete_url || "/pastor-resources/api/bookmarks/" + id, savedDeleteOptions(item));
     const data = await response.json();
     if (!data.ok) return showToast(data.error || "Unable to delete bookmark.");
     showToast("Bookmark deleted.");
@@ -10869,12 +10912,24 @@ async function deleteBookmark(id) {
 
 async function deleteAnnotation(id) {
     if (!confirm("Delete this highlight/note?")) return;
-    const response = await fetch("/pastor-resources/api/annotations/" + id, {method:"DELETE"});
+    const item = (libraryData.annotations || []).find(item => String(item.id) === String(id));
+    const response = await fetch(item?.delete_url || "/pastor-resources/api/annotations/" + id, savedDeleteOptions(item));
     const data = await response.json();
     if (!data.ok) return showToast(data.error || "Unable to delete annotation.");
     showToast("Annotation deleted.");
     loadMyLibrary();
 }
+
+function savedDeleteOptions(item) {
+    return item?.source === 'bible'
+        ? {method:'DELETE',headers:{'Content-Type':'application/json','X-CSRF-Token':libraryData.bible_csrf_token},body:'{}'}
+        : {method:'DELETE'};
+}
+document.addEventListener('click', event => {
+    const button = event.target.closest('[data-saved-kind]');
+    if (!button) return;
+    (button.dataset.savedKind === 'bookmarks' ? deleteBookmark : deleteAnnotation)(button.dataset.savedId);
+});
 
 {% if is_admin %}
 async function restoreBook(id) {
@@ -19851,10 +19906,19 @@ def register_pastor_resources_routes(app):
             )
         ]
 
-        return jsonify(
-            ok=True,
-            **payload,
-        )
+        # Import here because Bible Study uses the library's account identity.
+        # Its private saves remain in the independent Bible database.
+        from bible_study import bible_personal_library
+        bible_items = bible_personal_library(app, current_reader_user_key())
+        for kind in ('annotations', 'bookmarks'):
+            for item in bible_items[kind]:
+                item['id'] = 'bible:' + item['id']
+            payload[kind].extend(bible_items[kind])
+            payload[kind].sort(key=lambda item: str(item.get('updated_at') or item.get('created_at') or ''), reverse=True)
+        if 'bible_study_csrf' not in session:
+            import secrets
+            session['bible_study_csrf'] = secrets.token_urlsafe(32)
+        return jsonify(ok=True, bible_csrf_token=session['bible_study_csrf'], **payload)
 
     # -----------------------------------------------------
     # ADMIN EDIT / SAFE REMOVE / RESTORE

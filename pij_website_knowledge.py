@@ -39,6 +39,7 @@ BULLETIN BOARD
 - Shows the current bulletin feed, announcements and other district information.
 - It can also surface approved prayer-related posts and report-recognition information according to the existing bulletin logic.
 - The Bulletin Board is a viewing/landing page; AO announcement management itself is under AO Tool.
+- The daily Bible passage uses the indexed NIV text. Daily Devotional, when a matching article exists, displays an exact opening excerpt from the Maxwell Leadership Bible. Read more reveals the full original indexed article, title and passage. This card does not generate an AI summary or rewrite Maxwell's article.
 
 PASTOR'S TOOL — MONTHLY REPORT WORKFLOW
 - A pastor works on the church attached to the authenticated pastor account.
@@ -144,7 +145,29 @@ PASTOR'S RESOURCES — PUBLIC DIGITAL LIBRARY
 - Users can favorite books, mark completion, use bookmarks, highlights/annotations/notes, and reading-session/progress features supported by the reader.
 - Pij can deep-link to a retrieved PDF page or EPUB section using only approved links supplied by the retrieval layer.
 - Library content/index synchronization is an administrator operation. Sync Books refreshes the visible Drive catalog and then starts/queues an incremental Pij AI knowledge refresh.
+- After a complete successful Drive scan, Sync Books deletes missing public ebook sources and their indexed text/search records. Failed or cancelled scans do not trigger deletion. Personal notes, highlights, bookmarks and reading history remain; minimal book metadata is kept where those saves need a title. Removing indexed rows frees database space for reuse and does not necessarily shrink the physical database file.
 - Administrator database/details/edit/hide/restore tools exist but remain protected by backend authorization.
+
+BIBLE STUDY - READING AND STUDY TOOLS
+- Open Pastor's Resources, then Bible Study (/pastor-resources/bible-study). Authenticated Pastor and AO library accounts can read it.
+- The Bible / Book Study tabs remain above the Bible panel. Book Study follows the current book and displays Thompson introductions, linked major chains and the inline condensed outline.
+- Word Study, Concordance, Commentary and Sermon Outlines are the study-panel tabs. Their colored banners share the same handwritten heading style.
+- Tap a Bible word for the selected study tool. Word Study offers Mounce and Vine definitions plus available Thompson person studies. These dictionary explanations are not automatically verified original-language alignments.
+- Concordance provides Thompson headwords, short excerpts and Bible references. Chain topics, related chain numbers, Scripture references and available source charts open reading popups.
+- Commentary offers Wiersbe's Be Series, Exalting Jesus, The Moody Bible Commentary and The Pulpit Commentary. It follows the selected passage and shows the complete indexed section immediately. Pulpit has separate Exposition and Homiletics choices; its existing Homiletics/Homilies remain in Sermon Outlines. Greek terms in Pulpit open the surrounding original explanation with source attribution and shared reading actions. Open Word Study appears only when the Greek spelling matches an unambiguous original-language word in the selected passage and a dictionary entry exists; this does not assert an NIV word alignment. Exalting Jesus's opening outline and body headings are formatted for readability while preserving source wording. Moody and Pulpit preserve available original bold/italic emphasis from their prepared source files.
+- Sermon Outlines automatically suggests titles for the current Bible BOOK AND CHAPTER. Selecting a different verse does not narrow or refresh its chapter list. A sermon whose main printed passage overlaps that chapter can appear, including passages spanning chapters. Incidental references in its body do not establish coverage.
+- Spurgeon's Sermon Outlines preserves the original paragraphs, italic Scripture quotations/subpoints, bold Roman numeral headings and real bullet/numbered lists, including nesting. Selecting text in an outline supports the shared reading actions; global saved-source links retain its outline structure.
+- The 52 Sermons books (Gospel of John, Book of Acts, About Jesus and Funeral Sermons) retain original paragraph breaks, bold outline points and italic quotations. Printed chapter-only preaching texts are recognized. Where a message has no opening preaching text, its first printed outline quotation supplies the main passage; incidental illustration references do not. Part numbers and the John volume's bonus sermon remain intact; closing contents and publisher advertisements are excluded.
+- Pulpit sermon suggestions use both the printed main passage and the explicit book/chapter where the source places the homily. This retains source-chapter coverage when that edition has a misprinted reference. Combined passage/title headings and wrapped titles are supported; supporting references inside a sermon do not add chapters to its suggestions. Full original text and available source emphasis remain readable immediately.
+- Sermon results show titles only; opening a title shows the complete available original outline/teaching, author/editor, source, main passages and occasion/audience where stated. Sources include APEO/William H. Robertson, funeral collections, Joy (Philippians), Rob Westbrook, Spurgeon, suitable Shepherd's Staff teaching sections, and Homiletics/Homilies from The Pulpit Commentary Complete Volumes 1?9. The Sermon Outline Bible Commentary always appears last. An indexed outline is not a newly generated full manuscript.
+- The passage button opens book navigation. Old Testament and New Testament are clickable. Reopening navigation shows the current testament's book list and highlights the current book; selecting a book shows chapters. History returns to previous passages.
+- Previous/next controls and horizontal Bible swipes change chapters, including book boundaries. On phones Bible and study panels stack vertically; drag the divider to resize them. Desktop panels sit side by side.
+- Split View, Bible Fullscreen and Study Fullscreen are available through the layout selector or gear settings; passage controls remain accessible in each layout.
+- Gear settings contain paper color (Cream paper, White paper, Night reading), font size, Thompson margin references, current saved items and links to global notes/highlights and bookmarks. A-/A+ also change font size.
+- Tap a word for study lookup; long-press/select text for Copy, colored Highlight, Underline, Note or Bookmark. Tap a Bible verse number for whole-verse actions. Text selection suppresses word lookup and chapter swipes. Reading actions also apply to indexed text in Word Study, Concordance, Commentary, Sermon Outlines, Book Study and topic/reference popups. Study page images support bookmarks and notes.
+- Copy includes the passage or source attribution. Local Wi-Fi HTTP may require the selectable-text copy fallback.
+- Saves are private to the authenticated account. Bible saves anchor to the original verse/edition; study saves anchor to the exact indexed source text. My Library's Highlights/Notes and Bookmarks combine ebook and Bible Study saves. Opening a saved item returns to its source; source changes preserve the saved excerpt rather than silently marking different wording.
+- Sync Bible Study and Sync details are developer-only controls inside gear settings. Ordinary Pastor/AO readers do not receive sync permission simply by knowing this workflow. Developer sync imports official Drive sources into the private Bible store; it is separate from Sync Books.
 
 PRIVATE SERMON EBOOKS
 - The separate Sermon eBooks area under Pastor's Resources is a PRIVATE created-sermon collection restricted by backend authorization to the configured sermon admin account.
@@ -166,6 +189,9 @@ EVENT REGISTRATION / DO TOOL / ABOUT DEVELOPER
 - Do not invent controls for pending pages.
 
 APPROVED INTERNAL WEBSITE LINKS
+- Bible Study: /pastor-resources/bible-study
+- My Library notes/highlights: /pastor-resources/my-library?tab=highlights
+- My Library bookmarks: /pastor-resources/my-library?tab=bookmarks
 - Bulletin Board: /bulletin
 - Pastor's Tool: /pastor-tool
 - Church Progress: /church-progress

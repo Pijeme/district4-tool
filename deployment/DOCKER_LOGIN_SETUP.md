@@ -152,11 +152,10 @@ Desktop Bible Study uses the available window width and height. On mobile,
 horizontal swipes in the Bible text navigate chapters, including book boundaries;
 vertical scrolling, text selection and pinch zoom remain native browser actions.
 
-The Maxwell bulletin insight uses a separate white reading panel. Its short
-summary is generated from the matched indexed article; Read more displays that
-article's indexed wording and paragraph breaks. The daily cache key includes
-the source fingerprint and the current result format so prior generated
-expansions cannot appear as original source text.
+The bulletin's Daily Devotional uses a separate white panel. It shows an exact
+opening excerpt from the matching Maxwell Leadership Bible article; Read more
+shows the original indexed article. There is no AI summary or rewriting. Its
+source-versioned cache excludes results from the former generated-summary format.
 
 Tool headings share the local handwritten font and `static/img/BibleStudyBanner.png`.
 Each tool supplies its tint through `--bs-tool-tint` and reuses the `bs-banner`
@@ -168,3 +167,191 @@ index, with their source PDF pages shown in the popup. The printed book surveys
 and charts after the numerical index are not imported as chain-topic articles.
 Existing annotation records are preserved against their original editions;
 the currently disabled Bible annotation toolbar remains pending integration.
+
+## Mobile reading and personal Bible saves
+
+Bible Study uses a compact shared header, a reading toolbar, and independently
+scrolling Bible and study panels. Bible / Book Study tabs are retained. The
+horizontal mobile divider resizes the panels; desktop panels remain side by side.
+Reading settings (gear) contain paper color, font size, margin references, layout,
+chapter saves and links to global notes/highlights and bookmarks. Sync controls
+remain developer-only inside settings. Fullscreen layouts expand the chosen
+panel while keeping passage navigation and settings accessible.
+
+Tap a word for study information. Long-press and select text for Copy, colored
+Highlight, Underline or Note. Tap a verse number for whole-verse actions, including
+Bookmark. Selection suppresses word lookup and chapter swipes. Copy includes the
+Bible reference; when local Wi-Fi HTTP restricts clipboard access, the reader
+provides selectable text for manual copying.
+
+Personal saves use the existing private Bible annotation/bookmark tables. Offsets
+are Unicode code points tied to the original verse and edition. Multi-verse notes
+are one group. My Library merges these with ebook saves without copying Bible
+records into the ebook database. Reads and writes are account-scoped; Bible
+writes require a session CSRF token and edits reject stale note versions. Saved
+links reopen the anchored passage; an unavailable old edition is identified rather
+than silently applying its annotation to new wording. No schema migration or
+Bible/AI reindex is needed for this update.
+
+For a local phone preview, keep the phone and computer on the same Wi-Fi and run
+from the project directory (port 5001 avoids the Docker app on port 5000):
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app run --host 0.0.0.0 --port 5001 --no-debugger --no-reload
+```
+
+Open `http://COMPUTER_WIFI_IP:5001/pastor-resources/bible-study` on the phone and
+sign in normally. Allow Python on Windows Private networks if prompted. This
+local preview is separate from the published Docker image.
+
+## Chapter sermons and study-source saves
+
+Sermon Outlines is the fourth study tab. It follows the current Bible book and
+chapter, independently of word/verse selection. Results contain original titles
+only. Opening a title shows the full indexed outline or teaching section, author,
+source, printed passage(s), source page/section and stated occasion/audience.
+Sermons whose main passage spans chapters can appear in each covered chapter;
+incidental citations in later exposition do not establish coverage. Entries without
+an identifiable opening/main passage are omitted from automatic suggestions.
+Duplicate PDF/EPUB or locked/unlocked copies are collapsed. The Sermon Outline
+Bible Commentary is always sorted after all other sources. The catalogue is
+cached by indexed document fingerprints and reads the existing AI database only.
+
+Eligible collections include APEO sermon resources and character/book series,
+funeral collections, Joy (Philippians), Rob Westbrook, Spurgeon and suitable
+Shepherd's Staff teaching sections. Shepherd's Staff entries identify their teaching
+purpose and Ralph Mahoney's editorial credit; they are not labelled as newly
+written sermons. Full text means the complete indexed original entry.
+
+Selection actions now work on study text as well as Scripture, including Word
+Study, Concordance, Commentary, Book Study, sermon entries and topic/verse popups.
+Study pages support image bookmarks and notes. Saves use signed source hashes,
+Unicode code-point offsets and retained source snapshots, with per-account
+ownership, CSRF protection and note-edit version checks. Global collections merge
+these records with ebook/Bible saves. A source change preserves the saved excerpt
+and identifies the change instead of silently moving the highlight to new wording.
+The Pij website manual describes these controls and their role restrictions.
+
+Before the next Docker update, retain the existing data volume and initialize the
+additive study-save table once. This command first creates a SQLite recovery backup
+when the table is missing, then retains all Bible editions and personal records:
+
+```powershell
+docker compose exec district4 python bible_study.py init-study-saves --database /data/bible_study_data/bible_study.db
+```
+
+The local workspace has already received this additive initialization and its
+recovery backup is in `bible_study_data/backups/`. Ordinary reading requests never
+create or migrate this table. Developer Bible Study sync also carries the table
+forward. No ebook reindexing or source database replacement is required.
+
+Bible touch swipes accept shorter, slower, mildly diagonal gestures. Horizontal
+intent is detected before suppressing browser scrolling, and touch events handle
+mobile browsers that cancel pointer events. Vertical scrolling, multi-touch,
+long-press selection and chapter buttons remain available. Chapter changes give
+brief passage feedback.
+
+
+Bible Study source additions (October 21, evening)
+------------------------------------------------
+
+The commentary selector now includes The Moody Bible Commentary. Moody uses
+book boundaries and paragraph-leading passage references, including single-chapter
+books. Sermon Outlines also includes Homiletics and Homilies from The Pulpit
+Commentary Complete Volumes 1?9; Exposition text is excluded. Results still use
+book/chapter coverage and The Sermon Outline Bible Commentary remains last.
+APEO uses its printed theme and opening foundational passage, with passage styling
+inside the reader; later supporting references do not determine chapter coverage.
+
+Original source emphasis is stored in the additive `pij_library_source_formats`
+table in ai_index.db. Only safe strong/em/sup/sub text runs are sent to readers;
+source HTML, scripts and styles are never injected. EPUB paragraphs and emphasis
+are extracted from tags/stylesheets; PDF emphasis comes from font metadata.
+`fonttools` is required for embedded PDF font encodings. Ordinary reading never
+downloads originals or migrates databases. New indexed eligible books prepare
+formatting during indexing. Prepare existing editions once after deployment:
+
+```powershell
+python -c "import app; import pij_library_knowledge as k; k.refresh_study_source_formats()"
+```
+
+Sync Books now removes missing Drive sources from the current catalog, public AI
+documents, chunks, search index and source-format records. Cleanup is inside the
+successful full-scan transaction; Drive errors and cancellations do not trigger it,
+and a cancellation during cleanup rolls both databases back. Hidden or duplicate
+files still present in Drive are retained. Private sermon collections are untouched.
+Notes, highlights, bookmarks and reading history remain; minimal inactive book
+metadata is retained where personal records need its title. Deleted text pages are
+freed for SQLite reuse; sync does not run a blocking VACUUM or promise a smaller
+physical database file. Retain consistent SQLite backups before the first cleanup.
+Commentary/sermon caches include source-format fingerprints and filter current
+active, visible catalog sources so stale index rows cannot reappear in results.
+
+
+Spurgeon outline formatting (October 21, final evening update)
+-----------------------------------------------------------
+
+Spurgeon's Sermon Outlines now uses the prepared original EPUB, including actual
+paragraph boundaries, bold Roman numeral headings, italic quotations/subpoints and
+nested bullet/numbered lists. Source list numbering and item continuations are kept;
+only safe text/structure metadata reaches the DOM. A saved source opens with the
+same hierarchy, and reading actions continue to anchor to the exact source text.
+The author/editor attribution follows the printed edition. Roman-numbered Bible
+book citations (I Samuel, II Chronicles, etc.) are recognized without changing their
+printed text or Unicode offsets.
+
+The existing `refresh_study_source_formats()` maintenance command prepares this
+edition as source-format version 2. Previously prepared Moody/Pulpit/APEO records
+remain valid and do not require reprocessing. Ordinary readers do not download or
+extract the original books. The local EPUB and PDF have already been prepared.
+
+
+Pulpit chapter coverage correction (October 22)
+---------------------------------------------
+
+Pulpit parsing accepts both separate passage/title lines and combined headings
+such as `1Ti. 2:1-15.?Public worship.`. It joins wrapped titles and passage lists,
+uses explicit source chapter context for relative verse headings, and recognizes
+normal-weight titles when the printed citation identifies a heading. Exposition
+and incidental body citations remain excluded from sermon discovery. Complete
+article text, source attribution and available emphasis are retained.
+
+The citation vocabulary includes Rth., Son., Luk. and Joh.; Roman book aliases
+cannot overwrite existing canonical abbreviations (in particular Isa. remains
+Isaiah). In this edition's Ecclesiastes sections, the misprinted `Est.` heading
+label is resolved only using explicit Ecclesiastes chapter context; Esther outside
+that context keeps its meaning. Homilies also match the explicit source chapter
+where they are printed, without rewriting source passage text. This covers the
+Exodus 36 homilies whose printed reference incorrectly says Exodus 35.
+
+All nine available volumes were checked against their explicit source chapter
+headings. 1 Timothy now has Pulpit suggestions in each of its six chapters.
+The correction uses existing prepared/indexed data and needs no Drive resync,
+reindexing or schema migration. Restart the application to replace in-memory
+catalogues from the previous parser. Saved source snapshots remain preserved.
+
+Pulpit commentary and 52 Sermons typography (October 22)
+------------------------------------------------------
+
+The Commentary selector includes The Pulpit Commentary with Exposition and
+Homiletics choices, following the selected passage. Homilies remain available in
+Sermon Outlines. Verse sections retain continuation pages and source emphasis.
+Greek terms open surrounding original source text, supporting selection and
+shared reading actions. An optional Word Study link requires an unambiguous
+original Greek spelling match in the selected passage plus an existing dictionary
+entry; it never infers NIV alignment or generates a definition.
+
+Original EPUB typography is prepared for 52 Sermons From the Gospel of John,
+52 Sermons From the Book of Acts, 52 Sermons About Jesus and 52 Funeral Sermons.
+The reader keeps paragraphs, bold printed headings/numbering, italic quotations,
+whole-chapter preaching references, part numbers and the John bonus sermon.
+Publisher advertisements and closing contents are excluded from the final sermon.
+If a message has no opening preaching text, its first printed outline quotation
+supplies the passage; references in its introductory illustration do not.
+
+On the deployment index, run the existing refresh_study_source_formats maintenance
+after transferring/syncing the ebooks; local source-format records are already
+prepared. Ordinary readers never download originals. No schema migration is
+needed. Restart the application to refresh the cached catalogues; static asset
+version study-outlines-15 invalidates the old reader script/style. The compact
+selector labels are Moody and The Pulpit; full source names stay in attribution.

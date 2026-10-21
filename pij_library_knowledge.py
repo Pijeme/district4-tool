@@ -9,7 +9,9 @@ text is never sent to Gemini for an unauthorized user.
 """
 
 import html
+import hashlib
 import io
+import json
 import os
 import re
 import sqlite3
@@ -205,6 +207,10 @@ def _ensure_ai_library_tables_once():
                 ON pij_library_documents(source_type,drive_file_id)
                 WHERE drive_file_id IS NOT NULL AND drive_file_id<>''""")
         db.execute("CREATE INDEX IF NOT EXISTS idx_pij_library_chunk_doc ON pij_library_chunks(document_id, chunk_number)")
+        db.execute('''CREATE TABLE IF NOT EXISTS pij_library_source_formats (
+            document_id INTEGER PRIMARY KEY REFERENCES pij_library_documents(id) ON DELETE CASCADE,
+            checksum TEXT NOT NULL, modified_time TEXT NOT NULL, version INTEGER NOT NULL,
+            sections_json TEXT NOT NULL)''')
         try:
             db.execute(
                 """
@@ -317,6 +323,171 @@ def _xml_text(data):
         text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
         text = re.sub(r"<[^>]+>", " ", text)
         return _clean(html.unescape(text))
+
+
+def _formatted_source_title(title):
+    return bool(re.search(r'moody bible commentary|pulpit commentary|sermon resources vol|spurgeon.*sermon.*outline|^52\s+(?:funeral\s+)?sermons\b|^joy$', title, re.I))
+
+
+def _formatted_source_sections(data, fmt):
+    """Keep a small allowlist of source typography, never executable book HTML."""
+    def blocks_from_runs(runs):
+        blocks, current = [], []
+        def flush():
+            text = ''.join(run['text'] for run in current)
+            if text.strip():
+                # Trim only the outside; internal spaces and Unicode offsets agree.
+                left, right = len(text)-len(text.lstrip()), len(text.rstrip())
+                trimmed, position = [], 0
+                for run in current:
+                    end = position+len(run['text'])
+                    part = run['text'][max(0,left-position):max(0,min(end,right)-position)]
+                    if part: trimmed.append(dict(text=part,marks=run['marks']))
+                    position=end
+                structure=next((run.get('structure',{}) for run in current if run['text'].strip()),{})
+                blocks.append(dict(type='paragraph',text=text[left:right],runs=trimmed)|structure)
+            current.clear()
+        for run in runs:
+            for index, part in enumerate(run['text'].replace('\r','').split('\n')):
+                if index: flush()
+                if re.search(r'[\ud800-\udfff]',part):
+                    part=part.encode('utf-16-le','surrogatepass').decode('utf-16-le','replace')
+                if part: current.append(dict(text=part,marks=run['marks'],structure=run.get('structure',{})))
+        flush()
+        return blocks
+    if fmt.casefold() == 'pdf':
+        sections=[]
+        for page in PdfReader(io.BytesIO(data),strict=False).pages:
+            runs=[]
+            def visit(text, cm, tm, font, size):
+                name=str((font or {}).get('/BaseFont','')).casefold()
+                marks=[]
+                if any(word in name for word in ('bold','black','demi')): marks.append('strong')
+                if any(word in name for word in ('italic','oblique')): marks.append('em')
+                runs.append(dict(text=text,marks=marks))
+            page.extract_text(visitor_text=visit)
+            sections.append(blocks_from_runs(runs))
+        return sections
+    sections=[]
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        container=ET.fromstring(archive.read('META-INF/container.xml'))
+        opf_name=next(node.attrib['full-path'] for node in container.iter() if node.tag.split('}')[-1]=='rootfile')
+        opf=ET.fromstring(archive.read(opf_name));base=os.path.dirname(opf_name)
+        manifest={node.attrib['id']:node.attrib['href'] for node in opf.iter() if node.tag.split('}')[-1]=='item'}
+        order=[node.attrib['idref'] for node in opf.iter() if node.tag.split('}')[-1]=='itemref']
+        common_styles='\n'.join(archive.read(n).decode('utf-8','replace') for n in archive.namelist() if n.endswith('.css'))
+        list_sequence=0
+        for item in order:
+            name=os.path.normpath(os.path.join(base,manifest[item])).replace('\\','/')
+            markup=archive.read(name).decode('utf-8-sig','replace')
+            markup=re.sub(r'&([A-Za-z][A-Za-z0-9]+);',lambda match:match[0] if match[1] in ('amp','lt','gt','quot','apos') else html.unescape(match[0]),markup)
+            root=ET.fromstring(markup);runs=[]
+            # Calibre/Word EPUBs frequently express emphasis through stylesheet classes.
+            styles=common_styles+'\n'+'\n'.join(node.text or '' for node in root.iter() if node.tag.split('}')[-1]=='style')
+            classes={}
+            for selectors,body in re.findall(r'([^{}]+)\{([^{}]*)\}',styles):
+                marks=[]
+                if re.search(r'font-weight\s*:\s*(?:bold|[6-9]00)',body,re.I):marks.append('strong')
+                if re.search(r'font-style\s*:\s*(?:italic|oblique)',body,re.I):marks.append('em')
+                for selector in selectors.split(','):
+                    match=re.fullmatch(r'(?:[\w-]+)?\.([\w-]+)',selector.strip())
+                    if match:classes[match[1]]=marks
+            def walk(node, inherited=(), structure=None, lists=()):
+                nonlocal list_sequence
+                tag=node.tag.split('}')[-1].lower()
+                if tag in ('script','style','head','nav'):return
+                structure=dict(structure or {})
+                if tag in ('ul','ol'):
+                    start=node.attrib.get('start','1')
+                    lists=lists+({'kind':'ordered' if tag=='ol' else 'bullet',
+                        'next':int(start) if re.fullmatch(r'-?\d{1,5}',start) else 1,
+                        'style':node.attrib.get('type','1')},)
+                if tag=='li':
+                    list_sequence+=1
+                    context=lists[-1] if lists else {'kind':'bullet','next':1,'style':'1'}
+                    value=node.attrib.get('value','')
+                    number=int(value) if re.fullmatch(r'-?\d{1,5}',value) else context['next']
+                    context['next']=number+1
+                    structure.update(list_kind=context['kind'],list_level=min(6,max(1,len(lists))),
+                        list_item=list_sequence,list_number=number,list_style=context['style'] if context['style'] in ('1','a','A','i','I') else '1')
+                if tag=='blockquote':structure['source_quote']=True
+                if re.fullmatch(r'h[1-6]',tag):structure.update(type='heading',source_heading=int(tag[1]))
+                marks=list(inherited)
+                for cls in node.attrib.get('class','').split(): marks.extend(classes.get(cls,()))
+                inline=node.attrib.get('style','')
+                if tag in ('b','strong') or re.search(r'font-weight\s*:\s*(?:bold|[6-9]00)',inline,re.I):marks.append('strong')
+                if tag in ('i','em') or re.search(r'font-style\s*:\s*(?:italic|oblique)',inline,re.I):marks.append('em')
+                if tag in ('sup','sub'):marks.append(tag)
+                if re.fullmatch(r'h[1-6]',tag):marks.append('strong')
+                marks=list(dict.fromkeys(marks))
+                block=tag in ('p','div','li','blockquote','br') or bool(re.fullmatch(r'h[1-6]',tag))
+                if block:runs.append(dict(text='\n',marks=[]))
+                if node.text:runs.append(dict(text=node.text.replace('\n',' '),marks=marks,structure=structure))
+                for child in node:
+                    walk(child,marks,structure,lists)
+                    if child.tail:runs.append(dict(text=child.tail.replace('\n',' '),marks=marks,structure=structure))
+                if block:runs.append(dict(text='\n',marks=[]))
+            walk(root)
+            blocks=blocks_from_runs(runs)
+            if blocks:sections.append(blocks)
+    return sections
+
+
+def store_source_format(document_id, data, fmt, checksum, modified_time):
+    sections=_formatted_source_sections(data,fmt)
+    def operation():
+        db=_db()
+        try:
+            # Do not attach formatting to a changed or deleted index revision.
+            doc=db.execute('SELECT checksum,modified_time,title FROM pij_library_documents WHERE id=?',(document_id,)).fetchone()
+            if doc and (doc['checksum'],doc['modified_time'])==(checksum,modified_time):
+                db.execute('INSERT OR REPLACE INTO pij_library_source_formats VALUES (?,?,?,?,?)',
+                    (document_id,checksum,modified_time,2 if 'spurgeon' in doc['title'].casefold() else 1,json.dumps(sections,ensure_ascii=False)))
+                db.commit()
+        finally:db.close()
+    _retry_locked(operation,label='Saving original source typography')
+    return len(sections)
+
+
+def refresh_study_source_formats(progress=print, local_directory=None):
+    """Explicit maintenance for existing sources; ordinary reads never download."""
+    ensure_ai_library_tables()
+    db=_db()
+    try:
+        documents=db.execute('''SELECT d.* FROM pij_library_documents d
+            JOIN appdb.pastor_library_files f ON f.drive_file_id=d.drive_file_id
+            JOIN appdb.pastor_library_books b ON b.id=f.book_id
+            LEFT JOIN pij_library_source_formats s ON s.document_id=d.id
+            WHERE d.source_type='public_ebook' AND d.searchable=1 AND f.is_active=1 AND b.is_active=1
+            AND COALESCE(b.is_hidden,0)=0 AND COALESCE(f.is_duplicate,0)=0
+            AND (s.document_id IS NULL OR s.checksum<>d.checksum OR s.modified_time<>d.modified_time
+                 OR s.version<CASE WHEN lower(d.title) LIKE '%spurgeon%' THEN 2 ELSE 1 END)
+            ORDER BY CASE lower(d.format) WHEN 'epub' THEN 0 ELSE 1 END,d.id''').fetchall()
+    finally:db.close()
+    drive=None;results=[]
+    for doc in documents:
+        if not _formatted_source_title(doc['title']):continue
+        # Ignore generic/duplicate Pulpit copies when a numbered volume exists.
+        if 'pulpit' in doc['title'].casefold() and not re.search(r'\bvolume\s+[1-9]\b',doc['title'],re.I):continue
+        progress('Preserving original typography: '+doc['title'])
+        data=None
+        if local_directory:
+            from pathlib import Path
+            for candidate in Path(local_directory).glob('*.'+doc['format'].lower()):
+                title_key=re.sub(r'[^a-z0-9]','',doc['title'].split('(',1)[0].casefold())
+                if not re.sub(r'[^a-z0-9]','',candidate.stem.casefold()).startswith(title_key):continue
+                if doc['checksum'] and len(doc['checksum']) in (32,40,64):
+                    raw=candidate.read_bytes()
+                    algorithm={32:'md5',40:'sha1',64:'sha256'}[len(doc['checksum'])]
+                    if hashlib.new(algorithm,raw).hexdigest()==doc['checksum']:
+                        data=raw;break
+        if data is None:
+            if drive is None:drive=pastor_resources.get_drive_session()
+            data=pastor_resources.download_drive_file_bytes(drive,doc['drive_file_id'])
+        count=store_source_format(doc['id'],data,doc['format'],doc['checksum'],doc['modified_time'])
+        results.append(dict(title=doc['title'],sections=count))
+        progress('Saved '+str(count)+' source sections: '+doc['title'])
+    return results
 
 
 def _extract_epub(data):
@@ -638,6 +809,12 @@ def index_public_library(force=False):
                     continue
 
                 _store_public_document(row, chunks, len(sections))
+                if _formatted_source_title(row['title']) and not _public_library_index_cancel_requested():
+                    docdb=_db()
+                    try: document=_find_public_document(docdb,row['drive_file_id'])
+                    finally: docdb.close()
+                    if document:
+                        store_source_format(document['id'],data,fmt,document['checksum'],document['modified_time'])
                 indexed += 1
                 if old and old["searchable"] and int(old["chunk_count"] or 0) > 0:
                     reindexed += 1
