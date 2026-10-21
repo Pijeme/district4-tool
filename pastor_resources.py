@@ -6116,6 +6116,9 @@ def ensure_v3_tables():
     db = get_resource_db()
 
     try:
+        _v3_ensure_column(db, "pastor_library_books", "manual_page_count", "INTEGER")
+        _v3_ensure_column(db, "pastor_library_books", "recommended_at", "TEXT NOT NULL DEFAULT ''")
+
         # ---------------------------------------------
         # Manual metadata + safe hidden state.
         # Sync Books never overwrites these columns.
@@ -6427,7 +6430,9 @@ def get_effective_book(book_id, include_hidden=False):
                 COALESCE(b.is_hidden, 0) AS is_hidden,
                 b.manual_title,
                 b.manual_author,
-                b.manual_category
+                b.manual_category,
+                b.manual_page_count,
+                COALESCE(b.recommended_at, '') AS recommended_at
 
             FROM pastor_library_books b
 
@@ -6661,6 +6666,8 @@ def search_library_database_v3(
 
     query = str(query or "").strip()
     mode = str(mode or "all").strip().lower()
+    if mode not in {"all", "alphabetical", "author", "category", "recent", "favorites", "recommended"}:
+        mode = "all"
     filter_value = str(filter_value or "").strip()
 
     try:
@@ -6691,6 +6698,14 @@ def search_library_database_v3(
         where_parts.append(
             "COALESCE(s.favorite, 0) = 1"
         )
+
+    if mode == "recommended":
+        where_parts.extend([
+            "COALESCE(b.recommended_at, '') <> ''",
+            "EXISTS (SELECT 1 FROM pastor_library_files rf WHERE rf.book_id=b.id "
+            "AND rf.is_active=1 AND COALESCE(rf.is_duplicate,0)=0 "
+            "AND UPPER(rf.format) IN ('PDF','EPUB'))",
+        ])
 
     if (
         mode == "author"
@@ -6759,15 +6774,17 @@ def search_library_database_v3(
             f"ORDER BY LOWER({category_sql}), LOWER({title_sql})"
         )
 
-    elif mode == "recent":
+    elif mode in {"all", "recent"}:
         order_sql = (
-            "ORDER BY datetime(b.first_seen_at) DESC, "
-            f"LOWER({title_sql})"
+            "ORDER BY datetime(b.first_seen_at) DESC, b.id DESC"
         )
+
+    elif mode == "recommended":
+        order_sql = "ORDER BY b.recommended_at DESC, b.id DESC"
 
     else:
         order_sql = (
-            f"ORDER BY LOWER({title_sql})"
+            f"ORDER BY LOWER({title_sql}), b.id"
         )
 
     db = get_resource_db()
@@ -6823,6 +6840,8 @@ def search_library_database_v3(
                 b.created_time,
                 b.modified_time,
                 b.first_seen_at,
+                b.manual_page_count,
+                COALESCE(b.recommended_at, '') AS recommended_at,
                 COALESCE(s.favorite, 0) AS favorite,
                 COALESCE(s.progress_percent, 0) AS progress_percent,
                 s.last_opened_at,
@@ -6879,7 +6898,7 @@ def search_library_database_v3(
                     tuple(book_ids),
                 ).fetchall()
                 page_count_by_book = {
-                    int(item["book_id"]): int(item["page_count"] or 0)
+                    int(item["book_id"]): max(0, int(item["page_count"] or 0))
                     for item in page_rows
                 }
         except Exception:
@@ -6908,7 +6927,10 @@ def search_library_database_v3(
                     "created_time": str(row["created_time"] or ""),
                     "modified_time": str(row["modified_time"] or ""),
                     "formats": formats,
-                    "page_count": int(page_count_by_book.get(int(row["id"]), 0)),
+                    "page_count": int(page_count_by_book.get(int(row["id"]), 0) or row["manual_page_count"] or 0),
+                    "indexed_page_count": int(page_count_by_book.get(int(row["id"]), 0)),
+                    "manual_page_count": row["manual_page_count"],
+                    "recommended": bool(row["recommended_at"]),
                     "favorite": bool(row["favorite"]),
                     "progress_percent": float(
                         row["progress_percent"] or 0
@@ -7291,12 +7313,22 @@ def admin_edit_book(
     title,
     author,
     category,
+    manual_page_count=None,
 ):
     ensure_v3_tables()
 
     title = clean_text(title)
     author = clean_text(author)
     category = clean_text(category)
+
+    if manual_page_count is not None:
+        value = str(manual_page_count).strip()
+        if value and (not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 1000000):
+            raise ValueError("Page count must be a whole number between 1 and 1,000,000, or blank.")
+        manual_page_count = int(value) if value else None
+        update_pages = True
+    else:
+        update_pages = False
 
     if not title:
         raise ValueError(
@@ -7328,7 +7360,8 @@ def admin_edit_book(
 
             SET manual_title = ?,
                 manual_author = ?,
-                manual_category = ?
+                manual_category = ?,
+                manual_page_count = CASE WHEN ? THEN ? ELSE manual_page_count END
 
             WHERE id = ?
             """,
@@ -7336,6 +7369,8 @@ def admin_edit_book(
                 title,
                 author,
                 category,
+                update_pages,
+                manual_page_count,
                 int(book_id),
             ),
         )
@@ -7347,6 +7382,38 @@ def admin_edit_book(
             include_hidden=True,
         )
 
+    finally:
+        db.close()
+
+
+def admin_recommend_book(book_id, recommended):
+    """Shared developer selections are independent of each reader's favorites."""
+    if not isinstance(recommended, bool):
+        raise ValueError("Recommended must be true or false.")
+    ensure_v3_tables()
+    db = get_resource_db()
+    try:
+        row = db.execute(
+            "SELECT id, is_active, is_hidden FROM pastor_library_books WHERE id=?",
+            (int(book_id),),
+        ).fetchone()
+        if not row:
+            raise ValueError("Book was not found.")
+        if recommended:
+            available = db.execute(
+                "SELECT 1 FROM pastor_library_files WHERE book_id=? AND is_active=1 "
+                "AND COALESCE(is_duplicate,0)=0 AND UPPER(format) IN ('PDF','EPUB') LIMIT 1",
+                (int(book_id),),
+            ).fetchone()
+            if not row["is_active"] or row["is_hidden"] or not available:
+                raise ValueError("Only available, visible books can be recommended.")
+        # Repeated requests keep the same selection date and ordering.
+        db.execute(
+            "UPDATE pastor_library_books SET recommended_at=CASE WHEN ? "
+            "THEN COALESCE(NULLIF(recommended_at,''),?) ELSE '' END WHERE id=?",
+            (recommended, utc_now_iso(), int(book_id)),
+        )
+        db.commit()
     finally:
         db.close()
 
@@ -8771,6 +8838,9 @@ Pastor's Resources - District 4 Tool
 .pr-btn.read { color:#fff; background:linear-gradient(135deg,#d39bc4,#8e9fdf); }
 .pr-btn.download { background:#eef2f8; color:#576780; }
 .pr-admin-row { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.pr-admin-row [data-admin-action="recommend"] { grid-column:1/-1; grid-row:2; }
+.pr-grid.pr-recommended-grid { display:flex; overflow-x:auto; gap:14px; padding-bottom:12px; }
+.pr-recommended-grid .pr-card { flex:0 0 240px; width:240px; }
 .pr-btn.edit { background:#fff7e8; color:#9a6200; }
 .pr-btn.remove { background:#fff0f2; color:#b4233e; }
 
@@ -9068,6 +9138,9 @@ Pastor's Resources - District 4 Tool
 
         <div class="pr-resource-nav">
             <a class="pr-nav-btn primary" href="{{ url_for('pastor_resources') }}">Library</a>
+            {% if bible_study_available is defined and bible_study_available() %}
+            <a class="pr-nav-btn" href="{{ url_for('bible_study.page') }}">Bible Study</a>
+            {% endif %}
             <a class="pr-nav-btn" href="{{ url_for('pastor_resources_my_library') }}?tab=favorites">❤️ My Library</a>
             <a class="pr-nav-btn" href="{{ url_for('pastor_resources_my_library') }}?tab=bookmarks">🔖 Bookmarks</a>
             <a class="pr-nav-btn" href="{{ url_for('pastor_resources_my_library') }}?tab=highlights">🖍 Highlights / Notes</a>
@@ -9086,7 +9159,7 @@ Pastor's Resources - District 4 Tool
             <button class="pr-filter active" data-mode="all" type="button" onclick="changeMode('all',this)">All</button>
             <button class="pr-filter" data-mode="author" type="button" onclick="changeMode('author',this)">Author</button>
             <button class="pr-filter" data-mode="category" type="button" onclick="changeMode('category',this)">Category</button>
-            <button class="pr-filter" data-mode="recent" type="button" onclick="changeMode('recent',this)">Recently Added</button>
+            <button class="pr-filter" data-mode="alphabetical" type="button" onclick="changeMode('alphabetical',this)">Title A–Z</button>
             <button class="pr-filter" data-mode="favorites" type="button" onclick="changeMode('favorites',this)">❤️ Favorites</button>
         </div>
     </section>
@@ -9107,6 +9180,11 @@ Pastor's Resources - District 4 Tool
             </div>
         </div>
         <div class="pr-continue" id="continueGrid"></div>
+    </section>
+
+    <section class="pr-section" id="recommendedSection" style="display:none;">
+        <div class="pr-section-head"><div><h2>Recommended Books</h2><div class="pr-muted">Selected for you by our library developer.</div></div></div>
+        <div class="pr-grid pr-recommended-grid" id="recommendedGrid"></div>
     </section>
 
     <section class="pr-section">
@@ -9219,6 +9297,12 @@ Pastor's Resources - District 4 Tool
             <input id="editCategory" type="text">
         </div>
 
+        <div class="pr-field">
+            <label for="editPageCount">Page Count (fallback)</label>
+            <input id="editPageCount" type="number" min="1" max="1000000" step="1" placeholder="Leave blank if unknown" aria-describedby="editPageCountHelp">
+            <div class="pr-muted" id="editPageCountHelp">Used when the ebook index has no page count.</div>
+        </div>
+
         <div class="pr-modal-actions">
             <button class="pr-modal-cancel" type="button" onclick="closeEditModal()">Cancel</button>
             <button class="pr-modal-save" type="button" onclick="saveBookEdit()">Save Changes</button>
@@ -9240,6 +9324,7 @@ let totalPages = 1;
 let perPage = 24;
 let searchTimer = null;
 let currentBookMap = new Map();
+let recommendedBookMap = new Map();
 
 const LIBRARY_STATE_KEY = "pastorResourcesLibraryStateV1";
 const LIBRARY_RESTORE_KEY = "pastorResourcesRestoreRequestedV1";
@@ -9279,7 +9364,7 @@ function cancelLibraryDownload() {
 }
 
 function startLibraryDownload(bookId) {
-    const book = currentBookMap.get(Number(bookId));
+    const book = currentBookMap.get(Number(bookId)) || recommendedBookMap.get(Number(bookId));
     if (!book?.download_url) {
         showToast("Download file is no longer available. Please refresh the library.");
         return;
@@ -9326,7 +9411,7 @@ async function initializeLibraryPage() {
     const saved = requestedLibraryRestoreState();
 
     if (saved) {
-        currentMode = ["all","author","category","recent","favorites"].includes(saved.mode) ? saved.mode : "all";
+        currentMode = ["all","alphabetical","author","category","favorites"].includes(saved.mode) ? saved.mode : "all";
         currentQuery = String(saved.query || "");
         currentFilter = String(saved.filter || "");
         currentPage = Math.max(1, Number(saved.page || 1));
@@ -9349,7 +9434,8 @@ async function initializeLibraryPage() {
 
         await Promise.all([
             loadBooks(currentPage),
-            loadContinueReading()
+            loadContinueReading(),
+            loadRecommendations()
         ]);
 
         setTimeout(() => {
@@ -9360,8 +9446,29 @@ async function initializeLibraryPage() {
 
     await Promise.all([
         loadBooks(1),
-        loadContinueReading()
+        loadContinueReading(),
+        loadRecommendations()
     ]);
+}
+
+async function loadRecommendations() {
+    try {
+        const books = [];
+        let page = 1, pages = 1;
+        do {
+            const response = await fetch("/pastor-resources/api/books?mode=recommended&per_page=60&page=" + page);
+            const data = await response.json();
+            if (!response.ok || !data.ok) throw Error(data.error || "Unable to load recommendations.");
+            books.push(...(data.books || []));
+            pages = Number(data.pages || 1);
+            page++;
+        } while (page <= pages);
+        renderBooks(books, "recommendedGrid");
+        document.getElementById("recommendedSection").style.display = books.length ? "block" : "none";
+    } catch (error) {
+        console.warn(error);
+        document.getElementById("recommendedSection").style.display = "none";
+    }
 }
 
 async function loadContinueReading() {
@@ -9453,9 +9560,11 @@ async function loadBooks(page = 1) {
     }
 }
 
-function renderBooks(books) {
-    const grid = document.getElementById("bookGrid");
-    currentBookMap = new Map((books || []).map(book => [Number(book.id), book]));
+function renderBooks(books, targetId="bookGrid") {
+    const grid = document.getElementById(targetId);
+    const bookMap = new Map((books || []).map(book => [Number(book.id), book]));
+    if (targetId === "bookGrid") currentBookMap = bookMap;
+    else recommendedBookMap = bookMap;
 
     if (!books.length) {
         grid.innerHTML = '<div class="pr-message"><strong>No books found</strong>' + (currentQuery ? 'Try another search.' : 'No books matched this filter.') + '</div>';
@@ -9466,12 +9575,13 @@ function renderBooks(books) {
         const adminButtons = IS_RESOURCE_ADMIN ? `
             <div class="pr-admin-row">
                 <button class="pr-btn edit" type="button" data-admin-action="edit" data-book-id="${Number(book.id)}">✏️ Edit</button>
+                <button class="pr-btn edit" type="button" data-admin-action="recommend" data-book-id="${Number(book.id)}" aria-pressed="${book.recommended ? 'true' : 'false'}">${book.recommended ? 'Remove Recommendation' : 'Recommend'}</button>
                 <button class="pr-btn remove" type="button" data-admin-action="remove" data-book-id="${Number(book.id)}">🗑 Remove</button>
             </div>
         ` : "";
 
         return `
-            <article class="pr-card" id="book-card-${Number(book.id)}">
+            <article class="pr-card" id="${targetId}-book-card-${Number(book.id)}" data-book-card="${Number(book.id)}">
                 <img class="pr-cover" src="${escapeHtml(book.thumbnail_url)}" alt="${escapeHtml(book.title)}" loading="lazy" decoding="async">
                 <div class="pr-card-body">
                     <div class="pr-card-top">
@@ -9544,7 +9654,7 @@ async function changeMode(mode, button) {
     button.classList.add("active");
     currentMode = mode;
     await loadFilterOptions(mode);
-    loadBooks(1);
+    await loadBooks(1);
 }
 
 function filterSelectionChanged() {
@@ -9585,8 +9695,14 @@ async function toggleFavorite(bookId, button) {
         });
         const data = await response.json();
         if (!data.ok) throw new Error(data.error || "Unable to update favorite.");
-        button.classList.toggle("on", newValue);
-        button.textContent = newValue ? "♥" : "♡";
+        document.querySelectorAll('[data-book-card="' + Number(bookId) + '"] .pr-fav').forEach(favorite => {
+            favorite.classList.toggle("on", newValue);
+            favorite.textContent = newValue ? "♥" : "♡";
+        });
+        for (const map of [currentBookMap, recommendedBookMap]) {
+            const book = map.get(Number(bookId));
+            if (book) book.favorite = newValue;
+        }
         if (currentMode === "favorites" && !newValue) loadBooks(currentPage);
     } catch (error) {
         showToast(error.message);
@@ -10113,7 +10229,8 @@ async function pollResourceSyncProgress() {
 
             await Promise.all([
                 loadBooks(1),
-                loadContinueReading()
+                loadContinueReading(),
+                loadRecommendations()
             ]);
 
             // The backend automatically starts or queues the incremental Pij
@@ -10319,7 +10436,7 @@ async function resumeResourceSyncIfRunning() {
 
 {% if is_admin %}
 function openEditModalById(bookId) {
-    const book = currentBookMap.get(Number(bookId));
+    const book = currentBookMap.get(Number(bookId)) || recommendedBookMap.get(Number(bookId));
     if (!book) {
         showToast("Book details are no longer on this page. Please refresh.");
         return;
@@ -10329,6 +10446,10 @@ function openEditModalById(bookId) {
     document.getElementById("editTitle").value = book.title || "";
     document.getElementById("editAuthor").value = book.author || "";
     document.getElementById("editCategory").value = book.category || "";
+    document.getElementById("editPageCount").value = book.manual_page_count || "";
+    document.getElementById("editPageCountHelp").textContent = book.indexed_page_count > 0
+        ? `The index has ${Number(book.indexed_page_count).toLocaleString()} pages. That count takes priority; this value is a saved fallback.`
+        : "Used when the ebook index has no page count. Leave blank to clear the fallback.";
     document.getElementById("editModalBackdrop").classList.add("show");
 }
 
@@ -10345,11 +10466,17 @@ async function saveBookEdit() {
     const payload = {
         title:document.getElementById("editTitle").value.trim(),
         author:document.getElementById("editAuthor").value.trim(),
-        category:document.getElementById("editCategory").value.trim()
+        category:document.getElementById("editCategory").value.trim(),
+        manual_page_count:document.getElementById("editPageCount").value.trim()
     };
 
     if (!payload.title) {
         showToast("Title is required.");
+        return;
+    }
+
+    if (!document.getElementById("editPageCount").checkValidity()) {
+        document.getElementById("editPageCount").reportValidity();
         return;
     }
 
@@ -10363,14 +10490,14 @@ async function saveBookEdit() {
         if (!data.ok) throw new Error(data.error || "Unable to edit book.");
         closeEditModal();
         showToast("Book details updated. Your manual changes will survive future syncs.");
-        await loadBooks(currentPage);
+        await Promise.all([loadBooks(currentPage), loadContinueReading(), loadRecommendations()]);
     } catch (error) {
         showToast(error.message);
     }
 }
 
 async function removeBook(bookId) {
-    const book = currentBookMap.get(Number(bookId));
+    const book = currentBookMap.get(Number(bookId)) || recommendedBookMap.get(Number(bookId));
     const title = book?.title || "this ebook";
 
     if (!confirm('Remove "' + title + '" from Pastor\'s Resources?\n\nThe Google Drive file will NOT be deleted. You can restore it later from Hidden Books.')) return;
@@ -10380,18 +10507,34 @@ async function removeBook(bookId) {
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "Unable to remove book.");
 
-        const card = document.getElementById("book-card-" + Number(bookId));
-        if (card) card.remove();
+        document.querySelectorAll('[data-book-card="' + Number(bookId) + '"]').forEach(card => card.remove());
         currentBookMap.delete(Number(bookId));
 
         showToast("Book hidden from the library. The Drive file is safe and can be restored.");
-        await Promise.all([loadBooks(currentPage), loadContinueReading()]);
+        await Promise.all([loadBooks(currentPage), loadContinueReading(), loadRecommendations()]);
     } catch (error) {
         showToast(error.message);
     }
 }
 
-document.getElementById("bookGrid").addEventListener("click", event => {
+async function toggleRecommendation(bookId, button) {
+    const book = currentBookMap.get(Number(bookId)) || recommendedBookMap.get(Number(bookId));
+    if (!book || button.disabled) return;
+    button.disabled = true;
+    try {
+        const response = await fetch("/pastor-resources/admin/recommend/" + Number(bookId), {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({recommended:!book.recommended})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw Error(data.error || "Unable to update recommendation.");
+        showToast(data.recommended ? "Book recommended for everyone." : "Recommendation removed.");
+        await Promise.all([loadBooks(currentPage), loadRecommendations()]);
+    } catch (error) { showToast(error.message); }
+    finally { button.disabled = false; }
+}
+
+["bookGrid", "recommendedGrid"].forEach(id => document.getElementById(id).addEventListener("click", event => {
     const button = event.target.closest("[data-admin-action]");
     if (!button) return;
 
@@ -10400,10 +10543,12 @@ document.getElementById("bookGrid").addEventListener("click", event => {
 
     if (button.dataset.adminAction === "edit") {
         openEditModalById(bookId);
+    } else if (button.dataset.adminAction === "recommend") {
+        toggleRecommendation(bookId, button);
     } else if (button.dataset.adminAction === "remove") {
         removeBook(bookId);
     }
-});
+}));
 {% endif %}
 
 initializeLibraryPage();
@@ -10765,6 +10910,7 @@ PASTOR_READER_HTML = r"""
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+<script src="{{ url_for('static', filename='epub_page_view.js', v=1) }}"></script>
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Lora:wght@500;600;700&family=Nunito+Sans:wght@400;600;700;800;900&display=swap');
@@ -11176,6 +11322,12 @@ html, body { overflow:hidden !important; }
 .theme-sepia #pdfStage { filter:sepia(.25) saturate(.9); }
 
 /* EPUB */
+.format-epub .reader-canvas-area { overflow:hidden; display:block; padding:0; }
+.epub-page-window { position:relative; width:min(100%,980px); height:100%; margin:0 auto; overflow:hidden; }
+.epub-page-stage { width:100%; height:100%; transform-origin:0 0; }
+.epub-page-zoomed { cursor:grab; touch-action:none; }
+.epub-page-zoomed:active { cursor:grabbing; }
+#epubZoomHelp { margin-top:8px; font-size:11px; color:var(--reader-muted); }
 #epubViewer {
     width:min(100%,980px);
     height:100%;
@@ -11191,13 +11343,17 @@ html, body { overflow:hidden !important; }
 #iosEpubViewer {
     display:none;
     width:min(100%,980px);
-    min-height:100%;
+    height:100%;
+    min-height:0;
     box-sizing:border-box;
     background:var(--reader-panel);
     color:var(--reader-text);
     border-radius:0;
     box-shadow:0 4px 18px rgba(54,43,32,.08);
-    overflow:visible;
+    overflow-x:hidden;
+    overflow-y:auto;
+    scrollbar-gutter:stable;
+    -webkit-overflow-scrolling:touch;
     -webkit-user-select:text;
     user-select:text;
     -webkit-touch-callout:default;
@@ -12221,10 +12377,12 @@ html, body { overflow:hidden !important; }
                 <div class="pdf-link-layer" id="pdfLinkLayer"></div>
             </div>
             {% else %}
+            <div class="epub-page-window" id="epubPageWindow"><div class="epub-page-stage" id="epubPageStage">
             <div id="epubViewer"></div>
             <div id="iosEpubViewer" aria-label="EPUB reading content">
                 <article id="iosEpubContent"></article>
             </div>
+            </div></div>
             {% endif %}
         </div>
     </main>
@@ -12361,6 +12519,14 @@ html, body { overflow:hidden !important; }
                 </select>
             </div>
 
+            <div class="reader-tool-section-title" style="margin-top:10px;">Page View</div>
+            <div class="reader-control-row" style="margin-bottom:10px;">
+                <button class="reader-btn" type="button" onclick="zoomEpub(-0.25)" aria-label="Zoom out without changing EPUB layout">Zoom −</button>
+                <output id="epubZoomLabel" aria-label="Page zoom">100%</output>
+                <button class="reader-btn" type="button" onclick="zoomEpub(0.25)" aria-label="Zoom in without changing EPUB layout">Zoom +</button>
+                <button class="reader-btn" type="button" onclick="fitEpubPage()">Fit Page</button>
+            </div>
+            <div id="epubZoomHelp">Pinch or zoom to enlarge the same page. A− and A+ change text size.</div>
             <div class="reader-tool-section-title" style="margin-top:10px;">Text</div>
             <div class="reader-control-row">
                 <button class="reader-btn" type="button" onclick="changeEpubFont(-10)">A−</button>
@@ -13839,6 +14005,7 @@ function installPdfPinchZoom(target) {
 }
 
 function jumpReaderPage() {
+    if (READER_FORMAT === "EPUB") fitEpubPage();
     const input = document.getElementById("readerPageInput");
     if (!input) return;
 
@@ -13893,6 +14060,10 @@ function jumpReaderPage() {
 
 let epubBook = null;
 let rendition = null;
+let epubPageView = null;
+
+function zoomEpub(delta) { epubPageView?.zoomBy(delta); }
+function fitEpubPage() { epubPageView?.fit(); }
 let currentEpubCfi = STATE.epub_cfi || "";
 let epubFontSize = Number(STATE.epub_font_size || 100);
 let epubLineHeight = Number(STATE.epub_line_height || 1.6);
@@ -13908,7 +14079,6 @@ let epubLastSwipeAt = 0;
 let epubRenditionGestureInstalled = false;
 let epubTocFlat = [];
 let currentEpubHref = "";
-let epubPinchPendingSize = null;
 
 // iPhone/iPad compatibility reader. Android/Desktop continue using EPUB.js.
 let iosDirectEpubActive = false;
@@ -13922,9 +14092,6 @@ let iosEpubAssetUrls = new Map();
 let iosEpubSelectionTimer = null;
 let iosEpubSelectionHideTimer = null;
 let iosEpubProgressTimer = null;
-let iosEpubPinchStartDistance = 0;
-let iosEpubPinchStartSize = 100;
-let iosEpubPinching = false;
 let iosEpubChapterNavigationBusy = false;
 const IOS_EPUB_POSITION_KEY = "pastorIosDirectEpubPositionV1:" + BOOK_ID;
 
@@ -14022,68 +14189,7 @@ function epubTouchDistance(touches) {
 }
 
 function installEpubPinchHandlers(target, contents) {
-    if (!target || target.__pastorEpubPinchInstalled) return;
-    target.__pastorEpubPinchInstalled = true;
-
-    let pinching = false;
-    let startDistance = 0;
-    let startSize = epubFontSize;
-
-    const finishPinch = () => {
-        if (!pinching) return;
-        pinching = false;
-        if (Number.isFinite(epubPinchPendingSize)) {
-            const nextSize = Math.min(220, Math.max(70, Math.round(epubPinchPendingSize / 5) * 5));
-            epubPinchPendingSize = null;
-            if (nextSize !== epubFontSize) {
-                epubFontSize = nextSize;
-                applyEpubTheme();
-                scheduleEpubLayoutRefresh("Updating text size…");
-                saveState({epub_font_size:epubFontSize});
-                showReaderToast("Font size: " + epubFontSize + "%");
-            }
-        }
-    };
-
-    target.addEventListener("touchstart", event => {
-        if (!event.touches || event.touches.length !== 2) return;
-        startDistance = epubTouchDistance(event.touches);
-        if (!startDistance) return;
-        startSize = epubFontSize;
-        epubPinchPendingSize = startSize;
-        pinching = true;
-        if (event.cancelable) event.preventDefault();
-    }, {passive:false,capture:true});
-
-    target.addEventListener("touchmove", event => {
-        if (!pinching || !event.touches || event.touches.length !== 2) return;
-        const distance = epubTouchDistance(event.touches);
-        if (!distance || !startDistance) return;
-        const ratio = distance / startDistance;
-        epubPinchPendingSize = Math.min(220, Math.max(70, startSize * ratio));
-        if (event.cancelable) event.preventDefault();
-    }, {passive:false,capture:true});
-
-    target.addEventListener("touchend", event => {
-        if (pinching && (!event.touches || event.touches.length < 2)) finishPinch();
-    }, {passive:true,capture:true});
-    target.addEventListener("touchcancel", finishPinch, {passive:true,capture:true});
-
-    // Safari/WebKit legacy gesture events are a useful fallback on iPhone.
-    let gestureStartSize = epubFontSize;
-    target.addEventListener("gesturestart", event => {
-        gestureStartSize = epubFontSize;
-        epubPinchPendingSize = gestureStartSize;
-        pinching = true;
-        if (event.cancelable) event.preventDefault();
-    }, {passive:false,capture:true});
-    target.addEventListener("gesturechange", event => {
-        if (!pinching) return;
-        const scale = Number(event.scale || 1);
-        epubPinchPendingSize = Math.min(220, Math.max(70, gestureStartSize * scale));
-        if (event.cancelable) event.preventDefault();
-    }, {passive:false,capture:true});
-    target.addEventListener("gestureend", finishPinch, {passive:true,capture:true});
+    epubPageView?.install(contents?.document || target);
 }
 
 
@@ -14095,6 +14201,7 @@ function installEpubIosTapNavigation(contents) {
     doc.__pastorIosTapNavigationInstalled = true;
 
     doc.addEventListener("click", event => {
+        if (epubPageView?.blocksNavigation()) return;
         const target = event.target;
         if (target?.closest?.("a,button,input,textarea,select,label,[role='button']")) return;
 
@@ -14121,47 +14228,9 @@ function installEpubIosTapNavigation(contents) {
 }
 
 function installEpubIosGesturePinch(contents) {
-    if (!IS_IOS_READER || !contents?.document || !contents?.window) return;
-    const doc = contents.document;
-    const win = contents.window;
-    if (doc.__pastorIosGesturePinchInstalled) return;
-    doc.__pastorIosGesturePinchInstalled = true;
-
-    let pinching = false;
-    let startSize = epubFontSize;
-    let pendingSize = epubFontSize;
-
-    const start = event => {
-        startSize = epubFontSize;
-        pendingSize = epubFontSize;
-        pinching = true;
-        if (event.cancelable) event.preventDefault();
-    };
-    const change = event => {
-        if (!pinching) return;
-        const scale = Number(event.scale || 1);
-        pendingSize = Math.min(220, Math.max(70, startSize * scale));
-        if (event.cancelable) event.preventDefault();
-    };
-    const end = event => {
-        if (!pinching) return;
-        pinching = false;
-        if (event?.cancelable) event.preventDefault();
-        const nextSize = Math.min(220, Math.max(70, Math.round(Number(pendingSize || epubFontSize) / 5) * 5));
-        if (nextSize === epubFontSize) return;
-        epubFontSize = nextSize;
-        applyEpubTheme();
-        scheduleEpubLayoutRefresh("Updating text size…");
-        saveState({epub_font_size:epubFontSize});
-        showReaderToast("Font size: " + epubFontSize + "%");
-    };
-
-    [win, doc, doc.body].filter(Boolean).forEach(target => {
-        target.addEventListener("gesturestart", start, {passive:false,capture:true});
-        target.addEventListener("gesturechange", change, {passive:false,capture:true});
-        target.addEventListener("gestureend", end, {passive:false,capture:true});
-    });
+    epubPageView?.install(contents?.document);
 }
+
 
 function installEpubContentHandlers(contents) {
     if (!contents?.document || !contents?.window) return;
@@ -14741,7 +14810,7 @@ function iosEpubApplyCurrentAnnotations() {
 }
 
 function iosEpubCurrentPositionLocator() {
-    const area = document.getElementById("readerCanvasArea");
+    const area = document.getElementById("iosEpubViewer");
     const max = Math.max(1, Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0));
     const ratio = Math.max(0, Math.min(1, Number(area?.scrollTop || 0) / max));
     return `iosdompos:${iosEpubSpineIndex}:${ratio.toFixed(5)}`;
@@ -14755,7 +14824,7 @@ function iosEpubParsePositionLocator(locator) {
 
 function iosEpubSavePosition() {
     if (!iosDirectEpubActive || !iosEpubSpine.length) return;
-    const area = document.getElementById("readerCanvasArea");
+    const area = document.getElementById("iosEpubViewer");
     const max = Math.max(1, Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0));
     const ratio = Math.max(0, Math.min(1, Number(area?.scrollTop || 0) / max));
     const progress = Math.max(0, Math.min(100, ((iosEpubSpineIndex + ratio) / iosEpubSpine.length) * 100));
@@ -14787,6 +14856,7 @@ async function iosEpubRenderChapter(index, fragment="", restoreRatio=0) {
     const item = iosEpubSpine[targetIndex];
     const file = iosEpubZip?.file(item.path);
     if (!file) return false;
+    fitEpubPage();
 
     setPageBusy(true, "Opening chapter " + (targetIndex + 1) + "…");
     try {
@@ -14819,7 +14889,7 @@ async function iosEpubRenderChapter(index, fragment="", restoreRatio=0) {
         updateReaderPageControls(targetIndex + 1, iosEpubSpine.length, "Chapter", true);
         updateCurrentChapterHighlight();
 
-        const area = document.getElementById("readerCanvasArea");
+        const area = document.getElementById("iosEpubViewer");
         await nextAnimationFrame();
         if (fragment) {
             let target = null;
@@ -14882,7 +14952,7 @@ async function iosEpubGo(direction) {
 function iosEpubInstallInteractions() {
     const viewer = document.getElementById("iosEpubViewer");
     const content = document.getElementById("iosEpubContent");
-    const area = document.getElementById("readerCanvasArea");
+    const area = document.getElementById("iosEpubViewer");
     if (!viewer || !content) return;
 
     if (!viewer.__pastorDirectHandlers) {
@@ -14916,7 +14986,7 @@ function iosEpubInstallInteractions() {
                 return;
             }
 
-            if (iosEpubPinching || selectionToolbarInteracting || selectionIsActive(window)) {
+            if (epubPageView?.blocksNavigation() || selectionToolbarInteracting || selectionIsActive(window)) {
                 swipeTracking = false;
                 return;
             }
@@ -14962,6 +15032,7 @@ function iosEpubInstallInteractions() {
         };
 
         const finishDirectSwipe = (x, y) => {
+            if (epubPageView?.blocksNavigation()) { swipeTracking = false; return; }
             if (!swipeTracking || swipeMultiTouch) {
                 resetDirectSwipe();
                 return false;
@@ -15002,6 +15073,7 @@ function iosEpubInstallInteractions() {
         }, {passive:true,capture:true});
 
         viewer.addEventListener("click", event => {
+            if (epubPageView?.blocksNavigation()) return;
             // Some WebKit builds synthesize a click after a touch gesture.
             // Ignore it briefly so a swipe cannot also trigger the edge-tap
             // chapter navigation and accidentally skip two chapters.
@@ -15026,38 +15098,7 @@ function iosEpubInstallInteractions() {
             }, 90);
         });
 
-        viewer.addEventListener("touchstart", event => {
-            if (!event.touches || event.touches.length !== 2) return;
-            iosEpubPinchStartDistance = epubTouchDistance(event.touches);
-            iosEpubPinchStartSize = epubFontSize;
-            iosEpubPinching = Boolean(iosEpubPinchStartDistance);
-            if (iosEpubPinching && event.cancelable) event.preventDefault();
-        }, {passive:false,capture:true});
-        viewer.addEventListener("touchmove", event => {
-            if (!iosEpubPinching || !event.touches || event.touches.length !== 2) return;
-            const distance = epubTouchDistance(event.touches);
-            if (!distance) return;
-            const nextSize = Math.min(220, Math.max(70, iosEpubPinchStartSize * (distance / iosEpubPinchStartDistance)));
-            content.style.fontSize = nextSize + "%";
-            epubPinchPendingSize = nextSize;
-            if (event.cancelable) event.preventDefault();
-        }, {passive:false,capture:true});
-        const finishPinch = () => {
-            if (!iosEpubPinching) return;
-            iosEpubPinching = false;
-            if (Number.isFinite(epubPinchPendingSize)) {
-                epubFontSize = Math.min(220, Math.max(70, Math.round(epubPinchPendingSize / 5) * 5));
-                epubPinchPendingSize = null;
-                iosEpubApplyReaderAppearance();
-                saveState({epub_font_size:epubFontSize});
-                showReaderToast("Font size: " + epubFontSize + "%");
-            }
-        };
-        viewer.addEventListener("touchend", event => {
-            iosEpubScheduleSelectionCapture();
-            if (!event.touches || event.touches.length < 2) finishPinch();
-        }, {passive:true,capture:true});
-        viewer.addEventListener("touchcancel", finishPinch, {passive:true,capture:true});
+        viewer.addEventListener("touchend", iosEpubScheduleSelectionCapture, {passive:true});
         viewer.addEventListener("mouseup", iosEpubScheduleSelectionCapture, {passive:true});
         viewer.addEventListener("contextmenu", iosEpubScheduleSelectionCapture, {passive:true});
     }
@@ -15211,6 +15252,7 @@ async function initEpubReader() {
         });
 
         rendition.on("relocated",location => {
+            fitEpubPage();
             if (!epubNavigationRunning && !epubLayoutRefreshing) {
                 setPageBusy(false);
             }
@@ -15375,6 +15417,7 @@ function applyEpubTheme() {
 }
 
 function changeEpubFont(delta) {
+    fitEpubPage();
     epubFontSize = Math.min(220,Math.max(70,epubFontSize + delta));
     applyEpubTheme();
     if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating text size…");
@@ -15383,6 +15426,7 @@ function changeEpubFont(delta) {
 }
 
 function setEpubFontFamily(value) {
+    fitEpubPage();
     epubFontFamily = value;
     applyEpubTheme();
     if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating font…");
@@ -15390,6 +15434,7 @@ function setEpubFontFamily(value) {
 }
 
 function setEpubLineHeight(value) {
+    fitEpubPage();
     epubLineHeight = Number(value || 1.6);
     applyEpubTheme();
     if (!iosDirectEpubActive) scheduleEpubLayoutRefresh("Updating line spacing…");
@@ -15682,7 +15727,7 @@ async function rebuildVisibleEpubAnnotations() {
         // Rebuild the visible iOS chapter from the clean EPUB source. This is
         // more reliable than trying to surgically unwrap a stale Safari
         // highlight/span after deletion.
-        const area = document.getElementById("readerCanvasArea");
+        const area = document.getElementById("iosEpubViewer");
         const max = Math.max(
             1,
             Number(area?.scrollHeight || 1) - Number(area?.clientHeight || 0)
@@ -15804,6 +15849,7 @@ function selectionIsActive(win) {
 
 function queueEpubSwipeFromGesture(direction) {
     if (!rendition) return;
+    if (epubPageView?.blocksNavigation()) return;
     if (selectionIsActive(lastEpubContents?.window || window)) return;
 
     // Multiple iOS/EPUB.js event paths may report the same physical swipe.
@@ -15984,6 +16030,7 @@ function installSwipeHandlers(target, win=window) {
 
     target.addEventListener("touchstart", event => {
         tracking = false;
+        if (READER_FORMAT === "EPUB" && epubPageView?.blocksNavigation()) return;
 
         if (!event.touches || event.touches.length !== 1) return;
 
@@ -16015,6 +16062,7 @@ function installSwipeHandlers(target, win=window) {
     target.addEventListener("touchend", event => {
         if (!tracking) return;
         tracking = false;
+        if (READER_FORMAT === "EPUB" && epubPageView?.blocksNavigation()) return;
 
         if (!event.changedTouches || event.changedTouches.length !== 1) return;
         if (selectionIsActive(win)) return;
@@ -16044,6 +16092,7 @@ function installSwipeHandlers(target, win=window) {
 
 function queueEpubNavigation(direction) {
     if (!rendition) return;
+    fitEpubPage();
 
     const normalized = direction < 0 ? -1 : 1;
 
@@ -16640,6 +16689,22 @@ document.getElementById("themeSelect").value = currentTheme;
 
     installReaderBrowserZoomLock();
     syncReaderViewport();
+
+    if (READER_FORMAT === "EPUB") {
+        epubPageView = window.createEpubPageView({
+            viewport: document.getElementById("epubPageWindow"),
+            stage: document.getElementById("epubPageStage"),
+            selectionActive: () => selectionIsActive(lastEpubContents?.window || window),
+            onChange: ({scale}) => {
+                document.getElementById("epubZoomLabel").textContent = Math.round(scale * 100) + "%";
+                document.getElementById("epubZoomHelp").textContent = Math.abs(scale - 1) > 0.001
+                    ? "Drag to pan. On a computer, Shift-drag selects text. Fit Page restores the full view."
+                    : "Pinch or zoom to enlarge the same page. A− and A+ change text size.";
+                const direct = document.getElementById("iosEpubViewer");
+                if (direct) direct.style.overflowY = Math.abs(scale - 1) > 0.001 ? "hidden" : "auto";
+            }
+        });
+    }
 
     if (READER_FORMAT === "PDF") {
         installSwipeHandlers(canvasArea, window);
@@ -17402,6 +17467,8 @@ def get_database_details_payload(
     sort="name",
     page=1,
     per_page=50,
+    *,
+    export=False,
 ):
     """
     Read the last synchronized Google Drive ebook snapshot
@@ -17953,6 +18020,24 @@ def get_database_details_payload(
                     grouped[group_key] = item
             items = list(grouped.values())
 
+            if export:
+                # Search selects books; include every current format/location
+                # belonging to those books, even if only one file matched.
+                for item in items:
+                    item["export_files"] = []
+                for row in raw_rows:
+                    if not int(row.get("file_is_active") or 0):
+                        continue
+                    group_key = row.get("book_id")
+                    if group_key is None:
+                        group_key = "file:" + str(row.get("database_file_id") or "")
+                    if group_key in grouped:
+                        grouped[group_key]["export_files"].append({
+                            "format": row.get("format"),
+                            # An empty file path means the Drive root folder.
+                            "folder_path": row.get("file_folder_path"),
+                        })
+
         # ---------------------------------------------
         # Sort
         # ---------------------------------------------
@@ -18010,6 +18095,11 @@ def get_database_details_payload(
                     ).lower(),
                 )
             )
+
+        if export:
+            # Export the same filtered/sorted snapshot in one read, without
+            # pagination or repeatedly scanning the catalog for every page.
+            return {"items": items, "view": view, "sort": sort, "query": query}
 
         total = len(
             items
@@ -18226,6 +18316,55 @@ def get_database_details_payload(
         db.close()
 
 
+DATABASE_DETAILS_EXPORT_TITLES = {
+    "all": "Drive eBook Files",
+    "logical": "Logical Books",
+    "pdf": "PDF Files",
+    "epub": "EPUB Files",
+    "exact": "Exact Duplicates",
+    "same_name": "Same-Name Groups",
+    "hidden": "Hidden Books",
+    "inactive": "Inactive Records",
+    "ai_indexed": "AI Indexed Books",
+    "ai_not_indexed": "Not AI Indexed",
+}
+
+
+def format_database_details_txt(details):
+    """Export only the four requested metadata fields as readable UTF-8 text."""
+    def text(value, fallback):
+        # Keep catalog metadata from introducing fake fields or extra entries.
+        return " ".join(str(value or "").split()) or fallback
+
+    lines = [DATABASE_DETAILS_EXPORT_TITLES[details["view"]], ""]
+    for item in details["items"]:
+        files = item.get("export_files") or [{
+            "format": item.get("format"),
+            "folder_path": item.get("file_folder_path"),
+        }]
+        locations = sorted({
+            (text(file.get("format"), "Unknown").upper(),
+             text(file.get("folder_path"), "Pastor's Resources (root folder)"))
+            for file in files
+        })
+        formats = ", ".join(sorted({fmt for fmt, _ in locations}))
+        folders = sorted({folder for _, folder in locations})
+        lines.extend([
+            "Book Name: " + text(item.get("title") or item.get("drive_name"), "Untitled Book"),
+            "Author: " + text(item.get("author"), "Unknown Author"),
+            "File Type: " + formats,
+        ])
+        if len(folders) == 1:
+            lines.append("Google Drive Folder: " + folders[0])
+        else:
+            lines.append("Google Drive Folder:")
+            lines.extend("  " + fmt + ": " + folder for fmt, folder in locations)
+        lines.append("")
+    if not details["items"]:
+        lines.append("No records found.")
+    return "\r\n".join(lines) + "\r\n"
+
+
 PASTOR_DATABASE_DETAILS_HTML = r"""
 {% extends "base.html" %}
 {% block title %}Database Details - Pastor's Resources{% endblock %}
@@ -18237,6 +18376,7 @@ PASTOR_DATABASE_DETAILS_HTML = r"""
 .db-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}.db-action{display:inline-flex;align-items:center;justify-content:center;min-height:45px;padding:10px 14px;border:0;border-radius:12px;background:#fff;color:#3e5578;text-decoration:none;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 5px 16px rgba(15,23,42,.07)}.db-action.primary{color:#fff;background:linear-gradient(135deg,#b27db9,#7297de)}.db-action:disabled{opacity:.6}.db-action.danger{display:none;color:#fff;background:linear-gradient(135deg,#c54848,#9e2f43)}.db-action.danger.show{display:inline-flex}.db-cleanup-state{margin-top:10px;font-size:10px;font-weight:800;color:#64748b}.db-maint{position:fixed;inset:0;z-index:40000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(244,247,252,.96);backdrop-filter:blur(6px)}.db-maint.show{display:flex}.db-maint-card{width:min(520px,100%);padding:24px;border-radius:20px;background:#fff;border:1px solid #e2e8f0;box-shadow:0 24px 70px rgba(15,23,42,.20);text-align:center}.db-maint-card h3{margin:0;font:700 24px Georgia,serif}.db-maint-card p{color:#64748b;font-size:12px;line-height:1.55}.db-maint-track{height:10px;border-radius:999px;overflow:hidden;background:#e9edf4}.db-maint-track:after{content:"";display:block;width:35%;height:100%;border-radius:999px;background:#8c83c9;animation:dbmaint 1.15s ease-in-out infinite}@keyframes dbmaint{from{transform:translateX(-120%)}to{transform:translateX(390%)}}
 .db-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.db-stat{min-width:0;padding:14px;border-radius:16px;background:#fff;border:1px solid rgba(15,23,42,.07);box-shadow:0 6px 18px rgba(15,23,42,.045);text-align:left}.db-stat.click{cursor:pointer}.db-stat.click:hover{transform:translateY(-1px)}.db-stat.active{outline:2px solid rgba(112,148,220,.45)}.db-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:24px;font-weight:900}.db-label{margin-top:3px;color:#8796ad;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
 .db-note{margin-top:14px;padding:13px 15px;border-radius:14px;background:#fff9e9;color:#755b1e;border:1px solid #f0d985;font-size:11px;line-height:1.5}
+.db-stat-group{display:flex;min-width:0;flex-direction:column;gap:5px}.db-stat-group>.db-stat{width:100%;flex:1}.db-download{min-height:36px;padding:7px 9px;border:1px solid #dbe3ee;border-radius:10px;background:#fff;color:#3e5578;font-size:10px;font-weight:800;cursor:pointer}.db-download:disabled{opacity:.6;cursor:wait}
 .db-browser{display:none;margin-top:18px}.db-browser.open{display:block}.db-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}.db-head h2{margin:0;font:700 22px Georgia,serif}.db-tools{display:flex;flex-wrap:wrap;gap:8px}.db-input,.db-select{min-height:42px;border:1px solid #dbe3ee;border-radius:11px;padding:9px 11px;background:#fff;color:#334155;font-size:12px;font-weight:700}.db-input{width:min(420px,80vw)}
 .db-list{display:grid;gap:8px}.db-row{background:#fff;border:1px solid rgba(15,23,42,.08);border-radius:14px;overflow:hidden;box-shadow:0 5px 16px rgba(15,23,42,.04)}.db-rowbtn{width:100%;border:0;background:#fff;padding:13px 14px;text-align:left;cursor:pointer;display:flex;gap:12px;align-items:center}.db-main{min-width:0;flex:1}.db-book{font:700 15px/1.3 Georgia,serif}.db-sub{margin-top:4px;color:#7b879a;font-size:10px;overflow-wrap:anywhere}.db-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.badge{padding:4px 7px;border-radius:999px;background:#eef2f8;color:#59677f;font-size:8px;font-weight:900}.pdf{background:#fff0f0;color:#b53b3b}.epub{background:#eef8f2;color:#28845a}.aiyes{background:#e9f8ef;color:#18754a}.aino{background:#fff1e8;color:#a45718}.warn{background:#f2ecff;color:#7049a4}.chev{font-size:18px;color:#9aa7b9}
 .db-details{display:none;padding:0 14px 14px}.db-row.open .db-details{display:block}.db-grid{display:grid;grid-template-columns:1fr;gap:7px}.db-detail{padding:9px 10px;border-radius:10px;background:#f8fafc;min-width:0}.db-dlabel{font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;color:#9aa5b5}.db-dvalue{margin-top:3px;color:#44526a;font-size:10px;line-height:1.45;overflow-wrap:anywhere}.copy{margin-left:5px;border:0;border-radius:7px;padding:3px 6px;background:#e9eef7;color:#586980;font-size:8px;font-weight:800;cursor:pointer}
@@ -18254,6 +18394,7 @@ PASTOR_DATABASE_DETAILS_HTML = r"""
 <div class="db-note">This page reads the SQLite catalog snapshot only. It does not scan Google Drive every time you open it. Use <strong>Sync Books Now</strong> when you want this developer view to reflect the latest Drive contents. “Same name” is an informational warning only; it never removes or merges files automatically.</div>
 </section>
 <section class="db-browser" id="browser">
+<button class="db-action" type="button" style="margin-bottom:12px" onclick="downloadDetails(this)">Download Details (.txt)</button>
 <div class="db-head"><div><h2 id="resultTitle">Books</h2><div id="resultCount" style="font-size:10px;color:#8a96a9;margin-top:3px"></div></div><div class="db-tools"><input class="db-input" id="search" type="search" placeholder="Search this list..."><select class="db-select" id="sort"><option value="name">Name</option><option value="uploaded_desc">Uploaded newest</option><option value="modified_desc">Modified newest</option><option value="size_desc">Largest file</option></select></div></div>
 <div class="db-list" id="list"></div><div class="db-pages" id="pages"></div>
 </section></div><div class="db-maint" id="dbMaintenance"><div class="db-maint-card"><h3>Website Maintenance</h3><p>Removing the old AI index and optimizing the main database. Please keep this page open until it finishes.</p><div class="db-maint-track"></div></div></div><div class="db-toast" id="toast"></div>
@@ -18266,7 +18407,24 @@ function date(v){if(!v)return"—";const d=new Date(v);return isNaN(d) ? String(
 function size(v){let n=num(v),u=["B","KB","MB","GB"],i=0;while(n>=1024&&i<3){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`}
 function toast(m){const e=document.getElementById("toast");e.textContent=m;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display="none",2500)}
 async function copy(v){if(v)try{await navigator.clipboard.writeText(v);toast("Copied")}catch(e){toast("Copy failed")}}
-function card(v,l,view){return `<button class="db-stat click ${V===view?"active":""}" onclick="openView('${view}')"><div class="db-value">${num(v).toLocaleString()}</div><div class="db-label">${l}</div></button>`}
+function card(v,l,view){return `<div class="db-stat-group"><button class="db-stat click ${V===view?"active":""}" onclick="openView('${view}')"><div class="db-value">${num(v).toLocaleString()}</div><div class="db-label">${l}</div></button><button class="db-download" type="button" aria-label="Download ${l} details as TXT" onclick="downloadDetails(this,'${view}')">Download Details (.txt)</button></div>`}
+async function downloadDetails(button,view){
+    const label=button.textContent;
+    button.disabled=true;button.textContent="Preparing download…";
+    try{
+        const selected=view||V||"all";
+        const q=new URLSearchParams({view:selected,sort:view?"name":document.getElementById("sort").value,q:view?"":document.getElementById("search").value.trim()});
+        const response=await fetch({{ url_for('pastor_resources_database_details_download')|tojson }}+"?"+q,{credentials:"same-origin",cache:"no-store"});
+        if(!response.ok){let message="Unable to download details.";try{message=(await response.json()).error||message}catch(_error){}throw Error(message)}
+        if(!(response.headers.get("Content-Type")||"").startsWith("text/plain"))throw Error("Please sign in again and retry.");
+        const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+        link.href=url;link.download=(titles[selected]||"Database Details").toLowerCase().replace(/[^a-z0-9]+/g,"-")+".txt";
+        document.body.appendChild(link);link.click();link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),60000);
+        toast("Download started.");
+    }catch(error){toast(error.message||"Unable to download details.")}
+    finally{button.disabled=false;button.textContent=label}
+}
 function info(v,l){return `<div class="db-stat"><div class="db-value">${esc(v)}</div><div class="db-label">${l}</div></div>`}
 function summary(s){document.getElementById("summary").innerHTML=card(s.logical_books,"Logical Books","logical")+card(s.current_ebook_files,"Drive eBook Files","all")+card(s.pdf_files,"PDF Files","pdf")+card(s.epub_files,"EPUB Files","epub")+card(s.exact_duplicate_files,"Exact Duplicates","exact")+card(s.same_name_groups,"Same-Name Groups","same_name")+card(s.hidden_books,"Hidden Books","hidden")+card(s.inactive_file_records,"Inactive Records","inactive")+info(num(s.folders_scanned).toLocaleString(),"Folders Scanned")+info(num(s.unsupported_files).toLocaleString(),"Unsupported Files")+card(s.ai_indexed_books,"AI Indexed Books","ai_indexed")+card(s.ai_not_indexed_books,"Not AI Indexed","ai_not_indexed")+info(date(s.last_sync_at),"Last Sync");const b=document.getElementById("removeOldAiBtn"),st=document.getElementById("oldAiStatus");if(s.old_ai_index_detected){b.classList.add("show");b.disabled=!s.ai_database_verified;st.textContent=s.ai_database_verified?`Old AI index detected in app_v2.db (${num(s.old_ai_table_count)} table entries). ai_index.db verified.`:`Old AI index detected, but cleanup is locked: ${s.ai_verification_error||"ai_index.db could not be verified."}`;}else{b.classList.remove("show");st.textContent="✓ Old AI index is not present in app_v2.db.";}}
 function badges(i){let x=[`<span class="badge ${String(i.format||"").toLowerCase()}">${esc(String(i.format||"FILE").toUpperCase())}</span>`,i.ai_indexed?`<span class="badge aiyes">AI INDEXED</span>`:`<span class="badge aino">NOT AI INDEXED</span>`];if(i.is_exact_duplicate)x.push(`<span class="badge warn">EXACT DUPLICATE</span>`);if(i.is_same_name)x.push(`<span class="badge warn">SAME NAME ×${num(i.same_name_count)}</span>`);if(i.is_hidden)x.push(`<span class="badge warn">HIDDEN</span>`);if(!i.is_current)x.push(`<span class="badge warn">INACTIVE</span>`);return x.join("")}
@@ -19546,6 +19704,34 @@ def register_pastor_resources_routes(app):
                 error=str(error),
             ), 500
 
+    @app.route("/pastor-resources/admin/database-details/download")
+    def pastor_resources_database_details_download():
+        if not is_resource_admin():
+            return jsonify(ok=False, error="Administrator access required."), 403
+
+        try:
+            details = get_database_details_payload(
+                query=request.args.get("q", ""),
+                view=request.args.get("view", "all"),
+                sort=request.args.get("sort", "name"),
+                export=True,
+            )
+            title = DATABASE_DETAILS_EXPORT_TITLES[details["view"]]
+            filename = re.sub(r"[^a-z0-9]+", "-", title.lower()) + ".txt"
+            response = send_file(
+                io.BytesIO(format_database_details_txt(details).encode("utf-8-sig")),
+                mimetype="text/plain",
+                as_attachment=True,
+                download_name=filename,
+                max_age=0,
+            )
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+        except Exception:
+            app.logger.exception("Unable to export Pastor's Resources database details")
+            return jsonify(ok=False, error="Unable to download database details. Please retry."), 500
+
     @app.route(
         "/pastor-resources/admin/api/remove-old-ai-index",
         methods=["POST"],
@@ -19697,6 +19883,7 @@ def register_pastor_resources_routes(app):
                 payload.get("title"),
                 payload.get("author"),
                 payload.get("category"),
+                payload.get("manual_page_count"),
             )
 
             return jsonify(
@@ -19709,6 +19896,20 @@ def register_pastor_resources_routes(app):
                 ok=False,
                 error=str(error),
             ), 400
+
+    @app.route("/pastor-resources/admin/recommend/<int:book_id>", methods=["POST"])
+    def pastor_resources_admin_recommend(book_id):
+        if not is_resource_admin():
+            return jsonify(ok=False, error="Administrator access required."), 403
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify(ok=False, error="A JSON object is required."), 400
+        try:
+            recommended = payload.get("recommended")
+            admin_recommend_book(book_id, recommended)
+            return jsonify(ok=True, recommended=recommended)
+        except ValueError as error:
+            return jsonify(ok=False, error=str(error)), 400
 
     @app.route(
         "/pastor-resources/admin/hide/<int:book_id>",

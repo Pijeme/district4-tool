@@ -1,0 +1,35 @@
+# Keep this file beside .env and service_account.json.
+services:
+  district4:
+    image: pijeme/district4-tool-main:latest
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      AI_DATABASE: /data/ai_index.db
+      TZ: ${TZ:-Asia/Manila}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?Set FLASK_SECRET_KEY in .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-5000}:8000"
+    volumes:
+      - type: bind
+        source: ./service_account.json
+        target: /app/service_account.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - district4-data:/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  district4-data:

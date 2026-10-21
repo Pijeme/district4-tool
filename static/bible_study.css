@@ -1,0 +1,128 @@
+.bs-root{--bs-paper:#fbf5e8;--bs-panel:#fffdfa;--bs-ink:#302c25;--bs-muted:#766e60;--bs-line:#dfd3bf;--bs-accent:#805d32;--bs-split:60;--bs-font:19px;color:var(--bs-ink);max-width:1500px;margin:0 auto;padding:16px;font-family:Arial,sans-serif}
+.bs-root *{box-sizing:border-box}.bs-root button,.bs-root select{font:inherit;font-size:12px;border:1px solid var(--bs-line);border-radius:9px;background:var(--bs-panel);color:var(--bs-ink);min-height:38px;padding:8px 10px}
+.bs-search-form{margin-bottom:20px}.bs-search-form label{display:block;margin-bottom:6px;font-weight:bold}.bs-search-form>div{display:flex;gap:6px}.bs-search-form input{min-width:0;flex:1;padding:9px;border:1px solid var(--bs-line);border-radius:8px;background:var(--bs-panel);color:var(--bs-ink);font:inherit}.bs-dictionary{margin:18px 0}.bs-root .bs-source-toggle{width:100%;text-align:left;font:bold 20px Georgia,serif}.bs-entry h4{margin:0 0 8px;font:bold 18px Georgia,serif;color:var(--bs-ink)}.bs-source-content p{white-space:pre-wrap}.bs-source-content h5{font-weight:bold;font-size:1em;margin:15px 0 7px}.bs-source-image{height:auto;max-height:2em;max-width:100%;width:auto;vertical-align:middle}.bs-root button.bs-scripture-ref{display:inline;min-height:0;padding:0;border:0;border-radius:0;background:none;color:var(--bs-accent);text-decoration:underline;text-underline-offset:3px;font:inherit;white-space:normal}.bs-show-more{margin-top:8px}
+.bs-sync-tools{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:0 0 14px;font-size:12px;line-height:1.6}.bs-sync-tools details{flex-basis:100%;padding:10px;background:var(--bs-panel);border:1px solid var(--bs-line);border-radius:10px}.bs-sync-tools summary{cursor:pointer}.bs-sync-tools p{margin:8px 0}.bs-verse{margin:0 0 14px}.bs-root button.bs-word{display:inline;min-height:0;padding:0;border:0;border-radius:2px;background:transparent;color:inherit;font:inherit;vertical-align:baseline}.bs-root button.bs-word:hover,.bs-root button.bs-word:focus-visible{text-decoration:underline;text-decoration-color:var(--bs-accent)}.bs-entry{margin:14px 0;padding:14px;border:1px solid var(--bs-line);border-radius:10px;white-space:pre-wrap}.bs-entry p{margin:7px 0}.bs-reference-list{display:flex;flex-wrap:wrap;gap:6px}.bs-sync-tools [hidden],.bs-root [hidden]{display:none!important}
+#bibleStudyRoot h1,#bibleStudyRoot h2,#bibleStudyRoot h3,#bibleStudyRoot h4,#bibleStudyRoot h5{color:var(--bs-ink);letter-spacing:normal}#bibleStudyRoot select{color:var(--bs-ink);background:var(--bs-panel);border-color:var(--bs-line);border-radius:9px}
+.bs-root button{cursor:pointer}.bs-root button:disabled{cursor:default;opacity:.5}.bs-root button:focus-visible,.bs-root select:focus-visible,.bs-divider:focus-visible{outline:3px solid #7094cf;outline-offset:2px}
+.bs-header{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:14px}.bs-header h1{margin:6px 0 0;font:700 34px/1.15 Georgia,serif}.bs-back{color:var(--bs-accent);font-size:12px;text-decoration:none}.bs-modes{display:flex;flex-wrap:wrap;gap:6px}.bs-modes button[aria-pressed=true]{background:#6d573e;color:#fff;border-color:#6d573e}
+.bs-preview{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:11px 14px;margin-bottom:14px;border:1px solid var(--bs-line);border-radius:12px;background:var(--bs-panel);font-size:12px;line-height:1.5}.bs-preview strong{color:var(--bs-accent);white-space:nowrap}
+.bs-layout{display:grid;grid-template-columns:minmax(0,calc(var(--bs-split)*1%)) 10px minmax(0,1fr);height:72dvh;min-height:440px;border:1px solid var(--bs-line);border-radius:15px;overflow:hidden;background:var(--bs-line)}
+.bs-pane{min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;background:var(--bs-panel)}.bs-bible{background:var(--bs-paper)}.bs-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:12px;border-bottom:1px solid var(--bs-line);background:var(--bs-paper);position:sticky;top:0;z-index:2}.bs-toolbar select{max-width:100%}.bs-translation{font-size:11px;font-weight:700;color:var(--bs-muted);padding:5px}
+.bs-scripture{max-width:820px;margin:0 auto;padding:30px 36px 40px;font:var(--bs-font)/1.85 Georgia,'Times New Roman',serif}.bs-kicker{margin:0;color:var(--bs-muted);font:700 10px/1.5 Arial,sans-serif;text-transform:uppercase;letter-spacing:.09em}.bs-scripture h2{margin:12px 0 0;font-size:2.2em;line-height:1.2}.bs-chapter-heading{margin:8px 0 28px;color:var(--bs-muted);font-size:1.1em}.bs-verse-number{font:700 .65em Arial,sans-serif;vertical-align:super;color:var(--bs-muted)}.bs-red-letter{color:#a12e2e}.bs-word{font:inherit;background:transparent;color:inherit;cursor:pointer}
+.bs-empty{padding:22px 10px 18px;border-top:1px solid var(--bs-line);text-align:center}.bs-empty-mark{display:block;color:#a68b62;font-size:36px}.bs-empty h3{font-size:1.1em;line-height:1.4;margin:8px 0}.bs-empty p{color:var(--bs-muted);font-size:.85em;line-height:1.7;margin:12px auto;max-width:440px}
+.bs-personal-tools{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:12px 16px;border-top:1px solid var(--bs-line)}.bs-personal-tools span{font-size:11px;color:var(--bs-muted);line-height:1.5}
+.bs-divider{display:flex;align-items:center;justify-content:center;background:var(--bs-line);cursor:col-resize;touch-action:none}.bs-divider span{width:3px;height:35px;border-radius:3px;background:#a99577}.bs-divider:focus-visible{outline-offset:-3px}
+.bs-study-header{padding:24px 25px 18px;border-bottom:1px solid var(--bs-line)}.bs-study-header h2{font:700 28px Georgia,serif;margin:7px 0}.bs-study-header>p:last-child{margin:0;color:var(--bs-muted);font-size:12px}.bs-study-content{padding:22px 25px;line-height:1.75;font-size:13px}.bs-study-content h3{font:700 20px/1.4 Georgia,serif;margin:0 0 10px}.bs-result-guide{margin:20px 0}.bs-result-guide p{margin:16px 0}.bs-badge{display:table;margin-bottom:6px;padding:3px 8px;border-radius:6px;font:700 10px/1.5 Arial,sans-serif;letter-spacing:.03em}.bs-verified{background:#e3f0e6;color:#286442}.bs-kjv{background:#fff0cc;color:#845d1e}.bs-notice{padding:13px;border-left:3px solid #b49260;background:var(--bs-paper);color:var(--bs-muted)}.bs-concordance{border-top:1px solid var(--bs-line);margin-top:24px;padding-top:20px}.bs-concordance p{color:var(--bs-muted)}
+.bs-save-status{font-size:11px;line-height:1.5;color:var(--bs-muted);margin:11px 2px 0}.bs-root[data-theme=light]{--bs-paper:#fff;--bs-panel:#fbfcff}.bs-root[data-theme=dark]{--bs-paper:#24282e;--bs-panel:#2b3037;--bs-ink:#eee9df;--bs-muted:#bfb6a6;--bs-line:#47423a;--bs-accent:#e3c48e}.bs-root[data-theme=dark] .bs-red-letter{color:#ffad9f}
+.bs-root[data-mode=bible] .bs-study,.bs-root[data-mode=study] .bs-bible,.bs-root:not([data-mode=split]) .bs-divider{display:none}.bs-root:not([data-mode=split]) .bs-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.bs-root.bs-fullscreen{position:fixed;inset:0;z-index:40000;max-width:none;margin:0;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));height:100dvh;display:flex;flex-direction:column;background:var(--bs-paper);overflow:hidden}.bs-root.bs-fullscreen .bs-layout{height:auto;min-height:0;flex:1}.bs-root.bs-fullscreen .bs-header{flex-shrink:0}.bs-root.bs-fullscreen .bs-preview{display:none}.bs-root.bs-fullscreen .bs-save-status{flex-shrink:0}
+.bs-verse-dialog{width:min(92vw,540px);padding:22px;border:1px solid var(--bs-line);border-radius:14px;background:var(--bs-panel);color:var(--bs-ink)}.bs-verse-dialog::backdrop{background:#18243199}.bs-dialog-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.bs-verse-dialog #bsVerseText{font:20px/1.8 Georgia,serif}.bs-attribution{color:var(--bs-muted);font-size:11px}.bs-visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(max-width:700px){.bs-root{padding:10px}.bs-header{align-items:flex-start;flex-direction:column;gap:12px}.bs-header h1{font-size:29px}.bs-modes{width:100%}.bs-modes button{flex:1;font-size:11px;padding:8px 6px}.bs-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,calc(var(--bs-split)*1%)) 12px minmax(0,1fr);height:80dvh;min-height:500px}.bs-divider{cursor:row-resize}.bs-divider span{width:35px;height:3px}.bs-toolbar{padding:9px;gap:5px}.bs-toolbar select{font-size:16px}.bs-scripture{padding:22px 21px 28px}.bs-study-header{padding:15px 18px}.bs-study-content{padding:18px}.bs-save-status{font-size:10px}}
+/* Thompson reader: topic controls have their own margin and click targets. */
+.bs-root .bs-verse-row{display:grid;grid-template-columns:minmax(0,1fr) 94px;column-gap:18px;align-items:start}.bs-root .bs-chain-margin{border-left:1px solid var(--bs-line);padding-left:9px;font:11px/1.6 Arial,sans-serif;overflow-wrap:anywhere}.bs-root .bs-chain-margin button{display:block;padding:2px 0;min-height:28px;background:transparent;border:0;border-radius:0;text-align:left;color:var(--bs-accent);font:inherit}.bs-chain-margin summary{cursor:pointer;font-size:11px}.bs-chain-margin details{margin:3px 0}.bs-root .bs-chain-key{font-weight:bold;margin-right:4px}.bs-root .bs-word.is-selected{background:#ead29070;box-shadow:0 0 0 2px #ead29050}.bs-root button.bs-word.bs-red-letter,.bs-red-letter{color:#ae2638}.bs-root[data-theme=dark] button.bs-word.bs-red-letter{color:#ffad9f}.bs-scripture #bsVerses>h3{font-size:1.03em;line-height:1.4;margin:22px 0 13px;color:var(--bs-accent)}.bs-poetry{padding-left:1em;text-indent:-1em}.bs-chapter-end{display:flex;justify-content:space-between;gap:10px;margin:28px 0 20px;border-top:1px solid var(--bs-line);padding-top:16px}.bs-chapter-heading{font-variant:small-caps;letter-spacing:.04em}.bs-evidence{font:11px/1.6 Arial,sans-serif;color:var(--bs-accent);background:var(--bs-paper);padding:8px;border-radius:7px}.bs-entry{white-space:normal}
+.bs-navigation-dialog{width:min(94vw,620px);max-height:85dvh;padding:18px;border:1px solid var(--bs-line);border-radius:16px;background:var(--bs-panel);color:var(--bs-ink)}.bs-navigation-dialog::backdrop{background:#18243199}.bs-navigation-tabs{display:flex;gap:8px;margin:16px 0}.bs-navigation-tabs button{flex:1}.bs-navigation-tabs button[aria-selected=true]{background:#6d573e;color:white}.bs-navigation-body{overflow:auto;max-height:50dvh}.bs-book-group,.bs-chapter-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px;margin:10px 0 20px}.bs-root .bs-book-group button,.bs-root .bs-chapter-grid button{padding:6px 3px;min-height:43px;font-size:12px}.bs-root button[data-book-group=law]{background:#f1e5d2;color:#5f492c}.bs-root button[data-book-group=history]{background:#e0eadf;color:#365839}.bs-root button[data-book-group=poetry]{background:#f4e3df;color:#7b4842}.bs-root button[data-book-group=prophets]{background:#e9e1ef;color:#654477}.bs-root button[data-book-group=gospel]{background:#dceaf1;color:#355b72}.bs-root button[data-book-group=letters]{background:#e4e3f2;color:#4a4876}.bs-root button[data-book-group=apocalypse]{background:#f0e6c9;color:#6a5725}.bs-book-group button[aria-current=true],.bs-chapter-grid button[aria-current=true]{outline:2px solid #8d6a36;outline-offset:1px}.bs-direct-reference{display:flex;gap:8px;border-top:1px solid var(--bs-line);padding-top:14px}.bs-direct-reference input{width:100%;min-width:0;padding:10px;border:1px solid var(--bs-line);border-radius:8px;background:var(--bs-paper);color:var(--bs-ink);font:inherit}.bs-history-list{max-height:60dvh;overflow:auto;margin-top:16px}.bs-root .bs-history-item{display:block;text-align:left;width:100%;margin-bottom:8px;padding:12px;line-height:1.6}.bs-history-item small{display:block;color:var(--bs-muted)}.bs-chain-dialog{max-height:80dvh;overflow:auto}.bs-chain-dialog .bs-source-content{font:16px/1.8 Georgia,serif}.bs-root dialog input:focus-visible{outline:3px solid #7094cf;outline-offset:2px}
+@media(max-width:700px){.bs-root .bs-verse-row{grid-template-columns:minmax(0,1fr) 72px;column-gap:10px}.bs-root .bs-chain-margin{padding-left:6px;font-size:10px}.bs-scripture{padding:22px 15px}.bs-navigation-dialog{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:none;max-height:76dvh;border-radius:20px 20px 0 0;padding-bottom:max(18px,env(safe-area-inset-bottom))}.bs-navigation-dialog.bs-expanded{height:96dvh;max-height:96dvh}.bs-navigation-dialog.bs-expanded .bs-navigation-body{max-height:72dvh}.bs-book-group,.bs-chapter-grid{gap:6px}.bs-navigation-dialog input{font-size:16px}}
+.bs-root .bs-chain-key{display:block;line-height:1.3}.bs-root .bs-chain-margin button{margin-bottom:5px;overflow-wrap:break-word}.bs-root .bs-chain-margin{overflow-wrap:break-word}
+.bs-root .bs-chain-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.bs-root .bs-chain-margin button:focus-visible .bs-chain-name{display:block}
+/* Preserve the numerical index's sections, indented lists and verse paragraphs. */
+.bs-chain-dialog{width:min(94vw,680px);padding:0 24px 20px;scroll-padding-top:85px}
+.bs-chain-dialog .bs-dialog-head{position:sticky;top:0;z-index:1;background:var(--bs-panel);padding:18px 0 14px;border-bottom:1px solid var(--bs-line);font:700 15px/1.5 Arial,sans-serif}
+.bs-chain-dialog .bs-source-content{font:17px/1.65 Georgia,'Times New Roman',serif;overflow-wrap:break-word;padding-top:8px}
+.bs-chain-dialog .bs-source-content p{margin:0 0 12px;white-space:normal}
+.bs-chain-dialog .bs-source-content .bs-chain-section{font:700 17px/1.5 Georgia,serif;margin:18px 0 5px;padding-left:12px}
+.bs-chain-dialog .bs-source-content .bs-chain-subheading{font:700 italic 16px/1.5 Georgia,serif;margin:16px 0 5px;padding-left:12px}
+.bs-chain-dialog .bs-source-content .bs-chain-references{font-size:15px;line-height:1.65;margin:0 0 16px;padding-left:24px}
+.bs-chain-dialog .bs-source-content .bs-chain-verse{padding-left:14px;text-indent:-14px;margin-bottom:12px}
+.bs-chain-dialog .bs-chain-verse .bs-scripture-ref{font-weight:700}
+.bs-chain-dialog .bs-source-content .bs-chain-example{margin:3px 0;padding-left:24px}
+.bs-chain-dialog .bs-source-content .bs-chain-related{border-top:1px solid var(--bs-line);padding:12px 0 0 12px;margin-top:16px;font-size:15px}
+.bs-root .bs-chain-dialog button.bs-scripture-ref{color:#a52c40;text-decoration-thickness:1px}
+.bs-root[data-theme=dark] .bs-chain-dialog button.bs-scripture-ref{color:#ffad9f}
+@media(max-width:700px){.bs-chain-dialog{padding:0 18px 16px}.bs-chain-dialog .bs-source-content{font-size:16px}.bs-chain-dialog .bs-source-content .bs-chain-references{padding-left:16px}}
+@font-face{font-family:StudyHandwriting;src:url('fonts/Kalam-Regular.ttf') format('truetype');font-style:normal;font-weight:400;font-display:swap}
+.bs-study-tabs{display:flex;gap:3px;padding:10px 9px 0;background:var(--bs-line);position:sticky;top:0;z-index:3;isolation:isolate}
+.bs-root .bs-study-tabs button{flex:1;min-width:0;border:0;border-radius:13px 13px 0 0;background:transparent;padding:12px 8px;font:12px/1.3 Arial,sans-serif;white-space:nowrap;position:relative}
+.bs-root .bs-study-tabs button[aria-selected=true]{background:var(--bs-panel);font-weight:700;box-shadow:0 -2px 5px #302c2508}
+.bs-root .bs-study-tabs button[aria-selected=true]::after{content:'';position:absolute;bottom:-1px;left:0;right:0;height:3px;background:var(--bs-panel)}
+.bs-root .bs-study-tabs button:disabled{opacity:.5}
+.bs-study-header h2.bs-handwritten{font:italic 400 35px/1.4 StudyHandwriting,'Segoe Print',cursive;margin:0}
+.bs-root button.bs-chain-ref{display:inline;min-height:0;padding:0;border:0;border-radius:0;background:none;color:var(--bs-accent);font:inherit;text-align:left;text-decoration:underline;text-underline-offset:3px}
+.bs-chain-dialog .bs-dialog-head strong{flex:1;min-width:0}.bs-chain-dialog .bs-dialog-head button{flex-shrink:0}
+.bs-concordance-entry{margin:0 0 24px}.bs-concordance-entry h4{font:700 18px/1.5 Georgia,serif;margin:0 0 8px}
+.bs-concordance-related{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 16px;color:var(--bs-muted);font-size:12px}
+.bs-root button.bs-concordance-form{font-size:11px;padding:4px 7px;min-height:29px}
+.bs-concordance-excerpts{font:15px/1.65 Georgia,serif}.bs-concordance-excerpts p{margin:0;padding:9px 0;border-bottom:1px solid var(--bs-line);white-space:normal}
+.bs-concordance-excerpts .bs-scripture-ref{font-weight:bold}
+@media(max-width:700px){.bs-study-tabs{padding:8px 6px 0;gap:1px}.bs-root .bs-study-tabs button{font-size:11px;padding:12px 5px}.bs-study-header h2.bs-handwritten{font-size:32px}.bs-chain-dialog .bs-dialog-head{gap:7px}}
+/* Shared heading system: every tool uses the same font and source banner. */
+.bs-tool-word{--bs-tool-tint:#c4a052}.bs-tool-concordance{--bs-tool-tint:#8fa58a}.bs-tool-commentary{--bs-tool-tint:#839eb9}.bs-tool-book{--bs-tool-tint:#bf907b}
+.bs-study-header.bs-banner{position:relative;isolation:isolate;min-height:106px;padding:20px 24px;display:flex;align-items:center;justify-content:center;border-bottom:0;margin:8px 10px 0}
+.bs-banner::before,.bs-banner::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:url('img/BibleStudyBanner.png') center/100% 100% no-repeat}
+.bs-banner::after{background:var(--bs-tool-tint,#c4a052);opacity:.42;mask:url('img/BibleStudyBanner.png') center/100% 100% no-repeat;-webkit-mask:url('img/BibleStudyBanner.png') center/100% 100% no-repeat;mix-blend-mode:multiply}
+#bibleStudyRoot .bs-banner h2{font:italic 400 36px/1.35 StudyHandwriting,'Segoe Print',cursive;margin:0;color:#352c22;text-align:center}
+.bs-root .bs-study-tabs button[aria-selected=true]{box-shadow:inset 0 3px var(--bs-tab-accent,#c4a052)}
+#bsConcordanceTab{--bs-tab-accent:#8fa58a}#bsCommentaryTab{--bs-tab-accent:#839eb9}#bsBookStudyTab{--bs-tab-accent:#bf907b}
+.bs-reader-tabs{position:sticky;top:0}.bs-toolbar{top:var(--bs-reader-tab-height,50px);z-index:2}
+.bs-testaments{display:flex;gap:7px;margin:0 0 12px}.bs-root .bs-testaments button{flex:1;font-weight:700}
+.bs-root .bs-testaments button[aria-pressed=true]{background:var(--bs-accent);color:var(--bs-panel)}
+.bs-root .bs-book-group button[aria-current=true]{outline:3px solid var(--bs-accent);outline-offset:1px;font-weight:700;box-shadow:0 0 0 3px var(--bs-panel)}
+.bs-person-study{margin:0 0 24px;padding:15px;border:1px solid var(--bs-line);border-radius:12px;background:var(--bs-paper)}
+.bs-person-study h4{font:700 20px/1.4 Georgia,serif;margin:8px 0 12px}.bs-person-choice{display:block;width:100%;text-align:left;margin:7px 0;line-height:1.6!important}
+.bs-person-study details{margin:12px 0}.bs-person-study summary{cursor:pointer;font-weight:700;line-height:1.6}
+.bs-person-study .bs-source-content,.bs-book-study .bs-source-content{font:15px/1.75 Georgia,serif;overflow-wrap:break-word}
+.bs-book-study{max-width:900px;margin:auto;font-size:15px}.bs-book-study h3{font-size:26px}.bs-book-study .bs-source-content p{white-space:normal;margin:8px 0}
+.bs-book-study .bs-source-content h5{font:700 17px/1.6 Georgia,serif;margin:22px 0 9px}
+.bs-source-pages{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}.bs-source-dialog{width:min(96vw,1100px);max-height:90dvh;overflow:auto}.bs-source-dialog .bs-dialog-head{position:sticky;top:0;background:var(--bs-panel);padding:10px 0;z-index:1}
+#bsSourceImage{display:block;max-width:100%;height:auto;margin:10px auto}
+.bs-root[data-theme=dark] .bs-banner h2{color:#352c22}
+@media(max-width:700px){.bs-study-header.bs-banner{min-height:95px;margin:5px 5px 0;padding:18px 16px}#bibleStudyRoot .bs-banner h2{font-size:32px}.bs-testaments button{font-size:12px}.bs-person-study{padding:12px}}
+/* Desktop workspace fills the available window below the shared site header. */
+@media(min-width:701px){
+  .district-glass .app-main:has(>.bs-root),.app-main:has(>.bs-root){width:100%;max-width:none;margin:0;padding:10px 14px 8px}
+  .bs-root{max-width:none;margin:0;padding:0;height:calc(100dvh - var(--bs-page-top,90px) - 8px);min-height:520px;display:flex;flex-direction:column}
+  .bs-root>.bs-header,.bs-root>.bs-preview,.bs-root>.bs-sync-tools,.bs-root>.bs-save-status{flex-shrink:0}
+  .bs-root .bs-layout{height:auto;min-height:0;flex:1}
+}
+.bs-scripture{touch-action:pan-y pinch-zoom}
+.bs-book-study .bs-source-content .bs-major-chain{margin:0;border-bottom:1px solid var(--bs-line)}
+.bs-root .bs-major-chain button.bs-chain-ref{display:block;width:100%;padding:9px 0;text-decoration:none;line-height:1.6}
+.bs-root .bs-major-chain button.bs-chain-ref:hover{text-decoration:underline}
+.bs-condensed-outline{border-top:1px solid var(--bs-line);margin-top:24px;padding-top:18px}
+.bs-condensed-outline h4{font:bold 20px/1.5 Georgia,serif}
+.bs-commentary-author{font-weight:700;margin:0;color:var(--bs-accent)}
+.bs-commentary-guide{color:var(--bs-muted);margin:4px 0 24px;font-size:12px}
+.bs-commentary-entry{margin:20px 0 30px}.bs-commentary-entry h4{font:700 22px/1.4 Georgia,serif;margin:5px 0 10px}
+.bs-commentary-volume{font-weight:700;color:var(--bs-accent);margin:0}
+.bs-commentary-range{font-size:12px;color:var(--bs-muted);padding-bottom:12px;border-bottom:1px solid var(--bs-line)}
+.bs-commentary-text{font:16px/1.8 Georgia,serif;overflow-wrap:break-word}
+.bs-commentary-text p{white-space:pre-wrap;margin:12px 0}.bs-commentary-text summary{font:700 13px/1.8 Arial,sans-serif;color:var(--bs-accent);cursor:pointer;padding:8px 0}
+.bs-chain-chart{display:block;width:100%;height:auto;margin:12px 0}
+/* Keep diagnostics in a developer dialog, leaving the reader directly below its header. */
+.bs-header-actions,.bs-sync-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.bs-header-actions{justify-content:flex-end;gap:12px}
+.bs-sync-dialog{width:min(94vw,620px);max-height:85dvh;overflow:auto}
+.bs-sync-dialog .bs-dialog-head{padding-bottom:12px;border-bottom:1px solid var(--bs-line)}
+.bs-sync-dialog .bs-sync-tools{display:block;margin:16px 0 0;font-size:13px}
+.bs-sync-dialog .bs-sync-tools details{margin-top:14px}.bs-sync-dialog .bs-sync-tools p{margin:10px 0}
+.bs-commentary-series{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.bs-root .bs-commentary-series button{padding:9px 15px;border-radius:18px;line-height:1.4}
+.bs-root .bs-commentary-series button[aria-pressed=true]{background:#dce7f0;color:#283f56;border-color:#839eb9;font-weight:700}
+.bs-root[data-theme=dark] .bs-commentary-series button[aria-pressed=true]{background:#42576b;color:#f1f5fa}
+#bsReaderError{padding:12px;border-left:3px solid var(--bs-accent);font:14px/1.6 Arial,sans-serif}
+@media(max-width:700px){.bs-header-actions{width:100%;justify-content:flex-start}.bs-sync-actions{width:100%}.bs-sync-actions button{flex:1}.bs-root .bs-commentary-series button{flex:1;padding:9px 10px}}
+/* Exalting Jesus: the source outline and its body sections share a clear hierarchy. */
+.bs-commentary-text .bs-commentary-main-idea{padding:12px 15px;background:var(--bs-paper);border-left:3px solid #839eb9}
+.bs-commentary-outline-card{margin:18px 0 28px;padding:15px 19px;background:var(--bs-paper);border:1px solid var(--bs-line);border-radius:10px}
+.bs-commentary-outline-card>h5{margin:0 0 12px!important;font:700 16px/1.5 Arial,sans-serif}
+.bs-commentary-text .bs-commentary-outline{margin:7px 0;line-height:1.65}
+.bs-commentary-outline.bs-commentary-level-1{font-weight:700;margin-top:14px}
+.bs-commentary-outline.bs-commentary-level-2,.bs-commentary-outline-continuation.bs-commentary-level-2{padding-left:20px}
+.bs-commentary-outline.bs-commentary-level-3,.bs-commentary-outline-continuation.bs-commentary-level-3{padding-left:40px;font-size:15px}
+.bs-commentary-text .bs-commentary-outline-continuation{margin:0 0 7px}
+.bs-commentary-text .bs-commentary-heading{font:700 22px/1.5 Georgia,serif;margin:32px 0 8px;padding:15px 0 0;border-top:1px solid var(--bs-line);color:var(--bs-ink)}
+.bs-commentary-text .bs-commentary-heading.bs-commentary-level-2{font-size:18px;margin:24px 0 8px;padding:0 0 0 14px;border:0}
+.bs-commentary-text .bs-commentary-heading.bs-commentary-level-3{font-size:16px;margin:18px 0 8px;padding:0 0 0 28px;border:0}
+.bs-commentary-marker{color:var(--bs-accent);margin-right:5px}
+.bs-commentary-text .bs-commentary-reference{margin:0 0 18px;font-size:14px;font-style:italic}
+.bs-commentary-text .bs-commentary-section{font:700 19px/1.5 Georgia,serif;margin:28px 0 12px}
+@media(max-width:700px){.bs-commentary-outline-card{padding:12px}.bs-commentary-text .bs-commentary-heading{font-size:20px}.bs-commentary-text .bs-commentary-heading.bs-commentary-level-2{font-size:17px;padding-left:8px}}

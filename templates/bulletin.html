@@ -20,12 +20,26 @@
           <span class="verse-date">{{ today_str }}</span>
         </div>
         <p class="verse-text">{{ verse_text }}</p>
-        <p class="verse-ref">{{ verse_reference }}</p>
+        <p class="verse-ref">{{ verse_reference }} (NIV)</p>
       </div>
 
       <p class="muted small">
-        (Verse text provided via bible-api.com, KJV translation.)
+        New International Version (NIV), from the Bible Study collection.
       </p>
+      {% if leadership_insight or insight_pending %}
+      <section id="maxwellInsight" class="maxwell-insight" {% if not leadership_insight %}hidden{% endif %}>
+        {% if leadership_insight %}
+        <h3>Leadership Insight</h3>
+        <p class="muted small">Maxwell Leadership Bible</p>
+        <strong>{{ leadership_insight.title }}</strong>
+        <p class="muted small">{{ leadership_insight.passage }}</p>
+        <p>{{ leadership_insight.summary }}</p>
+        <details><summary>Read more</summary><div class="maxwell-source-content">{{ leadership_insight.content }}</div></details>
+        {% endif %}
+      </section>
+      <script id="maxwellInsightConfig" type="application/json">{{ {'url': url_for('bulletin_leadership_insight'), 'pending': insight_pending, 'reference': verse_reference, 'day': verse_day}|tojson }}</script>
+      <script src="{{ url_for('static', filename='bulletin_insight.js', v='2') }}" defer></script>
+      {% endif %}
     </section>
   </div>
 

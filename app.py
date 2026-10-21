@@ -45,6 +45,7 @@ from schedule import register_schedule_routes
 from thanksgiving_pledges import register_thanksgiving_pledges
 from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
+from bible_study import daily_maxwell_insight, get_indexed_niv_passage, register_bible_study_routes
 from sermon_ebooks import register_sermon_ebooks_routes
 from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
 from ai_assistant import register_ai_assistant
@@ -2963,40 +2964,15 @@ VERSE_REFERENCES = [
 
 
 
-def get_verse_of_the_day():
-    today_str = date.today().isoformat()
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute("SELECT * FROM verses WHERE date = ?", (today_str,))
-    row = cursor.fetchone()
-    if row:
-        return row["reference"], row["text"]
-
-    idx = date.today().toordinal() % len(VERSE_REFERENCES)
+def get_verse_of_the_day(today=None):
+    today = today or datetime.now(PH_TZ).date()
+    idx = today.toordinal() % len(VERSE_REFERENCES)
     reference = VERSE_REFERENCES[idx]
-
-    verse_text = reference
-    try:
-        encoded_ref = urllib.parse.quote(reference)
-        resp = requests.get(f"https://bible-api.com/{encoded_ref}", timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        if "text" in data and data["text"].strip():
-            verse_text = data["text"].strip()
-    except Exception:
-        verse_text = reference
-
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO verses (date, reference, text)
-        VALUES (?, ?, ?)
-        """,
-        (today_str, reference, verse_text),
+    verse_text = get_indexed_niv_passage(
+        reference, app.config['BIBLE_STUDY_DATABASE'], static_folder=app.static_folder,
+        protected_paths=(DATABASE, AI_DATABASE),
     )
-    db.commit()
-
-    return reference, verse_text
+    return reference, verse_text or "Today's NIV verse is temporarily unavailable."
 
 
 # ========================
@@ -3123,7 +3099,14 @@ def generate_pastor_credentials(full_name: str, age: int):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
-app.config["DATABASE"] = DATABASE
+app.config.update(
+    DATABASE=DATABASE,
+    AI_DATABASE=AI_DATABASE,
+    BIBLE_STUDY_LIBRARY_DATABASE=DATABASE,
+    BIBLE_STUDY_DRIVE_FOLDER_ID=os.environ.get("BIBLE_STUDY_DRIVE_FOLDER_ID", ""),
+    BIBLE_STUDY_DATABASE=os.environ.get(
+        "BIBLE_STUDY_DATABASE", str(Path(data_path("bible_study_data")) / "bible_study.db")),
+)
 
 register_area_progress_monitor(app)
 register_church_progress(app)
@@ -3132,6 +3115,7 @@ register_thanksgiving_pledges(app)
 register_temp_edit_routes(app)
 register_church_finder_routes(app)
 register_pastor_resources_routes(app)
+register_bible_study_routes(app)
 register_sermon_ebooks_routes(app)
 register_ai_assistant(app)
 register_developer_routes(app)
@@ -3969,8 +3953,11 @@ def bulletin():
 
     sync_from_sheets_if_needed(force=False)
 
-    reference, text = get_verse_of_the_day()
-    today_str = date.today().strftime("%B %d, %Y")
+    today = datetime.now(PH_TZ).date()
+    reference, text = get_verse_of_the_day(today=today)
+    leadership_insight, insight_pending = daily_maxwell_insight(
+        app.config['BIBLE_STUDY_DATABASE'], AI_DATABASE, reference, text, today.isoformat())
+    today_str = today.strftime("%B %d, %Y")
     area_number = _current_user_area_number()
     posts, current_church = build_bulletin_board_posts()
 
@@ -3978,11 +3965,27 @@ def bulletin():
         "bulletin.html",
         verse_reference=reference,
         verse_text=text,
+        verse_day=today.isoformat(),
+        leadership_insight=leadership_insight,
+        insight_pending=insight_pending,
         today_str=today_str,
         area_number=area_number,
         posts=posts,
         current_church=current_church,
     )
+
+@app.route("/bulletin/leadership-insight")
+def bulletin_leadership_insight():
+    if not any_user_logged_in():
+        return jsonify(ok=False, error="Login required."), 401
+    today = datetime.now(PH_TZ).date()
+    reference, text = get_verse_of_the_day(today=today)
+    insight, pending = daily_maxwell_insight(
+        app.config['BIBLE_STUDY_DATABASE'], AI_DATABASE, reference, text, today.isoformat())
+    response = jsonify(ok=True, insight=insight, pending=pending, reference=reference, day=today.isoformat())
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
 
 @app.route("/bulletin/pray/<request_id>", methods=["POST"])
 def bulletin_pray(request_id):

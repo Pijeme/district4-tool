@@ -4,6 +4,7 @@ requests
 gspread
 google-auth
 pypdf
+pypdfium2>=5.14,<6
 reportlab
 python-dotenv
 google-genai

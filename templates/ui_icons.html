@@ -30,7 +30,7 @@
 
 {# Shared loading UI, also used by standalone pages through app.py. #}
 {% macro loading_head() -%}
-<link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20261006-loading-compact') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20261021-reading') }}">
 <link rel="preload" as="image" href="{{ url_for('static', filename='img/Pij Loading.png') }}">
 <script>
 (function () {
@@ -75,6 +75,7 @@
     [/^\/pastor-resources\/read(?:\/|$)/, 'eBook Reader', 'Open the selected book with bookmarks, highlights, notes and reading progress.'],
     [/^\/pastor-resources\/admin\/database-details(?:\/|$)/, 'Library Database Details', 'Inspect library files, synchronization details and AI indexing status.'],
     [/^\/pastor-resources\/my-library(?:\/|$)/, 'My Library', 'View your saved books, bookmarks, highlights, notes and reading progress.'],
+    [/^\/pastor-resources\/bible-study(?:\/|$)/, 'Bible Study', 'Read Scripture and explore word study and concordance resources.'],
     [/^\/(?:pastor-resources|download-resources)(?:\/|$)/, "Pastor's Resources", 'Browse ministry books and study resources, and open the ebook library.'],
     [/^\/thanksgiving-pledges\/pending(?:\/|$)/, 'Pending Thanksgiving Pledges', 'Review submitted pledges and approve or reject pending entries.'],
     [/^\/thanksgiving-pledges(?:\/|$)/, '2027 Thanksgiving Pledges', 'View thanksgiving pledges and submit your pledge with a verification photo.'],

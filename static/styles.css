@@ -541,3 +541,11 @@ html.district-page-loading #globalLoadingOverlay { display: flex; }
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
+/* Maxwell article has its own plain reading panel on the bulletin page. */
+.ui-bulletin #maxwellInsight{margin-top:18px;padding:20px;background:#fff;color:#293241;border:1px solid #e1e5e9;border-radius:8px;box-shadow:none;line-height:1.7;overflow-wrap:break-word}
+.ui-bulletin #maxwellInsight h3{margin:0 0 10px;color:#293241;font-size:19px;letter-spacing:normal}
+.ui-bulletin #maxwellInsight strong{display:block;line-height:1.5}
+.ui-bulletin #maxwellInsight p{margin:8px 0}
+.ui-bulletin #maxwellInsight summary{cursor:pointer;color:#516b86;font-weight:600;padding:8px 0}
+.ui-bulletin #maxwellInsight .maxwell-source-content{white-space:pre-wrap;font:15px/1.8 Georgia,serif;border-top:1px solid #e1e5e9;padding-top:12px;margin-top:8px}

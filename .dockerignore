@@ -37,3 +37,9 @@ backups/
 .deploy.json
 database_report.txt
 .database_maintenance
+
+bible_study_data/
+bible_study_private/
+bible_study_backups/
+bible_study*.db*
+*.epub
