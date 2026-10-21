@@ -7,6 +7,7 @@ services:
     environment:
       DATA_DIR: /data
       AI_DATABASE: /data/ai_index.db
+      BIBLE_STUDY_DATABASE: /data/bible_study_data/bible_study.db
       TZ: ${TZ:-Asia/Manila}
       FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?Set FLASK_SECRET_KEY in .env}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}

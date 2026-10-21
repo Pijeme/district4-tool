@@ -55,9 +55,11 @@ Python remains at `http://127.0.0.1:5000`.
 
 ## Bible Study updates
 
-Rebuild the image after updating `requirements.txt`; Thompson PDF indexing uses
-`pypdfium2`. Keep the existing `bible_study_data` directory or volume mounted at
-the configured `BIBLE_STUDY_DATABASE` location. No source ebooks belong in the
+Rebuild the image after updating dependencies in both `requirements.txt` and
+`requirements.lock.txt`; Docker installs the locked dependencies, including
+`pypdfium2` for Thompson PDF indexing. The Compose data volume persists the Bible
+database at `/data/bible_study_data/bible_study.db` and the commentary index at
+`/data/ai_index.db`. Keep that volume attached when updating the image. No source ebooks belong in the
 image, public static folder, or Git repository.
 
 The developer **Sync Bible Study** button reads **For Scripture Study App**
