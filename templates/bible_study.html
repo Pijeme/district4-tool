@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='study-outlines-15') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='study-layout-18') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -55,6 +55,7 @@
       <label class="bs-visually-hidden" for="bsLayoutMode">Study layout</label><select id="bsLayoutMode"><option value="split">Split View</option><option value="bible">Bible Fullscreen</option><option value="study">Study Fullscreen</option></select>
     </div>
   </div>
+  <div class="bs-wide-tabs" id="bsWideTabs" aria-label="Bible and study tabs"></div>
   <div class="bs-layout" id="bsLayout">
     <section class="bs-pane bs-bible" id="bsBible" aria-label="NIV Bible reader" tabindex="-1">
       <div class="bs-study-tabs bs-reader-tabs" role="tablist" aria-label="Bible tools">
@@ -173,5 +174,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSourceDialog" aria-labelledby="bsSourceTitle"><div class="bs-dialog-head"><strong id="bsSourceTitle">Thompson study page</strong><button type="button" id="bsCloseSource" aria-label="Close study page">×</button></div><div class="bs-image-actions"><button type="button" data-study-image-action="bookmark">Bookmark page</button><button type="button" data-study-image-action="note">Note on page</button></div><img id="bsSourceImage" alt="Thompson study source page"></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='study-outlines-15') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='study-layout-18') }}" defer></script>
 {% endblock %}

@@ -238,14 +238,15 @@ class BibleStudyBrowserTests(unittest.TestCase):
         bible_study.register_bible_study_routes(app)
         app.add_url_rule('/pastor-resources', endpoint='pastor_resources', view_func=lambda: '')
         app.jinja_loader = ChoiceLoader([
-            DictLoader({'base.html': '<html><head></head><body class="district-glass"><button id="outsideBible">Outside control</button><main class="app-main">{% block content %}{% endblock %}</main></body></html>'}),
+            DictLoader({'base.html': '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body class="district-ui district-glass bible-study-page"><header class="app-header"><div class="header-left"><button id="outsideBible" class="menu-toggle">☰</button><div class="logo-wrap"></div><div class="header-text"><div class="app-title">District 4 Tool <span class="app-section-title">Bible Study</span></div></div></div></header><main class="app-main">{% block content %}{% endblock %}</main></body></html>'}),
             FileSystemLoader(str(ROOT / 'templates')),
         ])
         with app.test_request_context():
             html = app.jinja_env.get_template('bible_study.html').render(
                 csrf_token='test-csrf', bible_study_admin=admin,
                 bible_books=[{'name': name, 'chapters': count} for name, count in bible_study.BOOKS])
-        baseline = '<style>' + (ROOT / 'static/glass_theme.css').read_text(encoding='utf-8') + '</style>'
+        baseline = '<style>' + '\n'.join((ROOT/'static'/name).read_text(encoding='utf-8') for name in
+                                       ('styles.css','visual_upgrade.css','glass_theme.css')) + '</style>'
         html = html.replace('<head>', '<head>' + baseline)
         return re.sub(r'<link rel="stylesheet"[^>]*bible_study\.css[^>]*>',
                       lambda _match: '<style>' + (ROOT / 'static/bible_study.css').read_text(encoding='utf-8') + '</style>', html)
@@ -517,6 +518,8 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!document.getElementById('bsSelectionToolbar').hidden,'Greek explanation cannot use reading actions');
             getSelection().removeAllRanges();document.getElementById('bsCloseGreek').click();
             await new Promise(resolve=>setTimeout(resolve,700));greek.click();await wait();
+            check(document.getElementById('bsGreekDialog').open,'Greek popup did not reopen after selection');
+            check(document.querySelector('#bsGreekActions button'),'Reopened Greek popup lost its dictionary action');
             document.querySelector('#bsGreekActions button').click();await wait();
             check(document.getElementById('bsWordTab').getAttribute('aria-selected')==='true','Open Word Study did not switch tabs');
             check(dictionaryQueries.at(-1).includes('q=G3870'),'Dictionary lookup did not use the matched identifier');
@@ -529,6 +532,29 @@ class BibleStudyBrowserTests(unittest.TestCase):
         '''
         for size in ((1440,900),(390,844)):
             with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_rapid_tab_switches_share_pending_requests_and_keep_loaded_commentary_dom(self):
+        setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
+        window.commentaryFetches=0;window.releaseCommentary=null;
+        window.fetch=async(url,options={})=>{''').replace("if(path.endsWith('/history'))data.history=[];",'''
+            if(path.includes('/commentary?')){
+                commentaryFetches++;
+                await new Promise(resolve=>{releaseCommentary=resolve});
+                data={...data,available:true,reference:'Genesis 1:1',entries:[{title:'Original passage',source_title:'Original source',author:'Source author',passage:'Genesis 1:1',blocks:[{type:'paragraph',text:'A complete original paragraph that remains visible when switching tabs.'}]}]};
+            }else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,100));
+            const commentary=document.getElementById('bsCommentaryTab'),word=document.getElementById('bsWordTab');
+            commentary.click();await wait();word.click();commentary.click();await wait();
+            check(commentaryFetches===1,'Switching back duplicated an in-flight commentary request');
+            releaseCommentary();await wait();
+            const article=document.querySelector('#bsCommentaryResults article');
+            check(article&&article.textContent.includes('complete original paragraph'),'Shared response did not reach the active tab');
+            for(let i=0;i<20;i++){word.click();commentary.click();}
+            await wait();
+            check(commentaryFetches===1,'Loaded commentary was downloaded again on each tab switch');
+            check(document.querySelector('#bsCommentaryResults article')===article,'Loaded text was needlessly rebuilt');
+        ''',setup,window_size=(390,844))
 
     def test_sermon_titles_follow_chapter_only_and_source_selections_save_and_reopen(self):
         setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
@@ -869,6 +895,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         verify='''
             const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,25));
             const mobile=matchMedia('(max-width:700px)').matches;
+            const touch=mobile||navigator.maxTouchPoints>0;
             check(!document.querySelector('.bs-preview,.bs-sync-actions'),'Ordinary user sees diagnostic controls');
             if(!mobile){
                 check(document.querySelector('.app-main').getBoundingClientRect().width>innerWidth-40,'Desktop workspace remains narrow');
@@ -913,8 +940,8 @@ class BibleStudyBrowserTests(unittest.TestCase):
                 target.dispatchEvent(new PointerEvent('pointerup',{pointerType:'touch',pointerId:7,isPrimary:true,clientX:200+dx,clientY:200+dy,bubbles:true}));
             };
             swipe(-120);await wait();
-            check(el('Chapter').value===(mobile?'3':'2'),'Touch navigation has wrong viewport behavior');
-            if(mobile){
+            check(el('Chapter').value===(touch?'3':'2'),'Touch navigation has wrong device behavior');
+            if(touch){
                 swipe(120);await wait();check(el('Chapter').value==='2','Swipe right did not go back');
                 swipe(-10,160);await wait();check(el('Chapter').value==='2','Vertical scrolling changed chapter');
                 swipe(-25);await wait();check(el('Chapter').value==='2','Short gesture changed chapter');
@@ -929,8 +956,157 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(exalting.getAttribute('aria-pressed')==='true','Chapter navigation lost commentary choice');
             check(events.filter(p=>p.includes('/commentary?')).at(-1).includes('series=exalting-jesus'),'Chapter navigation requested the wrong commentary');
         '''
-        for size in ((1440,900),(390,844)):
+        for size in ((1440,900),(390,844),(1024,900)):
+            tablet="Object.defineProperty(navigator,'maxTouchPoints',{value:5});" if size[0]==1024 else ''
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,tablet+setup,window_size=size)
+
+    def test_study_loading_prioritizes_bible_and_visible_tab_then_only_selected_background_sources(self):
+        setup='''
+        window.events=[];window.releaseBible=null;window.releaseCommentary=null;window.releaseTitles=null;
+        window.fetch=async(url)=>{
+            const path=String(url),q=new URL(path,'https://example.test').searchParams;events.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:31087,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:false,state:{book:'Colossians',chapter:2,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?')){
+                await new Promise(resolve=>{releaseBible=resolve});
+                data.verses=[{id:1,verse:1,text:'Faith.',tokens:[{text:'Faith',token_index:0,start_offset:0,end_offset:5}]}];
+            }else if(path.includes('/commentary?')){
+                if(q.get('chapter')==='2')await new Promise(resolve=>{releaseCommentary=resolve});
+                data={...data,available:true,reference:'Source passage',entries:[{source_title:'Moody',title:'Original heading',author:'Source editor',passage:'Colossians 2',blocks:[{type:'paragraph',text:'Original paragraph.'}]}]};
+            }else if(path.includes('/sermons?')){
+                if(q.get('chapter')==='3')await new Promise(resolve=>{releaseTitles=resolve});
+                data.sermons=[{id:'one',title:'A source theme'}];
+            }else throw Error('Unexpected request '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const el=name=>document.getElementById('bs'+name),wait=(ms=25)=>new Promise(r=>setTimeout(r,ms));
+            el('CommentaryTab').click();document.querySelector('[data-commentary-series="moody"]').click();await wait();
+            check(!events.some(x=>x.includes('/commentary?')||x.includes('/sermons?')),'Study loaded before Bible');
+            releaseBible();await wait();
+            check(events.filter(x=>x.includes('/commentary?')).length===1,'Foreground commentary requested twice');
+            check(events.find(x=>x.includes('/commentary?')).includes('series=moody'),'Wrong selected provider loaded');
+            await wait(700);check(!events.some(x=>x.includes('/sermons?')),'Hidden tab loaded before visible commentary finished');
+            releaseCommentary();await wait(700);
+            check(events.filter(x=>x.includes('/sermons?')).length===1,'Sermon titles did not warm after commentary');
+            el('SermonTab').click();await wait();
+            check(el('SermonResults').textContent.includes('A source theme'),'Prefetched titles were not rendered');
+            check(events.filter(x=>x.includes('/sermons?')).length===1,'Prefetched titles fetched again');
+            el('Next').click();await wait();
+            check(!events.some(x=>x.includes('/sermons?')&&x.includes('chapter=3')),'New titles preceded Bible');
+            releaseBible();await wait();
+            check(events.at(-1).includes('/sermons?')&&events.at(-1).includes('chapter=3'),'Visible sermon tab did not get priority');
+            await wait(700);check(!events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Background commentary preceded visible titles');
+            releaseTitles();await wait(700);
+            check(events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Selected commentary did not warm after titles');
+            check(events.filter(x=>x.includes('/commentary?')).every(x=>x.includes('series=moody')),'Other providers loaded eagerly');
+            check(!events.some(x=>x.includes('/sermons/')),'Full sermons loaded in the background');
+        '''
+        self.run_browser(self.render_preview(),verify,setup,window_size=(1100,900))
+
+    def test_tab_dimensions_stay_fixed_when_reading_panels_resize(self):
+        setup=self.personal_setup()
+        verify='''
+            const root=document.getElementById('bibleStudyRoot'),divider=document.getElementById('bsDivider');
+            const dimensions=()=>[...root.querySelectorAll('.bs-study-tabs button')].map(x=>[x.getBoundingClientRect().width,x.getBoundingClientRect().height]);
+            const positions=()=>[...root.querySelectorAll('.bs-study-tabs button')].map(x=>[x.getBoundingClientRect().x,x.getBoundingClientRect().y]);
+            const oldPositions=positions();
+            const before=dimensions(),reader=root.querySelector('.bs-reader'),study=document.getElementById('bsStudy');
+            const old=study.getBoundingClientRect();
+            divider.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+            await new Promise(r=>setTimeout(r,25));
+            const after=dimensions(),changed=study.getBoundingClientRect();
+            check(JSON.stringify(before)===JSON.stringify(after),'Tab sizes changed with divider');
+            if(!matchMedia('(max-width:700px)').matches)check(JSON.stringify(oldPositions)===JSON.stringify(positions()),'Wide tab positions followed the divider');
+            check(Math.abs(old.width-changed.width)>5||Math.abs(old.height-changed.height)>5,'Reading panel failed to resize');
+            const tabs=document.getElementById('bsSermonTab').parentElement;tabs.scrollLeft=tabs.scrollWidth;
+            const last=tabs.querySelector('button:last-child').getBoundingClientRect(),row=tabs.getBoundingClientRect();
+            check(last.right<=row.right+1,'Last study tab cannot be reached');
+        '''
+        for size in ((1440,900),(390,844),(820,1000)):
             with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_webkit_first_load_restored_passage_and_tablet_tabs_remain_visible(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('Optional Playwright WebKit is required')
+        source=(ROOT/'static/bible_study.js').read_text(encoding='utf-8')
+        html=re.sub(r'<script src="[^"]*bible_study\.js[^\"]*"[^>]*></script>',
+                    lambda _: '<script>'+source.replace('</script',r'<\/script')+'</script>',self.render_preview())
+        setup=self.personal_setup()+'''
+        const fixtureFetch=window.fetch;
+        window.fetch=async(url,options)=>{
+            const response=await fixtureFetch(url,options),data=await response.json();
+            if(String(url).endsWith('/state')&&!options?.method)data.state.verse=17;
+            if(String(url).includes('/chapter?'))data.verses=Array.from({length:30},(_,i)=>({...data.verses[0],id:i+7,verse:i+1}));
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };
+        '''
+        html=html.replace('<head>','<head><script>'+setup+'</script>')
+        with sync_playwright() as p:
+            try:browser=p.webkit.launch(headless=True)
+            except Exception as error:self.skipTest('WebKit executable unavailable: '+str(error).splitlines()[0])
+            try:
+                for width,height in ((393,852),(820,1000),(1024,768)):
+                    with self.subTest(width=width):
+                        context=browser.new_context(viewport=dict(width=width,height=height),is_mobile=True,has_touch=True)
+                        page=context.new_page();page.set_content(html);page.wait_for_selector('#bsVerse17')
+                        page.wait_for_timeout(80)
+                        def assert_navigation():
+                            self.assertTrue(page.evaluate('''()=>{const n=document.querySelector('#bsNavigate'),r=n.getBoundingClientRect(),h=document.querySelector('.app-header').getBoundingClientRect();return r.top>=h.bottom&&r.bottom<=innerHeight&&n.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}'''))
+                            self.assertEqual(page.evaluate('scrollY'),0)
+                        assert_navigation()
+                        self.assertGreater(page.locator('#bsBible').evaluate('e=>e.scrollTop'),0,'Fixture did not restore a scrolled passage')
+                        if width>700:
+                            def tab_positions():return page.locator('.bs-study-tabs button').evaluate_all('(items)=>items.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})')
+                            before=tab_positions()
+                            for key in ('Home','End'):
+                                page.locator('#bsDivider').dispatch_event('keydown',dict(key=key));page.wait_for_timeout(20)
+                                self.assertEqual(tab_positions(),before)
+                                self.assertGreaterEqual(page.locator('#bsBible').bounding_box()['width'],219)
+                                self.assertTrue(page.evaluate('''()=>[...document.querySelectorAll('#bsWideTabs button')].every(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})'''))
+                        page.evaluate('window.scrollTo(0,100);window.dispatchEvent(new Event("pageshow"))')
+                        assert_navigation()
+                        page.set_viewport_size(dict(width=width,height=height-150));page.wait_for_timeout(40)
+                        assert_navigation()
+                        page.locator('#bsNavigate').click();self.assertTrue(page.locator('#bsNavigationDialog').evaluate('e=>e.open'))
+                        page.locator('#bsCloseNavigation').click()
+                        # Crossing the phone breakpoint moves each unique tab
+                        # group back into its own pane and restores it on return.
+                        if width>700:
+                            page.set_viewport_size(dict(width=393,height=852));page.wait_for_timeout(40)
+                            self.assertEqual(page.locator('#bsBible>.bs-reader-tabs').count(),1)
+                            self.assertEqual(page.locator('#bsStudy>.bs-study-tabs').count(),1)
+                            self.assertEqual(page.locator('#bsSermonTab').count(),1)
+                            page.set_viewport_size(dict(width=width,height=height));page.wait_for_timeout(40)
+                            self.assertEqual(page.locator('#bsWideTabs [role=tab]').count(),6)
+                            assert_navigation()
+                        context.close()
+            finally:browser.close()
+
+    def test_rapid_chapter_navigation_skips_obsolete_background_work(self):
+        setup='''
+        window.requests=[];window.bibles=[];
+        window.fetch=async(url)=>{
+            const path=String(url),q=new URL(path,'https://example.test').searchParams;requests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:31087,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:false,state:{book:'Genesis',chapter:1,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?')){await new Promise(resolve=>bibles.push(resolve));data.verses=[];}
+            else if(path.includes('/commentary?'))data={...data,available:true,entries:[]};
+            else if(path.includes('/sermons?'))data.sermons=[];
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=ms=>new Promise(r=>setTimeout(r,ms));
+            document.getElementById('bsNext').click();document.getElementById('bsNext').click();await wait(25);
+            check(bibles.length===3,'Rapid chapters did not request the new Bible text');
+            bibles[2]();await wait(700);bibles[0]();bibles[1]();await wait(50);
+            const background=requests.filter(x=>x.includes('/commentary?')||x.includes('/sermons?'));
+            check(background.length===2&&background.every(x=>x.includes('chapter=3')),'Obsolete chapters were warmed');
+            check(document.getElementById('bsChapter').value==='3','Old Bible response replaced current chapter');
+        '''
+        self.run_browser(self.render_preview(),verify,setup)
 
     def test_bulletin_insight_is_invisible_when_no_note_matches(self):
         html='''<html><head></head><body><section id="maxwellInsight" hidden style="display:none"></section>

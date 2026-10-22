@@ -5,6 +5,7 @@ Database creation requires the explicit maintenance CLI or administrator sync;
 ordinary reading requests never create or migrate a database.
 """
 import argparse
+import copy
 import ctypes
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from functools import lru_cache
 from html import unescape as unescape_html
 import hmac
 import hashlib
+import gzip
 import html.entities
 import io
 import json
@@ -29,6 +31,7 @@ import unicodedata
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, session, url_for
 from itsdangerous import URLSafeSerializer, BadSignature
@@ -2869,15 +2872,53 @@ def _source_documents(conn, rows):
     formats={}
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pij_library_source_formats'").fetchone():
         formats={row[0]:list(row[1:]) for row in conn.execute('SELECT document_id,checksum,modified_time,version FROM pij_library_source_formats')}
+    drives={row[0]:row[1] for row in conn.execute('SELECT id,drive_file_id FROM pij_library_documents')} if live is not None else {}
     result=[]
     for row in rows:
         document=dict(row)
         if live is not None:
-            drive=conn.execute('SELECT drive_file_id FROM pij_library_documents WHERE id=?',(document['id'],)).fetchone()
-            if not drive or drive[0] not in live:continue
+            if drives.get(document['id']) not in live:continue
         document['source_format']=formats.get(document['id'])
         result.append(document)
     return result
+
+
+_CATALOGUE_BUILD_LOCK=threading.RLock()
+_CATALOGUE_PARSER_REVISION=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _persisted_catalogue(kind):
+    """Reuse derived private indexes after restarts; source databases stay read-only."""
+    def decorate(build):
+        @lru_cache(maxsize=1)
+        def cached(path, documents):
+            key=hashlib.sha256(json.dumps([_CATALOGUE_PARSER_REVISION,str(Path(path).resolve()),documents],sort_keys=True).encode()).hexdigest()
+            directory=Path(path).resolve().parent/'bible_study_data'/'catalogue_cache'
+            target=directory/(kind+'-'+key+'.json.gz')
+            # A second simultaneous first request waits for and reuses the first
+            # build, rather than parsing the same multi-volume library again.
+            with _CATALOGUE_BUILD_LOCK:
+                try:
+                    with gzip.open(target,'rt',encoding='utf-8') as stream:stored=json.load(stream)
+                    if stored.get('key')==key and isinstance(stored.get('sections'),list):return stored['sections']
+                except (OSError,ValueError,EOFError,AttributeError):pass
+                sections=build(path,documents)
+                temporary=None
+                try:
+                    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+                    with tempfile.NamedTemporaryFile(dir=directory,prefix=kind+'-',suffix='.tmp',delete=False) as stream:temporary=Path(stream.name)
+                    with gzip.open(temporary,'wt',encoding='utf-8',compresslevel=1) as stream:
+                        json.dump(dict(key=key,sections=sections),stream,ensure_ascii=False,separators=(',',':'))
+                    os.replace(temporary,target)
+                except OSError:
+                    logging.getLogger(__name__).debug('Derived study cache unavailable; using the in-memory catalogue.')
+                finally:
+                    try:
+                        if temporary:temporary.unlink(missing_ok=True)
+                    except OSError:pass
+                return sections
+        return cached
+    return decorate
 
 
 def _pulpit_citation_emphasis(text, runs):
@@ -2907,6 +2948,8 @@ def _indexed_source(conn, document, *, with_styles=True):
         if row and (row[0],row[1])==(document['checksum'],document['modified_time']):
             formatted=json.loads(row[2])
     if formatted is not None:
+        fingerprint=(document['checksum'],document['modified_time'],*document['source_format'])
+        _store_source_pages(conn.execute('PRAGMA database_list').fetchone()[2],document['id'],fingerprint,formatted)
         rows=[(page,'\n'.join(block['text'] for block in blocks)) for page,blocks in enumerate(formatted,1)]
         styles={'__source_typography__':True,'__source_heading_citations__':set()}
         for blocks in formatted:
@@ -2918,6 +2961,49 @@ def _indexed_source(conn, document, *, with_styles=True):
                     styles[block['text']]=True
         return rows,styles
     return conn.execute('SELECT page_start,content FROM pij_library_chunks WHERE document_id=? ORDER BY chunk_number',(document['id'],)).fetchall(),{}
+
+
+def _source_page_path(path, document_id, fingerprint):
+    key=hashlib.sha256(json.dumps([1,str(Path(path).resolve()),document_id,fingerprint]).encode()).hexdigest()
+    return Path(path).resolve().parent/'bible_study_data'/'catalogue_cache'/('pages-'+key+'.sqlite')
+
+
+def _store_source_pages(path, document_id, fingerprint, pages):
+    """Disposable indexed pages avoid reparsing a complete volume for one article."""
+    target=_source_page_path(path,document_id,fingerprint)
+    with _CATALOGUE_BUILD_LOCK:
+        if target.is_file():return
+        temporary=None
+        try:
+            target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            with tempfile.NamedTemporaryFile(dir=target.parent,prefix='pages-',suffix='.tmp',delete=False) as stream:
+                temporary=Path(stream.name)
+            with closing(sqlite3.connect(temporary)) as cache:
+                cache.execute('CREATE TABLE pages(page INTEGER PRIMARY KEY,blocks BLOB NOT NULL)')
+                cache.executemany('INSERT INTO pages VALUES (?,?)',((number,gzip.compress(
+                    json.dumps(blocks,ensure_ascii=False,separators=(',',':')).encode(),compresslevel=1))
+                    for number,blocks in enumerate(pages,1)))
+                cache.commit()
+            os.replace(temporary,target)
+        except (OSError,sqlite3.DatabaseError):
+            logging.getLogger(__name__).debug('Derived source page cache unavailable; using the original index.')
+        finally:
+            try:
+                if temporary:temporary.unlink(missing_ok=True)
+            except OSError:pass
+
+
+def _read_source_pages(path, document_id, fingerprint, first, last):
+    if not fingerprint or fingerprint[:2]!=fingerprint[2:4]:return None
+    target=_source_page_path(path,document_id,fingerprint)
+    try:
+        with closing(sqlite3.connect(target.as_uri()+'?mode=ro',uri=True,timeout=2)) as cache:
+            rows=cache.execute('SELECT page,blocks FROM pages WHERE page BETWEEN ? AND ? ORDER BY page',(first,last)).fetchall()
+        if [row[0] for row in rows]!=list(range(first,last+1)):return None
+        pages=[json.loads(gzip.decompress(row[1])) for row in rows]
+        if not all(isinstance(page,list) and all(isinstance(block,dict) and isinstance(block.get('text'),str) for block in page) for page in pages):return None
+        return pages
+    except (OSError,sqlite3.DatabaseError,ValueError,EOFError,TypeError,zlib.error):return None
 
 
 def _study_source_blocks(text, styles=None):
@@ -3002,39 +3088,93 @@ def _collection_reader_blocks(blocks, title):
     return result
 
 
+def _wiersbe_reader_blocks(blocks, title):
+    for block in blocks:
+        block.pop('role',None);block.pop('level',None)
+        text=block['text'];runs=block.get('runs',[])
+        bold=bool(runs) and all('strong' in run.get('marks',[]) for run in runs if run['text'].strip())
+        heading=block.get('source_heading')
+        if heading or (bold and len(text)<180):
+            block.update(type='heading',role='commentary_heading',level=max(1,min(3,(heading or 2)-1)))
+        elif len(text)<180 and re.match(r'^\d+[.)]\s+',text) and text.upper()==text:
+            block.update(type='heading',role='commentary_heading',level=1)
+        else:block['type']='paragraph'
+    return blocks
+
+
+def _staff_reader_blocks(blocks, title):
+    result=[];remaining_title=_text(title).casefold()
+    for block in blocks:
+        text=block['text']
+        if len(result)<3 and re.fullmatch(r'Chapter\s+\d+',text,re.I):continue
+        normalized=_text(text).casefold()
+        if remaining_title and len(result)<3 and (normalized==remaining_title or remaining_title.startswith(normalized+' ')):
+            remaining_title=remaining_title[len(normalized):].lstrip();continue
+        block.pop('role',None);block.pop('level',None)
+        if len(text)<170 and (re.match(r'^(?:[A-Z]|[IVX]+)[.)]\s+',text) or text in ('Introduction','MY COMMITMENT')):
+            block.update(type='heading',role='sermon_heading',level=1)
+        elif len(text)<170 and re.match(r'^\d+[.)]\s+',text):
+            block.update(type='heading',role='sermon_subpoint',level=2)
+        elif len(text)<170 and re.match(r'^[a-z][.)]\s+',text):
+            block.update(type='paragraph',role='sermon_subpoint',level=3)
+        else:block['type']='paragraph'
+        result.append(block)
+    return result
+
+
 def _rich_source_blocks(ai_database, section):
+    path=Path(ai_database).resolve()
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=3)) as conn:
+        fingerprint=None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pij_library_source_formats'").fetchone():
+            row=conn.execute('''SELECT d.checksum,d.modified_time,f.checksum,f.modified_time,f.version
+                FROM pij_library_documents d LEFT JOIN pij_library_source_formats f ON f.document_id=d.id
+                WHERE d.id=?''',(section['document_id'],)).fetchone()
+            if row:fingerprint=tuple(row)
+    # Callers may add presentation metadata. Keep cached source blocks immutable.
+    return copy.deepcopy(_cached_rich_source_blocks(str(path),json.dumps(section,sort_keys=True),fingerprint))
+
+
+@lru_cache(maxsize=48)
+def _cached_rich_source_blocks(ai_database, encoded_section, fingerprint):
     """Read typography only for the opened article, without retaining whole books."""
+    section=json.loads(encoded_section)
     styles={};originals={};first=section['source_section'];last=section.get('source_end_section',first)
     wanted={line.strip() for line in section['text'].splitlines()}
-    with closing(sqlite3.connect(Path(ai_database).resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as conn:
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pij_library_source_formats'").fetchone():
-            # JSON extraction avoids materializing every rich paragraph in a volume.
-            paths=[f'$[{page-1}]' for page in range(first,last+1)]
-            placeholders=','.join('?' for _ in paths)
-            row=conn.execute(f'''SELECT json_extract(f.sections_json,{placeholders}) FROM pij_library_source_formats f
-                JOIN pij_library_documents d ON d.id=f.document_id
-                WHERE f.document_id=? AND f.checksum=d.checksum AND f.modified_time=d.modified_time''',
-                (*paths,section['document_id'])).fetchone()
-            if row and row[0]:
-                pages=json.loads(row[0]);pages=[pages] if len(paths)==1 else pages
-                for page in pages:
-                    for block in page or []:
-                        if block['text'] in wanted:
-                            styles.setdefault(block['text'],block.get('runs'))
-                            originals.setdefault(block['text'],[]).append(block)
+    pages=_read_source_pages(ai_database,section['document_id'],fingerprint,first,last)
+    if pages is None:
+        with closing(sqlite3.connect(Path(ai_database).resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pij_library_source_formats'").fetchone():
+                # Fall back to the authoritative formatting when derived pages
+                # have not been prepared or their cache is damaged.
+                paths=[f'$[{page-1}]' for page in range(first,last+1)]
+                placeholders=','.join('?' for _ in paths)
+                row=conn.execute(f'''SELECT json_extract(f.sections_json,{placeholders}) FROM pij_library_source_formats f
+                    JOIN pij_library_documents d ON d.id=f.document_id
+                    WHERE f.document_id=? AND f.checksum=d.checksum AND f.modified_time=d.modified_time''',
+                    (*paths,section['document_id'])).fetchone()
+                if row and row[0]:
+                    pages=json.loads(row[0]);pages=[pages] if len(paths)==1 else pages
+    for page in pages or []:
+        for block in page or []:
+            if block['text'] in wanted:
+                styles.setdefault(block['text'],block.get('runs'))
+                originals.setdefault(block['text'],[]).append(block)
     blocks=_study_source_blocks(section['text'],styles)
     if section.get('family')=='pulpit' and blocks and section['ranges'][0]['book_id']==21:
         blocks[0]['references']=_pulpit_citations(blocks[0]['text'],(21,section['ranges'][0]['chapter']))
     if section.get('family')=='apeo':
         blocks=_apeo_reader_blocks(blocks,section['title'])
-    if section.get('family') in ('spurgeon','collection'):
+    if section.get('family') in ('spurgeon','collection','wiersbe','staff'):
         for block in blocks:
             matches=originals.get(block['text'])
             if matches:
                 original=matches.pop(0)
                 for key in ('runs','list_kind','list_level','list_item','list_number','list_style','source_quote','source_heading'):
                     if key in original:block[key]=original[key]
-        blocks=(_spurgeon_reader_blocks if section['family']=='spurgeon' else _collection_reader_blocks)(blocks,section['title'])
+        reader={'spurgeon':_spurgeon_reader_blocks,'collection':_collection_reader_blocks,
+                'wiersbe':_wiersbe_reader_blocks,'staff':_staff_reader_blocks}[section['family']]
+        blocks=reader(blocks,section['title'])
     return blocks
 
 
@@ -3090,7 +3230,7 @@ def _wiersbe_sections(document, rows):
         groups.setdefault(page, []).append(content)
     # Long EPUB chapters are split into consecutive index sections. Carry their
     # continuation text forward until the next chapter or back matter begins.
-    logical, active = {}, None
+    logical, ends, active = {}, {}, None
     short_title = document['title'].split(' (', 1)[0]
     for page, chunks in groups.items():
         text = _join_index_chunks(chunks)
@@ -3103,6 +3243,7 @@ def _wiersbe_sections(document, rows):
             logical[page] = text
         elif active is not None and text.strip():
             logical[active] += '\n' + text.strip()
+        if active is not None:ends[active]=page
     sections = []
     for page, text in logical.items():
         chapter = re.search(r'(?im)^\s*Chapter\s+(?:[A-Za-z-]+|\d+)\s*$', text)
@@ -3135,7 +3276,7 @@ def _wiersbe_sections(document, rows):
                 passage += '; see also ' + _text(parallel[1])
         section = dict(document_id=document['id'], source_title=document['title'].split(' (', 1)[0],
             author='Warren W. Wiersbe', title=title, passage=passage, ranges=ranges,
-            source_section=page, text=body)
+            source_section=page, source_end_section=ends[page], family='wiersbe', text=body)
         # The Psalms volumes group many psalms into one EPUB chapter. Respect
         # their explicit individual Psalm headings instead of returning a book.
         if all(r['book_id']==19 for r in ranges):
@@ -3158,15 +3299,14 @@ def _wiersbe_sections(document, rows):
     return sections
 
 
-@lru_cache(maxsize=1)
+@_persisted_catalogue('wiersbe')
 def _wiersbe_catalogue(path, documents):
     """Cache derived source sections; the shared AI index is always read-only."""
     sections = []
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=ro', uri=True, timeout=3)) as conn:
         for document_json in documents:
             document = json.loads(document_json)
-            rows = conn.execute('SELECT page_start,content FROM pij_library_chunks WHERE document_id=? ORDER BY chunk_number',
-                                (document['id'],)).fetchall()
+            rows,_ = _indexed_source(conn,document,with_styles=False)
             if sum(len(row[1]) for row in rows) <= 5_000_000:
                 sections.extend(_wiersbe_sections(document, rows))
     return sections
@@ -3283,7 +3423,12 @@ def wiersbe_commentary(ai_database, book_id, chapter, verse):
     for row in documents:
         unique.setdefault(row['title'].split(' (', 1)[0].casefold(), json.dumps(dict(row), sort_keys=True))
     catalogue = _wiersbe_catalogue(str(path), tuple(unique.values()))
-    return _commentary_entries(catalogue, book_id, chapter, verse)
+    result=_commentary_entries(catalogue, book_id, chapter, verse)
+    for entry in result['entries']:
+        section=next(item for item in catalogue if item['document_id']==entry['document_id']
+                     and item['source_section']==entry['source_section'] and item['title']==entry['title'])
+        entry['blocks']=_rich_source_blocks(path,section)
+    return result
 
 
 def _exalting_ranges(text):
@@ -3378,7 +3523,7 @@ def _exalting_sections(document, rows):
     return sections
 
 
-@lru_cache(maxsize=1)
+@_persisted_catalogue('exalting')
 def _exalting_catalogue(path, documents):
     sections = []
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=ro', uri=True, timeout=3)) as conn:
@@ -3449,7 +3594,7 @@ def _moody_sections(document, rows, styles=None, *, with_blocks=True):
     return sections
 
 
-@lru_cache(maxsize=1)
+@_persisted_catalogue('moody')
 def _moody_catalogue(path, documents):
     sections=[]
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=ro',uri=True,timeout=3)) as conn:
@@ -3522,7 +3667,7 @@ def _pulpit_exposition_sections(document, rows, styles=None):
     return sections
 
 
-@lru_cache(maxsize=1)
+@_persisted_catalogue('pulpit')
 def _pulpit_commentary_catalogue(path, documents):
     sections=[]
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=ro',uri=True,timeout=5)) as conn:
@@ -3730,12 +3875,82 @@ def _sermon_primary_ranges(text):
             for item in ranges]
 
 
+def _staff_sections(document, rows, styles=None, *, with_blocks=True):
+    """Keep printed teaching chapters intact; internal points are not sermons."""
+    pages={}
+    for page,content in rows:pages.setdefault(page,[]).append(content)
+    locations=[];pieces=[];offset=0
+    for page,chunks in pages.items():
+        text=_join_index_chunks(chunks).strip()+'\n'
+        locations.append((offset,page));pieces.append(text);offset+=len(text)
+    text=''.join(pieces)
+    starts=list(re.finditer(r'(?im)^[ \t]*Chapter[ \t]+\d+[ \t]*\n[ \t]*([^\n]{2,140})',text))
+    boundaries=list(re.finditer(r'(?m)^[ \t]*(?:TOPICAL CONCORDANCE|SECTION[ \t]+[A-F](?:\d+|l))[ \t]*$',text))
+    result=[]
+    for index,match in enumerate(starts):
+        end=starts[index+1].start() if index+1<len(starts) else len(text)
+        boundary=next((b for b in boundaries if match.end()<b.start()<end),None)
+        if boundary:end=boundary.start()
+        title=_text(match[1]);header_end=match.end();body=text[match.start():end].strip()
+        for continuation in text[header_end:end].splitlines():
+            continuation=continuation.strip()
+            if not continuation:continue
+            words=continuation.split()
+            if ((styles or {}).get(continuation) is not True or len(continuation)>100
+                    or continuation in ('Introduction','MY COMMITMENT') or scripture_references(continuation)
+                    or re.match(r'^(?:[A-Za-z]|\d+)[.)]\s+',continuation)
+                    or not words or sum(word[0].isupper() for word in words)/len(words)<.7):break
+            title+=' '+continuation;header_end=text.find(continuation,header_end)+len(continuation)
+        # Only opening and main outline introductions establish the teaching's
+        # coverage. Incidental later quotations do not generate recommendations.
+        opening=text[header_end:end]
+        main=list(re.finditer(r'(?m)^[ \t]*[A-Z][.)][ \t]+[^\n]+\n',opening))
+        candidates=[opening[:min(main[0].start(),2500)] if main else opening[:2500]]
+        for n,point in enumerate(main):
+            stop=main[n+1].start() if n+1<len(main) else len(opening)
+            part=opening[point.end():min(stop,point.end()+1800)]
+            subpoint=re.search(r'(?m)^[ \t]*(?:\d+|[a-z])[.)]\s+',part)
+            candidates.append(part[:subpoint.start()] if subpoint and subpoint.start()>0 else part[:800])
+        # Some lessons print their foundational Scripture immediately beneath
+        # a numbered teaching point. Accept that opening quotation, rather than
+        # searching the entire point's later illustrations for references.
+        numbered=list(re.finditer(r'(?m)^[ \t]*\d+[.)][ \t]+[^\n]+\n',opening))
+        for n,point in enumerate(numbered):
+            stop=numbered[n+1].start() if n+1<len(numbered) else len(opening)
+            part=opening[point.end():min(stop,point.end()+1400)].lstrip()
+            first_line=part.split('\n',1)[0]
+            refs=scripture_references(first_line)
+            if part.startswith(('"','“','‘')) or (refs and refs[0]['start']==0):candidates.append(part)
+        ranges=[]
+        for candidate in candidates:
+            for span in _sermon_primary_ranges(candidate):
+                if span not in ranges:ranges.append(span)
+        if not ranges or len(body)<100:continue
+        first=next(page for offset,page in reversed(locations) if offset<=match.start())
+        last=next(page for offset,page in reversed(locations) if offset<end)
+        section_id=hashlib.sha256(json.dumps([document['id'],match.start(),body],ensure_ascii=False).encode()).hexdigest()[:32]
+        preceding=next((b for b in reversed(boundaries) if b.end()<=match.start()),None)
+        credit=None
+        if preceding:
+            header=text[preceding.end():min(preceding.end()+2000,match.start())]
+            # Credits belong to the section heading, before its first chapter.
+            header=re.split(r'(?im)^\s*Chapter\s+\d+\s*$',header,maxsplit=1)[0]
+            credit=re.search(r'(?m)^By[ \t]+([^\n]{3,100})$',header)
+        result.append(dict(id=section_id,document_id=document['id'],title=title,source_title=document['title'],
+            author=(credit[1].strip()+'; Ralph Mahoney (editor)' if credit else
+                    'Ralph Mahoney (editor); individual contributors as credited'),publisher='World MAP',
+            source_section=first,source_end_section=last,purpose='Bible study / leadership teaching',family='staff',
+            ranges=ranges,text=body,blocks=_staff_reader_blocks(_study_source_blocks(body,styles),title) if with_blocks else []))
+    return result
+
+
 def _sermon_sections(document, rows, styles=None, *, with_blocks=True):
     """Recognize printed entry boundaries and keep all continuation pages."""
     family = _sermon_family(document['title'])
     if not family or not rows:
         return []
     if family=='pulpit':return _pulpit_sections(document,rows,styles,with_blocks=with_blocks)
+    if family=='staff':return _staff_sections(document,rows,styles,with_blocks=with_blocks)
     pages = {}
     for page, content in rows:
         pages.setdefault(page, []).append(content)
@@ -3772,9 +3987,7 @@ def _sermon_sections(document, rows, styles=None, *, with_blocks=True):
     printed_author = re.search(r'(?im)^By\s*\n\s*([^\n]{3,100})', early_text)
     author = (printed_author[1].strip() if printed_author else document.get('author', ''))
     if family=='spurgeon':author='Charles Spurgeon; edited by Barry L. Davis'
-    if family == 'staff':
-        author = 'Ralph Mahoney (editor); individual contributors as credited'
-    elif author in ('Unknown Author', 'APEO Resources', 'Semon Help ebook', ''):
+    if author in ('Unknown Author', 'APEO Resources', 'Semon Help ebook', ''):
         printed = re.search(r'\bBy\s+(Barry L\. Davis[^\n\u00a0]{0,15})', early_text)
         author = printed[1].strip() if printed else 'Author as credited in the source'
 
@@ -3794,12 +4007,6 @@ def _sermon_sections(document, rows, styles=None, *, with_blocks=True):
             refs = scripture_references(line)
             if len(refs) == 1 and refs[0]['start'] == 0 and refs[0]['end'] == len(line):
                 add(match.start(), line, match.end())
-    elif family == 'staff':
-        # These are teaching sections, explicitly labelled as such in the reader.
-        for match in re.finditer(r'(?m)^\s*(?:Chapter\s+\d+\s*\n\s*([^\n]{2,100})|([A-Z]\.\s+[A-Z][^\n]{3,140}))\s*$', text):
-            title = match[1] or match[2]
-            if '....' not in title:
-                add(match.start(), title, match.end())
     else:
         if family == 'apeo':
             for match in re.finditer(r'(?m)^\s*Chapter\s+\d+\s*\n\s*([^\n]{3,120})\s*$', text):
@@ -3904,8 +4111,7 @@ def _sermon_sections(document, rows, styles=None, *, with_blocks=True):
         if not ranges or len(body) < 100:
             continue
         section_id = hashlib.sha256(json.dumps([document['id'], entry['start'], body], ensure_ascii=False).encode()).hexdigest()[:32]
-        purpose = ('Funeral message' if 'funeral' in document['title'].casefold() else
-                   'Bible study / leadership teaching' if family == 'staff' else 'Sermon outline')
+        purpose = 'Funeral message' if 'funeral' in document['title'].casefold() else 'Sermon outline'
         if entry['title'].casefold().startswith('for '):
             purpose += ' · ' + entry['title']
         blocks=_study_source_blocks(body,styles) if with_blocks else []
@@ -3921,7 +4127,7 @@ def _sermon_sections(document, rows, styles=None, *, with_blocks=True):
     return sections
 
 
-@lru_cache(maxsize=1)
+@_persisted_catalogue('sermons')
 def _sermon_catalogue(path, documents):
     sections, seen = [], set()
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=ro', uri=True, timeout=5)) as conn:
@@ -3966,6 +4172,32 @@ def sermons_for_chapter(ai_database, book_id, chapter):
             span['book_id'] == book_id and span['chapter'] <= chapter <= span['end_chapter'] for span in item['ranges'])]
     matches.sort(key=lambda item: (item['family'] == 'nicoll', item['title'].casefold(), item['source_title'].casefold(), item['id']))
     return [dict(id=item['id'], title=item['title']) for item in matches]
+
+
+def prepare_reader_catalogues(ai_database):
+    """Operator preparation avoids the initial source parse in a reading request."""
+    path=Path(ai_database).resolve()
+    if not path.is_file():raise ValueError('The existing AI index is required.')
+    report={}
+    start=time.perf_counter();prepared=0
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pij_library_source_formats'").fetchone():
+            for doc_id,checksum,modified,version in conn.execute('''SELECT f.document_id,f.checksum,f.modified_time,f.version
+                    FROM pij_library_source_formats f JOIN pij_library_documents d ON d.id=f.document_id
+                    WHERE d.source_type='public_ebook' AND d.searchable=1 AND f.checksum=d.checksum AND f.modified_time=d.modified_time'''):
+                fingerprint=(checksum,modified,checksum,modified,version)
+                if not _source_page_path(path,doc_id,fingerprint).is_file():
+                    row=conn.execute('SELECT sections_json FROM pij_library_source_formats WHERE document_id=?',(doc_id,)).fetchone()
+                    _store_source_pages(path,doc_id,fingerprint,json.loads(row[0]))
+                prepared+=1
+    report['source_pages']=dict(documents=prepared,seconds=round(time.perf_counter()-start,3))
+    for name,provider in (('wiersbe',wiersbe_commentary),('exalting',exalting_commentary),
+                          ('moody',moody_commentary),('pulpit',pulpit_commentary)):
+        start=time.perf_counter();result=provider(path,43,3,16)
+        report[name]=dict(available=result['available'],seconds=round(time.perf_counter()-start,3))
+    start=time.perf_counter();sections=sermon_catalogue(path)
+    report['sermons']=dict(sections=len(sections),seconds=round(time.perf_counter()-start,3))
+    return report
 
 
 def _maxwell_document(ai_database):
@@ -4392,6 +4624,10 @@ def register_bible_study_routes(app):
                         elif heading:
                             title=(title+' · ' if title and heading!=title else '')+str(heading)
                         for key, child in value.items():
+                            # The enclosing block already carries its immutable
+                            # text anchor. Signing every typography run duplicates
+                            # the same words, metadata and signatures hundreds of times.
+                            if key=='runs':continue
                             if key in ('text','preview','headword','title','body','definition','excerpt') and isinstance(child,str) and child.strip():
                                 descriptor = dict(origin=origin, path=list(path)+( [key] ), category=category,
                                     title=title[:250] or labels[category], label=labels[category],
@@ -4408,7 +4644,7 @@ def register_bible_study_routes(app):
                 for value,key,anchor in attachments:
                     value.setdefault('_study_texts',{})[key]=anchor
                 data['study_anchors'] = anchors
-                response.set_data(json.dumps(data, ensure_ascii=False))
+                response.set_data(json.dumps(data, ensure_ascii=False,separators=(',',':')))
         return response
 
     @blueprint.get('')
@@ -5140,16 +5376,21 @@ def register_bible_study_routes(app):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Bible Study maintenance; does not import or start app.py.')
-    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'import-step', 'sync-drive', 'format-thompson', 'import-concordance', 'import-studies'])
+    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'sync-drive', 'format-thompson', 'import-concordance', 'import-studies'])
     parser.add_argument('--database', required=True, help='Absolute path to a separate Bible Study .db file.')
     parser.add_argument('--archive', help='Local official STEPBible-Data ZIP, required for import-step.')
+    parser.add_argument('--ai-database', help='Existing private AI index, required for prepare-readers.')
     parser.add_argument('--pdf', help='Matching local Thompson PDF, required for format-thompson, import-concordance or import-studies.')
     parser.add_argument('--folder-id', default='', help='Official Bible Study Drive folder ID; otherwise use saved/discovered folder.')
     parser.add_argument('--backup-directory', help='Private folder for the SQLite recovery backup.')
     parser.add_argument('--dry-run', action='store_true', help='Validate without applying changes to the live database.')
     arguments = parser.parse_args()
     try:
-        if arguments.command=='init-study-saves':
+        if arguments.command=='prepare-readers':
+            if not arguments.ai_database:parser.error('--ai-database is required for prepare-readers.')
+            if arguments.dry_run:parser.error('prepare-readers writes only disposable private derived caches; omit --dry-run.')
+            print(json.dumps(prepare_reader_catalogues(arguments.ai_database),indent=2))
+        elif arguments.command=='init-study-saves':
             if arguments.dry_run:parser.error('init-study-saves creates a recovery backup and applies the additive upgrade; omit --dry-run')
             print(json.dumps(initialize_study_saves(arguments.database,arguments.backup_directory),indent=2))
         elif arguments.command in ('format-thompson','import-concordance','import-studies'):

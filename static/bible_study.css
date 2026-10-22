@@ -158,7 +158,7 @@
 .bible-study-page .pij-launcher{width:42px;height:42px;right:10px;bottom:max(8px,env(safe-area-inset-bottom))}
 .app-main:has(>.bs-root),.district-glass .app-main:has(>.bs-root){width:100%;max-width:none;margin:0;padding:0}
 .bs-root,.bs-root.bs-fullscreen{position:relative;inset:auto;z-index:auto;max-width:none;margin:0;padding:0;height:var(--bs-workspace-height,calc(100dvh - 62px));min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bs-paper)}
-.bs-root .bs-layout,.bs-root.bs-fullscreen .bs-layout{flex:1;height:auto;min-height:0;border-radius:0;border-left:0;border-right:0;grid-template-columns:minmax(0,calc(var(--bs-split)*1%)) 12px minmax(0,1fr)}
+.bs-root .bs-layout,.bs-root.bs-fullscreen .bs-layout{flex:1;height:auto;min-height:0;border-radius:0;border-left:0;border-right:0;grid-template-columns:minmax(0,calc((100% - 12px)*var(--bs-split)/100)) 12px minmax(0,1fr)}
 .bs-root:not([data-mode=split]) .bs-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
 .bs-root .bs-toolbar{position:relative;top:auto;z-index:4;flex-shrink:0;display:flex;flex-wrap:nowrap;gap:12px;padding:7px 12px;background:var(--bs-panel)}
 .bs-toolbar-main,.bs-toolbar-secondary{display:flex;align-items:center;gap:6px;min-width:0}.bs-toolbar-main{flex:1}
@@ -206,4 +206,34 @@
  .bs-root .bs-entry{padding:11px;margin:10px 0}.bs-root .bs-study-content h3{font-size:20px}
  .bs-selection-toolbar{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 16px)}
  .bs-settings-dialog select{font-size:16px}.bs-root .bs-settings-dialog{width:100%;max-width:none;max-height:86dvh;overflow:auto}
+}
+/* Tabs retain their own dimensions when the split divider moves. */
+.bs-root .bs-study-tabs{height:44px;min-height:44px;align-items:stretch;overflow-x:auto;overflow-y:hidden;flex-shrink:0}
+.bs-root .bs-study-tabs button,.bs-root .bs-study>.bs-study-tabs button{flex:0 0 132px;width:132px;min-width:132px;max-width:132px;height:38px;min-height:38px;padding:10px 8px}
+@media(max-width:700px){
+ .bs-root .bs-study-tabs{height:39px;min-height:39px}
+ .bs-root .bs-study-tabs button,.bs-root .bs-study>.bs-study-tabs button{flex-basis:94px;width:94px;min-width:94px;max-width:94px;height:35px;min-height:35px;padding:9px 4px}
+}
+/* Keep the complete toolbar inside the visible app shell, including Safari's
+   first layout and restored pages. Only the two reading panes scroll. */
+html:has(>body.bible-study-page){height:100%;overflow:hidden}
+body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--bs-viewport-height,100dvh);display:flex;flex-direction:column;overflow:hidden}
+.bible-study-page>.app-header{position:relative;top:auto;flex:0 0 auto}
+.bible-study-page>.app-main,.district-glass.bible-study-page>.app-main{display:flex;flex:1 1 0;flex-direction:column;min-width:0;min-height:0;overflow:hidden;padding:0;margin:0;width:100%;max-width:none}
+.bible-study-page .bs-root,.bible-study-page .bs-root.bs-fullscreen{flex:1 1 0;height:100%;min-height:0}
+.bs-root .bs-toolbar{flex:0 0 auto;align-self:stretch;isolation:isolate}
+.bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
+.bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
+.bs-root .bs-wide-tabs button{flex:0 0 112px;width:112px;min-width:112px;max-width:112px}
+.bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
+.bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
+.bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,1fr);gap:4px}
+.bs-root[data-compact-reader=true] .bs-chain-margin{display:flex;flex-wrap:wrap;gap:5px 10px;border-left:0;border-top:1px solid var(--bs-line);padding:4px 0 0;font-size:10px}
+.bs-root[data-compact-reader=true] .bs-chain-margin button{width:auto;max-width:100%;margin:0}
+.bs-root[data-compact-reader=true] .bs-chain-key{display:inline;margin-right:4px}
+.bs-root[data-compact-reader=true] .bs-chain-name{display:inline}
+@media(max-width:700px){
+ .bs-wide-tabs{display:none}
+ .bs-root .bs-reader-tabs button{flex-basis:94px;width:94px;min-width:94px;max-width:94px}
+ .bs-root .bs-study>.bs-study-tabs button{flex:0 0 auto;width:auto;min-width:0;max-width:none;padding:9px 8px}
 }

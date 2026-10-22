@@ -712,6 +712,116 @@ class LibraryPortabilityTests(unittest.TestCase):
         whole=sections[0]['blocks'][0]
         self.assertEqual(whole['text'],'John 11');self.assertTrue(whole['references'][0]['chapter_only'])
 
+    def test_derived_sermon_catalogue_survives_restart_and_invalidates_on_source_change(self):
+        import bible_study
+        row=self.catalog(title='Sermon Resources Vol 1')
+        docid=self.document(row,text='1. ORIGINAL THEME\nJohn 3:16\nA complete original sermon introduction with enough source explanation and a practical closing application.')
+        first=bible_study.sermon_catalogue(self.app.AI_DATABASE)
+        self.assertEqual([s['title'] for s in first],['ORIGINAL THEME'])
+        bible_study._sermon_catalogue.cache_clear()
+        with patch.object(bible_study,'_indexed_source',side_effect=AssertionError('A restart reparsed an unchanged book')):
+            self.assertEqual(bible_study.sermon_catalogue(self.app.AI_DATABASE),first)
+        cache=next((Path(self.app.AI_DATABASE).parent/'bible_study_data/catalogue_cache').glob('sermons-*.json.gz'))
+        cache.write_bytes(b'broken derived cache')
+        bible_study._sermon_catalogue.cache_clear()
+        with patch.object(bible_study,'_indexed_source',wraps=bible_study._indexed_source) as reader:
+            self.assertEqual(bible_study.sermon_catalogue(self.app.AI_DATABASE),first)
+            self.assertEqual(reader.call_count,1)
+        db=knowledge._db();db.execute('UPDATE pij_library_documents SET modified_time=? WHERE id=?',('changed',docid));db.commit();db.close()
+        with patch.object(bible_study,'_indexed_source',wraps=bible_study._indexed_source) as reader:
+            self.assertEqual(bible_study.sermon_catalogue(self.app.AI_DATABASE),first)
+            self.assertEqual(reader.call_count,1)
+
+    def test_rich_source_cache_retains_revision_emphasis_without_sharing_mutable_blocks(self):
+        import bible_study
+        row=self.catalog(title='52 Sermons About Jesus',fmt='EPUB');docid=self.document(row)
+        text='A complete original paragraph with its printed wording unchanged.'
+        def source(marks):return [[dict(text=text,runs=[dict(text=text,marks=marks)])]]
+        db=knowledge._db();db.execute('INSERT INTO pij_library_source_formats VALUES(?,?,?,?,?)',
+            (docid,row['checksum'],row['modified_time'],1,json.dumps(source(['em']))));db.commit();db.close()
+        section=dict(document_id=docid,source_section=1,text=text,title='A theme',family='collection')
+        first=bible_study._rich_source_blocks(self.app.AI_DATABASE,section)
+        first[0]['runs'][0]['marks'].append('changed-by-caller')
+        hits=bible_study._cached_rich_source_blocks.cache_info().hits
+        second=bible_study._rich_source_blocks(self.app.AI_DATABASE,section)
+        self.assertEqual(second[0]['runs'][0]['marks'],['em'])
+        self.assertEqual(bible_study._cached_rich_source_blocks.cache_info().hits,hits+1)
+        db=knowledge._db();db.execute('UPDATE pij_library_source_formats SET version=2,sections_json=? WHERE document_id=?',
+            (json.dumps(source(['strong'])),docid));db.commit();db.close()
+        self.assertEqual(bible_study._rich_source_blocks(self.app.AI_DATABASE,section)[0]['runs'][0]['marks'],['strong'])
+        db=knowledge._db();db.execute('UPDATE pij_library_documents SET checksum=? WHERE id=?',('new-source',docid));db.commit();db.close()
+        self.assertNotIn('runs',bible_study._rich_source_blocks(self.app.AI_DATABASE,section)[0],
+                         'Outdated source typography survived a source revision')
+
+    def test_indexed_page_cache_reads_only_opened_pages_and_recovers_from_corruption(self):
+        import bible_study as b
+        row=self.catalog(title='52 Sermons About Jesus',fmt='EPUB');docid=self.document(row)
+        text='An original paragraph with its source emphasis preserved.'
+        source=[[dict(text='Unopened page',runs=[])],[dict(text=text,runs=[dict(text=text,marks=['em'])])]]
+        db=knowledge._db();db.execute('INSERT INTO pij_library_source_formats VALUES(?,?,?,?,?)',
+            (docid,row['checksum'],row['modified_time'],1,json.dumps(source)));db.commit();db.close()
+        fingerprint=(row['checksum'],row['modified_time'],row['checksum'],row['modified_time'],1)
+        b._store_source_pages(self.app.AI_DATABASE,docid,fingerprint,source)
+        section=dict(document_id=docid,source_section=2,text=text,title='Theme',family='collection')
+        connect=sqlite3.connect
+        def forbid_whole_volume(*args,**kwargs):
+            conn=connect(*args,**kwargs)
+            conn.set_authorizer(lambda action,table,column,*_:sqlite3.SQLITE_DENY
+                if action==sqlite3.SQLITE_READ and table=='pij_library_source_formats' and column=='sections_json' else sqlite3.SQLITE_OK)
+            return conn
+        with patch.object(b.sqlite3,'connect',side_effect=forbid_whole_volume):
+            first=b._rich_source_blocks(self.app.AI_DATABASE,section)
+        self.assertEqual(first[0]['runs'][0]['marks'],['em'])
+        b._source_page_path(self.app.AI_DATABASE,docid,fingerprint).write_bytes(b'broken derived cache')
+        b._cached_rich_source_blocks.cache_clear()
+        self.assertEqual(b._rich_source_blocks(self.app.AI_DATABASE,section),first)
+        self.assertIsNone(b._read_source_pages(self.app.AI_DATABASE,docid,('changed',*fingerprint[1:]),2,2))
+
+    def test_wiersbe_native_paragraphs_and_heading_classes_survive_continuation_pages(self):
+        import bible_study as b
+        row=self.catalog(title='Be Complete (Colossians)',fmt='EPUB');docid=self.document(row)
+        def block(text,marks=(),**properties):return dict(text=text,runs=[dict(text=text,marks=list(marks))],**properties)
+        paragraphs=[block('If you received an original letter, this paragraph retains its printed wording and punctuation.'),
+                    block('1. SHARING THE GOSPEL',source_heading=2),
+                    dict(text='Their past alienation. This is still one complete source paragraph.',runs=[dict(text='Their past alienation.',marks=['strong']),dict(text=' This is still one complete source paragraph.',marks=[])])]
+        continuation=block('An original continuation paragraph on the next source page.')
+        source=[[block('Chapter Five'),block('One Man’s Ministry',source_heading=1),block('(Colossians 1:21—2:3)'),*paragraphs],[continuation]]
+        db=knowledge._db();db.execute("UPDATE pij_library_documents SET author='Warren W. Wiersbe' WHERE id=?",(docid,))
+        db.execute('INSERT INTO pij_library_source_formats VALUES(?,?,?,?,?)',(docid,row['checksum'],row['modified_time'],1,json.dumps(source)));db.commit();db.close()
+        entry=b.wiersbe_commentary(self.app.AI_DATABASE,51,2,1)['entries'][0]
+        self.assertEqual([x['text'] for x in entry['blocks']],[x['text'] for x in paragraphs]+[continuation['text']])
+        self.assertEqual(entry['blocks'][1]['role'],'commentary_heading')
+        self.assertEqual(entry['blocks'][2]['type'],'paragraph')
+        self.assertEqual(entry['blocks'][2]['runs'][0]['marks'],['strong'])
+        self.assertTrue(knowledge._formatted_source_title(row['title'],'Warren W. Wiersbe','EPUB'))
+        self.assertFalse(knowledge._formatted_source_title(row['title'],'Warren W. Wiersbe','PDF'))
+
+    def test_staff_keeps_teaching_chapters_and_uses_main_passages_without_incidental_coverage(self):
+        import bible_study as b
+        doc=dict(id=1,title='The-Shepherds-Staff')
+        rows=[(1,'Chapter 1 - Prayer\nChapter 1\nPrayer\nAn opening quotation. Psalms 91:15-16\nA. THE SECRET PLACE\nAn original teaching quotation. Matthew 6:6\n1. Right motives\nAn incidental illustration mentions John 3:16, but is not a main teaching text.'),
+              (2,'The original continuation of the same complete teaching chapter.\nB. LISTENING\nA main teaching quotation. Luke 11:1\n1. A printed subpoint\nThe remaining original explanation.'),
+              (3,'TOPICAL CONCORDANCE\nJohn 3:16\nA different reference section must not become part of the Prayer chapter.')]
+        sections=b._sermon_sections(doc,rows)
+        self.assertEqual([x['title'] for x in sections],['Prayer'])
+        self.assertEqual([(x['book_id'],x['chapter']) for x in sections[0]['ranges']],[(19,91),(40,6),(42,11)])
+        self.assertEqual(sections[0]['source_end_section'],2)
+        self.assertIn('same complete teaching chapter',sections[0]['text'])
+        self.assertNotIn('TOPICAL CONCORDANCE',sections[0]['text'])
+        self.assertEqual(sum(x.get('role')=='sermon_heading' for x in sections[0]['blocks']),2)
+
+    def test_staff_uses_printed_contributor_and_numbered_point_scripture(self):
+        import bible_study as b
+        doc=dict(id=1,title='The-Shepherds-Staff')
+        rows=[(1,'SECTION Al\nA SOURCE SECTION\nBy Printed Contributor\nChapter 1\nMethods Of\nEvangelism\nIntroduction\nAn original teaching introduction without a passage.\nA. TWO METHODS\n1. Mass Evangelism\n"An opening Scripture quotation describes preaching." Acts 8:5-8\nThe original explanation of the teaching continues here.\nSECTION A2\nANOTHER SECTION\nBy Another Contributor')]
+        sections=b._sermon_sections(doc,rows,{'Evangelism':True})
+        self.assertEqual(len(sections),1)
+        self.assertEqual(sections[0]['title'],'Methods Of Evangelism')
+        self.assertIn('Printed Contributor',sections[0]['author'])
+        self.assertNotIn('Another Contributor',sections[0]['text'])
+        self.assertEqual(sections[0]['ranges'][0]['book_id'],44)
+        self.assertFalse(any(x['text'] in ('Methods Of','Evangelism') for x in sections[0]['blocks']))
+
     def test_bible_sources_follow_live_catalog_even_before_a_cleanup(self):
         import bible_study
         row=self.catalog(title='Sermon Resources Vol 1')
@@ -2251,6 +2361,8 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         greek=next(b for b in entry['blocks'] if b.get('greek_links'))
         link=greek['greek_links'][0];self.assertEqual(greek['text'][link['start']:link['end']],'παρεκάλεσα')
         self.assertIn('_study_texts',greek,'Pulpit source selection must retain signed reading anchors')
+        self.assertTrue(all('runs' not in anchor['path'] for anchor in data['study_anchors']))
+        self.assertTrue(all('_study_texts' not in run for block in entry['blocks'] for run in block.get('runs',[])))
         hom=self.client.get(query+'&section=homiletics').json
         self.assertEqual([e['title'] for e in hom['entries']],['Faithful teaching.'])
         self.assertNotIn('separate homily',' '.join(b['text'] for b in hom['entries'][0]['blocks']))
@@ -2353,7 +2465,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertIn('John 3:16','\n'.join(block['text'] for block in detail['blocks']))
         self.assertEqual([item['title'] for item in self.client.get(self.base+'/api/sermons?book=Colossians&chapter=3').json['sermons']],['ZEALOUS HOPE'])
         john=self.client.get(self.base+'/api/sermons?book=John&chapter=3').json['sermons']
-        self.assertEqual([item['title'] for item in john],['A. NEW LIFE'])
+        self.assertEqual([item['title'] for item in john],['Teaching'])
         staff=self.client.get(self.base+'/api/sermons/'+john[0]['id']).json['sermon']
         self.assertIn('teaching',staff['purpose']);self.assertIn('editor',staff['author'])
         funeral=self.client.get(self.base+'/api/sermons?book=Revelation&chapter=14').json['sermons']

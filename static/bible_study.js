@@ -7,6 +7,7 @@
     const element = name => document.getElementById("bs" + name);
     const books = [...element("Book").options].map(option => ({name: option.value, chapters: Number(option.dataset.chapters)}));
     const mobile = window.matchMedia("(max-width: 700px)");
+    const touchNavigation = () => navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches || mobile.matches;
     const state = {book: "Genesis", chapter: 1, verse: 1, theme: "paper", font_size: 19, layout_mode: "split", split_ratio: 60, version: 0};
     let storageAvailable = false, saveChain = Promise.resolve(), writePaused = false, previousFocus = null;
     let contentAvailable = false, chapterRequest = 0, wordRequest = 0, verseRequest = 0;
@@ -19,6 +20,15 @@
     let commentaryRequest = 0, commentarySeries = "wiersbe", pulpitSection = "exposition", greekRequest = 0;
     const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus", moody: "The Moody Bible Commentary", pulpit: "The Pulpit Commentary"};
     function sizeWorkspace() {
+        if(document.body.classList.contains("bible-study-page")) {
+            // Size the app shell, rather than measuring a root whose position
+            // can change during Safari's initial scroll restoration or zoom.
+            const viewport=window.visualViewport;
+            if(!viewport || Math.abs(viewport.scale-1)<.01) {
+                document.body.style.setProperty("--bs-viewport-height",Math.round(viewport?.height || window.innerHeight)+"px");
+            }
+            return;
+        }
         const top = root.getBoundingClientRect().top;
         root.style.setProperty("--bs-page-top", Math.ceil(top) + "px");
         root.style.setProperty("--bs-workspace-height", Math.max(140, (window.visualViewport?.height || window.innerHeight) - top) + "px");
@@ -26,15 +36,61 @@
     window.addEventListener("resize", sizeWorkspace);
     window.visualViewport?.addEventListener("resize", sizeWorkspace);
     if (document.querySelector(".app-header")) new ResizeObserver(sizeWorkspace).observe(document.querySelector(".app-header"));
+    window.addEventListener("pageshow",sizeWorkspace);
     sizeWorkspace();
-    const readerChromeHeight = () => root.querySelector(".bs-reader-tabs").getBoundingClientRect().height;
-    const readerTabSize = new ResizeObserver(() => root.style.setProperty("--bs-reader-tab-height", root.querySelector(".bs-reader-tabs").offsetHeight + "px"));
+    const readerTabs=root.querySelector(".bs-reader-tabs"),studyTabs=element("Study").querySelector(".bs-study-tabs");
+    function positionTabs() {
+        if(mobile.matches) {
+            element("Bible").prepend(readerTabs);element("Study").prepend(studyTabs);
+        } else element("WideTabs").append(readerTabs,studyTabs);
+        root.style.setProperty("--bs-reader-tab-height",(mobile.matches?readerTabs.offsetHeight:0)+"px");
+    }
+    positionTabs();
+    const readerChromeHeight = () => mobile.matches?readerTabs.getBoundingClientRect().height:0;
+    const readerTabSize = new ResizeObserver(() => root.style.setProperty("--bs-reader-tab-height", readerChromeHeight() + "px"));
     readerTabSize.observe(root.querySelector(".bs-reader-tabs"));
     const chainHistory = [];
     let scrollTimer = null, scrollRestoreUntil = 0;
     const apiBase = config.statusUrl.replace(/\/status$/, "");
     const verseData = new Map();
     const studyAnchors = new Map(), boundStudyAnchors = new WeakMap();
+    const sourceResponses=new Map(), sourcePending=new Map(), sourceCacheLifetime=120000;
+    let commentaryRenderedKey="", commentaryRenderedAt=0;
+    let chapterLoadPromise=Promise.resolve(), backgroundTimer=null, backgroundEpoch=0, backgroundBusy=false, visibleStudyLoads=0;
+    let preferredStudy="commentary";
+
+    function cancelBackgroundStudy(){++backgroundEpoch;clearTimeout(backgroundTimer);}
+    function commentaryUrl(){return apiBase+"/commentary?"+new URLSearchParams({book:state.book,chapter:state.chapter,verse:state.verse,series:commentarySeries,section:pulpitSection});}
+    function sermonListUrl(){return apiBase+"/sermons?"+new URLSearchParams({book:state.book,chapter:state.chapter});}
+    function scheduleBackgroundStudy(){
+        cancelBackgroundStudy();const epoch=backgroundEpoch;
+        if(!contentAvailable)return;
+        backgroundTimer=setTimeout(()=>warmStudy(epoch),650);
+    }
+    async function warmStudy(epoch){
+        await chapterLoadPromise;
+        if(epoch!==backgroundEpoch || !contentAvailable)return;
+        if(backgroundBusy || visibleStudyLoads){backgroundTimer=setTimeout(()=>warmStudy(epoch),150);return;}
+        const order=studyTab==="commentary"?["sermon"]:studyTab==="sermon"?["commentary"]:
+            preferredStudy==="sermon"?["sermon","commentary"]:["commentary","sermon"];
+        backgroundBusy=true;
+        try{
+            for(const kind of order){
+                if(epoch!==backgroundEpoch || visibleStudyLoads)return;
+                const url=kind==="commentary"?commentaryUrl():sermonListUrl(), cached=sourceResponses.get(url);
+                if(cached && Date.now()-cached.at<sourceCacheLifetime)continue;
+                try{await api(url);}catch(_){/* An unavailable background source does not interrupt reading. */}
+            }
+        }finally{backgroundBusy=false;}
+    }
+    function beginStudyLoad(){
+        ++visibleStudyLoads;cancelBackgroundStudy();
+        return ()=>{--visibleStudyLoads;scheduleBackgroundStudy();};
+    }
+    function visibleStudy(action){
+        const finish=beginStudyLoad();
+        try{return Promise.resolve(action()).finally(finish);}catch(error){finish();return Promise.reject(error);}
+    }
     let studyPersonal = {annotations: [], bookmarks: []}, sermonRequest = 0, sermonChapter = "", hydrationQueued = false;
     let personal = {annotations: [], bookmarks: []}, pendingSelection = null, editingNote = null;
     let selectionBusy = false, selectionInteractionUntil = 0, toastTimer, savedVerseFilter = null;
@@ -51,12 +107,28 @@
     }
 
     async function api(url, options = {}) {
-        const response = await fetch(url, {credentials: "same-origin", cache: "no-store", ...options});
-        if (!(response.headers.get("Content-Type") || "").includes("application/json")) {
-            throw Error("Please sign in again and reopen Bible Study.");
+        const key=String(url), cacheable=(!options.method || options.method==="GET") &&
+            /\/(?:commentary\?|sermons(?:\?|\/)|word\/|concordance\?|dictionaries\/(?:entry\/|search\?))/.test(key);
+        const cached=cacheable?sourceResponses.get(key):null;
+        let data;
+        if(cached && Date.now()-cached.at<sourceCacheLifetime)data=cached.data;
+        else {
+            let pending=cacheable?sourcePending.get(key):null;
+            if(!pending) {
+                pending=(async()=>{
+                    const response = await fetch(url, {credentials: "same-origin", cache: "no-store", ...options});
+                    if (!(response.headers.get("Content-Type") || "").includes("application/json")) throw Error("Please sign in again and reopen Bible Study.");
+                    const result=await response.json();
+                    if(!response.ok || !result.ok)throw Error(result.error || "Bible Study is temporarily unavailable.");
+                    const validSource=key.includes('/commentary?')?Array.isArray(result.entries):key.includes('/sermons?')?Array.isArray(result.sermons):true;
+                    if(cacheable && validSource){sourceResponses.delete(key);sourceResponses.set(key,{at:Date.now(),data:result});while(sourceResponses.size>24)sourceResponses.delete(sourceResponses.keys().next().value);}
+                    return result;
+                })();
+                if(cacheable)sourcePending.set(key,pending);
+            }
+            try{data=await pending;}
+            finally{if(cacheable && sourcePending.get(key)===pending)sourcePending.delete(key);}
         }
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw Error(data.error || "Bible Study is temporarily unavailable.");
         for (const anchor of data.study_anchors || []) studyAnchors.set(anchor.category + "|" + anchor.text, anchor);
         if (studyAnchors.size > 12000) studyAnchors.clear();
         queueStudyHydration();
@@ -177,6 +249,7 @@
                         if (studyTab === "concordance") loadConcordance(token.text);
                         else if (studyTab === "commentary") loadCommentary();
                         else if (studyTab === "word") loadWord(verse.id, token.token_index);
+                        else scheduleBackgroundStudy();
                         if (mobile.matches) requestAnimationFrame(() => {
                             const pane = element("Bible"), bounds = paragraph.getBoundingClientRect();
                             const bottom = pane.getBoundingClientRect().bottom - 12;
@@ -528,7 +601,8 @@
         if(target)requestAnimationFrame(()=>target.scrollIntoView({block:"center"}));
     }
 
-    async function loadWord(verseId, tokenIndex) {
+    function loadWord(verseId,tokenIndex){return visibleStudy(()=>fetchWord(verseId,tokenIndex));}
+    async function fetchWord(verseId, tokenIndex) {
         const requestId = ++wordRequest;
         const results = element("WordResults");
         results.replaceChildren(node("p", "Looking up this word…"));
@@ -595,7 +669,11 @@
         } catch (_) { /* The source explanation remains available without dictionary data. */ }
     }
     element("CloseGreek").addEventListener("click",()=>element("GreekDialog").close());
-    element("GreekDialog").addEventListener("close",()=>{++greekRequest;});
+    element("GreekDialog").addEventListener("close",()=>{
+        // A queued close event from a previous opening must not invalidate a
+        // newer lookup if the same dialog has already been reopened.
+        if(!element("GreekDialog").open)++greekRequest;
+    });
 
     function renderSourceBlock(block, sourceBlocks=null) {
         const paragraph = node(block.role === "commentary_heading" && block.level > 1 ? "h6" : block.type === "heading" ? "h5" : "p");
@@ -653,7 +731,7 @@
             sourceText.append(button); offset = reference.end;
         }
         appendSlice(sourceText, offset, position);
-        bindStudyText(sourceText,block._study_texts?.text);
+        if(bindStudyText(sourceText,block._study_texts?.text))paintStudyContainer(sourceText);
         return paragraph;
     }
 
@@ -764,6 +842,7 @@
         event.preventDefault();
         const query = element("Search").value.trim();
         if (!query) return;
+        const finish=beginStudyLoad();
         selectedWord = {word: query}; element("ConcordanceSearch").value = query;
         ++concordanceRequest;
         const requestId = ++wordRequest;
@@ -773,7 +852,7 @@
             if (requestId === wordRequest) { renderDictionaryResults(data, requestId); renderPeople(data.people, requestId); }
         } catch (error) {
             if (requestId === wordRequest) element("WordResults").replaceChildren(node("p", error.message));
-        }
+        } finally{finish();}
     });
 
     function selectStudyTab(name, focus = false) {
@@ -781,6 +860,8 @@
         const changed = studyTab !== name;
         if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; }
         studyTab = name;
+        cancelBackgroundStudy();
+        if(["commentary","sermon"].includes(name))preferredStudy=name;
         for (const [tab, prefix] of [["word", "Word"], ["concordance", "Concordance"], ["commentary", "Commentary"], ["sermon", "Sermon"]]) {
             const active = tab === name;
             element(prefix + "Tab").setAttribute("aria-selected", String(active));
@@ -790,7 +871,7 @@
         if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon"})[name]+"Tab").focus();
         if (name === "sermon") { loadSermons(); return; }
         if (name === "commentary") { loadCommentary(); return; }
-        if (!changed || !selectedWord) return;
+        if (!changed || !selectedWord) {scheduleBackgroundStudy();return;}
         element("Search").value = element("ConcordanceSearch").value = selectedWord.word;
         if (name === "concordance") loadConcordance(selectedWord.word);
         else if (selectedWord.verseId !== undefined) loadWord(selectedWord.verseId, selectedWord.tokenIndex);
@@ -808,7 +889,8 @@
     });
 
     let sermonListScroll=0;
-    async function loadSermons() {
+    function loadSermons(){return visibleStudy(fetchSermons);}
+    async function fetchSermons() {
         const chapter=state.book+" "+state.chapter;
         if(sermonChapter===chapter)return;
         const requestId=++sermonRequest;
@@ -816,6 +898,8 @@
         element("SermonReader").hidden=true;element("SermonResults").hidden=false;
         element("SermonResults").replaceChildren(node("p","Finding indexed sermons for this chapter…"));
         try {
+            await chapterLoadPromise;
+            if(requestId!==sermonRequest || studyTab!=="sermon")return;
             const data=await api(apiBase+"/sermons?"+new URLSearchParams({book:state.book,chapter:state.chapter}));
             if(requestId!==sermonRequest)return;
             sermonChapter=chapter;element("SermonResults").replaceChildren();
@@ -826,7 +910,8 @@
             }
         } catch(error){if(requestId===sermonRequest)element("SermonResults").replaceChildren(node("p",error.message));}
     }
-    async function openSermon(id) {
+    function openSermon(id){return visibleStudy(()=>fetchSermon(id));}
+    async function fetchSermon(id) {
         const requestId=++sermonRequest;
         sermonListScroll=element("Study").scrollTop;
         element("SermonResults").hidden=true;element("SermonReader").hidden=false;
@@ -845,12 +930,18 @@
         ++sermonRequest;element("SermonReader").hidden=true;element("SermonResults").hidden=false;element("Study").scrollTop=sermonListScroll;
     });
 
-    async function loadCommentary() {
+    function loadCommentary(){return visibleStudy(fetchCommentary);}
+    async function fetchCommentary() {
+        const renderedKey=[state.book,state.chapter,state.verse,commentarySeries,pulpitSection].join("|");
+        if(commentaryRenderedKey===renderedKey && Date.now()-commentaryRenderedAt<sourceCacheLifetime)return;
+        commentaryRenderedKey="";
         const requestId = ++commentaryRequest;
         const results = element("CommentaryResults");
         const query = new URLSearchParams({book: state.book, chapter: state.chapter, verse: state.verse, series: commentarySeries, section:pulpitSection});
         results.replaceChildren(node("p", "Loading passage commentary…"));
         try {
+            await chapterLoadPromise;
+            if(requestId!==commentaryRequest || studyTab!=="commentary")return;
             const data = await api(apiBase + "/commentary?" + query);
             if (requestId !== commentaryRequest || studyTab !== "commentary") return;
             results.replaceChildren(node("h3", data.reference));
@@ -876,6 +967,7 @@
                 article.append(content, node("p", entry.author + " · " + entry.source_title, "bs-attribution"));
                 results.append(article);
             }
+            commentaryRenderedKey=renderedKey;commentaryRenderedAt=Date.now();
         } catch (error) {
             if (requestId === commentaryRequest) results.replaceChildren(node("p", error.message));
         }
@@ -896,7 +988,8 @@
         if(studyTab==="commentary" && commentarySeries==="pulpit")loadCommentary();
     }));
 
-    async function loadConcordance(query, offset = 0, ownerRequest = null) {
+    function loadConcordance(query,offset=0,ownerRequest=null){return visibleStudy(()=>fetchConcordance(query,offset,ownerRequest));}
+    async function fetchConcordance(query, offset = 0, ownerRequest = null) {
         const requestId = offset === 0 ? ++concordanceRequest : ownerRequest;
         const results = element("ConcordanceResults");
         if (offset === 0) results.replaceChildren(node("p", "Searching Thompson concordance…"));
@@ -1007,12 +1100,15 @@
         element("WordResults").insertBefore(card, element("WordResults").children[1] || null);
     }
 
-    async function loadBookStudy() {
+    function loadBookStudy(){return visibleStudy(fetchBookStudy);}
+    async function fetchBookStudy() {
         if (bookStudyBook === state.book) return;
         const requestId = ++bookStudyRequest, book = state.book;
         element("BookStudyTitle").textContent = book;
         element("BookStudyResults").replaceChildren(node("p", "Loading Thompson book study…"));
         try {
+            await chapterLoadPromise;
+            if(requestId!==bookStudyRequest || state.book!==book)return;
             const data = await api(apiBase + "/book-study?" + new URLSearchParams({book}));
             if (requestId !== bookStudyRequest || state.book !== book) return;
             if (data.available) bookStudyBook = book;
@@ -1182,12 +1278,13 @@
             showSyncReport(data.sync);
             if (data.sync.status === "running") syncTimer = setTimeout(pollSync, 2500);
             else if (data.sync.status === "completed") {
+                sourceResponses.clear();sourcePending.clear();commentaryRenderedKey="";sermonChapter="";
                 const status = await api(config.statusUrl);
                 contentAvailable = status.indexed_verses > 0;
                 storageAvailable = status.schema_ready;
                 element("Status").textContent = status.message;
                 element("SaveStatus").textContent = "Reading preferences can be saved to your account.";
-                loadChapter();
+                updateChapter();
             }
         } catch (error) {
             syncBusy = false; element("Sync").disabled = false;
@@ -1269,13 +1366,16 @@
         element("NextEnd").disabled = element("Next").disabled;
         if (bookStudyBook !== state.book) {
             ++bookStudyRequest; readerScroll.book = 0;
-            if (readerTab === "book") { element("Bible").scrollTop = 0; loadBookStudy(); }
+            if (readerTab === "book") element("Bible").scrollTop = 0;
         }
-        loadChapter();
+        cancelBackgroundStudy();
         ++commentaryRequest;
-        if (studyTab === "commentary") loadCommentary();
         if (sermonChapter !== state.book+" "+state.chapter) { ++sermonRequest; sermonChapter=""; }
+        const passageReady=chapterLoadPromise=loadChapter();
+        if(readerTab==="book")passageReady.then(()=>{if(passageReady===chapterLoadPromise&&readerTab==="book"&&bookStudyBook!==state.book)loadBookStudy();});
+        if (studyTab === "commentary") loadCommentary();
         if (studyTab === "sermon") loadSermons();
+        else if(studyTab!=="commentary")chapterLoadPromise.then(scheduleBackgroundStudy);
     }
 
     function applyAppearance() {
@@ -1291,8 +1391,16 @@
     }
 
     function setRatio(value) {
-        state.split_ratio = Math.max(20, Math.min(80, Math.round(value)));
+        const width=element("Layout").clientWidth;
+        const minimum=mobile.matches || width<1?20:Math.max(20,Math.ceil(220/Math.max(1,width-12)*100));
+        state.split_ratio = Math.max(minimum, Math.min(100-minimum, Math.round(value)));
         root.style.setProperty("--bs-split", state.split_ratio);
+        // Keep a narrow desktop/tablet pane readable. Only its text layout
+        // changes; the independent wide tab row never follows this divider.
+        const readerWidth=Math.max(0,width-12)*state.split_ratio/100;
+        root.dataset.compactReader=String(!mobile.matches && readerWidth<330);
+        element("Divider").setAttribute("aria-valuemin",minimum);
+        element("Divider").setAttribute("aria-valuemax",100-minimum);
         element("Divider").setAttribute("aria-valuenow", state.split_ratio);
         element("Divider").setAttribute("aria-orientation", mobile.matches ? "horizontal" : "vertical");
     }
@@ -1336,7 +1444,7 @@
     scripture.addEventListener("pointerdown", event => {
         if (event.isPrimary && event.target.closest(".bs-word")) wordPress = {id: event.pointerId, time: performance.now()};
         if (!event.isPrimary) { swipe = null; return; }
-        if (!mobile.matches || event.pointerType !== "touch" || readerTab !== "bible"
+        if (!touchNavigation() || event.pointerType !== "touch" || readerTab !== "bible"
                 || root.querySelector("dialog[open]") || window.getSelection()?.toString()) return;
         const control = event.target.closest("button,a,input,select,textarea,summary");
         if (control && !control.classList.contains("bs-word")) return;
@@ -1363,7 +1471,7 @@
     // Touch events continue on iOS when the browser cancels pointer events.
     scripture.addEventListener("touchstart", event => {
         nativeTouch=true;touchSwipe=null;
-        if(!mobile.matches||readerTab!=="bible"||event.touches.length!==1||root.querySelector("dialog[open]")||window.getSelection()?.toString())return;
+        if(!touchNavigation()||readerTab!=="bible"||event.touches.length!==1||root.querySelector("dialog[open]")||window.getSelection()?.toString())return;
         const control=event.target.closest("button,a,input,select,textarea,summary");
         if(control&&!control.classList.contains("bs-word"))return;
         const touch=event.touches[0];touchSwipe={x:touch.clientX,y:touch.clientY,time:performance.now(),horizontal:false};
@@ -1559,7 +1667,8 @@
         setRatio(event.key === "Home" ? 20 : event.key === "End" ? 80 : state.split_ratio + (event.key === next ? 2 : -2));
         savePreferences();
     });
-    mobile.addEventListener("change", () => setRatio(state.split_ratio));
+    mobile.addEventListener("change", () => {positionTabs();setRatio(state.split_ratio);});
+    new ResizeObserver(()=>setRatio(state.split_ratio)).observe(element("Layout"));
 
     (async function initialize() {
         try {

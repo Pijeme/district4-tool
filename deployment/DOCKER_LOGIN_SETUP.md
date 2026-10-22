@@ -355,3 +355,81 @@ prepared. Ordinary readers never download originals. No schema migration is
 needed. Restart the application to refresh the cached catalogues; static asset
 version study-outlines-15 invalidates the old reader script/style. The compact
 selector labels are Moody and The Pulpit; full source names stay in attribution.
+
+Study reader performance
+------------------------
+
+Derived commentary and sermon catalogues can be reused after a restart. They are
+compressed private files under the AI database's parent directory at
+`bible_study_data/catalogue_cache/`, never public static assets or image layers.
+The cache fingerprint includes source metadata, prepared-format revisions,
+visible source membership and parser code. Invalid or unavailable cache files
+fall back to building from the original index; source databases remain read-only.
+Concurrent initial catalogue requests share one build. Opened original source
+sections also have a bounded in-process typography cache keyed by source revision.
+Prepared typography also has compressed, indexed page caches in the same private
+directory. Opening a new Pulpit section reads its required pages rather than
+parsing the entire volume's formatting JSON. Missing or damaged page caches fall
+back to the original index; they contain no account data.
+
+Prepare the derived catalogues before exposing a new release to readers:
+
+```powershell
+docker compose exec district4 python bible_study.py prepare-readers --database /data/bible_study_data/bible_study.db --ai-database /data/ai_index.db
+```
+
+This reads the already indexed library and needs no ebook downloads or reindex.
+The first preparation still parses the source; subsequent process starts reuse
+the derived files. Old fingerprinted caches are disposable and may be removed
+during planned maintenance.
+
+The reader shares simultaneous identical requests and keeps up to 24 recent
+source responses in page memory for two minutes. Returning to the same commentary
+preserves its rendered text instead of downloading/rebuilding it. Personal saves,
+reader settings and other account APIs are never cached. A completed Bible Study
+sync clears page source caches. Superseded responses still cannot replace the
+current selection. Inline typography runs use their enclosing source block's
+immutable text anchor, reducing duplicate signatures without changing source
+wording, selection offsets, notes, highlights or bookmarks. Asset version
+`study-layout-18` loads the updated reader script and layout styling.
+
+Reader improvements (October 22)
+--------------------------------
+
+This release includes the following reader improvements.
+
+- Keep tab label widths/heights consistent while the reading panels resize.
+  On desktop/iPad, both tab groups live in a separate row outside the resizable
+  grid, so their positions stay fixed and all labels remain accessible. On phones,
+  each group stays above its own reading pane. Desktop panes have a 220px minimum;
+  narrow Bible panes place Thompson references beneath the verse text.
+- Enable chapter navigation on touch-capable iPads while preserving iPhone swipe,
+  vertical scrolling and text-selection behavior.
+- Refine The Shepherd's Staff content selection and original-source formatting.
+- Refine Warren Wiersbe headings, paragraphs and outline formatting, preserving
+  original wording and existing reading actions.
+- Prioritize Bible loading, then the active Commentary or Sermon Outlines tab,
+  then the other tab in the background after navigation settles. Commentary
+  warming covers only the selected series; sermon warming covers titles, with
+  full sermons loaded on selection. Reuse cached results and skip obsolete
+  queued chapter work.
+
+The Bible Study page uses a fixed viewport app shell with a non-scrolling header
+and toolbar; only its reading panes scroll. This prevents restored page scrolling
+from hiding navigation under the site header on iOS. Visual viewport height is
+updated on first load, pageshow and resize, while pinch zoom keeps its natural scale.
+Browser regression checks include WebKit first load, a restored verse, viewport
+height changes, tablet divider extremes and crossing the phone/tablet breakpoint.
+
+Wiersbe EPUBs and The Shepherd's Staff now qualify for original typography
+preparation during library indexing. Existing indexed copies require a one-time
+`pij_library_knowledge.refresh_study_source_formats(...)` maintenance run before
+`prepare-readers`; matching local source files can be supplied with
+`local_directory`. This adds safe source formatting to the AI index without
+altering ebook files or personal notes. Wiersbe uses original EPUB paragraphs,
+emphasis and heading classes. Staff recommendations retain whole teaching
+chapters, match opening/main teaching passages and show printed contributor
+credits where available; incidental illustrations alone do not establish coverage.
+
+A structured passage-based study index remains a possible follow-up if performance
+measurements justify it; transferring entire ebooks is not part of this scope.

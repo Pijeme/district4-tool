@@ -325,8 +325,9 @@ def _xml_text(data):
         return _clean(html.unescape(text))
 
 
-def _formatted_source_title(title):
-    return bool(re.search(r'moody bible commentary|pulpit commentary|sermon resources vol|spurgeon.*sermon.*outline|^52\s+(?:funeral\s+)?sermons\b|^joy$', title, re.I))
+def _formatted_source_title(title, author='', fmt=''):
+    return bool(re.search(r'moody bible commentary|pulpit commentary|sermon resources vol|spurgeon.*sermon.*outline|shepherd.?s.staff|^52\s+(?:funeral\s+)?sermons\b|^joy$', title, re.I)
+        or (title.casefold().startswith('be ') and 'wiersbe' in author.casefold() and fmt.casefold()=='epub'))
 
 
 def _formatted_source_sections(data, fmt):
@@ -412,6 +413,9 @@ def _formatted_source_sections(data, fmt):
                         list_item=list_sequence,list_number=number,list_style=context['style'] if context['style'] in ('1','a','A','i','I') else '1')
                 if tag=='blockquote':structure['source_quote']=True
                 if re.fullmatch(r'h[1-6]',tag):structure.update(type='heading',source_heading=int(tag[1]))
+                for cls in node.attrib.get('class','').split():
+                    if cls in ('Chapter-Title','A-head','B-head','C-head'):
+                        structure['source_heading']={'Chapter-Title':1,'A-head':2,'B-head':3,'C-head':4}[cls]
                 marks=list(inherited)
                 for cls in node.attrib.get('class','').split(): marks.extend(classes.get(cls,()))
                 inline=node.attrib.get('style','')
@@ -466,14 +470,14 @@ def refresh_study_source_formats(progress=print, local_directory=None):
     finally:db.close()
     drive=None;results=[]
     for doc in documents:
-        if not _formatted_source_title(doc['title']):continue
+        if not _formatted_source_title(doc['title'],doc['author'] or '',doc['format']):continue
         # Ignore generic/duplicate Pulpit copies when a numbered volume exists.
         if 'pulpit' in doc['title'].casefold() and not re.search(r'\bvolume\s+[1-9]\b',doc['title'],re.I):continue
         progress('Preserving original typography: '+doc['title'])
         data=None
         if local_directory:
             from pathlib import Path
-            for candidate in Path(local_directory).glob('*.'+doc['format'].lower()):
+            for candidate in Path(local_directory).rglob('*.'+doc['format'].lower()):
                 title_key=re.sub(r'[^a-z0-9]','',doc['title'].split('(',1)[0].casefold())
                 if not re.sub(r'[^a-z0-9]','',candidate.stem.casefold()).startswith(title_key):continue
                 if doc['checksum'] and len(doc['checksum']) in (32,40,64):
@@ -809,7 +813,7 @@ def index_public_library(force=False):
                     continue
 
                 _store_public_document(row, chunks, len(sections))
-                if _formatted_source_title(row['title']) and not _public_library_index_cancel_requested():
+                if _formatted_source_title(row['title'],row['author'] or '',fmt) and not _public_library_index_cancel_requested():
                     docdb=_db()
                     try: document=_find_public_document(docdb,row['drive_file_id'])
                     finally: docdb.close()
