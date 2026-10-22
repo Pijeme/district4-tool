@@ -237,3 +237,11 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
  .bs-root .bs-reader-tabs button{flex-basis:94px;width:94px;min-width:94px;max-width:94px}
  .bs-root .bs-study>.bs-study-tabs button{flex:0 0 auto;width:auto;min-width:0;max-width:none;padding:9px 8px}
 }
+
+#bsTranslation{max-width:100px;min-width:70px;flex-shrink:0}.bs-verse-text{white-space:pre-wrap}.bs-verse-footnotes{font:13px/1.6 Arial,sans-serif;color:var(--bs-muted);margin:0 0 14px}.bs-verse-footnotes summary{cursor:pointer}.bs-verse-footnotes p{white-space:pre-wrap}
+.bs-translation-control{display:flex;align-items:center;flex:0 0 auto}
+@media(max-width:700px){
+ .bs-toolbar-secondary .bs-translation{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .bs-toolbar-secondary #bsTranslation{width:84px;min-width:0}
+ .bs-toolbar-secondary #bsLayoutMode{flex:0 0 auto;max-width:145px}
+}

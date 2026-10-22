@@ -19,6 +19,36 @@ import pij_library_knowledge as knowledge
 
 
 class LibraryPortabilityTests(unittest.TestCase):
+    def test_reader_only_bibles_are_excluded_from_scan_index_and_cached_ai_search(self):
+        keep = self.catalog()
+        blocked = self.catalog('old-restricted', 843, 43, 'Synthetic restricted guide')
+        self.document(keep, text='Synthetic Ginoo prayer evidence.')
+        self.document(blocked, source_id=126, book_id=43, text='Synthetic Ginoo restricted evidence.')
+        restricted_id = '1sYXbwGS2nT4MW9SUl1FcE7OvIebqtmzK'
+        with closing(resources.get_resource_db()) as db, db:
+            db.execute('UPDATE pastor_library_files SET drive_file_id=? WHERE id=843', (restricted_id,))
+        with closing(knowledge._db()) as db, db:
+            db.execute('UPDATE pij_library_documents SET drive_file_id=? WHERE source_file_id=126', (restricted_id,))
+        self.assertEqual([r['book_id'] for r in knowledge._public_files_to_index()], [42])
+        with closing(knowledge._db(read_only=True)) as db:
+            self.assertEqual({r['book_id'] for r in knowledge._search_chunks(db, ['Ginoo'])}, {42})
+        self.assertFalse(knowledge.get_library_book_status(43)['found'])
+        self.assertEqual(knowledge.find_library_books('restricted')['count'], 0)
+        blocked = dict(blocked,drive_file_id=restricted_id)
+        with self.assertRaises(ValueError):
+            knowledge._store_public_document(blocked, [(1,1,1,'Synthetic text')], 1)
+        self.assertTrue(resources.ai_restricted_source({'name':'Biblica Open Tagalog Contemporary Bible 2025.zip'}))
+        def listing(drive, folder):
+            if folder == resources.PASTOR_RESOURCES_DRIVE_FOLDER_ID:
+                return [dict(id=resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID, name='Restricted Bibles',
+                             mimeType=resources.GOOGLE_DRIVE_FOLDER_MIME), self.drive_item()]
+            raise AssertionError('The restricted folder must never be listed by library scanning.')
+        with (patch.object(resources,'get_drive_session',return_value=object()),
+              patch.object(resources,'list_drive_folder',side_effect=listing) as scanned,
+              patch.object(resources,'get_title_and_author',return_value=('Prayer Guide','Author'))):
+            resources.scan_drive_library()
+        self.assertEqual(scanned.call_count,1)
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix='district4_library_test_')
         self.addCleanup(directory.cleanup)
@@ -502,6 +532,287 @@ class LibraryPortabilityTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_book_counts_respect_smaller_requests_and_cap_at_ten(self):
+        for question, expected in (
+            ('Suggest books about giving', 10),
+            ('Suggest a book about giving', 1),
+            ('Suggest one resource about giving', 1),
+            ('Suggest 3 books about giving', 3),
+            ('Suggest seven books about giving', 7),
+            ('Suggest eight ebooks about giving', 8),
+            ('Suggest nine resources about giving', 9),
+            ('Suggest ten books about giving', 10),
+            ('Suggest up to 10 books about giving', 10),
+            ('Suggest 25 books about giving', 10),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(knowledge._requested_book_count(question), expected)
+        self.assertEqual(knowledge._requested_book_count('Suggest books', default=0), 0)
+        self.assertEqual(knowledge._query_terms('List up to ten books about giving'), ['giving'])
+
+    def test_ten_recommendations_keep_every_source_and_topic_within_context_budget(self):
+        for number in range(12):
+            row = self.catalog(f'drive-{number}', 100 + number, 100 + number,
+                               f'Generosity Volume {number}')
+            # The matching topic is deliberately late in a long passage.
+            self.document(row, source_id=100 + number,
+                          text='Opening material. ' * 220 + 'Giving generously helps others. ' * 60)
+        for question, expected in (
+            ('Suggest books about giving', 10),
+            ('List up to ten books about giving', 10),
+            ('Suggest 25 books about giving', 10),
+            ('Suggest 3 books about giving', 3),
+            ('Suggest a book about giving', 1),
+        ):
+            with self.subTest(question=question):
+                context = knowledge.library_context_for_gemini(question)
+                self.assertEqual(context.count('\nBOOK '), expected)
+                self.assertEqual(context.count('APPROVED LINK:'), expected)
+                self.assertEqual(context.count('PASSAGE:'), expected)
+                self.assertLessEqual(len(context), knowledge.MAX_CONTEXT_CHARS)
+                for block in context.split('\nBOOK ')[1:]:
+                    self.assertIn('Giving', block)
+                    self.assertRegex(block, r'APPROVED LINK: /pastor-resources/read/1\d\d\?')
+
+    def test_recommendations_use_only_available_relevant_books(self):
+        self.document(self.catalog(title='Generosity Guide'), text='Giving generously helps others.')
+        self.document(self.catalog('drive-B', 843, 43, 'Unrelated Guide'), source_id=126,
+                      text='Music practice improves rhythm.')
+        context = knowledge.library_context_for_gemini('Suggest ten books about giving')
+        self.assertEqual(context.count('\nBOOK '), 1)
+        self.assertIn('Generosity Guide', context)
+        self.assertNotIn('Unrelated Guide', context)
+        self.assertIn('list fewer rather than padding', context)
+
+    def test_preferred_sources_are_found_even_when_study_bible_fills_global_hits(self):
+        bible = self.catalog(title='Alpha Study Bible')
+        doc_id = self.document(bible, text='Giving generously helps.')
+        devotional = self.catalog('drive-devotional', 843, 43, 'Daily Devotional Reflections')
+        self.document(devotional, source_id=126,
+                      text='Opening reflection. ' * 300 + 'Giving generously helps others.')
+        commentary = self.catalog('drive-commentary', 844, 44, 'Ministry Commentary')
+        self.document(commentary, source_id=127,
+                      text='Context and explanation. ' * 300 + 'Giving generously helps others.')
+        hidden = self.catalog('drive-hidden', 845, 45, 'Hidden Devotional')
+        self.document(hidden, source_id=128, text='Giving generously helps.')
+        with closing(knowledge._db()) as db:
+            db.execute('UPDATE appdb.pastor_library_books SET is_hidden=1 WHERE id=45')
+            for number in range(2, 162):
+                db.execute('''INSERT INTO pij_library_chunks
+                    (document_id,chunk_number,page_start,page_end,content) VALUES(?,?,?,?,?)''',
+                           (doc_id, number, number, number, 'Giving generously helps.'))
+                db.execute('INSERT INTO pij_library_chunks_fts(document_id,chunk_number,content) VALUES(?,?,?)',
+                           (doc_id, number, 'Giving generously helps.'))
+            db.execute('UPDATE pij_library_documents SET chunk_count=161 WHERE id=?', (doc_id,))
+            db.commit()
+            global_hits = knowledge._search_chunks(db, ['giving'], limit=140)
+            self.assertEqual({row['book_id'] for row in global_hits}, {42})
+            ranked, mode = knowledge._rank_books(db, 'Suggest books about giving', 'recommendation', 10)
+            self.assertEqual(mode, 'recommendation')
+            self.assertEqual({book['book_id'] for book in ranked[:2]}, {43, 44})
+            self.assertEqual(ranked[-1]['book_id'], 42)
+            self.assertNotIn(45, [book['book_id'] for book in ranked])
+            # The subset filter also applies when FTS5 is unavailable.
+            with patch.object(knowledge, '_fts_available', return_value=False):
+                subset = knowledge._search_chunks(db, ['giving'], book_ids=[43, 44, 45])
+            self.assertEqual({row['book_id'] for row in subset}, {43, 44})
+
+        context = knowledge.library_context_for_gemini('Suggest a book about giving')
+        self.assertNotIn('Alpha Study Bible', context)
+        self.assertEqual(context.count('APPROVED LINK:'), 1)
+        self.assertIn('present commentaries and devotional books first', context)
+        exact = knowledge.library_context_for_gemini('Tell me about "Alpha Study Bible"')
+        self.assertIn('BOOK 1: Alpha Study Bible', exact)
+        self.assertNotIn('Daily Devotional Reflections', exact)
+
+    def test_extra_matching_pages_do_not_increase_a_books_score(self):
+        doc_id = self.document(self.catalog(title='Alpha Study Bible'), text='Giving generously helps.')
+        with closing(knowledge._db()) as db:
+            before, _ = knowledge._rank_books(db, 'Suggest books about giving', 'recommendation', 10)
+            for number in range(2, 5):
+                db.execute('''INSERT INTO pij_library_chunks
+                    (document_id,chunk_number,page_start,page_end,content) VALUES(?,?,?,?,?)''',
+                           (doc_id, number, number, number, 'Giving generously helps.'))
+                db.execute('INSERT INTO pij_library_chunks_fts(document_id,chunk_number,content) VALUES(?,?,?)',
+                           (doc_id, number, 'Giving generously helps.'))
+            db.commit()
+            after, _ = knowledge._rank_books(db, 'Suggest books about giving', 'recommendation', 10)
+        self.assertEqual(before[0]['score'], after[0]['score'])
+
+    def test_study_bible_classification_takes_precedence_over_commentary_category(self):
+        self.assertEqual(knowledge._resource_priority({
+            'title': 'Life Application Study Bible', 'category': 'Commentaries', 'folder_path': ''}), 2)
+        self.assertEqual(knowledge._resource_priority({
+            'title': 'NIV Life Journey Bible', 'category': 'Study Bibles', 'folder_path': ''}), 2)
+        self.assertEqual(knowledge._resource_priority({
+            'title': 'NIV Bible Study Commentary', 'category': 'General', 'folder_path': ''}), 0)
+        self.assertEqual(knowledge._resource_priority({
+            'title': 'Reflection Guide', 'category': 'Devotionals', 'folder_path': ''}), 0)
+        self.assertFalse(knowledge._use_resource_priority('Suggest study Bibles about giving', 'recommendation'))
+
+    def test_typed_counts_and_routes_accept_natural_resource_requests(self):
+        for question, kind, count in (
+            ('suggest 10 study bible?', 'study_bible', 10),
+            ('show 3 study Bibles', 'study_bible', 3),
+            ('suggest five devotional books', 'devotional', 5),
+            ('list two commentaries', 'commentary', 2),
+            ("suggest four children's ministry books", 'children_ministry', 4),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(knowledge._library_mode(question), 'recommendation')
+                self.assertEqual(knowledge._requested_book_count(question), count)
+                self.assertEqual(knowledge._requested_resource_type(question), kind)
+                self.assertEqual(knowledge._resource_topic_terms(question, kind), [])
+
+    def test_study_bible_browse_uses_catalogue_without_passage_search(self):
+        for number in range(12):
+            # Intentionally not indexed: catalogue availability and full-text
+            # searchability are separate and recommendations must respect that.
+            self.catalog(f'drive-{number}', 100 + number, 100 + number,
+                         f'Edition {number} Study Bible')
+        with closing(resources.get_resource_db()) as db:
+            db.execute("UPDATE pastor_library_books SET is_hidden=1 WHERE id=100")
+            db.execute("UPDATE pastor_library_files SET is_active=0 WHERE book_id=101")
+            db.execute("UPDATE pastor_library_files SET is_duplicate=1 WHERE book_id=102")
+            db.commit()
+        self.catalog('drive-commentary', 200, 200, 'Daily Study Bible')
+        self.catalog('drive-handbook', 201, 201, 'Bible Study Handbook')
+        with (patch.object(knowledge, '_search_chunks', side_effect=AssertionError('No passage search')),
+              patch.object(knowledge, '_catalog_specific_book_for_question', side_effect=AssertionError('Not one title'))):
+            context = knowledge.library_context_for_gemini('suggest 10 study bible?')
+        self.assertEqual(context.count('\nBOOK '), 9)
+        self.assertEqual(context.count('APPROVED SOURCE:'), 9)
+        self.assertEqual(len(context.approved_sources), 9)
+        self.assertTrue(all(source['reason']['English'] for source in context.approved_sources))
+        self.assertNotIn('Daily Study Bible', context)
+        self.assertNotIn('Bible Study Handbook', context)
+        self.assertNotIn('Edition 0 Study Bible', context)
+        self.assertIn('not extracted passages', context)
+        self.assertIn('do not claim the whole library', context)
+        self.assertLessEqual(len(context), knowledge.MAX_CONTEXT_CHARS)
+        self.assertEqual(knowledge.library_context_for_gemini('suggest 3 study Bibles').count('\nBOOK '), 3)
+
+    def test_children_ministry_browse_prioritizes_practical_books_over_incidental_commentaries(self):
+        for number, title in enumerate(('Crafts for Children', 'Sunday School Lessons', 'Kids Devotions',
+                                       'Talking with Your Kids', 'General Bible Commentary')):
+            row = self.catalog(f'drive-{number}', 100 + number, 100 + number, title)
+            self.document(row, source_id=100 + number, text='Children and ministry are mentioned here.')
+        context = knowledge.library_context_for_gemini('suggest 10 books for children ministry')
+        self.assertEqual(context.count('\nBOOK '), 4)
+        self.assertIn('BOOK 1: Crafts for Children', context)
+        self.assertLess(context.index('Sunday School Lessons'), context.index('Kids Devotions'))
+        self.assertLess(context.index('Kids Devotions'), context.index('Talking with Your Kids'))
+        self.assertNotIn('General Bible Commentary', context)
+        self.assertIn('Bible-themed crafts', context.approved_sources[0]['reason']['English'])
+
+    def test_topical_fit_comes_before_commentary_preference(self):
+        self.document(self.catalog(title='Generosity Giving Guide'), text='Giving generously helps others.')
+        self.document(self.catalog('drive-C', 843, 43, 'General Bible Commentary'), source_id=126,
+                      text='Giving generously helps others.')
+        with closing(knowledge._db()) as db:
+            ranked, mode = knowledge._rank_books(db, 'Suggest books about giving', 'recommendation', 10)
+        self.assertEqual(ranked[0]['title'], 'Generosity Giving Guide')
+
+    def test_typed_topic_search_excludes_other_source_types(self):
+        self.document(self.catalog(title='Prayer Study Bible'), text='Prayer helps believers.')
+        self.document(self.catalog('drive-C', 843, 43, 'Prayer Commentary'), source_id=126,
+                      text='Prayer helps believers.')
+        context = knowledge.library_context_for_gemini('Suggest 3 study Bibles about prayer')
+        self.assertIn('Prayer Study Bible', context)
+        self.assertNotIn('Prayer Commentary', context)
+
+    def test_loving_others_recommendations_do_not_collapse_to_a_similar_title(self):
+        for number, title in enumerate(('Love One Another', 'Christian Compassion', 'Loving Our Neighbors',
+                                       'Practical Christian Care', 'Helping People', 'Fellowship Guide')):
+            row = self.catalog(f'drive-{number}', 100 + number, 100 + number, title)
+            self.document(row, source_id=100 + number,
+                          text='Love others by listening, showing compassion, and helping neighbors in practical ways.')
+        self.assertIsNone(knowledge._catalog_specific_book_for_question('suggest 5 books about loving others?'))
+        with closing(knowledge._db()) as db:
+            self.assertIsNone(knowledge._find_specific_book(db, 'suggest books about loving others?', ['loving', 'others']))
+        context = knowledge.library_context_for_gemini('suggest 5 books about loving others?')
+        self.assertIn('RETRIEVAL MODE: RECOMMENDATION', context)
+        self.assertEqual(context.count('\nBOOK '), 5)
+        self.assertEqual(len({source['title'] for source in context.approved_sources}), 5)
+        exact = knowledge.library_context_for_gemini('Tell me about the book "Love One Another"')
+        self.assertIn('RETRIEVAL MODE: SPECIFIC_BOOK', exact)
+        self.assertEqual(exact.count('\nBOOK '), 1)
+        self.assertIn('BOOK 1: Love One Another', exact)
+
+    def test_recommendations_do_not_repeat_titles_with_imported_author_differences(self):
+        original = self.catalog(title='Love One Another')
+        duplicate = self.catalog('drive-B', 843, 43, 'Temporary Imported Title')
+        other = self.catalog('drive-C', 844, 44, 'Loving Our Neighbors')
+        with closing(resources.get_resource_db()) as db:
+            db.execute("UPDATE pastor_library_books SET title='Love One Another',author='Epub Files' WHERE id=43")
+            db.commit()
+        for number, row in enumerate((original, duplicate, other)):
+            self.document(row, source_id=125 + number,
+                          text='Love others through compassion and practical care for neighbors.')
+        context = knowledge.library_context_for_gemini('Suggest 5 books about loving others')
+        titles = [source['title'] for source in context.approved_sources]
+        self.assertEqual(titles.count('Love One Another'), 1)
+        self.assertEqual(len(titles), 2)
+
+    def test_metadata_terms_match_words_instead_of_unrelated_substrings(self):
+        self.assertFalse(knowledge._term_in_text('anger', 'danger zone'))
+        self.assertFalse(knowledge._term_in_text('other', 'another book'))
+        row = {'title': 'Danger Zone', 'author': 'Author', 'category': 'General', 'folder_path': ''}
+        self.assertEqual(knowledge._metadata_score(row, ['anger'], 'recommendation'), 0)
+
+    def test_study_bible_catalogue_supplies_verified_opening_material(self):
+        row = self.catalog(title='Amplified Study Bible')
+        self.document(row, text='Introduction. This Bible is designed for readers comparing word meanings. Its features include study notes.')
+        context = knowledge.library_context_for_gemini('Suggest study Bibles')
+        self.assertIn('OPENING EXCERPT:', context)
+        self.assertIn('readers comparing word meanings', context)
+        self.assertIn('Make the explanations distinct', context)
+        self.assertLessEqual(len(context), knowledge.MAX_CONTEXT_CHARS)
+
+    def test_common_topic_search_finishes_within_a_bounded_query_budget(self):
+        row = self.catalog(title='Giving Guide')
+        doc_id = self.document(row, text='Giving generously helps others.')
+        with closing(knowledge._db()) as db:
+            for table in ('pij_library_chunks', 'pij_library_chunks_fts'):
+                db.execute(f'DELETE FROM {table} WHERE document_id=?', (doc_id,))
+            db.executemany('''INSERT INTO pij_library_chunks
+                (document_id,chunk_number,page_start,page_end,content) VALUES(?,?,?,?,?)''',
+                ((doc_id, number, number, number, 'Giving generously helps others.') for number in range(1, 5001)))
+            db.executemany('INSERT INTO pij_library_chunks_fts(document_id,chunk_number,content) VALUES(?,?,?)',
+                ((doc_id, number, 'Giving generously helps others.') for number in range(1, 5001)))
+            db.execute('UPDATE pij_library_documents SET chunk_count=5000 WHERE id=?', (doc_id,))
+            db.commit()
+
+            # A work budget catches whole-result sorting without depending on
+            # machine speed. Scoped lookups should touch only the chosen book's
+            # indexed chunk range, not traverse globally ranked FTS matches.
+            for book_id, budget in ((None, 200000), (42, 20000)):
+                with self.subTest(book_id=book_id):
+                    steps = [0]
+
+                    def interrupt_excessive_work():
+                        steps[0] += 100
+                        return int(steps[0] > budget)
+
+                    db.set_progress_handler(interrupt_excessive_work, 100)
+                    try:
+                        hits = knowledge._search_chunks(db, ['giving'], limit=3, book_id=book_id)
+                        self.assertEqual(len(hits), 3)
+                        self.assertTrue(all(hit['book_id'] == 42 for hit in hits))
+                    finally:
+                        db.set_progress_handler(None, 0)
+
+    def test_visibility_is_applied_before_the_ranked_result_limit(self):
+        hidden = self.catalog(title='Hidden Giving Guide')
+        self.document(hidden, text='Giving giving giving.')
+        visible = self.catalog('drive-B', 843, 43, 'Available Giving Guide')
+        self.document(visible, source_id=126, text='Giving generously helps support people in need.')
+        with closing(knowledge._db()) as db:
+            db.execute('UPDATE appdb.pastor_library_books SET is_hidden=1 WHERE id=42')
+            db.commit()
+            hits = knowledge._search_chunks(db, ['giving'], limit=1)
+        self.assertEqual([hit['book_id'] for hit in hits], [43])
+
     def test_failed_and_empty_indexes_are_retried(self):
         row = self.catalog()
         self.document(row)
@@ -935,7 +1246,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.path = Path(self.directory.name) / 'bible_study.db'
         self.app = Flask(__name__, static_folder=str(Path(resources.__file__).parent / 'static'))
         self.app.secret_key = 'isolated-test-session-key-not-production'
-        self.app.config.update(TESTING=True, BIBLE_STUDY_DATABASE=str(self.path))
+        self.app.config.update(TESTING=True, BIBLE_STUDY_DATABASE=str(self.path), BIBLE_STUDY_TRANSLATION_FOLDER_ID='')
         self.app.jinja_loader = ChoiceLoader([
             DictLoader({'base.html': '<html><head></head><body>{% block content %}{% endblock %}</body></html>'}),
             FileSystemLoader(str(Path(resources.__file__).parent / 'templates')),
@@ -965,6 +1276,155 @@ class BibleStudyIntegrationTests(unittest.TestCase):
     def settings(self, **updates):
         return {**dict(book='Genesis', chapter=1, verse=1, theme='paper', font_size=19,
                        layout_mode='split', split_ratio=60, version=0), **updates}
+
+    def translation_zip(self, word='Ginoo', malformed=False):
+        # Synthetic USFM; no licensed Bible text enters tests or AI fixtures.
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+            for code, (_,chapters) in zip(self.bible.USFM_BOOK_IDS,self.bible.BOOKS):
+                text='\\id '+code+'\n'
+                for chapter in range(1,chapters+1):
+                    text+=f'\\c {chapter}\n\\s1 Synthetic heading\n\\p\n\\v 1 {word} synthetic.\n'
+                    if code=='GEN' and chapter==1:
+                        text+='\\s2 Second heading\n\\q1\n\\v 2-3 '+word+' synthetic\n\\q2 next line. \\f + \\fr 1:2 \\ft Synthetic note.\\f*\n'
+                        text+='\\v 4 Ginoong pag-ibig synthetic.\n'
+                archive.writestr(code+'.usfm', text if not malformed or code!='GEN' else text.replace('\\v 2-3','\\v 1-3',1))
+        return output.getvalue()
+
+    def test_usfm_validation_preserves_ranges_headings_footnotes_and_poetry(self):
+        data=self.translation_zip()
+        parsed=self.bible.parse_usfm_archive(data,'CEBOCB')
+        self.assertEqual((parsed['books'],parsed['chapters'],parsed['verse_ranges']), (66,1189,1))
+        first,combined,last=parsed['verses'][:3]
+        self.assertEqual((combined['verse'],combined['verse_end']), (2,3))
+        self.assertEqual(first['heading'],'Synthetic heading')
+        self.assertEqual(combined['heading'],'Second heading')
+        self.assertEqual(last['heading'],'')
+        self.assertEqual(combined['text'],'Ginoo synthetic\nnext line.')
+        self.assertEqual(combined['notes'],[{'text':'1:2 Synthetic note.'}])
+        self.assertEqual(combined['layout'],'poetry')
+        with self.assertRaises(self.bible.SyncError):
+            self.bible.parse_usfm_archive(self.translation_zip(malformed=True),'CEBOCB')
+        with self.assertRaises(self.bible.SyncError):
+            self.bible.parse_usfm_archive(b'broken','TCB')
+        with self.assertRaises(self.bible.SyncError):
+            self.bible.parse_usfm_archive(data,'NIV')
+
+    def test_translation_import_reader_concordance_preferences_and_edition_isolation(self):
+        headers=self.preview(initialize=True)
+        self.publish_fixture()
+        with closing(sqlite3.connect(self.path)) as conn:
+            old=conn.execute('SELECT id,text FROM bible_verses ORDER BY id').fetchall()
+        data=self.translation_zip()
+        with patch.object(knowledge,'index_public_library',side_effect=AssertionError('No AI index access')):
+            result=self.bible.import_usfm_translations(self.path,{'CEBOCB':data,'TCB':self.translation_zip('Panginoon')})
+        self.assertTrue(Path(result['backup']).is_file())
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT id,text FROM bible_verses WHERE id<=? ORDER BY id',(old[-1][0],)).fetchall(),old)
+            self.assertIsNone(conn.execute('PRAGMA foreign_key_check').fetchone())
+        query='?book=Genesis&chapter=1&translation=CEBOCB'
+        chapter=self.client.get(self.base+'/api/chapter'+query).json
+        self.assertEqual(len(chapter['verses']),3)
+        verse=chapter['verses'][1]
+        self.assertEqual((verse['verse'],verse['verse_end']),(2,3))
+        self.assertEqual(verse['footnotes'][0]['text'],'1:2 Synthetic note.')
+        preview=self.client.get(self.base+'/api/verse'+query+'&verse=3').json['verse']
+        self.assertEqual(preview['reference'],'Genesis 1:2–3')
+        self.assertEqual(preview['text'],verse['text'])
+        self.assertIsNone(self.bible.get_indexed_niv_passage('Genesis 1:2',self.path))
+        matches=self.client.get(self.base+'/api/concordance?q=GINOO&translation=CEBOCB').json
+        self.assertEqual(len(matches['entries']),20)
+        self.assertEqual(matches['next_offset'],20)
+        self.assertEqual(matches['entries'][1]['headword'],'Genesis 1:2–3')
+        self.assertNotIn('Ginoong',str(matches['entries']))
+        exact=self.client.get(self.base+'/api/concordance?q=pag-ibig&translation=CEBOCB').json
+        self.assertEqual([v['headword'] for v in exact['entries']],['Genesis 1:4'])
+        other=self.client.get(self.base+'/api/concordance?q=Ginoo&translation=TCB').json
+        self.assertEqual(other['entries'],[])
+        self.assertEqual(self.client.get(self.base+'/api/word/'+str(verse['id'])+'/0').status_code,404)
+        self.assertEqual(self.client.get(self.base+'/api/chapter?book=Genesis&chapter=1&translation=bad').status_code,400)
+        saved=self.client.post(self.base+'/api/state',json=self.settings(translation='CEBOCB',verse=3),headers=headers)
+        self.assertEqual(saved.status_code,200)
+        self.assertEqual(self.client.get(self.base+'/api/state').json['state']['translation'],'CEBOCB')
+        ranges=[dict(verse_id=verse['id'],start_offset=0,end_offset=5,selected_text='Ginoo')]
+        added=self.client.post(self.base+'/api/annotations',json=dict(kind='highlight',color='#ffe66d',ranges=ranges),headers=headers)
+        self.assertEqual(added.status_code,201,added.json)
+        self.assertEqual(len(self.client.get(self.base+'/api/personal'+query).json['annotations']),1)
+        self.assertEqual(self.client.get(self.base+'/api/personal?book=Genesis&chapter=1&translation=TCB').json['annotations'],[])
+        again=self.bible.import_usfm_translations(self.path,{'CEBOCB':data})
+        self.assertIsNone(again['backup'])
+        self.login('Another Reader',pastor=True)
+        self.assertEqual(self.client.get(self.base+'/api/state').json['state']['translation'],'NIV')
+        self.assertEqual(self.client.get(self.base+'/api/personal'+query).json['annotations'],[])
+
+    def test_translation_validation_failure_preserves_existing_database(self):
+        self.preview(initialize=True);self.publish_fixture()
+        with closing(sqlite3.connect(self.path)) as conn:
+            before=conn.execute('SELECT * FROM bible_verses').fetchall()
+        with self.assertRaises(self.bible.SyncError):
+            self.bible.import_usfm_translations(self.path,{'CEBOCB':self.translation_zip(),'TCB':b'bad'})
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT * FROM bible_verses').fetchall(),before)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM bible_editions').fetchone()[0],2)
+
+    def test_v6_translation_upgrade_preserves_verses_tokens_notes_bookmarks_and_state(self):
+        legacy=self.bible.SCHEMA_SQL.replace("'NIV','KJV','CEBOCB','TCB'", "'NIV','KJV'")
+        legacy=legacy.replace("    verse_end INTEGER NOT NULL DEFAULT 0, notes_json TEXT NOT NULL DEFAULT '[]', layout TEXT NOT NULL DEFAULT '',\n",'')
+        legacy=legacy.replace("    normalized_text TEXT NOT NULL DEFAULT '',\n",'').replace('CREATE INDEX bible_token_word ON bible_tokens(normalized_text,verse_id);','')
+        with patch.object(self.bible,'SCHEMA_SQL',legacy):
+            headers=self.preview(initialize=True)
+        self.publish_fixture()
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('PRAGMA user_version=6')
+        verse=self.client.get(self.base+'/api/chapter').json['verses'][0]
+        self.client.post(self.base+'/api/bookmarks',json={'verse_id':verse['id']},headers=headers)
+        self.client.post(self.base+'/api/annotations',json=dict(kind='note',note='Keep this note',ranges=[dict(verse_id=verse['id'],start_offset=0,end_offset=5,selected_text='Alpha')]),headers=headers)
+        self.client.post(self.base+'/api/state',json=self.settings(),headers=headers)
+        tables=('bible_verses','bible_tokens','bible_annotations','bible_bookmarks','bible_reader_state')
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('PRAGMA user_version=6')
+            columns={table:[row[1] for row in conn.execute('PRAGMA table_info('+table+')')] for table in tables}
+            before={table:conn.execute('SELECT '+','.join(columns[table])+' FROM '+table+' ORDER BY rowid').fetchall() for table in tables}
+        result=self.bible.import_usfm_translations(self.path,{'CEBOCB':self.translation_zip()})
+        with closing(sqlite3.connect(result['backup'])) as backup:
+            self.assertEqual(backup.execute('PRAGMA user_version').fetchone()[0],6)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0],7)
+            self.assertIsNone(conn.execute('PRAGMA foreign_key_check').fetchone())
+            for table in tables:
+                rows=conn.execute('SELECT '+','.join(columns[table])+' FROM '+table+' ORDER BY rowid').fetchall()
+                self.assertEqual(rows[:len(before[table])],before[table])
+        self.assertEqual(self.client.get(self.base+'/api/state').json['state']['translation'],'NIV')
+
+    def test_combined_translation_verse_inherits_chain_topics_from_each_number(self):
+        self.preview(initialize=True);self.publish_fixture()
+        self.bible.import_usfm_translations(self.path,{'CEBOCB':self.translation_zip()})
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            edition=conn.execute("SELECT id FROM bible_editions WHERE translation='NIV'").fetchone()[0]
+            for number in (2,3):
+                verse=conn.execute('''INSERT INTO bible_verses(edition_id,book_id,chapter,verse,text,content_hash)
+                    VALUES(?,1,1,?,'Synthetic English text',?)''',(edition,number,str(number)*64)).lastrowid
+                topic=conn.execute('''INSERT INTO bible_chain_topics(edition_id,topic_key,title,content_json,source_page)
+                    VALUES(?,?,?,'{}',1)''',(edition,str(number),'Synthetic topic '+str(number))).lastrowid
+                conn.execute('INSERT INTO bible_chain_verses(verse_id,topic_id) VALUES(?,?)',(verse,topic))
+        chapter=self.client.get(self.base+'/api/chapter?translation=CEBOCB').json
+        self.assertEqual([item['topic_key'] for item in chapter['verses'][1]['topics']],['2','3'])
+        self.assertEqual(chapter['verses'][0]['topics'],[])
+
+    def test_translation_zip_drive_sync_is_separate_and_repeatable(self):
+        self.preview(initialize=True)
+        fixture=self.translation_zip()
+        items=[dict(id='synthetic-cebuano-zip',name='cebocb_usfm.zip'),dict(id='synthetic-tagalog-zip',name='Open Tagalog Bible.zip')]
+        drive=Mock()
+        with patch.object(resources,'list_drive_folder',return_value=items) as listing:
+            result=self.bible.sync_translation_sources(self.path,'restricted-folder',lambda message:None,drive=drive,fetch=lambda source:fixture)
+        listing.assert_called_once_with(drive,'restricted-folder')
+        self.assertEqual(set(result['counts']),{'CEBOCB','TCB'})
+        # An edition hash is independent of the other translation's identical test archive.
+        self.assertEqual(len(self.client.get(self.base+'/api/translations').json['translations']),3)
+        with patch.object(resources,'list_drive_folder',return_value=items+[items[0]]):
+            with self.assertRaises(self.bible.SyncError):
+                self.bible.sync_translation_sources(self.path,'restricted-folder',lambda message:None,drive=drive,fetch=lambda source:fixture)
 
     def test_anonymous_requests_never_open_or_create_storage(self):
         with patch.object(self.bible.sqlite3, 'connect', side_effect=AssertionError('No database access')):

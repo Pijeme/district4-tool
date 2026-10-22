@@ -230,6 +230,56 @@ class LibraryBrowserTests(unittest.TestCase):
 class BibleStudyBrowserTests(unittest.TestCase):
     run_browser = LibraryBrowserTests.run_browser
 
+    def test_translation_switch_word_matches_verse_popups_and_copy_on_desktop_and_mobile(self):
+        setup=self.personal_setup()+'''
+        const originalFetch=window.fetch;window.translationRequests=[];
+        window.fetch=async(url,options={})=>{
+            const path=String(url),params=new URL(path,'https://example.test').searchParams;
+            translationRequests.push({path,options});let data={ok:true};
+            const language=params.get('translation')||'NIV',word=language==='TCB'?'Panginoon':'Ginoo';
+            if(path.endsWith('/translations'))data.translations=['NIV','CEBOCB','TCB'].map(code=>({code,label:code,available:true}));
+            else if(path.includes('/chapter?')&&language!=='NIV')data.verses=[{id:language==='TCB'?9:8,verse:2,verse_end:3,text:word+' synthetic.\\nNext line.',heading:'Synthetic heading',layout:'poetry',attribution:'Publisher fixture',edition_label:language,footnotes:[{text:'Synthetic footnote.'}],topics:[{id:3,topic_key:'123',title:'Topic'}],tokens:[{text:word,token_index:0,start_offset:0,end_offset:word.length}]}];
+            else if(path.includes('/concordance?'))data={...data,available:true,query:word,next_offset:null,entries:[{headword:'Genesis 1:2–3',source_label:language+' · Word matches',passage:{book:'Genesis',chapter:1,verse:2},blocks:[{type:'paragraph',text:'Genesis 1:3',references:[{start:0,end:11,book:'Genesis',chapter:1,verse:3}]}]}]};
+            else if(path.includes('/verse?'))data.verse={reference:'Genesis 1:2–3',text:word+' synthetic.',attribution:'Publisher fixture',edition_label:language};
+            else return originalFetch(url,options);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,100));
+            const translation=document.getElementById('bsTranslation');
+            check(translation&&!translation.options[1].disabled,'Available translation missing');
+            for(const [code,word] of [['CEBOCB','Ginoo'],['TCB','Panginoon']]){
+                translation.value=code;translation.dispatchEvent(new Event('change'));await wait();
+                const verse=document.querySelector('.bs-verse-text');
+                check(verse.textContent===word+' synthetic.\\nNext line.','Selected translation text/line breaks lost');
+                check(document.querySelector('.bs-verse-number').textContent==='2–3','Combined verse was split incorrectly');
+                check(document.getElementById('bsWordTab').disabled,'Unverified original-language mapping enabled');
+                check(document.getElementById('bsConcordanceTab').getAttribute('aria-selected')==='true','Native word matching not selected');
+                check(document.querySelector('.bs-verse-footnotes').textContent.includes('Synthetic footnote.'),'Footnote missing');
+                check(!verse.textContent.includes('footnote'),'Footnote changed verse annotation offsets');
+                document.querySelector('.bs-verse-number').click();
+                document.querySelector('[data-selection-action="copy"]').click();await wait();
+                const edition=code==='TCB'?'Ang Salita ng Diyos':'Ang Pulong sa Dios';
+                check(copied==='Genesis 1:2–3 ('+edition+')'+String.fromCharCode(10)+verse.textContent,'Whole-verse copy lost the combined verse range');
+                verse.querySelector('.bs-word').click();await wait();
+                check(document.getElementById('bsConcordanceResults').textContent.includes(code+' · Word matches'),'Wrong concordance edition');
+                document.querySelector('#bsConcordanceResults .bs-scripture-ref').click();await wait();
+                check(document.getElementById('bsVerseDialog').open,'Source reference has no verse popup');
+                check(document.getElementById('bsVerseText').textContent===word+' synthetic.','Popup used another translation: '+document.getElementById('bsVerseText').textContent+' / '+translationRequests.at(-1).path);
+                document.getElementById('bsCopyVerse').click();await wait();
+                check(copied==='Genesis 1:2–3 ('+code+')\\n'+word+' synthetic.','Copied verse used the wrong edition');
+                document.getElementById('bsCloseVerse').click();
+                const save=translationRequests.filter(r=>r.path.endsWith('/state')&&r.options.method==='POST').at(-1);
+                check(JSON.parse(save.options.body).translation===code,'Translation preference not saved');
+                check(document.getElementById('bsBook').value==='Genesis'&&document.getElementById('bsChapter').value==='1','Switch changed passage');
+            }
+            check(!translationRequests.some(r=>r.path.includes('/word/')),'Local-language word sent to English word-study endpoint');
+            check(document.documentElement.scrollWidth<=innerWidth,'Translation control causes horizontal overflow');
+        '''
+        for size in ((1100,850),(420,900)):
+            with self.subTest(size=size):
+                self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
     def render_preview(self, admin=False):
         import bible_study
         from jinja2 import ChoiceLoader, FileSystemLoader

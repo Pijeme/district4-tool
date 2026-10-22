@@ -8,9 +8,10 @@
     const books = [...element("Book").options].map(option => ({name: option.value, chapters: Number(option.dataset.chapters)}));
     const mobile = window.matchMedia("(max-width: 700px)");
     const touchNavigation = () => navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches || mobile.matches;
-    const state = {book: "Genesis", chapter: 1, verse: 1, theme: "paper", font_size: 19, layout_mode: "split", split_ratio: 60, version: 0};
+    const state = {translation: "NIV", book: "Genesis", chapter: 1, verse: 1, theme: "paper", font_size: 19, layout_mode: "split", split_ratio: 60, version: 0};
     let storageAvailable = false, saveChain = Promise.resolve(), writePaused = false, previousFocus = null;
     let contentAvailable = false, chapterRequest = 0, wordRequest = 0, verseRequest = 0;
+    let lastVerseReference = null;
     let copiedVerse = "", syncTimer = null, syncBusy = false;
     let navigationBook = state.book, chainRequest = 0;
     let studyTab = "word", selectedWord = null, concordanceRequest = 0, currentChain = null;
@@ -42,7 +43,11 @@
     function positionTabs() {
         if(mobile.matches) {
             element("Bible").prepend(readerTabs);element("Study").prepend(studyTabs);
-        } else element("WideTabs").append(readerTabs,studyTabs);
+            element("EditionLabel").after(element("TranslationControl"));
+        } else {
+            element("WideTabs").append(readerTabs,studyTabs);
+            element("History").before(element("TranslationControl"));
+        }
         root.style.setProperty("--bs-reader-tab-height",(mobile.matches?readerTabs.offsetHeight:0)+"px");
     }
     positionTabs();
@@ -195,6 +200,34 @@
     }
     function paintStudyMarks() { root.querySelectorAll("[data-study-source]").forEach(paintStudyContainer); }
 
+    const translationNames = {NIV: "New International Version", CEBOCB: "Ang Pulong sa Dios", TCB: "Ang Salita ng Diyos"};
+    const translationLabel = () => state.translation === "NIV" ? "NIV" : translationNames[state.translation] || "NIV";
+    async function refreshTranslations() {
+        try {
+            const data = await api(apiBase + "/translations");
+            for (const option of element("Translation").options) {
+                const item = data.translations.find(item => item.code === option.value);
+                option.disabled = !item?.available;
+                option.title = item?.label || option.textContent;
+            }
+        } catch (_) { /* The selected edition reports its own unavailable content. */ }
+    }
+    function applyTranslation() {
+        if (!translationNames[state.translation]) state.translation = "NIV";
+        element("Translation").value = state.translation;
+        element("EditionLabel").textContent = translationLabel();
+        element("BibleKicker").textContent = "The Holy Bible · " + translationNames[state.translation];
+        element("WordTab").disabled = state.translation !== "NIV";
+        element("WordTab").title = state.translation === "NIV" ? "" : "English word study is available with NIV. Use Concordance for this translation.";
+        if (state.translation !== "NIV" && studyTab === "word") selectStudyTab("concordance");
+    }
+    element("Translation").addEventListener("change", () => {
+        state.translation = element("Translation").value;
+        ++wordRequest; ++concordanceRequest; ++verseRequest; selectedWord = null;
+        applyTranslation(); updateChapter(); savePreferences();
+        if (element("VerseDialog").open && lastVerseReference) previewVerse(lastVerseReference);
+    });
+
     async function loadChapter() {
         const requestId = ++chapterRequest;
         element("ReaderError").hidden = true;
@@ -207,7 +240,7 @@
         element("Empty").hidden = false;
         if (!contentAvailable || !config.chapterUrl) return;
         try {
-            const query = new URLSearchParams({book: state.book, chapter: state.chapter});
+            const query = new URLSearchParams({book: state.book, chapter: state.chapter, translation: state.translation});
             const data = await api(config.chapterUrl + "?" + query);
             if (requestId !== chapterRequest) return;
             const verses = data.verses || [];
@@ -223,10 +256,10 @@
                     element("Verses").append(node("h3", verse.heading)); lastHeading = verse.heading;
                 }
                 const row = node("div", undefined, (verse.topics || []).length ? "bs-verse-row" : "");
-                const paragraph = node("p", undefined, "bs-verse" + (["Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Songs"].includes(state.book) ? " bs-poetry" : ""));
+                const paragraph = node("p", undefined, "bs-verse" + (verse.layout === "poetry" || ["Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Songs"].includes(state.book) ? " bs-poetry" : ""));
                 paragraph.id = "bsVerse" + verse.verse;
                 paragraph.dataset.verseId = verse.id;
-                const number = node("button", verse.verse, "bs-verse-number"); number.type = "button";
+                const number = node("button", verse.verse_end > verse.verse ? verse.verse + "–" + verse.verse_end : verse.verse, "bs-verse-number"); number.type = "button";
                 number.setAttribute("aria-label", "Actions for " + state.book + " " + state.chapter + ":" + verse.verse);
                 number.addEventListener("click", () => selectWholeVerse(verse)); paragraph.append(number);
                 const textContainer = node("span", undefined, "bs-verse-text"); paragraph.append(textContainer);
@@ -248,7 +281,7 @@
                         element("Search").value = element("ConcordanceSearch").value = token.text;
                         if (studyTab === "concordance") loadConcordance(token.text);
                         else if (studyTab === "commentary") loadCommentary();
-                        else if (studyTab === "word") loadWord(verse.id, token.token_index);
+                        else if (studyTab === "word" && state.translation === "NIV") loadWord(verse.id, token.token_index);
                         else scheduleBackgroundStudy();
                         if (mobile.matches) requestAnimationFrame(() => {
                             const pane = element("Bible"), bounds = paragraph.getBoundingClientRect();
@@ -265,6 +298,12 @@
                 }
                 appendScriptureText(textContainer, characters, offset, characters.length, verse.red_spans || []);
                 row.append(paragraph);
+                if (verse.footnotes?.length) {
+                    const notes = node("details", undefined, "bs-verse-footnotes");
+                    notes.append(node("summary", "Notes · " + verse.verse));
+                    for (const note of verse.footnotes) notes.append(node("p", note.text));
+                    row.append(notes);
+                }
                 if ((verse.topics || []).length) {
                     const margin = node("aside", undefined, "bs-chain-margin"); margin.setAttribute("aria-label", "Chain topics for verse " + verse.verse);
                     let extra = null;
@@ -285,12 +324,12 @@
             }
             loadPersonal(requestId);
             if (verses.length && storageAvailable) {
-                const target = verses.find(verse => verse.verse === state.verse) || verses[0];
+                const target = verses.find(verse => verse.verse <= state.verse && (verse.verse_end || verse.verse) >= state.verse) || verses[0];
                 api(apiBase + "/history", {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: JSON.stringify({verse_id: target.id})}).catch(() => {});
                 scrollRestoreUntil = performance.now() + 500;
                 if (readerTab !== "bible") return;
                 if (state.verse > 1) {
-                    const targetElement = element("Verse" + state.verse);
+                    const targetElement = element("Verse" + target.verse);
                     if (targetElement) element("Bible").scrollTop += targetElement.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 20;
                 } else element("Bible").scrollTop = 0;
             }
@@ -330,7 +369,8 @@
     }
     function selectionReference(ranges) {
         const first = verseData.get(ranges[0]?.verse_id), last = verseData.get(ranges.at(-1)?.verse_id);
-        return first ? state.book + " " + state.chapter + ":" + first.verse + (last && last.verse !== first.verse ? "–" + last.verse : "") : "";
+        const end = last?.verse_end || last?.verse;
+        return first ? state.book + " " + state.chapter + ":" + first.verse + (end > first.verse ? "–" + end : "") : "";
     }
     function showSelectionActions(ranges) {
         pendingSelection = {ranges, reference: selectionReference(ranges)};
@@ -415,7 +455,7 @@
     }
     async function loadPersonal(requestId = chapterRequest) {
         try {
-            const data = await api(apiBase + "/personal?" + new URLSearchParams({book: state.book, chapter: state.chapter}));
+            const data = await api(apiBase + "/personal?" + new URLSearchParams({book: state.book, chapter: state.chapter, translation: state.translation}));
             if (requestId !== chapterRequest) return;
             personal = {annotations: data.annotations || [], bookmarks: data.bookmarks || []};
             studyPersonal = {annotations:data.study_annotations || [],bookmarks:data.study_bookmarks || []};
@@ -500,7 +540,7 @@
         const action = button.dataset.selectionAction;
         if (action === "copy") {
             const snapshot = pendingSelection;
-            await copyScripture(snapshot.reference + (snapshot.study ? "" : " (NIV)") + "\n" + snapshot.ranges.map(span => span.selected_text).join("\n"));
+            await copyScripture(snapshot.reference + (snapshot.study ? "" : " (" + translationLabel() + ")") + "\n" + snapshot.ranges.map(span => span.selected_text).join("\n"));
         } else if (action === "note") openNote();
         else if (action === "bookmark") {
             button.disabled = true;
@@ -549,7 +589,8 @@
     }
     function jumpToVerse(number) {
         if (readerTab !== "bible") selectReaderTab("bible");
-        const target = element("Verse" + number);
+        const verse = [...verseData.values()].find(item => item.verse <= number && (item.verse_end || item.verse) >= number);
+        const target = element("Verse" + (verse?.verse || number));
         if (!target) return;
         state.verse = number;
         element("Bible").scrollTop += target.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 14;
@@ -857,6 +898,7 @@
 
     function selectStudyTab(name, focus = false) {
         if (!["word", "concordance", "commentary", "sermon"].includes(name)) return;
+        if (name === "word" && state.translation !== "NIV") name = "concordance";
         const changed = studyTab !== name;
         if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; }
         studyTab = name;
@@ -992,13 +1034,13 @@
     async function fetchConcordance(query, offset = 0, ownerRequest = null) {
         const requestId = offset === 0 ? ++concordanceRequest : ownerRequest;
         const results = element("ConcordanceResults");
-        if (offset === 0) results.replaceChildren(node("p", "Searching Thompson concordance…"));
+        if (offset === 0) results.replaceChildren(node("p", state.translation === "NIV" ? "Searching Thompson concordance…" : "Searching word matches…"));
         try {
-            const data = await api(apiBase + "/concordance?" + new URLSearchParams({q: query, offset}));
+            const data = await api(apiBase + "/concordance?" + new URLSearchParams({q: query, offset, translation: state.translation}));
             if (requestId !== concordanceRequest) return;
             if (offset === 0) results.replaceChildren(node("h3", data.query));
-            if (!data.available) { results.append(node("p", "The Thompson concordance has not been synced yet.")); return; }
-            if (!data.entries.length && offset === 0) results.append(node("p", "No entry for this word is listed in the Thompson concordance."));
+            if (!data.available) { results.append(node("p", state.translation === "NIV" ? "The Thompson concordance has not been synced yet." : "This translation has not been imported yet.")); return; }
+            if (!data.entries.length && offset === 0) results.append(node("p", state.translation === "NIV" ? "No entry for this word is listed in the Thompson concordance." : "No verses contain this exact word in the selected translation."));
             for (const entry of data.entries) {
                 const card = node("article", undefined, "bs-concordance-entry");
                 card.append(node("h4", entry.headword));
@@ -1016,7 +1058,12 @@
                 }
                 const content = node("div", undefined, "bs-concordance-excerpts bs-source-content");
                 for (const block of entry.blocks) content.append(renderSourceBlock(block));
-                card.append(content, node("p", "Thompson concordance · PDF page " + entry.source_page, "bs-attribution"));
+                card.append(content, node("p", entry.source_label || "Thompson concordance · PDF page " + entry.source_page, "bs-attribution"));
+                if (entry.passage) {
+                    const read = node("button", "Read passage"); read.type = "button";
+                    read.addEventListener("click", () => navigatePassage(entry.passage.book, entry.passage.chapter, entry.passage.verse));
+                    card.append(read);
+                }
                 results.append(card);
             }
             if (data.next_offset !== null) {
@@ -1155,6 +1202,7 @@
     });
 
     async function previewVerse(reference) {
+        lastVerseReference = reference;
         const requestId = ++verseRequest;
         copiedVerse = ""; element("CopyVerse").disabled = true;
         element("CopyVerse").textContent = "Copy Verse";
@@ -1162,13 +1210,13 @@
         element("VerseText").textContent = "Loading verse…"; element("VerseAttribution").textContent = "";
         if (!element("VerseDialog").open) element("VerseDialog").showModal();
         try {
-            const data = await api(config.verseUrl + "?" + new URLSearchParams({book: reference.book, chapter: reference.chapter, verse: reference.verse,
+            const data = await api(config.verseUrl + "?" + new URLSearchParams({translation: state.translation, book: reference.book, chapter: reference.chapter, verse: reference.verse,
                 end_chapter: reference.end_chapter || reference.chapter, end_verse: reference.end_verse || reference.verse}));
             if (requestId !== verseRequest) return;
             element("VerseReference").textContent = data.verse.reference;
             element("VerseText").textContent = data.verse.text;
             element("VerseAttribution").textContent = data.verse.attribution;
-            copiedVerse = data.verse.reference + " (NIV)\n" + data.verse.text;
+            copiedVerse = data.verse.reference + " (" + (data.verse.edition_label || translationLabel()) + ")\n" + data.verse.text;
             element("CopyVerse").disabled = false;
         } catch (error) {
             if (requestId === verseRequest) element("VerseText").textContent = error.message;
@@ -1222,7 +1270,7 @@
         if (previous) { ++chainRequest; renderChain(previous.topic, previous.scrollTop); }
     });
     element("ChainDialog").addEventListener("close", () => { ++chainRequest; currentChain = null; chainHistory.length = 0; });
-    element("VerseDialog").addEventListener("close", () => { ++verseRequest; });
+    element("VerseDialog").addEventListener("close", () => { if (!element("VerseDialog").open) ++verseRequest; });
     root.querySelectorAll("dialog").forEach(dialog => {
         dialog.addEventListener("close",()=>{
             if(element("SelectionToolbar").parentElement===dialog){root.append(element("SelectionToolbar"));clearSelectionActions();}
@@ -1284,7 +1332,7 @@
                 storageAvailable = status.schema_ready;
                 element("Status").textContent = status.message;
                 element("SaveStatus").textContent = "Reading preferences can be saved to your account.";
-                updateChapter();
+                await refreshTranslations(); updateChapter();
             }
         } catch (error) {
             syncBusy = false; element("Sync").disabled = false;
@@ -1585,7 +1633,7 @@
             element("NavigationError").textContent = "Enter a valid reference, such as John 3:16."; return;
         }
         if (contentAvailable && match[3]) {
-            try { await api(config.verseUrl + "?" + new URLSearchParams({book: book.name, chapter: match[2], verse: match[3]})); }
+            try { await api(config.verseUrl + "?" + new URLSearchParams({translation: state.translation, book: book.name, chapter: match[2], verse: match[3]})); }
             catch (error) { element("NavigationError").textContent = error.message; return; }
         }
         navigatePassage(book.name, Number(match[2]), Number(match[3] || 1));
@@ -1597,9 +1645,9 @@
             element("HistoryList").replaceChildren();
             if (!data.history.length) element("HistoryList").append(node("p", "Your visited passages will appear here."));
             for (const item of data.history) {
-                const button = node("button", item.book + " " + item.chapter + ":" + item.verse, "bs-history-item"); button.type = "button";
+                const button = node("button", item.book + " " + item.chapter + ":" + item.verse + " · " + (item.translation || "NIV"), "bs-history-item"); button.type = "button";
                 button.append(node("small", new Date(item.visited_at).toLocaleString()), node("small", item.snippet));
-                button.addEventListener("click", () => navigatePassage(item.book, item.chapter, item.verse)); element("HistoryList").append(button);
+                button.addEventListener("click", () => { state.translation = item.translation || "NIV"; applyTranslation(); navigatePassage(item.book, item.chapter, item.verse); }); element("HistoryList").append(button);
             }
         } catch (error) { element("HistoryList").replaceChildren(node("p", error.message)); }
     });
@@ -1690,10 +1738,11 @@
             try {
                 const data = await api(apiBase + "/personal/" + kind + "/" + encodeURIComponent(query.get(kind.slice(0, -1))));
                 if (!data.item.available) throw Error("This saved item belongs to a Bible edition that is currently unavailable.");
-                state.book = data.item.book; state.chapter = data.item.chapter; state.verse = data.item.verse;
+                state.translation = data.item.translation || "NIV"; state.book = data.item.book; state.chapter = data.item.chapter; state.verse = data.item.verse;
                 if (state.layout_mode === "study") state.layout_mode = "split";
             } catch (error) { toast(error.message); }
         }
+        applyTranslation(); await refreshTranslations();
         updateChapter(); applyAppearance(); setRatio(mobile.matches ? (localSettings.mobileRatio || 50) : state.split_ratio); setMode(state.layout_mode);
         if(query.has("study")) {
             try { const saved=await api(apiBase+"/study-saves/"+encodeURIComponent(query.get("study")));await openSavedStudy(saved.item); }

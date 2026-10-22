@@ -6999,7 +6999,10 @@ def register_sermon_ebooks_routes(app):
         if not row:
             return "Sermon PDF not found.", 404
 
-        return proxy_pdf_file(
-            row,
-            as_attachment=True,
-        )
+        response = proxy_pdf_file(row, as_attachment=True)
+        if request.method == "GET" and response.status_code in (200, 206):
+            preparing = request.headers.get("X-Ebook-Prepare") == "1"
+            import app as appmod
+            appmod.record_website_event("ebook_prepared" if preparing else "download",
+                ("Prepared sermon ebook: " if preparing else "Sermon ebook download requested: ")+str(dict(row).get("title") or dict(row).get("filename") or "Sermon")+" (PDF)", notification=False)
+        return response

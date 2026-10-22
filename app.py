@@ -10,7 +10,10 @@ import secrets
 import tempfile
 import hmac
 import shutil
+import json
+import time
 from pathlib import Path
+from contextlib import closing
 
 from sheet_cache import DATASETS, CacheSyncError, init_cache_tables, sync_cache
 from login_events import ensure_login_event_schema, insert_login_event
@@ -579,6 +582,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_prayer_status ON sheet_prayer_request_cache(status)"
     )
 
+    init_website_activity_tables(db)
     init_cache_tables(db)
     migrate_monthly_reports_scope_to_pastor()
     db.commit()
@@ -2432,6 +2436,7 @@ def _append_prayer_request_to_sheet(church_name, submitted_by, request_id, title
             "",   # Answered Date
         ]
     )
+    record_website_event("Prayer request submitted", "Prayer request submitted: "+str(request_id))
 
 
 def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
@@ -2486,6 +2491,7 @@ def _update_prayer_request_cells_in_sheet(request_id, updates: dict):
         raise RuntimeError("The PrayerRequest sheet is missing the required update headers.")
 
     ws.batch_update(body)
+    record_website_event("Prayer request updated", "Prayer request updated: "+str(request_id), details={"fields": [key for key in updates if key != "request_text"]})
     return True
 
 
@@ -2508,6 +2514,7 @@ def _delete_prayer_request_row_in_sheet(request_id):
 
     verify_sheet_row(ws, "PrayerRequest", sheet_row)
     ws.delete_rows(sheet_row)
+    record_website_event("Prayer request deleted", "Prayer request deleted: "+str(request_id))
     return True
 
 
@@ -3120,15 +3127,318 @@ register_sermon_ebooks_routes(app)
 register_ai_assistant(app)
 register_developer_routes(app)
 
+def init_website_activity_tables(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS website_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+        actor_key TEXT NOT NULL, actor_username TEXT NOT NULL, actor_name TEXT NOT NULL,
+        actor_role TEXT NOT NULL, action TEXT NOT NULL, description TEXT NOT NULL,
+        page_path TEXT NOT NULL, is_notification INTEGER NOT NULL DEFAULT 0,
+        read_at TEXT, event_key TEXT UNIQUE, details_json TEXT NOT NULL DEFAULT '{}')""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_actor ON website_events(actor_key,id DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_unread ON website_events(is_notification,read_at,id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_created ON website_events(created_at)")
+
+
+def website_owner():
+    return session.get("ao_logged_in") is True and str(session.get("ao_username") or "").strip().casefold() == "pijeme"
+
+
+def website_actor():
+    # An AO may temporarily select a pastor. Always attribute to the login.
+    if session.get("ao_logged_in"):
+        username = session.get("ao_username") or session.get("username")
+        name, role = session.get("ao_name"), session.get("ao_role") or "Area Overseer"
+    elif session.get("pastor_logged_in"):
+        username = session.get("username") or session.get("pastor_username")
+        name, role = session.get("name") or session.get("pastor_name"), "Pastor"
+    elif session.get("member_logged_in"):
+        username = session.get("username")
+        name, role = session.get("name"), "Member"
+    else:
+        return {"key": "guest", "username": "", "name": "Guest", "role": "Guest"}
+    username = str(username or "").strip()[:150]
+    return {"key": username.casefold(), "username": username, "name": str(name or username)[:150], "role": str(role)[:80]}
+
+
+def record_website_event(action, description, *, notification=True, page_path="", event_key=None, details=None):
+    """Queue confirmed actions; the response hook persists them after application writes.
+
+    Never capture entire forms, credentials, photos, private notes or AI prompts.
+    """
+    if not has_request_context():
+        return
+    events = getattr(g, "website_events", None)
+    if events is None:
+        events = g.website_events = []
+    events.append((action[:80], str(description)[:500], notification, page_path or request.path,
+                   event_key, details or {}))
+
+
+# Explicit allowlist of user mutations. Success requires JSON ok=true or a new
+# success flash; merely receiving a redirect never counts as a successful change.
+WEBSITE_CHANGE_ACTIONS = {
+    "ao_edit_account_save": "Account updated", "ao_edit_account_delete": "Account deleted",
+    "ao_announcement_create": "Announcement created", "ao_announcement_update": "Announcement updated",
+    "ao_announcement_delete": "Announcement deleted", "sunday_detail": "Sunday report updated",
+    "church_progress_view": "Church progress updated", "ao_aopt_submit": "AOPT updated",
+    "ao_church_status_approve": "Church report approved", "pastor_tool": "Pastor report updated",
+    "prayer_request_write": "Prayer request submitted", "prayer_request_edit": "Prayer request updated",
+    "prayer_request_delete": "Prayer request deleted", "prayer_request_mark_answered": "Prayer marked answered",
+    "ao_prayer_requests_approve": "Prayer request approved", "ao_prayer_requests_reject": "Prayer request rejected",
+    "ao_prayer_requests_approve_all": "Prayer requests approved", "bulletin_pray": "Prayer support updated",
+    "pledge_submit": "Pledge submitted", "pledge_decision": "Pledge reviewed",
+    "temp_edit": "Account edit submitted", "temp_edit_admin": "Account edit reviewed",
+    "church_progress.member_create": "Member account created", "church_progress.member_update": "Member account updated",
+    "church_progress.member_delete": "Member account deleted",
+    "area_progress_monitor.area_progress_monitor_save_remarks": "Church remarks updated",
+    "pastor_resources_admin_edit": "Book details updated", "pastor_resources_admin_recommend": "Book recommendation updated",
+    "pastor_resources_admin_hide": "Book hidden", "pastor_resources_admin_restore": "Book restored",
+    "pastor_resources_favorite": "Book favorite updated", "pastor_resources_completed": "Book completion updated",
+    "pastor_resources_bookmarks": "Book bookmark added", "pastor_resources_delete_bookmark": "Book bookmark deleted",
+    "pastor_resources_annotations": "Book annotation added", "pastor_resources_annotation_item": "Book annotation changed",
+    "sermon_ebooks_edit": "Sermon details updated", "sermon_ebooks_delete": "Sermon hidden",
+    "sermon_ebooks_restore": "Sermon restored", "sermon_ebooks_annotations": "Sermon annotation added",
+    "sermon_ebooks_annotation_update": "Sermon annotation updated", "sermon_ebooks_annotation_delete": "Sermon annotation deleted",
+    "sermon_ebooks_bookmarks": "Sermon bookmark added", "sermon_ebooks_bookmark_delete": "Sermon bookmark deleted",
+    "bible_study.study_save_create": "Bible study saved", "bible_study.study_saved_item_api": "Saved Bible study changed",
+    "bible_study.annotation_create": "Bible annotation added", "bible_study.bookmark_create": "Bible bookmark added",
+    "bible_study.personal_item_api": "Bible annotation or bookmark changed",
+    "pastor_resources_sync_books_live": "Book synchronization requested", "pastor_resources_sync_books": "Books synchronized",
+    "pastor_resources_sync_books_cancel": "Book synchronization cancellation requested",
+    "sermon_ebooks_sync": "Sermon synchronization requested", "bible_study.sync_start": "Bible synchronization requested",
+}
+
+
+@app.context_processor
+def website_activity_context():
+    owner = website_owner()
+    if owner and "website_activity_csrf" not in session:
+        session["website_activity_csrf"] = secrets.token_urlsafe(32)
+    return {"website_activity_owner": owner, "website_activity_csrf": session.get("website_activity_csrf", "") if owner else ""}
+
+
+@app.after_request
+def collect_website_activity(response):
+    if request.path.startswith("/ai/") or request.endpoint == "healthz":
+        return response
+    actor = website_actor()
+    old_actor = getattr(g, "website_actor", actor)
+    if not actor["username"] and old_actor["username"]:
+        actor = old_actor
+    if 200 <= response.status_code < 400:
+        endpoint = request.endpoint or ""
+        mutating = request.method in {"POST", "PATCH", "DELETE", "PUT"}
+        payload = response.get_json(silent=True) if response.is_json else None
+        previous = getattr(g, "website_flashes_before", [])
+        new_flashes = list(session.get("_flashes", []))
+        # Ignore previously displayed flashes from earlier requests.
+        for item in previous:
+            if item in new_flashes:
+                new_flashes.remove(item)
+        success = (isinstance(payload, dict) and payload.get("ok") is True) or any(c == "success" for c, _ in new_flashes)
+        action = WEBSITE_CHANGE_ACTIONS.get(endpoint)
+        if endpoint == "schedules" and request.form.get("action") in {"create_schedule", "edit_schedule", "public_edit_schedule_details", "delete_schedule", "join_schedule"}:
+            action = request.form["action"].replace("_", " ").capitalize()
+        if mutating and action and success and not getattr(g, "website_events", None):
+            data = request.get_json(silent=True) if request.is_json else request.form
+            data = data if isinstance(data, dict) or hasattr(data, "get") else {}
+            # Only short, non-sensitive subject labels are retained.
+            subject = next((str(data.get(k))[:150] for k in ("original_username", "username", "full_name", "name", "title", "submission_id", "request_id") if data.get(k)), "")
+            if endpoint == "pledge_decision":
+                subject = str(data.get("decision") or "")[:40] + " " + str(data.get("submission_id") or "")[:80]
+            details = {}
+            if getattr(g, "website_before", None):
+                aliases = {"name":"full_name", "contact":"contact_number"}
+                details["before"] = g.website_before
+                if endpoint != "ao_edit_account_delete":
+                    details["after"] = {key: str(data.get(aliases.get(key,key), value))[:150] for key,value in g.website_before.items()}
+            record_website_event(action, action+(": "+subject if subject else ""), details=details,
+                                 event_key=("pledge:"+str(payload.get("reference"))) if endpoint == "pledge_submit" and isinstance(payload, dict) and payload.get("reference") else None,
+                                 page_path=request.path)
+        if endpoint in {"splash", "pastor_login", "ao_login"} and request.method == "POST" and actor["username"] and response.status_code in (302,303):
+            record_website_event("login", "Signed in", notification=False, page_path="/bulletin")
+        elif endpoint == "logout" and actor["username"]:
+            record_website_event("logout", "Signed out", notification=False, page_path="/logout")
+        if (request.method == "GET" and response.status_code == 200 and response.mimetype == "text/html"
+                and actor["username"] and not request.path.startswith("/ao-tool/activity")
+                and not request.path.startswith("/static/") and endpoint not in {"logout"}):
+            record_website_event("visit", "Opened "+_page_label_from_path(request.path), notification=False)
+    events = getattr(g, "website_events", [])
+    if events:
+        try:
+            with closing(sqlite3.connect(DATABASE, timeout=1)) as db, db:
+                now = utc_now_iso()
+                for action, description, notification, path, event_key, details in events:
+                    db.execute("""INSERT OR IGNORE INTO website_events
+                        (created_at,actor_key,actor_username,actor_name,actor_role,action,description,page_path,is_notification,event_key,details_json)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (now,actor["key"],actor["username"],actor["name"],actor["role"],action,description,path[:500],int(notification),event_key,json.dumps(details,ensure_ascii=False)))
+                    if action == "visit":
+                        # Preserve the existing developer visit dashboard too.
+                        db.execute("""INSERT INTO developer_visit_logs
+                            (created_at,ip_address,user_agent,actor_username,actor_name,actor_role,request_path,page_label,method)
+                            VALUES (?,?,?,?,?,?,?,?,?)""", (now,request.remote_addr or "",str(request.user_agent)[:300],actor["username"],actor["name"],actor["role"],path[:500],description.removeprefix("Opened "),"GET"))
+                # Indexed time comparisons, at most hourly per process.
+                global _website_last_cleanup
+                if time.monotonic()-_website_last_cleanup > 3600:
+                    cutoff = datetime.fromtimestamp(time.time()-90*86400, timezone.utc).isoformat()
+                    db.execute("DELETE FROM website_events WHERE is_notification=0 AND created_at < ?", (cutoff,))
+                    db.execute("DELETE FROM developer_visit_logs WHERE created_at < ?", (cutoff,))
+                    _website_last_cleanup = time.monotonic()
+        except sqlite3.Error:
+            app.logger.exception("Website activity could not be persisted endpoint=%s", request.endpoint)
+    return response
+
+
+_website_last_cleanup = 0.0
+
+
+def _require_website_owner(write=False):
+    if not website_owner():
+        abort(403)
+    if write:
+        supplied = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf_token", "")
+        expected = session.get("website_activity_csrf", "")
+        if not expected or not hmac.compare_digest(str(supplied), expected):
+            abort(400)
+
+
+def _website_date_filter():
+    clauses, values = [], []
+    for field, operator in (("start", ">="), ("end", "<=")):
+        value = request.args.get(field, "")
+        if value:
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError:
+                abort(400)
+            # UTC+8 local calendar boundaries, stored as UTC ISO timestamps.
+            from datetime import timedelta
+            stamp = datetime(parsed.year, parsed.month, parsed.day, tzinfo=PH_TZ or timezone(timedelta(hours=8)))
+            if field == "end":
+                stamp += timedelta(days=1)
+                operator = "<"
+            clauses.append("created_at "+operator+" ?")
+            values.append(stamp.astimezone(timezone.utc).isoformat())
+    return clauses, values
+
+
+@app.get("/ao-tool/activity")
+def website_activity_page():
+    _require_website_owner()
+    return render_template("activity_updates.html")
+
+
+@app.get("/ao-tool/activity/api")
+def website_activity_api():
+    _require_website_owner()
+    db = get_db()
+    view = request.args.get("view", "accounts")
+    clauses, values = _website_date_filter()
+    page = max(1, min(request.args.get("page", 1, type=int) or 1, 100000))
+    limit = 30
+    if view == "summary":
+        row = db.execute("SELECT COUNT(*),COALESCE(MAX(id),0) FROM website_events WHERE is_notification=1 AND read_at IS NULL").fetchone()
+        return jsonify(ok=True, unread=row[0], latest_id=row[1])
+    if view == "notifications":
+        clauses.append("is_notification=1")
+    elif view == "activities":
+        clauses.append("actor_key=?")
+        values.append(request.args.get("account", ""))
+    elif view != "accounts":
+        abort(400)
+    query = request.args.get("q", "").strip()[:100]
+    if query:
+        clauses.append("(instr(lower(actor_username),lower(?))>0 OR instr(lower(actor_name),lower(?))>0)")
+        values.extend((query,query))
+    # Activity retention is enforced on reads even before hourly cleanup runs.
+    cutoff = datetime.fromtimestamp(time.time()-90*86400, timezone.utc).isoformat()
+    if view in {"accounts", "activities"}:
+        clauses.append("(is_notification=1 OR created_at>=?)")
+        values.append(cutoff)
+    where = " WHERE "+" AND ".join(clauses) if clauses else ""
+    if view == "accounts":
+        count = db.execute("SELECT COUNT(DISTINCT actor_key) FROM website_events"+where, values).fetchone()[0]
+        rows = db.execute("""SELECT actor_key,MAX(actor_username) AS actor_username,MAX(actor_name) AS actor_name,
+            MAX(actor_role) AS actor_role,MAX(created_at) AS last_activity,COUNT(*) AS activity_count
+            FROM website_events"""+where+" GROUP BY actor_key ORDER BY last_activity DESC LIMIT ? OFFSET ?", (*values,limit,(page-1)*limit)).fetchall()
+    else:
+        count = db.execute("SELECT COUNT(*) FROM website_events"+where, values).fetchone()[0]
+        rows = db.execute("SELECT * FROM website_events"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", (*values,limit,(page-1)*limit)).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        if "details_json" in item:
+            item["details"] = json.loads(item.pop("details_json"))
+            item.pop("event_key", None)
+        items.append(item)
+    return jsonify(ok=True,items=items,page=page,pages=max(1,(count+limit-1)//limit),total=count)
+
+
+@app.post("/ao-tool/activity/read")
+def website_activity_read():
+    _require_website_owner(write=True)
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids") if isinstance(data,dict) else None
+    if not isinstance(ids,list) or len(ids)>30 or any(type(value) is not int or value<1 for value in ids):
+        abort(400)
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        get_db().execute("UPDATE website_events SET read_at=? WHERE is_notification=1 AND read_at IS NULL AND id IN ("+placeholders+")", (utc_now_iso(),*ids))
+        get_db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/ao-tool/activity/clear")
+def website_activity_clear():
+    _require_website_owner(write=True)
+    get_db().execute("DELETE FROM website_events")
+    get_db().execute("DELETE FROM developer_visit_logs")
+    get_db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/activity/ebook")
+def website_ebook_activity():
+    if not (any_user_logged_in() or session.get("member_logged_in")):
+        abort(401)
+    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data,dict) or data.get("action") not in {"download", "share", "copy_link"}:
+        abort(400)
+    path = urllib.parse.urlsplit(str(data.get("url") or "")).path
+    match = re.fullmatch(r"/pastor-resources/(download|read)/(\d+)", path)
+    sermon = re.fullmatch(r"/pastor-resources/sermon-ebooks/(download|read)/(\d+)", path)
+    if match:
+        from pastor_resources import get_effective_book, is_resource_admin
+        book = get_effective_book(int(match[2]), include_hidden=is_resource_admin())
+        if not book:
+            abort(404)
+        title = book.get("title") or "Ebook"
+    elif sermon:
+        from sermon_ebooks import get_sermon_row, is_sermon_admin
+        if not is_sermon_admin():
+            abort(403)
+        book = get_sermon_row(int(sermon[2]))
+        if not book:
+            abort(404)
+        title = dict(book).get("title") or dict(book).get("filename") or "Sermon ebook"
+    else:
+        abort(400)
+    descriptions = {"download": "Started saving ebook", "share": "Shared ebook through device share menu", "copy_link": "Copied ebook link"}
+    record_website_event(data["action"], descriptions[data["action"]]+": "+str(title), notification=False, page_path=path)
+    return jsonify(ok=True)
+
+
 @app.template_filter("phpeso")
 def phpeso_filter(value):
     return format_php_currency(value)
 
 
 def _cleanup_old_visit_logs():
-    cutoff = datetime.now(timezone.utc).timestamp() - (2 * 24 * 60 * 60)
-    cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-    get_db().execute("DELETE FROM developer_visit_logs WHERE datetime(created_at) < datetime(?)", (cutoff_iso,))
+    cutoff = datetime.fromtimestamp(time.time()-90*86400, timezone.utc).isoformat()
+    get_db().execute("DELETE FROM developer_visit_logs WHERE created_at < ?", (cutoff,))
+    get_db().execute("DELETE FROM website_events WHERE is_notification=0 AND created_at < ?", (cutoff,))
     get_db().commit()
 
 
@@ -3137,6 +3447,13 @@ def _page_label_from_path(path: str):
     if path == "/":
         return "Splash/Login"
     mappings = [
+        ("/pastor-resources/bible-study", "Bible Study"),
+        ("/pastor-resources/sermon-ebooks", "Sermon eBooks"),
+        ("/pastor-resources/read/", "Ebook Reader"),
+        ("/pastor-resources/my-library", "My Library"),
+        ("/pastor-resources", "Pastor's Resources"),
+        ("/thanksgiving-pledges", "Thanksgiving Pledges"),
+        ("/church-progress", "Church Progress"),
         ("/pastor-tool", "Pastor Tool"),
         ("/ao-tool/church-status", "Church Status"),
         ("/ao-tool/prayer-requests", "AO Prayer Requests"),
@@ -3155,40 +3472,8 @@ def _page_label_from_path(path: str):
 
 
 def _log_visit_if_needed():
-    path = request.path or ""
-    if path.startswith("/static/") or path == "/favicon.ico":
-        return
-    actor_username = ""
-    actor_name = ""
-    actor_role = ""
-    if pastor_logged_in():
-        actor_username = (session.get("pastor_username") or "").strip()
-        actor_name = (session.get("pastor_name") or "").strip()
-        actor_role = str(session.get("selected_position") or "Pastor")
-    elif ao_logged_in():
-        actor_username = (session.get("ao_username") or "").strip()
-        actor_name = (session.get("ao_name") or "").strip()
-        actor_role = str(session.get("ao_role") or "Area Overseer")
-    get_db().execute(
-        """
-        INSERT INTO developer_visit_logs (
-            created_at, ip_address, user_agent, actor_username, actor_name, actor_role, request_path, page_label, method
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            utc_now_iso(),
-            str(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
-            str(request.headers.get("User-Agent") or "").strip(),
-            actor_username,
-            actor_name,
-            actor_role,
-            path,
-            _page_label_from_path(path),
-            request.method,
-        ),
-    )
-    get_db().commit()
-    _cleanup_old_visit_logs()
+    # Successful HTML visits are recorded in the response hook below.
+    return
 
 
 def _record_pastor_login_event(row):
@@ -3264,7 +3549,18 @@ def _insert_pastor_login_event(row):
 def before_request():
     if request.endpoint == "healthz":
         return
+    if request.path.startswith("/ai/"):
+        # Chat must not wait on schema writes or bootstrap network calls. The
+        # schema is normally ready from the page that opened the chat.
+        return
     init_db()
+    g.website_flashes_before = list(session.get("_flashes", []))
+    g.website_actor = website_actor()
+    g.website_before = None
+    if request.endpoint in {"ao_edit_account_save", "ao_edit_account_delete"} and request.method == "POST":
+        row = get_db().execute("SELECT username,name,church_address,contact,birthday FROM sheet_accounts_cache WHERE username=?",
+                               (request.form.get("original_username", ""),)).fetchone()
+        g.website_before = dict(row) if row else None
     if request.endpoint != "static":
         sync_from_sheets_if_needed()
     _log_visit_if_needed()
@@ -4403,6 +4699,7 @@ def _process_submit_report_job(job_id: str):
             (utc_now_iso(), final_message, job_id),
         )
         db.commit()
+        record_website_event("Report submitted", f"Monthly report submitted: {pastor_username} / {year}-{month:02d}", event_key="report-submitted:"+str(job_id))
     except Exception as e:
         db.execute(
             """
@@ -4866,6 +5163,7 @@ def sunday_detail(year, month, day):
 
             db.commit()
             mark_month_dirty(year, month)
+            record_website_event("Sunday report updated", f"Sunday report updated: {year}-{month:02d}-{day:02d}")
 
             # ✅ keep AO church selection after save
             if ao_logged_in() and church:
@@ -4978,6 +5276,7 @@ def church_progress_view(year, month):
             )
             db.commit()
             mark_month_dirty(year, month)
+            record_website_event("Church progress updated", f"Church progress updated: {year}-{month:02d}")
 
             if ao_logged_in() and church:
                 return redirect(url_for("pastor_tool", year=year, month=month, church=church))
@@ -5404,6 +5703,7 @@ def ao_create_account():
                                                error=error, success=None, values=values,
                                                generated_username=None, generated_password=None)
 
+                    record_website_event("Account created", "Account created: "+username)
                     refresh_after_sheet_write("Accounts")
                     try:
                         cursor.execute(
@@ -5765,7 +6065,6 @@ def ao_church_status_print_report_finalize(job_id):
 
     return jsonify({"ok": True, "finalized": True, "marked": marked, "message": "ReportStatus updated."})
 
-import threading
 
 download_locks = {}
 download_done = {}

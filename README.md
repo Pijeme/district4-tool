@@ -141,7 +141,86 @@ docker compose up -d
 Copying data is needed once when retaining existing records. It is not part of
 normal deployments. Do not import into an active or already populated volume.
 
+## Activity, notifications and Pij
+
+The signed-in AO account `pijeme` has an **Activity & Updates** entry in AO Tools.
+Accounts expand into paginated timelines. Successful page visits, ebook download
+requests, and device share actions are recorded with account names and timestamps.
+These activity records expire after 90 days. Successful website changes also
+produce notifications, retained until cleared. One **Clear Activity & Notifications**
+control removes both histories without deleting application records. Tracking
+starts with this release; previous activity is not reconstructed. The owner popup
+counts unread change notifications only and links directly to the notification tab.
+Cancelled native sharing is not recorded as a completed share; download records
+do not establish that a browser saved a file or a recipient opened it.
+
+Pij uses read-only library retrieval, two concurrent AI requests, and one active
+request per account. Model attempts have 20-second network timeouts with a shared
+45-second budget and a single fallback model. Chat close clears its conversation;
+late responses are discarded, and inactive history expires after 30 minutes.
+Book recommendations include up to 10 relevant titles with source links; explicit
+requests for fewer are respected. Pij's About Developer knowledge uses the same
+public profiles and support details displayed by the page.
+Pij also shares the pastor/church directory across all areas with every signed-in
+role: pastor and church names, church addresses, contact numbers, birthdays, area
+numbers and sub-areas. Report/account access keeps its existing role scope; the
+shared directory uses an explicit field allowlist and excludes other account data.
+Library answers match the requested subject, audience and resource type first.
+Children's ministry and resource-type lists (such as "10 study Bibles") browse
+verified available catalogue entries without requiring a matching text passage;
+availability does not imply that the book's contents are searchable. Topic
+questions still use indexed evidence. Commentaries/devotionals get preference
+among similarly suitable sources, and extra matching pages add no ranking points.
+Before replies are saved or returned, reader links are checked against the exact
+titles and URLs supplied for that request. Unambiguous title matches can repair
+wrong IDs; unverifiable links or exposed retrieval reports produce a concise
+verified list without another AI call.
+Recommendations include a short explanation per book. Valid model explanations
+are retained when links need repair; bare items and validation fallbacks use
+conservative catalogue-use notes or a short retrieved excerpt. Explicit requests
+for titles only keep the list compact. Brackets in book titles render as links.
+Broad topic recommendations do not use fuzzy single-title selection, and matching
+uses whole words. Repeated imported copies of a title appear once. Study-Bible
+lists include bounded opening excerpts when indexed, so descriptions can explain
+edition differences; a bad list entry no longer removes valid explanations from
+the other entries.
+Runtime `pij_request` / `pij_provider` logs contain stage durations and error
+categories without prompts or credentials. The existing single-worker Gunicorn
+configuration remains required for the process-local request reservations.
+
 ## Backup and restore
+
+Bible Study supports the reader-only Cebuano `CEBOCB` (Ang Pulong sa Dios) and
+Tagalog `TCB` (Ang Salita ng Diyos) editions alongside NIV. The selector beside
+passage navigation preserves the passage and saves the edition per account.
+Verse popups and copying follow that selection. Original English study resources
+continue to follow book/chapter; combined verses share the corresponding Thompson
+chain topics. Native-language concordance uses case-insensitive exact word
+occurrences; automatic English Word Study stays with NIV. Saves retain their
+original edition. USFM footnotes, headings, line breaks and verse ranges survive
+import, and publisher attribution appears below each chapter.
+
+Keep the supplied USFM ZIPs in the separate translation Drive folder
+`1ew6gje-IGqNJ9J5wR2NGYV0_dUVJ5vIM`; they need not be extracted in Drive. Developer
+**Sync Bible Study** imports them alongside the existing independent study sources.
+For a translation-only import, run inside the deployed environment:
+
+```sh
+python bible_study.py sync-translations --database /data/bible_study_data/bible_study.db
+```
+
+The importer validates all 66 books and 1,189 chapters in a temporary database,
+backs up the private Bible database before upgrading/publishing, and retains old
+editions and personal records. Identical archives reuse the current edition and
+do not create another backup. Startup and reader requests do not migrate schemas.
+Deploy the updated application and run a sync on the server; local imports do not
+modify the server's copy.
+
+The translation folder and supplied file IDs are excluded before recursive
+library scanning. AI indexing and retrieval also exclude restricted IDs and
+matching source metadata, including stale cached documents. These translations
+are stored only in the private Bible Study database, never copied into the AI
+index or sent to an AI provider. Pij's NIV-only passage helper remains NIV-only.
 
 For a consistent full backup, stop the application briefly and copy the volume:
 

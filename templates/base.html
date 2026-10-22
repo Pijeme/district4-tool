@@ -546,7 +546,28 @@
         }
       }
 
+      let chatEpoch = 0, chatController = null;
+      let clearChatPromise = Promise.resolve();
+      function clearPijHistory() {
+        ++chatEpoch;
+        if (chatController) chatController.abort();
+        chatController = null;
+        if (historyPollTimer) { clearInterval(historyPollTimer); historyPollTimer = null; }
+        resetWelcome(); input.value = ''; setBusy(false);
+        // Serialize clears so a rapid close/reopen cannot send a new message
+        // before the old conversation has been invalidated on the server.
+        clearChatPromise = clearChatPromise.catch(() => {}).then(async () => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 8000);
+          try {
+            const response = await fetch('/ai/clear', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}',keepalive:true,signal:controller.signal});
+            if (!response.ok) throw Error('Unable to clear the previous chat. Please sign in again.');
+          } finally { clearTimeout(timer); }
+        });
+        return clearChatPromise;
+      }
       function closePij() {
+        clearPijHistory().catch(() => {});
         panel.classList.remove('open');
         panel.setAttribute('aria-hidden', 'true');
         launcher.setAttribute('aria-expanded', 'false');
@@ -627,7 +648,7 @@
         // Markdown links are accepted only for the allow-listed relative
         // routes above. Unsafe or invented links become ordinary label text.
         return safeText.replace(
-          /\[([^\]\n]+)\]\((\/[^)\s]+)\)/g,
+          /\[((?:\\.|[^\[\]\\\n]|\[(?:\\.|[^\]\\\n])*\])+)\]\((\/[^)\s]+)\)/g,
           function (_, label, href) {
             const safeHref = normalizePijInternalHref(href);
 
@@ -638,7 +659,7 @@
             return '<a class="pij-internal-link" href="' +
               escapeHtml(safeHref) +
               '">' +
-              label +
+              label.replace(/\\([\\\[\]])/g, '$1') +
               '</a>';
           }
         );
@@ -792,68 +813,6 @@
 
       let historyPollTimer = null;
 
-      function renderHistory(history) {
-        messages.innerHTML = '';
-        if (!history || !history.length) {
-          resetWelcome();
-          return;
-        }
-
-        history.forEach(function (item) {
-          const role = item && item.role;
-          const content = item && item.content ? item.content : '';
-          if (!content) return;
-          addMessage(role === 'user' ? 'You' : 'Pij', content, role === 'user', false);
-        });
-      }
-
-      async function restoreConversation() {
-        try {
-          const response = await fetch('/ai/history', {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            cache: 'no-store'
-          });
-          const data = await response.json().catch(function () { return {}; });
-          if (!response.ok || !data.ok) return;
-
-          renderHistory(data.messages || []);
-
-          if (data.pending) {
-            setBusy(true);
-            addThinking();
-            startHistoryPolling();
-          } else {
-            setBusy(false);
-          }
-        } catch (e) {
-          // Keep the normal welcome UI if history cannot be restored.
-        }
-      }
-
-      function startHistoryPolling() {
-        if (historyPollTimer) return;
-
-        historyPollTimer = window.setInterval(async function () {
-          try {
-            const response = await fetch('/ai/history', {
-              method: 'GET',
-              headers: { 'Accept': 'application/json' },
-              cache: 'no-store'
-            });
-            const data = await response.json().catch(function () { return {}; });
-            if (!response.ok || !data.ok) return;
-
-            if (!data.pending) {
-              window.clearInterval(historyPollTimer);
-              historyPollTimer = null;
-              renderHistory(data.messages || []);
-              setBusy(false);
-            }
-          } catch (e) {}
-        }, 1500);
-      }
-
       launcher.addEventListener('click', function () {
         if (panel.classList.contains('open')) closePij();
         else openPij();
@@ -869,36 +828,14 @@
 
       newChatBtn.addEventListener('click', async function () {
         newChatBtn.disabled = true;
-
-        try {
-          const response = await fetch('/ai/clear', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-          });
-
-          const data = await response.json().catch(function () { return {}; });
-
-          if (!response.ok || !data.ok) {
-            throw new Error(data.error || 'Could not start a new chat.');
-          }
-
-          if (historyPollTimer) {
-            window.clearInterval(historyPollTimer);
-            historyPollTimer = null;
-          }
-          resetWelcome();
-          input.value = '';
-          setBusy(false);
-          input.focus();
-        } catch (error) {
-          addMessage('Pij', 'Sorry, I could not start a new chat right now.', false, false);
-        } finally {
-          newChatBtn.disabled = false;
-        }
+        try { await clearPijHistory(); input.focus(); }
+        catch (error) { addMessage('Pij', error.message, false, false); }
+        finally { newChatBtn.disabled = false; }
       });
-
-      // Restore the same server-side conversation on every page load.
-      restoreConversation();
+      // A fresh page starts a fresh chat. Keepalive also covers navigation and
+      // tab closure, where normal asynchronous requests may be interrupted.
+      clearPijHistory().catch(() => {});
+      window.addEventListener('pagehide', () => { clearPijHistory().catch(() => {}); });
 
       form.addEventListener('submit', async function (event) {
         event.preventDefault();
@@ -911,9 +848,16 @@
         setBusy(true);
 
         const thinkingRow = addThinking();
+        const epoch = chatEpoch;
+        const controller = new AbortController();
+        chatController = controller;
+        const timer = setTimeout(() => controller.abort(), 55000);
 
         try {
+          await clearChatPromise;
+          if (epoch !== chatEpoch) return;
           const response = await fetch('/ai/chat', {
+            signal: controller.signal,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -923,7 +867,10 @@
             })
           });
 
-          const data = await response.json().catch(function () { return {}; });
+          const data = await response.json().catch(function () {
+            throw Error('The server interrupted Pij response (HTTP ' + response.status + '). Please try again.');
+          });
+          if (epoch !== chatEpoch) return;
 
           if (thinkingRow && thinkingRow.parentNode) {
             thinkingRow.parentNode.removeChild(thinkingRow);
@@ -936,6 +883,11 @@
           addMessage('Pij', data.answer || 'Sorry, I could not generate a response.', false, false);
 
         } catch (error) {
+          if (epoch !== chatEpoch) return;
+          if (error.name === 'AbortError') {
+            error = Error('Pij took too long to respond. Please try again shortly.');
+            clearPijHistory().catch(() => {});
+          }
           if (thinkingRow && thinkingRow.parentNode) {
             thinkingRow.parentNode.removeChild(thinkingRow);
           }
@@ -949,13 +901,25 @@
             false
           );
         } finally {
-          setBusy(false);
-          input.focus();
+          clearTimeout(timer);
+          if (epoch === chatEpoch) { chatController = null; setBusy(false); input.focus(); }
         }
       });
     })();
   </script>
   {% endif %}
 
+{% if website_activity_owner %}
+<dialog id="websiteUpdatesPopup" aria-labelledby="websiteUpdatesTitle" style="max-width:420px;width:calc(100% - 40px);border:1px solid #cbd5e1;border-radius:20px;padding:26px;box-shadow:0 24px 70px #0f172a44;">
+  <h2 id="websiteUpdatesTitle" style="margin-top:0;">New website updates</h2>
+  <p id="websiteUpdatesMessage"></p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;">
+    <a class="btn-primary" href="{{ url_for('website_activity_page') }}?tab=notifications">View notifications</a>
+    <button class="btn-secondary" type="button" id="websiteUpdatesDismiss">Later</button>
+  </div>
+</dialog>
+<script id="websiteActivityConfig" type="application/json">{{ {'api': url_for('website_activity_api'), 'read': url_for('website_activity_read'), 'clear': url_for('website_activity_clear'), 'csrf': website_activity_csrf}|tojson }}</script>
+<script src="{{ url_for('static',filename='activity_updates.js') }}" defer></script>
+{% endif %}
 </body>
 </html>

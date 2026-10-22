@@ -45,6 +45,12 @@
     </form>
     </div>
     {% endif %}
+    {% if website_activity_owner %}
+    <a href="{{ url_for('website_activity_page') }}" class="btn-secondary ui-utility" style="display:flex;gap:14px;margin:14px 0;background:#eff6ff;color:#1e3a8a;">
+      <span class="ui-utility-icon">{{ icon('chart') }}</span>
+      <span><span class="ui-utility-title">Activity &amp; Updates</span><span class="ui-utility-description">Account activity, book downloads and website changes ? Only you</span></span>
+    </a>
+    {% endif %}
     <div class="ui-utility-grid">
     <a href="{{ url_for('ao_church_status') }}" class="btn-secondary ui-utility ui-utility-status" style="background:#8b5cf6; border-color:#8b5cf6; color:#fff;">
       <span class="ui-utility-icon">{{ icon("church") }}</span>

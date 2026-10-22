@@ -48,6 +48,20 @@ GOOGLE_DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly"
 ]
 
+# Reader-only Bible sources: never traverse this folder in an ebook/AI scan.
+BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID = '1ew6gje-IGqNJ9J5wR2NGYV0_dUVJ5vIM'
+AI_EXCLUDED_DRIVE_IDS = frozenset((BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID,
+    '1sYXbwGS2nT4MW9SUl1FcE7OvIebqtmzK', '1iEsTQgU7VWodGbnIarYSPWwV1Gv1ZPlg'))
+
+
+def ai_restricted_source(row):
+    row = dict(row)
+    if str(row.get('drive_file_id') or row.get('id') or '') in AI_EXCLUDED_DRIVE_IDS:
+        return True
+    text = ' '.join(str(row.get(key) or '') for key in ('name', 'title', 'folder_path')).casefold()
+    return bool(re.search(r'cebocb|(?:open.*(?:cebuano|tagalog).*contemporary.*bible)|'
+                          r'open.*ang.*(?:pulong sa dios|salita ng diyos)', text))
+
 GOOGLE_DRIVE_FOLDER_MIME = (
     "application/vnd.google-apps.folder"
 )
@@ -1384,6 +1398,8 @@ def scan_drive_library(progress_callback=None, cancel_callback=None):
         folder_path="",
     ):
         check_cancel()
+        if folder_id in AI_EXCLUDED_DRIVE_IDS:
+            return
 
         nonlocal folders_scanned
         nonlocal total_files_seen
@@ -1432,6 +1448,8 @@ def scan_drive_library(progress_callback=None, cancel_callback=None):
             file_id = str(
                 item.get("id") or ""
             ).strip()
+            if file_id in AI_EXCLUDED_DRIVE_IDS or ai_restricted_source(item):
+                continue
 
             # ---------------------------------------------
             # Folder
@@ -19225,10 +19243,15 @@ def register_pastor_resources_routes(app):
                 status=404,
             )
 
-        return make_drive_stream_response(
-            file_row,
-            as_attachment=True,
-        )
+        response = make_drive_stream_response(file_row, as_attachment=True)
+        if request.method == "GET" and response.status_code in (200, 206):
+            preparing = request.headers.get("X-Ebook-Prepare") == "1"
+            title = book.get("title") or "Ebook"
+            fmt = file_row.get("format") or ""
+            _appmod().record_website_event("ebook_prepared" if preparing else "download",
+                ("Prepared ebook for saving or sharing: " if preparing else "Ebook download requested: ")+str(title)+(f" ({fmt})" if fmt else ""),
+                notification=False)
+        return response
 
     # -----------------------------------------------------
     # READER STATE

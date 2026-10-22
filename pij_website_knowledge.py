@@ -11,6 +11,7 @@ EXPERIMENTAL ARCHITECTURE:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from flask import session
 
@@ -25,6 +26,10 @@ GENERAL
 - The authenticated login account determines identity and permission. Temporary working selections never replace the true login identity.
 - Pij may combine the steps below into natural guidance and may reason about which feature fits the user's goal.
 - Pij does not directly click buttons or submit forms. It guides the user unless backend context explicitly confirms an action occurred.
+- Every signed-in user may ask for pastor/church directory details across ALL areas: pastor name, church name, church address, contact number, birthday, area number and sub-area. This directory permission is independent of the user's reporting/management area.
+- Use pastor_church_directory for these shared details, including questions such as "Which churches are in Area 1?" Do not refuse a directory question just because it concerns another area.
+- The directory address is the recorded church address, not a separately verified residential address. Use recorded birthdays/contact numbers exactly; say when a field is missing rather than guessing it.
+- Shared directory access does not grant access to another area's reports, finances, account credentials, member details, or private prayer requests. Those records retain their existing scope.
 
 SIDE MENU / MAIN PAGES
 - Bulletin Board: shared landing/information page after login.
@@ -33,7 +38,8 @@ SIDE MENU / MAIN PAGES
 - AO Tool: available to Area Overseer/Sub-Area Overseer accounts.
 - DO Tool: currently marked Pending.
 - Prayer Request, Schedules, Church Finder and Pastor's Resources are available from the main menu to logged-in users.
-- Event Registration and About Developer are currently marked Pending in the menu/project.
+- Event Registration is currently marked Pending in the menu/project.
+- About Developer is available at /about-developer and describes the people behind the tool.
 
 BULLETIN BOARD
 - Shows the current bulletin feed, announcements and other district information.
@@ -150,6 +156,10 @@ PASTOR'S RESOURCES — PUBLIC DIGITAL LIBRARY
 
 BIBLE STUDY - READING AND STUDY TOOLS
 - Open Pastor's Resources, then Bible Study (/pastor-resources/bible-study). Authenticated Pastor and AO library accounts can read it.
+- The translation selector beside book/chapter navigation offers imported NIV, Cebuano (Ang Pulong sa Dios), and Tagalog (Ang Salita ng Diyos). Switching keeps the passage and saves the selection to the account. Verse-reference popups and Copy Verse use that selection; combined source verses remain combined.
+- Thompson chains use shared passage coordinates. Commentary, Book Study, and Sermon Outlines retain their original English source text and follow the selected book/chapter. Their clickable Bible references open in the selected translation.
+- Cebuano/Tagalog Concordance searches exact words in that translation, ignoring letter case. It does not infer Greek/Hebrew links; automatic Word Study is available with NIV. English Thompson Concordance remains available with NIV. Notes, marks, bookmarks and history retain the original edition.
+- The two added Biblica translations and their separate Drive ZIP folder are reader-only licensed sources. Pij may explain these controls but must not read, quote, summarize, translate or index those editions. Their text is never supplied to Pij.
 - The Bible / Book Study tabs remain above the Bible panel. Book Study follows the current book and displays Thompson introductions, linked major chains and the inline condensed outline.
 - Word Study, Concordance, Commentary and Sermon Outlines are the study-panel tabs. Their colored banners share the same handwritten heading style.
 - Tap a Bible word for the selected study tool. Word Study offers Mounce and Vine definitions plus available Thompson person studies. These dictionary explanations are not automatically verified original-language alignments.
@@ -182,11 +192,19 @@ TEMPORARY EDIT
 - The token-protected admin page can mark requests Approved or Rejected. Approved changes are applied to Google Sheets; rejected items are discarded.
 - Pij may explain this workflow but must not reveal or invent private access tokens.
 
-EVENT REGISTRATION / DO TOOL / ABOUT DEVELOPER
+EVENT REGISTRATION / DO TOOL
 - Event Registration currently exists as a page but is marked Pending in the menu/project.
 - DO Tool currently returns a Pending page.
-- About Developer is currently Pending.
 - Do not invent controls for pending pages.
+
+ABOUT DEVELOPER
+- This is an active page at /about-developer, titled The People Behind the Tool. It is not a pending page.
+- It recognizes Pijeme Franco Walawala (Project Creator & Lead Developer), Bernard Balansag (Deployment, Infrastructure & Technical Support), and Mervin Pabiran (Project Contributor).
+- Only Mervin's full profile is coming soon. Do not describe the whole page or the other profiles as pending.
+- The project began with the goal of making ministry reporting easier and grew through friendship and collaboration into a tool for pastors, workers, churches, and District 4.
+- Know More expands an available developer profile; Show Less collapses it. Profiles cover background, education, technical skills, contributions, project story, goals, personal introduction, favorite Bible verse, message to users, and public contact links.
+- A Support the mission popup explains voluntary donations for hosting, domain, maintenance, and service fees. Access is never paywalled. Copy GCash Number copies the displayed number; Continue opens the page. Never claim a donation was made or verified.
+- The PUBLIC ABOUT DEVELOPER PAGE DATA below comes from the same profile data displayed on the page. Use it for biographical facts and published contact/support details; do not guess missing information.
 
 APPROVED INTERNAL WEBSITE LINKS
 - Bible Study: /pastor-resources/bible-study
@@ -212,6 +230,7 @@ APPROVED INTERNAL WEBSITE LINKS
 - Temporary Edit: /temp-edit (token protection still applies; never invent a token)
 - Event Registration: /event-registration
 - DO Tool: /do-tool
+- About Developer: /about-developer
 - These are approved same-site destinations Pij may turn into clickable Markdown links.
 - Use only the exact route supplied here or an exact book/page link supplied by the library retrieval layer. Never invent IDs, tokens or query parameters.
 
@@ -381,6 +400,27 @@ def _authorized_account_rows(db, ident):
     return []
 
 
+def _shared_pastor_church_directory(db):
+    """District-wide directory fields authorized for all authenticated roles."""
+    if not any(session.get(flag) for flag in ('ao_logged_in', 'pastor_logged_in', 'member_logged_in')):
+        return []
+    # Legacy Sheets columns age/sex contain area number/church name. Alias them
+    # explicitly so the model cannot mistake them for a pastor's age or sex.
+    rows = db.execute('''
+        SELECT TRIM(COALESCE(name,'')) AS pastor_name,
+               TRIM(COALESCE(sex,'')) AS church_name,
+               TRIM(COALESCE(church_address,'')) AS church_address,
+               TRIM(COALESCE(contact,'')) AS contact_number,
+               TRIM(COALESCE(birthday,'')) AS birthday,
+               TRIM(COALESCE(age,'')) AS area_number,
+               TRIM(COALESCE(sub_area,'')) AS sub_area
+        FROM sheet_accounts_cache
+        WHERE LOWER(TRIM(COALESCE(position,'')))='pastor'
+        ORDER BY CAST(COALESCE(age,'0') AS INTEGER), sex, name, church_address
+    ''').fetchall()
+    return [dict(row) for row in rows]
+
+
 def _authorized_report_rows(db, ident, pastors):
     church_keys = set()
     for r in pastors:
@@ -443,20 +483,14 @@ def authorized_database_snapshot() -> dict:
     Flask decides the scope before Gemini sees any row.
     """
     appmod = _app()
-    try:
-        appmod.ensure_sheet_cache_loaded()
-    except Exception:
-        pass
-    try:
-        appmod.ensure_schedule_cache_loaded()
-    except Exception:
-        pass
-
+    # Chat reads initialized mirrors. A question never starts a Google Sheets
+    # refresh; normal page/bootstrap and explicit sync own that operation.
     db = appmod.get_db()
     ident = current_identity()
     pastors = _authorized_pastor_rows(db, ident)
     accounts = _authorized_account_rows(db, ident)
     reports = _authorized_report_rows(db, ident, pastors)
+    directory = _shared_pastor_church_directory(db)
 
     schedules = db.execute("""
         SELECT church_name, church_address, pastor_name, contact_number,
@@ -477,6 +511,8 @@ def authorized_database_snapshot() -> dict:
     return {
         "scope_note": (
             "This is a SANITIZED, AUTHORIZED snapshot prepared by Flask. "
+            "pastor_church_directory is shared across all areas for every signed-in user. "
+            "It authorizes only the directory fields supplied there; account and report rows remain role-scoped. "
             "Do not assume records outside this snapshot are accessible."
         ),
         "accounts": [
@@ -485,12 +521,7 @@ def authorized_database_snapshot() -> dict:
                 "position", "sub_area", "google_pin_location", "latitude", "longitude"
             ]) for r in accounts
         ],
-        "pastor_church_directory_in_scope": [
-            _rowdict(r, [
-                "username", "name", "church_address", "age", "sex", "birthday",
-                "position", "sub_area", "google_pin_location", "latitude", "longitude"
-            ]) for r in pastors
-        ],
+        "pastor_church_directory": directory,
         "report_rows_in_scope": [
             _rowdict(r, [
                 "year", "month", "activity_date", "church", "pastor", "address",
@@ -524,10 +555,30 @@ def authorized_database_snapshot() -> dict:
     }
 
 
+def _public_developer_context() -> str:
+    """Use only the public fields rendered by developer.py, never account records."""
+    from developer import DEVELOPERS, GCASH_DISPLAY, GCASH_NAME
+
+    fields = (
+        "name", "role", "short", "pending", "background", "education", "skills",
+        "contribution", "story", "goal", "intro", "verse", "verse_text",
+        "verse_note", "message", "contacts",
+    )
+    data = {
+        "page": "/about-developer",
+        "developers": [{key: profile[key] for key in fields if key in profile}
+                       for profile in DEVELOPERS],
+        "voluntary_support": {"method": "GCash", "number": GCASH_DISPLAY, "name": GCASH_NAME},
+    }
+    return "\n\nPUBLIC ABOUT DEVELOPER PAGE DATA\n" + json.dumps(
+        data, ensure_ascii=False, separators=(",", ":"))
+
+
 def safe_context_for_gemini(message: str, current_path: str = "", page_title: str = "") -> str:
     ident = current_identity()
     now = datetime.now(PH_TZ)
-    snapshot = authorized_database_snapshot()
+    needs_records = bool(re.search(r"\b(account|accounts|report|reports|church|churches|pastor|pastors|schedule|schedules|announcement|announcements|birthday|birthdays|contact|contacts|member|members|area|areas|pledge|pledges|tithes|offering|attendance|simbahan|ulat|iskedyul|name|names|address|addresses|phone|telephone|mobile|number|numbers|directory|ngalan|pangalan|kontak|numero|kaadlawan|kaarawan)\b", message, re.I))
+    snapshot = authorized_database_snapshot() if needs_records else {"note": "No account records requested."}
 
     # Temporary Pastor's Tool selection is useful context, but never identity.
     working_pastor = str(session.get("pastor_username") or "").strip() if ident["kind"] in {"ao", "sub_ao", "do"} else ""
@@ -545,6 +596,7 @@ def safe_context_for_gemini(message: str, current_path: str = "", page_title: st
         f"- Current path: {current_path or 'unknown'}\n"
         f"- Pastor's Tool temporary working pastor (NOT login identity): {working_pastor or 'none'}\n\n"
         + WEBSITE_MANUAL
+        + _public_developer_context()
         + "\n\nAUTHORIZED SANITIZED DATABASE SNAPSHOT\n"
         + json.dumps(snapshot, ensure_ascii=False, default=str, separators=(",", ":"))
     )

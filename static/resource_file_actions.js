@@ -14,7 +14,11 @@
         const direct = element("Direct");
         let controller = null;
         let file = null;
-        let bookTitle = "";
+        let bookTitle = "", activityUrl = "";
+        function recordActivity(action) {
+            fetch('/activity/ebook', {method:'POST', credentials:'same-origin', keepalive:true,
+                headers:{'Content-Type':'application/json'}, body:JSON.stringify({action, url:activityUrl})}).catch(() => {});
+        }
         let previousFocus = null;
         let sharing = false;
 
@@ -66,6 +70,7 @@
             previousFocus = document.activeElement;
             file = null;
             bookTitle = label || "ebook";
+            activityUrl = url;
             setReady(false);
             title.textContent = "Preparing ebook...";
             name.textContent = bookTitle;
@@ -83,7 +88,7 @@
             controller = request;
             try {
                 const response = await fetch(url, {
-                    credentials: "same-origin", cache: "no-store", signal: request.signal
+                    credentials: "same-origin", cache: "no-store", signal: request.signal, headers: {"X-Ebook-Prepare":"1"}
                 });
                 if (!response.ok) throw new Error("Unable to prepare the ebook (HTTP " + response.status + ").");
                 const type = (response.headers.get("Content-Type") || "application/octet-stream").split(";")[0].trim().toLowerCase();
@@ -144,6 +149,7 @@
             link.style.display = "none";
             document.body.appendChild(link);
             link.click();
+            recordActivity("download");
             link.remove();
             // Give the browser time to start saving before releasing its URL.
             setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
@@ -163,6 +169,7 @@
                 cancelButton.disabled = true;
                 // No fetch or await before this call: preserve the tap's user activation.
                 await navigator.share({title: bookTitle, files: [selectedFile]});
+                recordActivity("share");
                 status.textContent = "File handed to your phone's share menu.";
             } catch (error) {
                 status.textContent = error?.name === "AbortError"

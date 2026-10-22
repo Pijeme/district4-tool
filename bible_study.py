@@ -41,7 +41,7 @@ from pastor_resources import current_reader_user_key, is_resource_admin
 
 
 BASE_DIR = Path(__file__).resolve().parent
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 APPLICATION_ID = 0x4249424C
 MAX_JSON_BYTES = 16384
 STUDY_SAVE_SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS bible_study_saves (
@@ -69,6 +69,14 @@ BOOKS = (
 )
 BOOK_BY_NAME = {name.casefold(): (index, name, count) for index, (name, count) in enumerate(BOOKS, 1)}
 BOOK_BY_NAME['song of solomon'] = BOOK_BY_NAME['song of songs']
+USFM_BOOK_IDS = 'GEN EXO LEV NUM DEU JOS JDG RUT 1SA 2SA 1KI 2KI 1CH 2CH EZR NEH EST JOB PSA PRO ECC SNG ISA JER LAM EZK DAN HOS JOL AMO OBA JON MIC NAM HAB ZEP HAG ZEC MAL MAT MRK LUK JHN ACT ROM 1CO 2CO GAL EPH PHP COL 1TH 2TH 1TI 2TI TIT PHM HEB JAS 1PE 2PE 1JN 2JN 3JN JUD REV'.split()
+READER_TRANSLATIONS = {
+    'NIV': dict(label='NIV', title='New International Version'),
+    'CEBOCB': dict(label='Cebuano · Ang Pulong sa Dios', title='Biblica® Open Cebuano Contemporary Bible 2024',
+        attribution='Biblica® Open Ang Pulong sa Dios™ · Copyright © 2009, 2010, 2014, 2024 Biblica, Inc. · CC BY-SA 4.0 · biblica.com / open.bible'),
+    'TCB': dict(label='Tagalog · Ang Salita ng Diyos', title='Biblica® Open Tagalog Contemporary Bible 2025',
+        attribution='Biblica® Open Ang Salita ng Diyos · Copyright © 2009, 2011, 2014, 2025 Biblica, Inc. · Source: Biblica® Open Tagalog Contemporary Bible 2025'),
+}
 
 # All verse/token/annotation offsets are Unicode code-point offsets into an
 # immutable verse revision. Future DOM code must convert JavaScript UTF-16
@@ -89,7 +97,7 @@ CREATE TABLE bible_import_runs (
 CREATE TABLE bible_editions (
     id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES bible_sources(id),
     import_run_id INTEGER NOT NULL REFERENCES bible_import_runs(id), edition_key TEXT NOT NULL UNIQUE,
-    translation TEXT NOT NULL CHECK(translation IN ('NIV','KJV')), title TEXT NOT NULL,
+    translation TEXT NOT NULL CHECK(translation IN ('NIV','KJV','CEBOCB','TCB')), title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'staged' CHECK(status IN ('staged','ready')),
     is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0,1)), attribution TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX bible_active_translation ON bible_editions(translation) WHERE is_active=1;
@@ -98,6 +106,7 @@ CREATE TABLE bible_verses (
     book_id INTEGER NOT NULL REFERENCES bible_books(id), chapter INTEGER NOT NULL CHECK(chapter BETWEEN 1 AND 150),
     verse INTEGER NOT NULL CHECK(verse BETWEEN 1 AND 176), text TEXT NOT NULL CHECK(length(text)>0),
     heading TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL CHECK(length(content_hash)=64),
+    verse_end INTEGER NOT NULL DEFAULT 0, notes_json TEXT NOT NULL DEFAULT '[]', layout TEXT NOT NULL DEFAULT '',
     revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
     UNIQUE(edition_id,book_id,chapter,verse,revision));
 CREATE UNIQUE INDEX bible_active_verse ON bible_verses(edition_id,book_id,chapter,verse) WHERE is_active=1;
@@ -105,7 +114,9 @@ CREATE TABLE bible_tokens (
     id INTEGER PRIMARY KEY, verse_id INTEGER NOT NULL REFERENCES bible_verses(id),
     token_index INTEGER NOT NULL CHECK(token_index>=0), start_offset INTEGER NOT NULL CHECK(start_offset>=0),
     end_offset INTEGER NOT NULL CHECK(end_offset>start_offset), text TEXT NOT NULL,
+    normalized_text TEXT NOT NULL DEFAULT '',
     UNIQUE(verse_id,token_index));
+CREATE INDEX bible_token_word ON bible_tokens(normalized_text,verse_id);
 CREATE TABLE bible_lexicon (
     id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES bible_sources(id), strong_id TEXT NOT NULL,
     language TEXT NOT NULL CHECK(language IN ('Hebrew','Greek')), lemma TEXT NOT NULL DEFAULT '',
@@ -2339,6 +2350,170 @@ def _library_sources(database_path):
     return selected
 
 
+def _usfm_plain(text):
+    text = re.sub(r'\\ref\s+([^|\\]+)(?:\|[^\\]*)?\\ref\*', r'\1', text)
+    text = re.sub(r'\\[+a-zA-Z][a-zA-Z0-9-]*\*?[ \t]*', '', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    return re.sub(r'\n\s*\n+', '\n', text).strip()
+
+
+def parse_usfm_archive(data, translation, *, require_complete=True):
+    """Parse the supplied publisher archives locally; never OCR or call an AI."""
+    if translation not in ('CEBOCB', 'TCB'):
+        raise SyncError('Unsupported USFM translation.')
+    result, seen_books = [], set()
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = [item for item in archive.infolist() if item.filename.lower().endswith('.usfm')]
+            if len(members) > 66 or sum(item.file_size for item in members) > 64 * 1024 * 1024:
+                raise SyncError('The USFM archive exceeds the supported size.')
+            for member in members:
+                text = archive.read(member).decode('utf-8-sig')
+                identity = re.search(r'\\id\s+(\w+)', text)
+                if not identity or identity[1] not in USFM_BOOK_IDS or identity[1] in seen_books:
+                    raise SyncError('A USFM book identifier is missing, unsupported or duplicated.')
+                code = identity[1]; seen_books.add(code); book_id = USFM_BOOK_IDS.index(code) + 1
+                if len(re.findall(r'\\f\s', text)) != text.count('\\f*'):
+                    raise SyncError('A USFM footnote is incomplete.')
+                chapters = list(re.finditer(r'\\c\s+(\d+)\s*', text))
+                if require_complete and [int(c[1]) for c in chapters] != list(range(1, BOOKS[book_id-1][1]+1)):
+                    raise SyncError('USFM chapters are missing or out of order in ' + code + '.')
+                for ci, chapter_marker in enumerate(chapters):
+                    chapter = int(chapter_marker[1])
+                    if not 1 <= chapter <= BOOKS[book_id-1][1]:
+                        raise SyncError('Invalid USFM chapter.')
+                    body = text[chapter_marker.end():chapters[ci+1].start() if ci+1 < len(chapters) else len(text)]
+                    verses = list(re.finditer(r'\\v\s+(\d+(?:-\d+)?)\s+', body))
+                    pending = body[:verses[0].start()] if verses else ''
+                    previous = 0
+                    for vi, marker in enumerate(verses):
+                        numbers = marker[1].split('-'); start, end = int(numbers[0]), int(numbers[-1])
+                        if not previous < start <= end <= 176 or (require_complete and start != previous + 1):
+                            raise SyncError('USFM verse numbers overlap or have gaps in ' + code + '.')
+                        previous = end
+                        content = body[marker.end():verses[vi+1].start() if vi+1 < len(verses) else len(body)]
+                        headings = re.findall(r'(?m)^\\(?:s[1-3]?|ms[1-3]?|d)\s+([^\n]*)', pending)
+                        notes = []
+                        def footnote(match):
+                            notes.append(dict(text=_usfm_plain(re.sub(r'^\\f\s+\S+\s*', '', match[0][:-3]))))
+                            return ''
+                        content = re.sub(r'\\f\s+.*?\\f\*', footnote, content, flags=re.S)
+                        pending = '\n'.join(re.findall(r'(?m)^\\(?:s[1-3]?|ms[1-3]?|d)\s+[^\n]*', content))
+                        content = re.sub(r'(?m)^\\(?:s[1-3]?|ms[1-3]?|mr|r|d|cl)\s+[^\n]*\n?', '', content)
+                        poetry = bool(re.search(r'\\q[mrc]?[1-4]?\b', content))
+                        plain = _usfm_plain(content)
+                        if not plain:
+                            raise SyncError('An empty USFM verse was found.')
+                        result.append(dict(book_id=book_id, chapter=chapter, verse=start, verse_end=end,
+                            text=plain, heading=' · '.join(_usfm_plain(h) for h in headings),
+                            notes=notes, layout='poetry' if poetry else ''))
+                    if not verses:
+                        raise SyncError('An empty USFM chapter was found.')
+    except (zipfile.BadZipFile, UnicodeError, RuntimeError) as exc:
+        raise SyncError('The Bible ZIP is damaged or is not UTF-8 USFM.') from exc
+    if not result or (require_complete and seen_books != set(USFM_BOOK_IDS)):
+        raise SyncError('The USFM archive must contain all 66 Bible books.')
+    return dict(translation=translation, verses=result, books=len(seen_books),
+                chapters=len({(v['book_id'],v['chapter']) for v in result}),
+                verse_ranges=sum(v['verse_end']>v['verse'] for v in result))
+
+
+def _publish_usfm(conn, parsed, sources):
+    now = datetime.now(timezone.utc).isoformat()
+    counts = {}
+    for translation, content in parsed.items():
+        source = sources[translation]; digest = source['sha256']; edition = READER_TRANSLATIONS[translation]
+        key = translation + ':' + digest
+        existing = conn.execute('SELECT id FROM bible_editions WHERE edition_key=?', (key,)).fetchone()
+        conn.execute('UPDATE bible_editions SET is_active=0 WHERE translation=?', (translation,))
+        if existing:
+            conn.execute('UPDATE bible_editions SET is_active=1 WHERE id=?', (existing[0],))
+        else:
+            conn.execute('''INSERT OR IGNORE INTO bible_sources(title,edition,sha256,source_path,attribution,rights_note,created_at)
+                VALUES(?,?,?,?,?,?,?)''', (edition['title'],translation,digest,source.get('source_path',''),
+                edition['attribution'],'Bible Study reader only. No AI access or AI indexing.',now))
+            source_id = conn.execute('SELECT id FROM bible_sources WHERE sha256=?', (digest,)).fetchone()[0]
+            run_id = conn.execute("INSERT INTO bible_import_runs(source_id,status,started_at,finished_at) VALUES(?,'validated',?,?)", (source_id,now,now)).lastrowid
+            edition_id = conn.execute('''INSERT INTO bible_editions(source_id,import_run_id,edition_key,translation,title,status,is_active,attribution)
+                VALUES(?,?,?,?,?,'ready',1,?)''', (source_id,run_id,key,translation,edition['title'],edition['attribution'])).lastrowid
+            for verse in content['verses']:
+                verse_id = conn.execute('''INSERT INTO bible_verses
+                    (edition_id,book_id,chapter,verse,verse_end,text,heading,content_hash,notes_json,layout)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)''', (edition_id,verse['book_id'],verse['chapter'],verse['verse'],verse['verse_end'],
+                    verse['text'],verse['heading'],hashlib.sha256(verse['text'].encode()).hexdigest(),json.dumps(verse['notes'],ensure_ascii=False),verse['layout'])).lastrowid
+                conn.executemany('''INSERT INTO bible_tokens(verse_id,token_index,start_offset,end_offset,text,normalized_text)
+                    VALUES(?,?,?,?,?,?)''', ((verse_id,i,word.start(),word.end(),word[0],unicodedata.normalize('NFKC',word[0]).casefold())
+                    for i,word in enumerate(re.finditer(r"[^\W\d_]+(?:['’ʼ-][^\W\d_]+)*",verse['text'],re.UNICODE))))
+        counts[translation] = len(content['verses'])
+    return counts
+
+
+def import_usfm_translations(database_path, archives, *, sources=None, progress=lambda message: None):
+    """Validate a staged copy and back up before publishing either translation."""
+    path = _database_path(database_path)
+    parsed, records = {}, {}
+    for translation, value in archives.items():
+        data = value if isinstance(value, bytes) else Path(value).read_bytes()
+        progress('Validating ' + READER_TRANSLATIONS[translation]['label'] + ' USFM.')
+        parsed[translation] = parse_usfm_archive(data, translation)
+        records[translation] = dict((sources or {}).get(translation, {}), sha256=hashlib.sha256(data).hexdigest())
+    if not parsed:
+        raise SyncError('No translation ZIPs were supplied.')
+    if path.exists():
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
+            unchanged = all(conn.execute('''SELECT 1 FROM bible_editions e JOIN bible_import_runs r
+                ON r.id=e.import_run_id WHERE e.edition_key=? AND e.is_active=1 AND e.status='ready'
+                AND r.status='validated' ''', (kind+':'+source['sha256'],)).fetchone()
+                for kind, source in records.items())
+        if unchanged:
+            return dict(status='completed', counts={kind:len(value['verses']) for kind,value in parsed.items()},
+                        backup=None, message='Cebuano/Tagalog ZIPs are unchanged; keeping their indexed editions.')
+    with tempfile.TemporaryDirectory(prefix='district4_usfm_validation_') as directory:
+        staged = Path(directory)/'validation.db'
+        if path.exists():
+            with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(staged)) as target:
+                source.backup(target)
+        initialize_database(staged)
+        with closing(sqlite3.connect(staged)) as conn, conn:
+            counts = _publish_usfm(conn, parsed, records)
+            if conn.execute('PRAGMA foreign_key_check').fetchone() or conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise SyncError('Translation database validation failed.')
+    backup = None
+    if path.exists():
+        directory = path.parent/'backups'; directory.mkdir(parents=True,exist_ok=True)
+        backup = directory/('before_translations_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_')+secrets.token_hex(3)+'.db')
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(backup)) as target:
+            source.backup(target)
+    initialize_database(path)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute('PRAGMA foreign_keys=ON')
+        published = _publish_usfm(conn, parsed, records)
+        if published != counts or conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise SyncError('Translation publication failed validation; the recovery backup was kept.')
+    return dict(status='completed',counts=counts,backup=str(backup) if backup else None,
+                message='Cebuano/Tagalog translations imported into Bible Study only.')
+
+
+def sync_translation_sources(path, folder_id, progress, *, drive=None, fetch=None):
+    owned = drive is None
+    drive = drive or resources.get_drive_session()
+    try:
+        selected = {}
+        for item in resources.list_drive_folder(drive, folder_id):
+            name = str(item.get('name') or '')
+            if not name.casefold().endswith('.zip'): continue
+            kind = 'CEBOCB' if 'cebocb' in name.casefold() else 'TCB' if 'tagalog' in name.casefold() else ''
+            if not kind: continue
+            if kind in selected: raise SyncError('Keep only one current ZIP per translation in the translation folder.')
+            selected[kind] = dict(drive_file_id=item['id'],size=item.get('size',0),name=name,
+                                  source_path='drive:'+item['id'])
+        if not selected: raise SyncError('No Cebuano or Tagalog USFM ZIPs were found in the translation folder.')
+        archives = {kind: fetch(source) if fetch else _download_source(drive,source) for kind,source in selected.items()}
+        return import_usfm_translations(path,archives,sources=selected,progress=progress)
+    finally:
+        if owned: drive.close()
+
+
 def _download_source(drive, source):
     limit = 96 * 1024 * 1024
     file_id = str(source['drive_file_id'])
@@ -2718,7 +2893,7 @@ def _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress):
     return dict(**report,temporary_validation='passed',backup=str(backup) if backup else None)
 
 
-def sync_sources(path, folder_id, progress, fetch=None, drive=None):
+def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translation_folder_id=None):
     """Independent Drive -> Bible Study SQLite sync; no AI/library DB dependency."""
     owned = drive is None
     drive = drive or resources.get_drive_session()
@@ -2772,7 +2947,14 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None):
                 _validate_dictionary(content, family)
             parsed[family] = content
         progress('Publishing validated sources. Existing verses and personal records are preserved.')
-        return _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress)
+        result = _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress)
+        if translation_folder_id:
+            progress('Importing Cebuano and Tagalog into Bible Study only.')
+            translations = sync_translation_sources(path,translation_folder_id,progress,drive=drive,fetch=fetch)
+            result['counts'].update(translations['counts'])
+            result['message'] += ' ' + translations['message']
+            _write_sync_status(path,result)
+        return result
     finally:
         if owned:
             drive.close()
@@ -2783,7 +2965,9 @@ def _run_sync(app, path, lock):
         _write_sync_status(path, {'status': 'running', 'message': message, 'updated_at': datetime.now(timezone.utc).isoformat()})
     try:
         with app.app_context():
-            sync_sources(path, app.config.get('BIBLE_STUDY_DRIVE_FOLDER_ID', ''), progress)
+            options = ({'translation_folder_id':app.config['BIBLE_STUDY_TRANSLATION_FOLDER_ID']}
+                       if app.config.get('BIBLE_STUDY_TRANSLATION_FOLDER_ID') else {})
+            sync_sources(path, app.config.get('BIBLE_STUDY_DRIVE_FOLDER_ID', ''), progress, **options)
     except Exception as error:
         logging.getLogger(__name__).exception('Bible Study sync failed')
         message = str(error) if isinstance(error, SyncError) else 'Sync failed while reading the sources or saving data. Check server logs and retry.'
@@ -2840,7 +3024,7 @@ def get_indexed_niv_passage(reference, database_path, **path_options):
             return None
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
             if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID
-                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, SCHEMA_VERSION)):
+                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION)):
                 return None
             rows = conn.execute('''SELECT v.verse,v.text FROM bible_verses v
                 JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
@@ -4313,7 +4497,7 @@ def daily_maxwell_insight(database_path, ai_database, reference, verse_text, day
         key = hashlib.sha256(json.dumps([str(day), reference, verse_text, document['fingerprint'], 'maxwell-devotional-original-v3']).encode()).hexdigest()
         conn = sqlite3.connect(path.as_uri()+'?mode=rw', uri=True, timeout=2)
         if (conn.execute('PRAGMA application_id').fetchone()[0]!=APPLICATION_ID
-                or conn.execute('PRAGMA user_version').fetchone()[0] not in (2, 3, 4, 5, SCHEMA_VERSION)):
+                or conn.execute('PRAGMA user_version').fetchone()[0] not in (2, 3, 4, 5, 6, SCHEMA_VERSION)):
             return None, False
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute('SELECT status,lease_until,result_json FROM bible_daily_insights WHERE cache_key=?', (key,)).fetchone()
@@ -4368,7 +4552,9 @@ def initialize_database(database_path, **path_options):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=15)
     try:
-        conn.execute('PRAGMA foreign_keys=ON')
+        # Rebuild only the edition constraint during the explicit v7 upgrade.
+        # Foreign-key names stay unchanged; validate every reference afterward.
+        conn.execute('PRAGMA foreign_keys=OFF')
         application_id = conn.execute('PRAGMA application_id').fetchone()[0]
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
         if application_id not in (0, APPLICATION_ID) or (tables and application_id != APPLICATION_ID):
@@ -4391,15 +4577,32 @@ def initialize_database(database_path, **path_options):
             conn.executemany('INSERT INTO bible_books(id,name,chapter_count) VALUES(?,?,?)',
                              [(index, name, count) for index, (name, count) in enumerate(BOOKS, 1)])
             conn.execute("INSERT INTO bible_metadata(key,value) VALUES('offset_unit','unicode_codepoint')")
-        elif version not in (1, 2, 3, 4, 5) or application_id != APPLICATION_ID:
+        elif version not in (1, 2, 3, 4, 5, 6) or application_id != APPLICATION_ID:
             raise ValueError('Unsupported Bible Study migration; existing records were kept.')
         migrations = ((DICTIONARY_SCHEMA_SQL if version < 2 else '')
                       + (ORIGINAL_SCHEMA_SQL if version < 3 else '')
                       + (THOMPSON_SCHEMA_SQL if version < 4 else '')
-                      + (CONCORDANCE_SCHEMA_SQL if version < 5 else '') + STUDY_SCHEMA_SQL + STUDY_SAVE_SCHEMA_SQL)
+                      + (CONCORDANCE_SCHEMA_SQL if version < 5 else '')
+                      + (STUDY_SCHEMA_SQL if version < 6 else '') + STUDY_SAVE_SCHEMA_SQL)
         for statement in migrations.split(';'):
             if statement.strip():
                 conn.execute(statement)
+        if version != 0 and version < 7:
+            definition = re.search(r'CREATE TABLE bible_editions \(.*?\);', SCHEMA_SQL, re.S)[0]
+            conn.execute(definition.replace('CREATE TABLE bible_editions (','CREATE TABLE bible_editions_v7 ('))
+            conn.execute('INSERT INTO bible_editions_v7 SELECT * FROM bible_editions')
+            conn.execute('DROP TABLE bible_editions')
+            conn.execute('ALTER TABLE bible_editions_v7 RENAME TO bible_editions')
+            conn.execute('CREATE UNIQUE INDEX bible_active_translation ON bible_editions(translation) WHERE is_active=1')
+            for table, column in (('bible_verses','verse_end INTEGER NOT NULL DEFAULT 0'),
+                                  ('bible_verses',"notes_json TEXT NOT NULL DEFAULT '[]'"),
+                                  ('bible_verses',"layout TEXT NOT NULL DEFAULT ''"),
+                                  ('bible_tokens',"normalized_text TEXT NOT NULL DEFAULT ''")):
+                if column.split()[0] not in {row[1] for row in conn.execute('PRAGMA table_info('+table+')')}:
+                    conn.execute('ALTER TABLE '+table+' ADD COLUMN '+column)
+            conn.execute('CREATE INDEX IF NOT EXISTS bible_token_word ON bible_tokens(normalized_text,verse_id)')
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('Bible Study migration failed foreign-key validation.')
         if version < 4:
             rebuild_dictionary_senses(conn)
         conn.execute(f'PRAGMA application_id={APPLICATION_ID}')
@@ -4420,18 +4623,20 @@ def _account_key():
     return current_reader_user_key()
 
 
-def _personal_bible_items(conn, user_key, book_id=None, chapter=None):
+def _personal_bible_items(conn, user_key, book_id=None, chapter=None, translation=None):
     """Read private verse anchors without changing either reader's storage."""
     filters, values = ['p.user_key=?'], [user_key]
     if book_id is not None:
         filters.append('v.book_id=?'); values.append(book_id)
     if chapter is not None:
         filters.append('v.chapter=?'); values.append(chapter)
+    if translation is not None:
+        filters.append('e.translation=?'); values.append(translation)
     suffix = ''' FROM {table} p JOIN bible_verses v ON v.id=p.verse_id
         JOIN bible_books b ON b.id=v.book_id JOIN bible_editions e ON e.id=v.edition_id
         JOIN bible_import_runs r ON r.id=e.import_run_id WHERE ''' + ' AND '.join(filters)
     fields = '''p.*,v.book_id,v.chapter,v.verse,v.edition_id,b.name AS book,
-        e.title AS edition_title,e.is_active AS edition_active,v.is_active AS verse_active,
+        e.title AS edition_title,e.translation,e.is_active AS edition_active,v.is_active AS verse_active,
         e.status AS edition_status,r.status AS import_status'''
 
     def decorate(row, kind):
@@ -4518,6 +4723,7 @@ def _study_saved_items(conn, user_key):
 def register_bible_study_routes(app):
     app.config.setdefault('BIBLE_STUDY_DATABASE', str(BASE_DIR / 'bible_study_data' / 'bible_study.db'))
     app.config.setdefault('AI_DATABASE', os.getenv('AI_DATABASE', str(BASE_DIR / 'ai_index.db')))
+    app.config.setdefault('BIBLE_STUDY_TRANSLATION_FOLDER_ID', resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID)
     blueprint = Blueprint('bible_study', __name__, url_prefix='/pastor-resources/bible-study')
 
     def available():
@@ -4544,7 +4750,7 @@ def register_bible_study_routes(app):
             conn.execute('PRAGMA foreign_keys=ON')
             conn.execute('PRAGMA busy_timeout=5000')
             if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID
-                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, SCHEMA_VERSION)):
+                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION)):
                 raise StorageUnavailable('not_initialized')
             yield conn
         except ValueError:
@@ -4560,10 +4766,10 @@ def register_bible_study_routes(app):
             with database() as conn:
                 verse_count = conn.execute('''SELECT COUNT(*) FROM bible_verses v
                     JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
-                    WHERE e.translation='NIV' AND e.is_active=1 AND e.status='ready'
+                    WHERE e.translation IN ('NIV','CEBOCB','TCB') AND e.is_active=1 AND e.status='ready'
                     AND r.status='validated' AND v.is_active=1''').fetchone()[0]
             return {'status': 'schema_ready', 'schema_ready': True, 'indexed_verses': verse_count,
-                    'message': (f'{verse_count:,} NIV verses are available.' if verse_count else
+                    'message': (f'{verse_count:,} Bible verse entries are available.' if verse_count else
                                 'No Bible text has been imported. A developer can use Sync Bible Study.')}
         except StorageUnavailable as error:
             status = str(error)
@@ -4576,7 +4782,7 @@ def register_bible_study_routes(app):
                     'message': messages.get(status, messages['storage_unavailable'])}
 
     def default_state():
-        return {'book': 'Genesis', 'chapter': 1, 'verse': 1, 'theme': 'paper', 'font_size': 19,
+        return {'book': 'Genesis', 'chapter': 1, 'verse': 1, 'translation': 'NIV', 'theme': 'paper', 'font_size': 19,
                 'layout_mode': 'split', 'split_ratio': 60, 'version': 0}
 
     @blueprint.before_request
@@ -4653,7 +4859,7 @@ def register_bible_study_routes(app):
             session['bible_study_csrf'] = secrets.token_urlsafe(32)
         return render_template('bible_study.html', csrf_token=session['bible_study_csrf'],
                                bible_books=[{'name': name, 'chapters': count} for name, count in BOOKS],
-                               bible_study_admin=sync_admin(),
+                               bible_study_admin=sync_admin(), bible_translations=READER_TRANSLATIONS,
                                bible_preference_key=hashlib.sha256(_account_key().encode()).hexdigest()[:20])
 
     @blueprint.get('/api/status')
@@ -4712,68 +4918,100 @@ def register_bible_study_routes(app):
             return None
         return (book[0], chapter) if book and 1 <= chapter <= book[2] else None
 
-    def read_verses(conn, reference, verse=None):
-        return conn.execute('''SELECT v.id,v.verse,v.text,v.heading,e.title,e.attribution
+    def requested_translation():
+        value = request.args.get('translation', 'NIV').upper()
+        return value if value in READER_TRANSLATIONS else None
+
+    @blueprint.get('/api/translations')
+    def translations_api():
+        present = set()
+        try:
+            with database() as conn:
+                present = {row[0] for row in conn.execute('''SELECT e.translation FROM bible_editions e
+                    JOIN bible_import_runs r ON r.id=e.import_run_id WHERE e.is_active=1 AND e.status='ready'
+                    AND r.status='validated' ''')}
+        except StorageUnavailable: pass
+        return jsonify(ok=True, translations=[dict(code=key,label=value['label'],available=key in present)
+                       for key,value in READER_TRANSLATIONS.items()])
+
+    def read_verses(conn, reference, verse=None, translation='NIV'):
+        columns = "v.verse_end,v.notes_json,v.layout" if conn.execute('PRAGMA user_version').fetchone()[0]>=7 else "v.verse AS verse_end,'[]' AS notes_json,'' AS layout"
+        return conn.execute('''SELECT v.id,v.verse,v.text,v.heading,e.title,e.attribution,e.translation,'''+columns+'''
             FROM bible_verses v JOIN bible_editions e ON e.id=v.edition_id
             JOIN bible_import_runs r ON r.id=e.import_run_id
-            WHERE e.translation='NIV' AND e.is_active=1 AND e.status='ready' AND r.status='validated'
+            WHERE e.translation=? AND e.is_active=1 AND e.status='ready' AND r.status='validated'
             AND v.is_active=1 AND v.book_id=? AND v.chapter=? AND (? IS NULL OR v.verse=?) ORDER BY v.verse''',
-                            (*reference, verse, verse)).fetchall()
+                            (translation, *reference, verse, verse)).fetchall()
 
     @blueprint.get('/api/chapter')
     def chapter_api():
         reference = requested_reference()
-        if reference is None:
+        translation = requested_translation()
+        if reference is None or translation is None:
             return jsonify(ok=False, error='Invalid Bible book or chapter.'), 400
         try:
             with database() as conn:
-                rows = read_verses(conn, reference)
+                rows = read_verses(conn, reference, translation=translation)
                 verses = []
                 for row in rows:
                     tokens = conn.execute('SELECT token_index,start_offset,end_offset,text FROM bible_tokens WHERE verse_id=? ORDER BY token_index', (row['id'],)).fetchall()
                     spans=[dict(r) for r in conn.execute('SELECT start_offset,end_offset FROM bible_red_letter_spans WHERE verse_id=? ORDER BY start_offset',(row['id'],))]
-                    topics=[];edition_label='NIV'
+                    topics=[];edition_label=READER_TRANSLATIONS[translation]['label']
                     if conn.execute('PRAGMA user_version').fetchone()[0]>=4:
-                        topics=[dict(r) for r in conn.execute('''SELECT t.id,t.topic_key,t.title FROM bible_chain_verses x
-                            JOIN bible_chain_topics t ON t.id=x.topic_id WHERE x.verse_id=? ORDER BY CAST(t.topic_key AS INTEGER),t.topic_key''',(row['id'],))]
+                        topics=[dict(r) for r in conn.execute('''SELECT DISTINCT t.id,t.topic_key,t.title FROM bible_chain_verses x
+                            JOIN bible_chain_topics t ON t.id=x.topic_id JOIN bible_verses nv ON nv.id=x.verse_id
+                            JOIN bible_editions ne ON ne.id=nv.edition_id
+                            WHERE ne.translation='NIV' AND ne.is_active=1 AND nv.is_active=1
+                            AND nv.book_id=? AND nv.chapter=? AND nv.verse BETWEEN ? AND ?
+                            ORDER BY CAST(t.topic_key AS INTEGER),t.topic_key''',
+                            (reference[0],reference[1],row['verse'],row['verse_end'] or row['verse']))]
                         detail=conn.execute('''SELECT d.label FROM bible_verses v JOIN bible_edition_details d ON d.edition_id=v.edition_id WHERE v.id=?''',(row['id'],)).fetchone()
                         if detail:edition_label=detail[0]
-                    verses.append({**dict(row), 'tokens': [dict(token) for token in tokens],'red_spans':spans,'topics':topics,'edition_label':edition_label})
-            return jsonify(ok=True, verses=verses, storage_available=True)
+                    verses.append({**dict(row), 'verse_end': row['verse_end'] or row['verse'],
+                        'footnotes':json.loads(row['notes_json']), 'tokens': [dict(token) for token in tokens],
+                        'red_spans':spans,'topics':topics,'edition_label':edition_label})
+            return jsonify(ok=True, verses=verses, storage_available=True,translation=translation)
         except StorageUnavailable:
             return jsonify(ok=True, verses=[], storage_available=False)
 
     @blueprint.get('/api/verse')
     def verse_api():
         reference = requested_reference()
+        translation = requested_translation()
         try:
             number = int(request.args.get('verse', '0'))
             end_chapter = int(request.args.get('end_chapter', str(reference[1] if reference else 0)))
             end_verse = int(request.args.get('end_verse', str(number)))
         except ValueError:
             number = end_chapter = end_verse = 0
-        if (reference is None or not 1 <= number <= 176 or not 1 <= end_verse <= 176
+        if (reference is None or translation is None or not 1 <= number <= 176 or not 1 <= end_verse <= 176
                 or not reference[1] <= end_chapter <= BOOKS[reference[0]-1][1]
                 or (reference[1], number) > (end_chapter, end_verse)):
             return jsonify(ok=False, error='Invalid verse reference.'), 400
         try:
             with database() as conn:
-                rows = conn.execute('''SELECT v.id,v.chapter,v.verse,v.text,e.attribution FROM bible_verses v
+                end_column = 'COALESCE(NULLIF(v.verse_end,0),v.verse)' if conn.execute('PRAGMA user_version').fetchone()[0]>=7 else 'v.verse'
+                rows = conn.execute('''SELECT v.id,v.chapter,v.verse,v.text,e.attribution,e.translation,'''+end_column+''' AS verse_end FROM bible_verses v
                     JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
-                    WHERE e.translation='NIV' AND e.is_active=1 AND e.status='ready' AND r.status='validated'
+                    WHERE e.translation=? AND e.is_active=1 AND e.status='ready' AND r.status='validated'
                     AND v.is_active=1 AND v.book_id=? AND v.chapter BETWEEN ? AND ?
-                    AND (v.chapter>? OR v.verse>=?) AND (v.chapter<? OR v.verse<=?)
+                    AND (v.chapter>? OR '''+end_column+'''>=?) AND (v.chapter<? OR v.verse<=?)
                     ORDER BY v.chapter,v.verse LIMIT 501''',
-                    (reference[0], reference[1], end_chapter, reference[1], number, end_chapter, end_verse)).fetchall()
+                    (translation,reference[0], reference[1], end_chapter, reference[1], number, end_chapter, end_verse)).fetchall()
             if not rows:
-                return jsonify(ok=False, error='This NIV verse is not present in the indexed source.'), 404
+                return jsonify(ok=False, error='This verse is not present in the selected translation.'), 404
             if len(rows)>500:
                 return jsonify(ok=False, error='This passage is too long for a verse preview.'), 400
-            label = f'{BOOKS[reference[0]-1][0]} {reference[1]}:{number}'
-            if end_chapter != reference[1] or end_verse != number:
-                label += '–' + (str(end_chapter)+':' if end_chapter != reference[1] else '') + str(end_verse)
-            text = rows[0]['text'] if len(rows)==1 else '\n\n'.join(f"{row['chapter']}:{row['verse']} {row['text']}" for row in rows)
-            return jsonify(ok=True, verse={**dict(rows[0]), 'text': text, 'reference': label})
+            number = rows[0]['verse']; end_verse = rows[-1]['verse_end']
+            first_chapter = rows[0]['chapter']; end_chapter = rows[-1]['chapter']
+            label = f'{BOOKS[reference[0]-1][0]} {first_chapter}:{number}'
+            if end_chapter != first_chapter or end_verse != number:
+                label += '–' + (str(end_chapter)+':' if end_chapter != first_chapter else '') + str(end_verse)
+            text = rows[0]['text'] if len(rows)==1 else '\n\n'.join(
+                f"{row['chapter']}:{row['verse']}" + ('–'+str(row['verse_end']) if row['verse_end']>row['verse'] else '')
+                + ' ' + row['text'] for row in rows)
+            return jsonify(ok=True, verse={**dict(rows[0]), 'text': text, 'reference': label,
+                                          'edition_label':READER_TRANSLATIONS[translation]['label']})
         except StorageUnavailable:
             return jsonify(ok=False, error='Bible Study data is unavailable.'), 503
 
@@ -5041,14 +5279,36 @@ def register_bible_study_routes(app):
     @blueprint.get('/api/concordance')
     def concordance_api():
         query=_text(request.args.get('q',''))
+        translation = requested_translation()
         try:
             offset=int(request.args.get('offset','0'))
         except ValueError:
             return jsonify(ok=False,error='Invalid concordance page.'),400
-        if not query or len(query)>100 or not 0<=offset<=10000:
+        if not query or translation is None or len(query)>100 or not 0<=offset<=10000:
             return jsonify(ok=False,error='Enter a word of up to 100 characters.'),400
         try:
             with database() as conn:
+                if translation != 'NIV':
+                    if conn.execute('PRAGMA user_version').fetchone()[0]<7:
+                        return jsonify(ok=True,query=query,available=False,entries=[],next_offset=None)
+                    term = unicodedata.normalize('NFKC',query).casefold()
+                    rows=conn.execute('''SELECT DISTINCT v.id,v.book_id,v.chapter,v.verse,v.verse_end,v.text
+                        FROM bible_tokens t JOIN bible_verses v ON v.id=t.verse_id
+                        JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
+                        WHERE t.normalized_text=? AND e.translation=? AND e.is_active=1 AND v.is_active=1
+                          AND e.status='ready' AND r.status='validated'
+                        ORDER BY v.book_id,v.chapter,v.verse LIMIT 21 OFFSET ?''',(term,translation,offset)).fetchall()
+                    present=conn.execute("SELECT 1 FROM bible_editions WHERE translation=? AND is_active=1 AND status='ready'",(translation,)).fetchone()
+                    entries=[]
+                    for row in rows[:20]:
+                        reference=f"{BOOKS[row['book_id']-1][0]} {row['chapter']}:{row['verse']}"
+                        if row['verse_end']>row['verse']: reference+='–'+str(row['verse_end'])
+                        entries.append(dict(headword=reference,source_label=READER_TRANSLATIONS[translation]['label']+' · Word matches',
+                            passage=dict(book=BOOKS[row['book_id']-1][0],chapter=row['chapter'],verse=row['verse']),
+                            blocks=[dict(type='paragraph',text=reference,references=scripture_references(reference)),
+                                    dict(type='paragraph',text=row['text'],references=[])],related=[]))
+                    return jsonify(ok=True,query=query,translation=translation,available=bool(present),entries=entries,
+                                   next_offset=offset+20 if len(rows)>20 else None)
                 if conn.execute('PRAGMA user_version').fetchone()[0]<5:
                     return jsonify(ok=True,query=query,available=False,entries=[],next_offset=None)
                 edition=conn.execute('''SELECT e.id FROM bible_editions e JOIN bible_import_runs r ON r.id=e.import_run_id
@@ -5085,7 +5345,7 @@ def register_bible_study_routes(app):
             with database() as conn:
                 if conn.execute('PRAGMA user_version').fetchone()[0]<4:
                     return jsonify(ok=True,history=[])
-                rows=conn.execute('''SELECT h.id,h.visited_at,b.name AS book,v.chapter,v.verse,
+                rows=conn.execute('''SELECT h.id,h.visited_at,b.name AS book,v.chapter,v.verse,e.translation,
                     substr(v.text,1,160) AS snippet,e.title AS edition FROM bible_navigation_history h
                     JOIN bible_verses v ON v.id=h.verse_id JOIN bible_books b ON b.id=v.book_id
                     JOIN bible_editions e ON e.id=v.edition_id WHERE h.user_key=? ORDER BY h.id DESC LIMIT 100''',(_account_key(),)).fetchall()
@@ -5101,14 +5361,14 @@ def register_bible_study_routes(app):
             with database(write=True) as conn:
                 if conn.execute('PRAGMA user_version').fetchone()[0]<4:
                     return jsonify(ok=True,saved=False)
-                row=conn.execute('''SELECT v.id,v.book_id,v.chapter FROM bible_verses v JOIN bible_editions e ON e.id=v.edition_id
-                    JOIN bible_import_runs r ON r.id=e.import_run_id WHERE v.id=? AND e.translation='NIV'
+                row=conn.execute('''SELECT v.id,v.book_id,v.chapter,v.edition_id FROM bible_verses v JOIN bible_editions e ON e.id=v.edition_id
+                    JOIN bible_import_runs r ON r.id=e.import_run_id WHERE v.id=? AND e.translation IN ('NIV','CEBOCB','TCB')
                     AND e.is_active=1 AND e.status='ready' AND r.status='validated' AND v.is_active=1''',(data['verse_id'],)).fetchone()
-                if not row:return jsonify(ok=False,error='This NIV passage is unavailable.'),404
+                if not row:return jsonify(ok=False,error='This passage is unavailable.'),404
                 conn.execute('BEGIN IMMEDIATE')
-                previous=conn.execute('''SELECT v.book_id,v.chapter FROM bible_navigation_history h JOIN bible_verses v ON v.id=h.verse_id
+                previous=conn.execute('''SELECT v.book_id,v.chapter,v.edition_id FROM bible_navigation_history h JOIN bible_verses v ON v.id=h.verse_id
                     WHERE h.user_key=? ORDER BY h.id DESC LIMIT 1''',(_account_key(),)).fetchone()
-                if not previous or tuple(previous)!=(row['book_id'],row['chapter']):
+                if not previous or tuple(previous)!=(row['book_id'],row['chapter'],row['edition_id']):
                     conn.execute('INSERT INTO bible_navigation_history(user_key,verse_id,visited_at) VALUES(?,?,?)',
                         (_account_key(),row['id'],datetime.now(timezone.utc).isoformat()))
                     conn.execute('''DELETE FROM bible_navigation_history WHERE user_key=? AND id NOT IN
@@ -5128,7 +5388,10 @@ def register_bible_study_routes(app):
             return jsonify(ok=False, error='Choose a valid chapter.'), 400
         try:
             with database() as conn:
-                items = _personal_bible_items(conn, _account_key(), book[0] if book else None, chapter)
+                if requested_translation() is None:
+                    return jsonify(ok=False,error='Choose a supported translation.'),400
+                items = _personal_bible_items(conn, _account_key(), book[0] if book else None, chapter,
+                                              requested_translation() if book else None)
                 study = _study_saved_items(conn, _account_key())
             return jsonify(ok=True, study_annotations=study['annotations'], study_bookmarks=study['bookmarks'], **items)
         except StorageUnavailable:
@@ -5215,7 +5478,7 @@ def register_bible_study_routes(app):
         row = conn.execute('''SELECT v.id,v.text,v.book_id,v.chapter,v.verse,v.edition_id
             FROM bible_verses v JOIN bible_editions e ON e.id=v.edition_id
             JOIN bible_import_runs r ON r.id=e.import_run_id WHERE v.id=? AND v.is_active=1
-            AND e.translation='NIV' AND e.is_active=1 AND e.status='ready' AND r.status='validated' ''', (verse_id,)).fetchone()
+            AND e.translation IN ('NIV','CEBOCB','TCB') AND e.is_active=1 AND e.status='ready' AND r.status='validated' ''', (verse_id,)).fetchone()
         if row is None:
             raise InvalidBibleSelection('This Bible edition or verse is unavailable. Reload the chapter.')
         return row
@@ -5327,8 +5590,8 @@ def register_bible_study_routes(app):
         try:
             with database() as conn:
                 row = conn.execute('''SELECT b.name AS book,s.chapter,s.verse,s.theme,s.font_size,
-                    s.layout_mode,s.split_ratio,s.version FROM bible_reader_state s
-                    JOIN bible_books b ON b.id=s.book_id WHERE s.user_key=?''', (_account_key(),)).fetchone()
+                    s.layout_mode,s.split_ratio,s.version,COALESCE(e.translation,'NIV') AS translation FROM bible_reader_state s
+                    JOIN bible_books b ON b.id=s.book_id LEFT JOIN bible_editions e ON e.id=s.edition_id WHERE s.user_key=?''', (_account_key(),)).fetchone()
             return jsonify(ok=True, state=dict(row) if row else default_state(), storage_available=True)
         except StorageUnavailable:
             return jsonify(ok=True, state=default_state(), storage_available=False)
@@ -5336,12 +5599,13 @@ def register_bible_study_routes(app):
     @blueprint.post('/api/state')
     def state_save():
         data = request.get_json(silent=True)
-        allowed = {'book', 'chapter', 'verse', 'theme', 'font_size', 'layout_mode', 'split_ratio', 'version'}
+        allowed = {'book', 'chapter', 'verse', 'translation', 'theme', 'font_size', 'layout_mode', 'split_ratio', 'version'}
         if not isinstance(data, dict) or set(data) - allowed:
             return jsonify(ok=False, error='Invalid reader settings.'), 400
         book = BOOK_BY_NAME.get(str(data.get('book', '')).strip().casefold())
         numeric = ('chapter', 'verse', 'font_size', 'split_ratio', 'version')
-        if not book or any(type(data.get(key)) is not int for key in numeric):
+        translation = data.get('translation','NIV')
+        if not book or translation not in READER_TRANSLATIONS or any(type(data.get(key)) is not int for key in numeric):
             return jsonify(ok=False, error='Invalid reader settings.'), 400
         if not (1 <= data['chapter'] <= book[2] and 1 <= data['verse'] <= 176
                 and 14 <= data['font_size'] <= 30 and 20 <= data['split_ratio'] <= 80 and data['version'] >= 0
@@ -5355,14 +5619,17 @@ def register_bible_study_routes(app):
                 if current_version != data['version']:
                     return jsonify(ok=False, error='Reader settings changed in another tab. Reload before saving.'), 409
                 version = current_version + 1
+                edition=conn.execute("SELECT id FROM bible_editions WHERE translation=? AND is_active=1 AND status='ready'",(translation,)).fetchone()
+                if not edition and translation != 'NIV':
+                    return jsonify(ok=False,error='This translation has not been imported yet.'),400
                 conn.execute('''INSERT INTO bible_reader_state
-                    (user_key,book_id,chapter,verse,theme,font_size,layout_mode,split_ratio,version,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_key) DO UPDATE SET
+                    (user_key,book_id,chapter,verse,theme,font_size,layout_mode,split_ratio,version,updated_at,edition_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_key) DO UPDATE SET
                     book_id=excluded.book_id,chapter=excluded.chapter,verse=excluded.verse,
                     theme=excluded.theme,font_size=excluded.font_size,layout_mode=excluded.layout_mode,
-                    split_ratio=excluded.split_ratio,version=excluded.version,updated_at=excluded.updated_at''',
+                    split_ratio=excluded.split_ratio,version=excluded.version,updated_at=excluded.updated_at,edition_id=excluded.edition_id''',
                     (_account_key(), book[0], data['chapter'], data['verse'], data['theme'], data['font_size'],
-                     data['layout_mode'], data['split_ratio'], version, datetime.now(timezone.utc).isoformat()))
+                     data['layout_mode'], data['split_ratio'], version, datetime.now(timezone.utc).isoformat(),edition[0] if edition else None))
                 conn.commit()
             return jsonify(ok=True, version=version)
         except StorageUnavailable:
@@ -5376,12 +5643,14 @@ def register_bible_study_routes(app):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Bible Study maintenance; does not import or start app.py.')
-    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'sync-drive', 'format-thompson', 'import-concordance', 'import-studies'])
+    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'sync-drive', 'sync-translations', 'format-thompson', 'import-concordance', 'import-studies'])
     parser.add_argument('--database', required=True, help='Absolute path to a separate Bible Study .db file.')
     parser.add_argument('--archive', help='Local official STEPBible-Data ZIP, required for import-step.')
     parser.add_argument('--ai-database', help='Existing private AI index, required for prepare-readers.')
     parser.add_argument('--pdf', help='Matching local Thompson PDF, required for format-thompson, import-concordance or import-studies.')
     parser.add_argument('--folder-id', default='', help='Official Bible Study Drive folder ID; otherwise use saved/discovered folder.')
+    parser.add_argument('--translation-folder-id', default=resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID,
+                        help='Separate reader-only Cebuano/Tagalog USFM ZIP folder; never used by the AI index.')
     parser.add_argument('--backup-directory', help='Private folder for the SQLite recovery backup.')
     parser.add_argument('--dry-run', action='store_true', help='Validate without applying changes to the live database.')
     arguments = parser.parse_args()
@@ -5405,14 +5674,18 @@ if __name__ == '__main__':
                 parser.error('--archive is required for import-step')
             print(json.dumps(import_step_archive(arguments.database, arguments.archive,
                 backup_directory=arguments.backup_directory, dry_run=arguments.dry_run), indent=2))
-        elif arguments.command=='sync-drive':
+        elif arguments.command in ('sync-drive','sync-translations'):
             if arguments.dry_run:
                 parser.error('--dry-run is supported for import-step; sync-drive always validates a temporary copy before applying')
             path=_database_path(arguments.database)
             lock=_sync_lock(path,create=True)
             if lock is None:raise SyncError('A Bible Study sync is already running.')
             try:
-                print(json.dumps(sync_sources(path,arguments.folder_id,lambda message:print(message,flush=True)),indent=2))
+                progress=lambda message:print(message,flush=True)
+                result=(sync_translation_sources(path,arguments.translation_folder_id,progress)
+                        if arguments.command=='sync-translations' else
+                        sync_sources(path,arguments.folder_id,progress,translation_folder_id=arguments.translation_folder_id))
+                print(json.dumps(result,indent=2))
             finally:_release_sync_lock(lock)
         else:
             initialize_database(arguments.database)

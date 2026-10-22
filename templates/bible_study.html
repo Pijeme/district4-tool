@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='study-layout-18') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='translations-20') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -33,7 +33,7 @@
     <div class="bs-dialog-head"><strong id="bsSyncTitle">Sync details</strong><button type="button" id="bsCloseSync" aria-label="Close sync details">×</button></div>
     <div class="bs-sync-tools">
     <p id="bsStatus" role="status">Checking Bible Study availability…</p>
-    <p id="bsSyncStatus" role="status">Sync NIV, Mounce and Vine directly from the For Scripture Study App Drive folder.</p>
+    <p id="bsSyncStatus" role="status">Sync NIV, Mounce and Vine, plus Cebuano and Tagalog ZIPs from their separate Bible translation folder.</p>
     <details id="bsSyncReport" hidden><summary>Sync report</summary><div id="bsSyncReportBody"></div></details>
     </div>
   </dialog>
@@ -43,6 +43,8 @@
   <div class="bs-toolbar" aria-label="Bible reading controls">
     <div class="bs-toolbar-main">
       <button type="button" id="bsNavigate" aria-haspopup="dialog" aria-controls="bsNavigationDialog">Genesis 1 &#9662;</button>
+      <span class="bs-translation-control" id="bsTranslationControl"><label class="bs-visually-hidden" for="bsTranslation">Bible translation</label>
+        <select id="bsTranslation" aria-label="Bible translation"><option value="NIV">NIV</option><option value="CEBOCB">Cebuano</option><option value="TCB">Tagalog</option></select></span>
       <button type="button" id="bsHistory" aria-label="Reading history" title="Reading history">{{ icon('clock') }}</button>
       <span hidden><label for="bsBook">Bible book</label><select id="bsBook">{% for book in bible_books %}<option value="{{ book.name }}" data-chapters="{{ book.chapters }}">{{ book.name }}</option>{% endfor %}</select><label for="bsChapter">Chapter</label><select id="bsChapter"><option value="1">1</option></select></span>
       <button type="button" id="bsPrevious" aria-label="Previous chapter">{{ icon('chevron', 'bs-icon-previous') }}</button>
@@ -57,14 +59,14 @@
   </div>
   <div class="bs-wide-tabs" id="bsWideTabs" aria-label="Bible and study tabs"></div>
   <div class="bs-layout" id="bsLayout">
-    <section class="bs-pane bs-bible" id="bsBible" aria-label="NIV Bible reader" tabindex="-1">
+    <section class="bs-pane bs-bible" id="bsBible" aria-label="Bible reader" tabindex="-1">
       <div class="bs-study-tabs bs-reader-tabs" role="tablist" aria-label="Bible tools">
         <button type="button" id="bsReaderTab" role="tab" aria-selected="true" aria-controls="bsReaderPanel" data-reader-tab="bible">Bible</button>
         <button type="button" id="bsBookStudyTab" role="tab" aria-selected="false" aria-controls="bsBookStudyPanel" tabindex="-1" data-reader-tab="book">Book Study</button>
       </div>
       <div id="bsReaderPanel" role="tabpanel" aria-labelledby="bsReaderTab">
       <article class="bs-scripture" id="bsScripture">
-        <p class="bs-kicker">The Holy Bible · New International Version</p>
+        <p class="bs-kicker" id="bsBibleKicker">The Holy Bible · New International Version</p>
         <h2 id="bsBookHeading">Genesis</h2>
         <p class="bs-chapter-heading">Chapter <span id="bsChapterHeading">1</span></p>
         <div class="bs-empty" id="bsEmpty">
@@ -174,5 +176,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSourceDialog" aria-labelledby="bsSourceTitle"><div class="bs-dialog-head"><strong id="bsSourceTitle">Thompson study page</strong><button type="button" id="bsCloseSource" aria-label="Close study page">×</button></div><div class="bs-image-actions"><button type="button" data-study-image-action="bookmark">Bookmark page</button><button type="button" data-study-image-action="note">Note on page</button></div><img id="bsSourceImage" alt="Thompson study source page"></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='study-layout-18') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='translations-20') }}" defer></script>
 {% endblock %}

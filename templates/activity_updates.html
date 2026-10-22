@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Activity & Updates - District 4 Tool{% endblock %}
+{% block content %}
+<section id="activityUpdates" class="card au-dashboard">
+  <a href="{{ url_for('ao_tool') }}">← AO Tools</a>
+  <div class="au-heading"><div><h2>Activity &amp; Updates</h2><p class="muted">Your private overview of account activity and website changes. Times shown in UTC+8.</p></div>
+    <button type="button" class="btn-secondary" id="auClear">Clear Activity &amp; Notifications</button>
+  </div>
+  <div class="au-tabs" role="tablist" aria-label="Activity and updates">
+    <button type="button" role="tab" id="auAccountsTab" aria-selected="true" aria-controls="auResults" class="btn-primary">Account Activity</button>
+    <button type="button" role="tab" id="auNotificationsTab" aria-selected="false" aria-controls="auResults" class="btn-secondary">Change Notifications</button>
+  </div>
+  <form id="auFilters" class="au-filters">
+    <label>Account<input id="auSearch" type="search" placeholder="Name or username" maxlength="100"></label>
+    <label>From<input id="auStart" type="date"></label><label>Through<input id="auEnd" type="date"></label>
+    <button class="btn-secondary" type="submit">Apply filters</button>
+  </form>
+  <p class="muted small">Visits, downloads and shares are kept for 90 days. Change notifications remain until cleared. Download and share records describe website actions, not confirmation that a recipient saved or read a file.</p>
+  <p id="auStatus" role="status" aria-live="polite"></p>
+  <div id="auResults" role="tabpanel" aria-labelledby="auAccountsTab"></div>
+  <div class="au-pagination"><button class="btn-secondary" id="auPrev" type="button">Previous</button><span id="auPage"></span><button class="btn-secondary" id="auNext" type="button">Next</button></div>
+</section>
+<dialog id="auClearDialog" aria-labelledby="auClearTitle">
+  <h3 id="auClearTitle">Clear activity and notifications?</h3>
+  <p>This permanently clears both histories. Accounts, books, pledges and reports stay in place.</p>
+  <div class="au-tabs"><button class="btn-secondary" type="button" id="auClearCancel">Cancel</button><button class="btn-primary" type="button" id="auClearConfirm">Clear both histories</button></div>
+</dialog>
+<style>
+.au-dashboard{padding:24px;max-width:1050px;margin:0 auto}.au-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}.au-heading h2{margin-bottom:8px}.au-tabs,.au-pagination{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:20px 0}.au-filters{display:flex;gap:12px;align-items:end;flex-wrap:wrap;padding:18px;background:#f1f5f9;border-radius:14px}.au-filters label{display:grid;gap:6px;font-size:13px}.au-filters input{padding:10px;border:1px solid #cbd5e1;border-radius:8px;max-width:100%;box-sizing:border-box}.au-account,.au-event{border:1px solid #dbe3ef;border-radius:14px;margin:12px 0;overflow:hidden}.au-account>summary{cursor:pointer;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:18px;background:#f8fafc}.au-history,.au-event{padding:16px}.au-event p{margin:6px 0;overflow-wrap:anywhere}.au-event time,.au-meta{font-size:13px;color:#64748b}.au-unread{border-left:4px solid #2563eb}.au-event pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}#auClearDialog{border:1px solid #cbd5e1;border-radius:18px;max-width:440px;padding:24px}dialog::backdrop{background:#0f172a66}@media(max-width:600px){.au-dashboard{padding:14px}.au-filters label{flex:1;min-width:120px}.au-tabs button{flex:1}}
+</style>
+{% endblock %}
