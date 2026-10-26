@@ -57,6 +57,25 @@
 /* Shared heading system: every tool uses the same font and source banner. */
 .bs-tool-word{--bs-tool-tint:#c4a052}.bs-tool-concordance{--bs-tool-tint:#8fa58a}.bs-tool-commentary{--bs-tool-tint:#839eb9}.bs-tool-book{--bs-tool-tint:#bf907b}
 .bs-tool-sermon{--bs-tool-tint:#a48fa7}#bsSermonTab{--bs-tab-accent:#a48fa7}
+.bs-tool-illustrations{--bs-tool-tint:#9caa7c}#bsIllustrationsTab{--bs-tab-accent:#9caa7c}
+.bs-illustration-modes{display:flex;gap:6px;margin-bottom:18px}
+.bs-root .bs-illustration-modes button{flex:1;min-width:0;white-space:normal;line-height:1.5}
+.bs-root .bs-illustration-modes button[aria-selected=true]{background:var(--bs-line);font-weight:bold}
+.bs-illustration-source{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.bs-illustration-source select{min-width:0;max-width:100%}
+.bs-illustration-alphabet{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0 18px}
+.bs-root .bs-illustration-alphabet button{min-width:34px;min-height:38px;padding:5px}
+.bs-root .bs-illustration-alphabet button[aria-pressed=true]{background:var(--bs-line);font-weight:bold}
+.bs-illustration-topics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:6px;margin:12px 0}
+.bs-root .bs-illustration-topics button{text-align:left;white-space:normal;overflow-wrap:anywhere}
+.bs-illustration-card{padding:18px 0;border-bottom:1px solid var(--bs-line);overflow-wrap:anywhere}
+.bs-illustration-card h4{margin:0 0 8px;font:700 18px/1.5 Georgia,serif}
+.bs-illustration-card p{margin:8px 0}.bs-illustration-match{font-size:12px;color:var(--bs-accent)}
+#bsIllustrationsReader{overflow-wrap:anywhere}#bsIllustrationsReader>h3{margin-top:18px}
+#bsIllustrationsContent{font:17px/1.8 Georgia,serif}#bsIllustrationsContent p{white-space:pre-wrap;margin:0 0 1em}
+.bs-illustration-references{border-top:1px solid var(--bs-line);padding:10px 0;margin-top:14px}
+.bs-illustration-references p{margin:7px 0;overflow-wrap:anywhere}
+#bsIllustrationsReader .bs-scripture-ref{white-space:normal;text-align:left}
 .bs-study>.bs-study-tabs{overflow-x:auto;scrollbar-width:thin}.bs-root .bs-study>.bs-study-tabs button{min-width:91px;flex:1 0 auto}
 .bs-root .bs-sermon-title{display:block;width:100%;text-align:left;margin:0;padding:13px 8px;border:0;border-bottom:1px solid var(--bs-line);border-radius:0;font:16px/1.6 Georgia,serif}
 #bsSermonContent{font:16px/1.8 Georgia,serif;overflow-wrap:anywhere}#bsSermonContent p{white-space:pre-wrap;margin:3px 0}#bsSermonContent h5{margin:18px 0 6px;font-size:17px}
@@ -224,7 +243,7 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-root .bs-toolbar{flex:0 0 auto;align-self:stretch;isolation:isolate}
 .bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
 .bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
-.bs-root .bs-wide-tabs button{flex:0 0 112px;width:112px;min-width:112px;max-width:112px}
+.bs-root .bs-wide-tabs button{flex:0 0 104px;width:104px;min-width:104px;max-width:104px;white-space:normal;padding:5px 8px}
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
 .bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,1fr);gap:4px}
@@ -235,11 +254,73 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 @media(max-width:700px){
  .bs-wide-tabs{display:none}
  .bs-root .bs-reader-tabs button{flex-basis:94px;width:94px;min-width:94px;max-width:94px}
- .bs-root .bs-study>.bs-study-tabs button{flex:0 0 auto;width:auto;min-width:0;max-width:none;padding:9px 8px}
+ .bs-root .bs-study>.bs-study-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px;width:100%;height:44px;min-height:44px;padding:4px 4px 0;overflow:hidden}
+ .bs-root .bs-study>.bs-study-tabs button{flex:none;width:100%;min-width:0;max-width:none;height:40px;min-height:40px;padding:4px 2px;font-size:11px;line-height:13px;white-space:normal;text-wrap:balance}
+ .bs-mobile-tab-line{display:block}
 }
+@media(max-width:360px){.bs-root .bs-study>.bs-study-tabs{gap:1px;padding-left:2px;padding-right:2px}.bs-root .bs-study>.bs-study-tabs button{font-size:10px;padding-left:1px;padding-right:1px}}
 
 #bsTranslation{max-width:100px;min-width:70px;flex-shrink:0}.bs-verse-text{white-space:pre-wrap}.bs-verse-footnotes{font:13px/1.6 Arial,sans-serif;color:var(--bs-muted);margin:0 0 14px}.bs-verse-footnotes summary{cursor:pointer}.bs-verse-footnotes p{white-space:pre-wrap}
 .bs-translation-control{display:flex;align-items:center;flex:0 0 auto}
+.bs-verse-body,.bs-chain-margin{min-width:0;overflow-wrap:anywhere}
+.bs-root .bs-verse-row>.bs-verse-body{grid-column:1;grid-row:1}
+.bs-root .bs-verse-row>.bs-chain-margin{grid-column:2;grid-row:1;max-width:100%}
+.bs-root[data-compact-reader=true] .bs-verse-row>.bs-chain-margin{grid-column:1;grid-row:2}
+.bs-dictionary,.bs-translations{border:1px solid var(--bs-line);border-radius:10px;padding:14px;margin:16px 0}
+/* Source colors stay inside Word Study, including English equivalent results. */
+#bsWordPanel .bs-dictionary[data-dictionary-source=harper]{--bs-source-fill:#eaf6fd;--bs-source-edge:#a9cfe5}
+#bsWordPanel .bs-dictionary[data-dictionary-source=vine]{--bs-source-fill:#ebf8ef;--bs-source-edge:#afd5bc}
+#bsWordPanel .bs-dictionary[data-dictionary-source=mounce]{--bs-source-fill:#fcecf3;--bs-source-edge:#e3b7ca}
+.bs-root[data-theme=dark] #bsWordPanel .bs-dictionary[data-dictionary-source=harper]{--bs-source-fill:#243c4a;--bs-source-edge:#537f98}
+.bs-root[data-theme=dark] #bsWordPanel .bs-dictionary[data-dictionary-source=vine]{--bs-source-fill:#293e35;--bs-source-edge:#5d8b71}
+.bs-root[data-theme=dark] #bsWordPanel .bs-dictionary[data-dictionary-source=mounce]{--bs-source-fill:#46303e;--bs-source-edge:#a06c87}
+#bsWordPanel .bs-dictionary[data-dictionary-source]{background:var(--bs-source-fill,var(--bs-panel));border-color:var(--bs-source-edge,var(--bs-line))}
+#bsWordPanel .bs-dictionary[data-dictionary-source]>.bs-source-toggle{background:transparent;border-color:var(--bs-source-edge,var(--bs-line))}
+.bs-translations{border:0;border-radius:0;padding:0;margin:6px 0;font-size:15px}
+.bs-word-type{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:8px 0 14px;max-width:100%}
+.bs-word-type label{display:flex;align-items:center;gap:6px;max-width:100%;font:14px/1.5 Arial,sans-serif}
+.bs-root .bs-word-type select{max-width:100%;min-width:0;min-height:40px}
+.bs-word-type .bs-attribution{overflow-wrap:anywhere}
+.bs-other-definitions,.bs-related-articles{border-top:1px solid var(--bs-line);padding:10px 0;margin-top:8px}
+.bs-other-definitions>summary,.bs-related-articles>summary{cursor:pointer;line-height:1.5;min-height:32px}
+.bs-grammar-note{font:14px/1.7 Arial,sans-serif}
+.bs-root button.bs-dictionary-ref{display:inline;min-height:0;padding:0;border:0;border-radius:0;background:none;color:var(--bs-accent);text-decoration:underline;text-underline-offset:3px;font:inherit;white-space:normal}
+#bsDictionaryDialog{width:min(94vw,780px)}
+#bsDictionaryContent{font:16px/1.8 Georgia,serif;overflow-wrap:anywhere}
+#bsDictionaryContent article+article{border-top:1px solid var(--bs-line);margin-top:16px;padding-top:16px}
+.bs-native-notice{font:13px/1.7 Arial,sans-serif;margin:12px 0}
+.bs-native-entry{border-top:1px solid var(--bs-line);margin:14px 0;padding-bottom:12px}
+.bs-native-equivalents,.bs-native-spellings{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.bs-native-equivalents>p{flex-basis:100%;margin:0}
+.bs-native-spelling{flex:1 1 160px;min-width:0;max-width:260px;overflow-wrap:anywhere}
+.bs-native-spelling p{margin:5px 0}
+.bs-root .bs-english-equivalent[aria-pressed=true]{background:var(--bs-line);font-weight:bold}
+.bs-native-english{margin-top:24px;border-top:2px solid var(--bs-line);padding-top:16px;min-width:0}
+.bs-expository>.bs-dictionary-title{font:700 1.29em/1.35 Georgia,'Times New Roman',serif;margin:.5em 0 .7em}
+.bs-expository .bs-source-content,#bsDictionaryContent .bs-expository{font:17px/1.7 Georgia,'Times New Roman',serif;overflow-wrap:anywhere}
+.bs-expository .bs-source-content p,#bsDictionaryContent .bs-expository p{margin:0 0 .65em;white-space:normal}
+.bs-expository .bs-attribution,#bsDictionaryContent .bs-expository .bs-attribution{font:11px/1.6 Arial,sans-serif;text-indent:0;margin:7px 0 14px}
+.bs-expository .bs-dictionary-testament{font:700 italic 1em/1.5 Georgia,serif;text-align:left;margin:1.1em 0 .45em;text-indent:0}
+.bs-expository .bs-dictionary-section{font:700 1em/1.5 Georgia,serif;margin:1em 0 .55em;text-indent:0}
+.bs-expository[data-dictionary-family=vine] .bs-dictionary-section,.bs-expository[data-dictionary-family=vine]>.bs-dictionary-title{text-align:center}
+.bs-expository[data-dictionary-family=vine]>.bs-dictionary-title{font-style:italic;margin:1em 0 .75em}
+.bs-root .bs-inline-glyph{width:auto;max-height:3em;max-width:100%;vertical-align:baseline;display:inline-block;margin:0}
+.bs-expository .bs-dictionary-numbered{margin-top:.7em}
+.bs-translation-choices{margin:0;line-height:2;overflow-wrap:anywhere}
+.bs-root .bs-translation-choice{display:inline;min-height:32px;padding:2px 3px;border:0;border-radius:3px;background:transparent;color:var(--bs-accent);font:inherit;text-align:left;text-decoration:underline;text-underline-offset:3px}
+.bs-root .bs-translation-choice[aria-expanded=true]{font-weight:bold;background:var(--bs-panel)}
+.bs-translation-definition{position:relative;border-left:2px solid var(--bs-line);padding:12px 14px;margin:8px 0 14px;overflow-wrap:anywhere}
+.bs-translation-definition>h4{margin:0 60px 12px 0;font:700 19px/1.5 Georgia,serif}
+.bs-root .bs-translation-close{float:right;min-height:30px;padding:3px 7px;font-size:12px}
+.bs-definition{padding:14px 0;margin:0;white-space:normal;border:0;border-radius:0}
+.bs-definition+.bs-definition{border-top:1px solid var(--bs-line)}
+.bs-definition h4{margin:0 0 6px;font:700 17px/1.5 Georgia,serif}
+.bs-definition p{margin:7px 0}.bs-definition .bs-source-content{overflow-wrap:break-word}
+.bs-smallcaps{font-variant:small-caps}
+.bs-illustration .bs-source-image{display:inline-block;max-height:65vh;max-width:100%;height:auto;width:auto;margin:12px auto}
+.bs-source-table-wrap{overflow-x:auto;margin:14px 0}.bs-source-table{border-collapse:collapse;width:100%;font-size:.9em;white-space:normal}
+.bs-source-table td,.bs-source-table th{border:1px solid var(--bs-line);padding:8px;vertical-align:top;min-width:80px}
+.bs-source-table p{margin:0;white-space:normal}
 @media(max-width:700px){
  .bs-toolbar-secondary .bs-translation{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .bs-toolbar-secondary #bsTranslation{width:84px;min-width:0}

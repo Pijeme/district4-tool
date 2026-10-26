@@ -11,6 +11,7 @@ from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from html import unescape as unescape_html
+from html.parser import HTMLParser
 import hmac
 import hashlib
 import gzip
@@ -41,7 +42,10 @@ from pastor_resources import current_reader_user_key, is_resource_admin
 
 
 BASE_DIR = Path(__file__).resolve().parent
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+DICTIONARY_LABELS = {'harper': 'HarperCollins', 'mounce': 'Mounce', 'vine': 'Vine',
+                     'tagalog': 'Tagalog', 'cebuano': 'Cebuano'}
+DICTIONARY_PRESENTATION_VERSION = 1
 APPLICATION_ID = 0x4249424C
 MAX_JSON_BYTES = 16384
 STUDY_SAVE_SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS bible_study_saves (
@@ -77,6 +81,9 @@ READER_TRANSLATIONS = {
     'TCB': dict(label='Tagalog · Ang Salita ng Diyos', title='Biblica® Open Tagalog Contemporary Bible 2025',
         attribution='Biblica® Open Ang Salita ng Diyos · Copyright © 2009, 2011, 2014, 2025 Biblica, Inc. · Source: Biblica® Open Tagalog Contemporary Bible 2025'),
 }
+NATIVE_DICTIONARY_FAMILIES={'TCB':'tagalog','CEBOCB':'cebuano'}
+NATIVE_DICTIONARY_NOTICE=('English equivalents are dictionary suggestions and may not match this verse’s meaning. '
+    'Check the verse context; these results may be less precise than an English Bible lookup.')
 
 # All verse/token/annotation offsets are Unicode code-point offsets into an
 # immutable verse revision. Future DOM code must convert JavaScript UTF-16
@@ -179,7 +186,7 @@ DICTIONARY_SCHEMA_SQL = """
 CREATE TABLE bible_dictionary_versions (
     id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES bible_sources(id),
     import_run_id INTEGER NOT NULL REFERENCES bible_import_runs(id),
-    family TEXT NOT NULL CHECK(family IN ('mounce','vine')), is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0,1)),
+    family TEXT NOT NULL CHECK(family IN ('mounce','vine','harper','tagalog','cebuano')), is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0,1)),
     UNIQUE(source_id,family));
 CREATE UNIQUE INDEX bible_active_dictionary ON bible_dictionary_versions(family) WHERE is_active=1;
 CREATE TABLE bible_dictionary_entries (
@@ -354,6 +361,26 @@ class SyncError(Exception):
 
 
 _PDFIUM_LOCK = threading.Lock()
+
+
+STUDY_RESOURCE_SCHEMA_SQL = '''
+CREATE TABLE IF NOT EXISTS bible_dictionary_gloss_terms (
+    entry_id INTEGER NOT NULL REFERENCES bible_dictionary_entries(id), term TEXT NOT NULL,
+    weight INTEGER NOT NULL, PRIMARY KEY(entry_id,term));
+CREATE INDEX IF NOT EXISTS bible_gloss_lookup ON bible_dictionary_gloss_terms(term,entry_id);
+CREATE TABLE IF NOT EXISTS bible_commentary_versions (
+    id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES bible_sources(id),
+    import_run_id INTEGER NOT NULL REFERENCES bible_import_runs(id), volume_key TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0, UNIQUE(source_id,volume_key));
+CREATE UNIQUE INDEX IF NOT EXISTS bible_active_commentary ON bible_commentary_versions(volume_key) WHERE is_active=1;
+CREATE TABLE IF NOT EXISTS bible_commentary_sections (
+    id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL REFERENCES bible_commentary_versions(id),
+    ordinal INTEGER NOT NULL, title TEXT NOT NULL, passage TEXT NOT NULL, ranges_json TEXT NOT NULL,
+    content_json TEXT NOT NULL, plain_text TEXT NOT NULL, locator TEXT NOT NULL, UNIQUE(version_id,ordinal));
+CREATE TABLE IF NOT EXISTS bible_commentary_assets (
+    version_id INTEGER NOT NULL REFERENCES bible_commentary_versions(id),
+    sha256 TEXT NOT NULL REFERENCES bible_dictionary_assets(sha256), PRIMARY KEY(version_id,sha256));
+'''
 
 
 def _pdf_clean(value):
@@ -1371,6 +1398,8 @@ _INHERITED_REFERENCE = re.compile(r'\s*[,;]\s*(?:(?P<chapter>\d{1,3}):)?(?P<vers
 _SINGLE_BOOKS = '|'.join(re.escape(name).replace(r'\ ', r'\s*') for name in sorted(REFERENCE_BOOKS, key=len, reverse=True)
                          if BOOKS[REFERENCE_BOOKS[name]-1][1]==1)
 _SINGLE_CHAPTER_REFERENCE = re.compile(r'(?<![\w])(?P<book>'+_SINGLE_BOOKS+r')\.?\s+(?P<verse>\d{1,3})[a-c]?(?:\s*[-–—]\s*(?P<last>\d{1,3})[a-c]?)?(?![\w:])', re.I)
+_DICTIONARY_CHAPTER_REFERENCE = re.compile(r'(?<!\w)(?P<book>'+_BOOK_PATTERN+r')\.?\s+(?P<chapter>\d{1,3})(?![\d:])',re.I)
+_DICTIONARY_BARE_REFERENCE = re.compile(r'(?<![\w:])'+_RANGE_PATTERN+r'(?![\w:])')
 
 
 def scripture_references(text):
@@ -1403,7 +1432,7 @@ def scripture_references(text):
             consumed = current.end()
             current = _INHERITED_REFERENCE.match(text, consumed)
             # A free-standing number followed by prose may be a statistic.
-            if current and re.match(r'\s+[A-Za-z]', text[current.end():]):
+            if current and not current['chapter'] and re.match(r'\s+[A-Za-z]', text[current.end():]):
                 current = None
     for match in _SINGLE_CHAPTER_REFERENCE.finditer(text):
         if any(match.start()<item['end'] and match.end()>item['start'] for item in result):
@@ -1421,12 +1450,106 @@ def normalize_term(value):
                             if not unicodedata.combining(char)).split()).strip(' .,:;()')
 
 
+def _dictionary_navigation_blocks(conn, version_id, blocks, entry_id=None):
+    """Add navigation to existing imports without changing source text or runs."""
+    blocks=copy.deepcopy(blocks)
+    leaves=[]
+    def collect(items):
+        for block in items:
+            if block['type']=='table':
+                for row in block.get('rows',[]):collect([cell['block'] for cell in row])
+            else:leaves.append(block)
+    collect(blocks)
+    context=None
+    for block in leaves:
+        text=block['text'];refs=scripture_references(text)
+        for match in _DICTIONARY_CHAPTER_REFERENCE.finditer(text):
+            if any(match.start()<r['end'] and match.end()>r['start'] for r in refs):continue
+            book=_REF_NAMES[re.sub(r'[.\s]+','',match['book']).casefold()];chapter=int(match['chapter'])
+            if BOOKS[book-1][1]==1 or not 1<=chapter<=BOOKS[book-1][1]:continue
+            refs.append(dict(start=match.start(),end=match.end(),book=BOOKS[book-1][0],book_id=book,
+                chapter=chapter,verse=1,end_chapter=chapter,end_verse=1,chapter_only=True,source_text=match[0]))
+        # A parenthetical (24:58) inherits a book only from a prior explicit
+        # citation to that same chapter. Bare numbers never become verse links.
+        events=[(r['start'],r) for r in refs]
+        events.extend((m.start(),m) for m in _DICTIONARY_BARE_REFERENCE.finditer(text)
+                      if not any(m.start()<r['end'] and m.end()>r['start'] for r in refs))
+        for start,event in sorted(events,key=lambda item:item[0]):
+            if isinstance(event,dict):context=event;continue
+            match=event
+            if not context or text.rfind('(',0,start)<=text.rfind(')',0,start):continue
+            chapter,verse=int(match['chapter']),int(match['verse'])
+            last_chapter=int(match['end_chapter'] or chapter);last_verse=int(match['end_verse'] or verse)
+            if chapter!=context['chapter'] or not (1<=chapter<=last_chapter<=BOOKS[context['book_id']-1][1]
+                    and 1<=verse<=176 and 1<=last_verse<=176 and (chapter,verse)<=(last_chapter,last_verse)):continue
+            refs.append(dict(start=start,end=match.end(),book=context['book'],book_id=context['book_id'],chapter=chapter,
+                verse=verse,end_chapter=last_chapter,end_verse=last_verse,source_text=match[0],inherited_book=True))
+        block['references']=sorted(refs,key=lambda r:r['start'])
+    # EPUB "See / See also" suggestions are often plain typography rather than
+    # <a> elements. Resolve complete printed headings within the same edition.
+    suggestions=[]
+    for block in leaves:
+        for marker in re.finditer(r'\bsee(?:\s+also)?\s+',block['text'],re.I):
+            preceding=block['text'][:marker.start()].rstrip()
+            marked=False;position=0
+            for run in block.get('runs',[]):
+                end=position+(len(run['text']) if run['type']=='text' else 1)
+                if position<=marker.start()<end and set(run.get('marks',[]))&{'strong','em'}:marked=True
+                position=end
+            if marker[0][0].isupper() or not preceding or preceding[-1:] in '(;.' or marked:
+                suggestions.append((block,marker.end()))
+    linked_targets={run['epub_target'] for block in leaves for run in block.get('runs',[]) if run.get('epub_target')}
+    if not suggestions and not linked_targets:return blocks
+    targets={}
+    locators={}
+    for row in conn.execute('SELECT id,headword,locator FROM bible_dictionary_entries WHERE version_id=?',(version_id,)):
+        if row['id']!=entry_id:locators[row['locator']]=row['id']
+        labels=[row['headword'],*re.split(r'[,;()]',row['headword'])]
+        for label in labels:
+            term=normalize_term(re.sub(r'^to\s+','',label.strip(),flags=re.I))
+            if len(term)<2 or term in {'the','an','of','to','and','or','noun','verb','noun and verb','adjective','adverb'}:continue
+            if re.match(r'^(?:book|letter|gospel) of\b',term):continue
+            targets.setdefault(term,[])
+            if row['id']!=entry_id and row['id'] not in targets[term]:targets[term].append(row['id'])
+    for block in leaves:
+        position=0
+        for run in block.get('runs',[]):
+            end=position+(len(run['text']) if run['type']=='text' else 1)
+            target=locators.get(run.get('epub_target'))
+            if target and not any(position<r['end'] and end>r['start'] for r in block['references']):
+                links=block.setdefault('dictionary_links',[])
+                if links and links[-1]['end']==position and links[-1]['entry_ids']==[target]:
+                    links[-1].update(end=end,headword=block['text'][links[-1]['start']:end])
+                else:links.append(dict(start=position,end=end,headword=block['text'][position:end],entry_ids=[target]))
+            position=end
+    for block,start in suggestions:
+        text=block['text']
+        parenthetical=text.rfind('(',0,start)>text.rfind(')',0,start)
+        stop=re.search(r'[.!?\n)]' if parenthetical else r'[.!?\n]',text[start:])
+        end=min(start+500,start+stop.start() if stop else len(text))
+        words=list(re.finditer(r"[^\W_]+(?:[’'-][^\W_]+)*",text[start:end]))
+        used=start
+        for i,word in enumerate(words):
+            first=start+word.start()
+            if first<used:continue
+            for last in reversed(words[i:i+16]):
+                final=start+last.end();ids=targets.get(normalize_term(text[first:final]))
+                if not ids or any(first<r['end'] and final>r['start'] for r in block['references']):continue
+                links=block.setdefault('dictionary_links',[])
+                if not any(first<r['end'] and final>r['start'] for r in links):
+                    links.append(dict(start=first,end=final,headword=text[first:final],entry_ids=ids))
+                used=final;break
+    return blocks
+
+
 def _dictionary_block(element, filename, archive, assets):
     runs = []
-    def walk(node, marks=()):
+    def walk(node, marks=(), link=None):
         tag = _tag(node)
         if tag in {'script', 'style', 'iframe', 'object', 'svg'}:
             return
+        if tag=='a':link=_epub_target(filename,node.get('href','')) if node.get('href') else None
+        navigation=dict(epub_target=link) if link else {}
         if tag == 'img':
             target = _epub_target(filename, node.attrib.get('src', ''))
             if not target or '#' in target:
@@ -1439,21 +1562,21 @@ def _dictionary_block(element, filename, archive, assets):
                         mime = Image.MIME.get(picture.format)
                         if mime not in {'image/gif', 'image/jpeg', 'image/png'} or max(picture.size) > 4096 or len(data) > 2 * 1024 * 1024:
                             raise SyncError('A dictionary image exceeds supported limits.')
-                        picture.verify()
+                        width,height=picture.size;picture.verify()
                 except (KeyError, OSError, ValueError):
                     raise SyncError('A dictionary image could not be validated.') from None
-                assets[target] = dict(sha256=hashlib.sha256(data).hexdigest(), mime_type=mime, data=data)
-            runs.append(dict(type='image', asset=assets[target]['sha256'], marks=list(marks)))
+                assets[target] = dict(sha256=hashlib.sha256(data).hexdigest(), mime_type=mime, data=data,width=width,height=height)
+            runs.append(dict(type='image', asset=assets[target]['sha256'], marks=list(marks),**navigation))
             return
-        mark = {'i': 'em', 'em': 'em', 'b': 'strong', 'strong': 'strong', 'sup': 'sup', 'sub': 'sub'}.get(tag)
+        mark = {'i': 'em', 'em': 'em', 'b': 'strong', 'strong': 'strong', 'sup': 'sup', 'sub': 'sub', 'smallcaps':'smallcaps'}.get(tag)
         if mark:
             marks = (*marks, mark)
         if node.text:
-            runs.append(dict(type='text', text=re.sub(r'\s+', ' ', node.text), marks=list(marks)))
+            runs.append(dict(type='text', text=re.sub(r'\s+', ' ', node.text), marks=list(marks),**navigation))
         for child in node:
-            walk(child, marks)
+            walk(child, marks,link)
             if child.tail:
-                runs.append(dict(type='text', text=re.sub(r'\s+', ' ', child.tail), marks=list(marks)))
+                runs.append(dict(type='text', text=re.sub(r'\s+', ' ', child.tail), marks=list(marks),**navigation))
         if tag == 'br':
             runs.append(dict(type='text', text='\n', marks=list(marks)))
     walk(element)
@@ -1468,6 +1591,271 @@ def _dictionary_block(element, filename, archive, assets):
     plain = ''.join(run['text'] if run['type'] == 'text' else '\ufffc' for run in runs)
     kind = 'heading' if _tag(element) in {'h1', 'h2', 'h3', 'h4'} or element.attrib.get('class') in {'h1', 'h2', 'pc', 'bh'} else 'paragraph'
     return dict(type=kind, runs=runs, text=plain, references=scripture_references(plain))
+
+
+def _resource_css(archive):
+    """Read source typography into a small allowlist; never execute ebook CSS."""
+    rules = {}
+    for name in archive.namelist():
+        if not name.lower().endswith('.css'):
+            continue
+        for selectors, body in re.findall(r'([^{}]+)\{([^{}]*)\}', archive.read(name).decode('utf-8', 'replace')):
+            declarations = dict((key.strip().lower(), value.strip().lower())
+                                for key, value in re.findall(r'([\w-]+)\s*:\s*([^;]+)', body))
+            for selector in selectors.split(','):
+                selector = selector.strip()
+                if re.fullmatch(r'(?:[\w-]+)?\.[\w-]+', selector):
+                    rules.setdefault(selector.split('.')[-1], {}).update(declarations)
+    return rules
+
+
+def _resource_block(element, filename, archive, assets, css):
+    # Convert class-based emphasis to semantic marks before using the existing
+    # image validator and Unicode offset machinery.
+    element = copy.deepcopy(element)
+    for node in element.iter():
+        style = {}
+        for cls in node.get('class', '').split():
+            style.update(css.get(cls, {}))
+        marks = []
+        if style.get('font-style') in ('italic', 'oblique'): marks.append('em')
+        if style.get('font-weight') in ('bold','bolder','600','700','800','900'): marks.append('strong')
+        if style.get('vertical-align') in ('super','sub'): marks.append('sup' if style['vertical-align']=='super' else 'sub')
+        if style.get('font-variant') == 'small-caps': marks.append('smallcaps')
+        for mark in marks:
+            wrapper = ET.Element(mark)
+            wrapper.text = node.text; node.text = None
+            wrapper.extend(list(node))
+            for child in list(node): node.remove(child)
+            node.append(wrapper)
+    block = _dictionary_block(element, filename, archive, assets)
+    style = {}
+    for cls in element.get('class', '').split(): style.update(css.get(cls, {}))
+    presentation = {}
+    if style.get('text-align') in ('center','right','left','justify'): presentation['align'] = style['text-align']
+    for key, prop in (('indent','text-indent'),('inset','margin-left')):
+        value = style.get(prop, '')
+        if re.fullmatch(r'-?\d+(?:\.\d+)?em', value): presentation[key] = max(-4, min(8, float(value[:-2])))
+    if presentation: block['presentation'] = presentation
+    if _tag(element) == 'table':
+        rows = []
+        for row in element.iter():
+            if _tag(row) != 'tr': continue
+            cells = []
+            for cell in row:
+                if _tag(cell) not in ('td','th'): continue
+                child = _resource_block(cell, filename, archive, assets, css)
+                cells.append(dict(header=_tag(cell)=='th', colspan=min(20, max(1, int(cell.get('colspan','1')))), block=child))
+            if cells: rows.append(cells)
+        block.update(type='table', rows=rows)
+    if any(run['type']=='image' for run in block['runs']): block['illustration'] = True
+    return block
+
+
+def _resource_blocks(root, filename, archive, assets, css, *, quoted=False):
+    blocks = []
+    for node in root:
+        tag = _tag(node)
+        if tag in ('script','style','head','svg'): continue
+        if tag in ('p','h1','h2','h3','h4','h5','h6','table','li'):
+            block = _resource_block(node, filename, archive, assets, css)
+            if quoted: block['source_quote'] = True
+            if tag.startswith('h') and len(tag)==2: block['type']='heading'
+            if tag=='li': block.update(list_kind='bullet',list_level=1)
+            if block['text'].strip(): blocks.append(block)
+        elif tag=='img':
+            blocks.append(_resource_block(node, filename, archive, assets, css))
+        else:
+            blocks.extend(_resource_blocks(node, filename, archive, assets, css, quoted=quoted or tag=='blockquote'))
+    return blocks
+
+
+def _block_assets(blocks):
+    return {run['asset'] for block in blocks for run in block.get('runs', []) if run['type']=='image'}
+
+
+def parse_harper_epub(data):
+    entries, assets = [], {}
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        css = _resource_css(archive)
+        for filename, content in _epub_documents(data):
+            root = _xml(content)
+            # Entry boundaries are the explicit links back to the alphabetical
+            # contents, including entries that contain several paragraphs/tables.
+            current = None
+            def walk(parent):
+                nonlocal current
+                for node in parent:
+                    if _tag(node) in ('p','table','h1','h2','h3','h4'):
+                        anchor = next((n for n in node.iter() if _tag(n)=='a' and n.get('id')
+                                       and re.search(r'(?:^|/)toc-[^/]+#', n.get('href',''))), None)
+                        if anchor is not None:
+                            current = dict(family='harper', locator=filename+'#'+anchor.get('id'),
+                                headword=_text(''.join(anchor.itertext())), section='Bible background', language='', blocks=[])
+                            entries.append(current)
+                        if current:
+                            block = _resource_block(node,filename,archive,assets,css)
+                            if block['text'].strip(): current['blocks'].append(block)
+                    elif _tag(node) not in ('head','script','style'): walk(node)
+            walk(root)
+    for entry in entries:
+        entry['plain_text']='\n\n'.join(b['text'] for b in entry['blocks'])
+        entry['terms']=_entry_terms(entry); entry['identifiers']=[]
+    if not entries: raise SyncError('No HarperCollins article anchors were found.')
+    return dict(entries=entries,assets=assets)
+
+
+def _gloss_equivalents(gloss):
+    """Direct meanings only; examples inside parentheses are not translations."""
+    value=gloss
+    while re.search(r'\([^()]*\)',value): value=re.sub(r'\([^()]*\)',' ',value)
+    parts=[]
+    for part in value.split(';'):
+        part=re.sub(r'^(?:to|an?|the)\s+','',part.strip(),flags=re.I)
+        # Split short synonym pairs, not clauses such as "a person who is dear
+        # or loved". Commas can enumerate objects within an unrelated meaning.
+        alternatives=re.split(r'\s+or\s+',part)
+        parts.extend(alternatives if all(re.fullmatch(r'[\w’\'-]+',item) for item in alternatives) else [part])
+    return [normalize_term(part) for part in parts]
+
+
+def parse_language_dictionary(data, family):
+    code = {'tagalog':'tl','cebuano':'ceb'}[family]
+    entries = []
+    stop = {'the','and','with','for','from','that','this','one','who','which','have','used','someone','something'}
+    for ordinal, line in enumerate(io.BytesIO(data),1):
+        if not line.strip(): continue
+        try: record=json.loads(line)
+        except (ValueError,UnicodeError): raise SyncError(f'Invalid {family} JSONL at line {ordinal}.') from None
+        if record.get('lang_code')!=code or not record.get('word') or not isinstance(record.get('senses'),list):
+            raise SyncError(f'Unexpected {family} dictionary record at line {ordinal}.')
+        blocks=[];gloss_terms={}
+        for sense in record['senses']:
+            for gloss in sense.get('glosses',[]):
+                blocks.append(dict(type='paragraph',text=gloss,runs=[dict(type='text',text=gloss,marks=[])],references=[]))
+                candidates=[(normalize_term(gloss),6)]
+                candidates.extend((part,4) for part in _gloss_equivalents(gloss))
+                candidates.extend((word,1) for word in re.findall(r'[a-z]{3,}',normalize_term(gloss)) if word not in stop)
+                for term,weight in candidates:
+                    if term and len(term)<=100: gloss_terms[term]=max(weight,gloss_terms.get(term,0))
+            for example in sense.get('examples',[]):
+                text=example.get('text','')
+                translation=example.get('english') or example.get('translation','')
+                if translation: text+=' — '+translation
+                if text: blocks.append(dict(type='paragraph',text=text,runs=[dict(type='text',text=text,marks=[])],references=[],source_quote=True))
+        if not blocks: continue
+        word=record['word'];terms={(normalize_term(word),'headword',word,1)}
+        for form in record.get('forms',[]):
+            value=form.get('form','')
+            if value: terms.add((normalize_term(value),'headword',value,1))
+        entries.append(dict(family=family,locator='line:'+str(ordinal),headword=word,section=record.get('pos',''),
+            language=DICTIONARY_LABELS[family],blocks=blocks,plain_text='\n\n'.join(b['text'] for b in blocks),
+            terms=sorted(terms),identifiers=[],gloss_terms=gloss_terms))
+    if not entries: raise SyncError('The '+family+' dictionary has no definitions.')
+    return dict(entries=entries,assets={})
+
+
+def parse_be_epub(data, title):
+    assets={};pages={};supplied_title=title;warnings=[]
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        container=_xml(archive.read('META-INF/container.xml'))
+        package=next(n.get('full-path') for n in container.iter() if _tag(n)=='rootfile')
+        metadata=_xml(archive.read(package))
+        title=next((n.text for n in metadata.iter() if _tag(n)=='title' and n.text),title)
+        creator=' '.join(n.text or '' for n in metadata.iter() if _tag(n)=='creator')
+        if 'wiersbe' not in creator.casefold():
+            raise SyncError('The selected BE source has unexpected title or author metadata.')
+        css=_resource_css(archive)
+        for ordinal,(filename,content) in enumerate(_epub_documents(data),1):
+            root=_xml(content);body=next((n for n in root.iter() if _tag(n)=='body'),root)
+            blocks=_resource_blocks(body,filename,archive,assets,css)
+            for block in blocks: block['locator']=filename
+            pages[ordinal]=blocks
+    expected=supplied_title.split(' (',1)[0]
+    if not title.casefold().startswith('be '):
+        if not expected.casefold().startswith('be ') or not any(b['text'].strip().casefold()==expected.casefold() for page in pages.values() for b in page):
+            raise SyncError('The BE filename and internal title could not be reconciled.')
+        warnings.append(expected+': incorrect package title; verified the title inside the book instead.')
+        title=expected
+    rows=[(page,'\n\n'.join(b['text'] for b in blocks)) for page,blocks in pages.items()]
+    sections=_wiersbe_sections(dict(id=0,title=title),rows)
+    for section in sections:
+        body=section['text'];blocks=[]
+        for page in range(section['source_section'],section['source_end_section']+1):
+            blocks.extend(copy.deepcopy(b) for b in pages.get(page,[]) if b['text'].strip() and b['text'].strip() in body)
+        if not blocks: raise SyncError('A BE chapter could not retain its source paragraphs.')
+        section['blocks']=_wiersbe_reader_blocks(blocks,section['title'])
+        section['locator']=blocks[0]['locator']+'#section-'+str(section['source_section'])
+    if not sections: raise SyncError('No passage-linked BE chapters were found. Existing content was kept.')
+    return dict(title=title,volume_key=normalize_term(title),sections=sections,assets=assets,warnings=warnings)
+
+
+def bible_study_be_commentary(conn,book_id,chapter,verse):
+    if conn.execute('PRAGMA user_version').fetchone()[0]<8: return dict(available=False,entries=[])
+    rows=conn.execute('''SELECT c.*,s.title AS source_title FROM bible_commentary_sections c
+        JOIN bible_commentary_versions v ON v.id=c.version_id JOIN bible_sources s ON s.id=v.source_id
+        JOIN bible_import_runs r ON r.id=v.import_run_id WHERE v.is_active=1 AND r.status='validated'
+        AND EXISTS(SELECT 1 FROM json_each(c.ranges_json) span WHERE json_extract(span.value,'$.book_id')=?
+            AND json_extract(span.value,'$.chapter')*200+json_extract(span.value,'$.verse')<=?
+            AND json_extract(span.value,'$.end_chapter')*200+json_extract(span.value,'$.end_verse')>=?)''',
+        (book_id,chapter*200+verse,chapter*200+verse)).fetchall()
+    catalogue=[]
+    for row in rows:
+        spans=json.loads(row['ranges_json'])
+        if not any(s['book_id']==book_id and (s['chapter'],s['verse'])<=(chapter,verse)<=(s['end_chapter'],s['end_verse']) for s in spans): continue
+        catalogue.append(dict(document_id=row['version_id'],source_title=row['source_title'],author='Warren W. Wiersbe',
+            title=row['title'],passage=row['passage'],source_section=row['ordinal'],ranges=spans,
+            text=row['plain_text'],blocks=json.loads(row['content_json'])))
+    result=_commentary_entries(catalogue,book_id,chapter,verse)
+    result['available']=bool(conn.execute('SELECT 1 FROM bible_commentary_versions WHERE is_active=1').fetchone())
+    return result
+
+
+def reverse_dictionary_matches(conn, query, part=None):
+    groups=[];forms=english_word_forms(query)
+    if conn.execute('PRAGMA user_version').fetchone()[0]<8: return groups
+    for family in ('tagalog','cebuano'):
+        rows=conn.execute('''SELECT e.id,e.headword,e.section,e.preview,e.content_json,MAX(g.weight) AS rank
+            FROM bible_dictionary_gloss_terms g JOIN bible_dictionary_entries e ON e.id=g.entry_id
+            JOIN bible_dictionary_versions d ON d.id=e.version_id JOIN bible_import_runs r ON r.id=d.import_run_id
+            WHERE g.term IN ('''+','.join('?' for _ in forms)+''') AND d.family=? AND d.is_active=1
+            AND r.status='validated' GROUP BY e.id ORDER BY rank DESC,e.id LIMIT 500''',(*forms,family)).fetchall()
+        candidates={}; forms=set(forms)
+        for row in rows:
+            if part and _dictionary_part(row['section']) != part: continue
+            definitions=[b['text'] for b in json.loads(row['content_json']) if not b.get('source_quote')]
+            matches=[i for i,gloss in enumerate(definitions) if forms.intersection(_gloss_equivalents(gloss))]
+            if not matches: continue
+            key=normalize_term(row['headword'])
+            entry=dict(id=row['id'],entry_ids=[row['id']],headword=row['headword'],section=row['section'],
+                       preview=definitions[matches[0]],primary=matches[0]==0)
+            if key in candidates:
+                candidates[key]['entry_ids'].append(row['id'])
+                candidates[key]['primary'] |= entry['primary']
+            else: candidates[key]=entry
+        # Count native words through the existing token index, rather than
+        # favoring short/rare words simply because they sort ahead of others.
+        for term,entry in candidates.items():
+            entry['bible_uses']=conn.execute('''SELECT COUNT(*) FROM bible_tokens t
+                JOIN bible_verses v ON v.id=t.verse_id JOIN bible_editions e ON e.id=v.edition_id
+                JOIN bible_import_runs r ON r.id=e.import_run_id
+                WHERE t.normalized_text=? AND e.translation=? AND e.is_active=1 AND v.is_active=1
+                AND e.status='ready' AND r.status='validated' ''',
+                (term,'TCB' if family=='tagalog' else 'CEBOCB')).fetchone()[0]
+        entries=sorted(candidates.values(),key=lambda e:(-bool(e['bible_uses']),-e['primary'],-e['bible_uses'],normalize_term(e['headword'])))[:10]
+        for entry in entries:
+            entry['entry_ids']=[row['id'] for row in conn.execute('''SELECT DISTINCT e.id,e.headword
+                FROM bible_dictionary_terms t JOIN bible_dictionary_entries e ON e.id=t.entry_id
+                JOIN bible_dictionary_versions d ON d.id=e.version_id JOIN bible_import_runs r ON r.id=d.import_run_id
+                WHERE t.term=? AND t.kind='headword' AND d.family=? AND d.is_active=1 AND r.status='validated'
+                ORDER BY e.id''',(normalize_term(entry['headword']),family))
+                if normalize_term(row['headword'])==normalize_term(entry['headword'])]
+            if part:
+                entry['entry_ids']=[entry_id for entry_id in entry['entry_ids'] if _dictionary_part(
+                    conn.execute('SELECT section FROM bible_dictionary_entries WHERE id=?',(entry_id,)).fetchone()[0])==part]
+        available=bool(conn.execute('SELECT 1 FROM bible_dictionary_versions WHERE family=? AND is_active=1',(family,)).fetchone())
+        groups.append(dict(source=family,label=DICTIONARY_LABELS[family],available=available,entries=entries))
+    return groups
 
 
 def _entry_terms(entry):
@@ -1619,8 +2007,10 @@ def _dictionary_preview_block(block,limit=360):
             runs.append({**run,'text':run['text'][:limit-used]})
         truncated=True;break
     if truncated:runs.append(dict(type='text',text='…',marks=[]))
-    return dict(type='paragraph',text=block['text'][:limit]+('…' if truncated else ''),runs=runs,
-        references=[r for r in block.get('references',[]) if r['end']<=limit])
+    return dict(**{k:v for k,v in block.items() if k not in ('type','text','runs','references','dictionary_links')},
+        type='paragraph',text=block['text'][:limit]+('…' if truncated else ''),runs=runs,
+        references=[r for r in block.get('references',[]) if r['end']<=limit],
+        dictionary_links=[r for r in block.get('dictionary_links',[]) if r['end']<=limit])
 
 
 def contextual_dictionary_study(conn,token):
@@ -1693,6 +2083,27 @@ def contextual_dictionary_study(conn,token):
         explanation='Dictionary explanations, not a verified NIV word alignment. Verse references and STEP identifiers help narrow the possibilities.')
 
 
+def _expository_block(element,filename,archive,assets,css,family):
+    block=_resource_block(element,filename,archive,assets,css)
+    # Mounce's images are inline Hebrew/Greek letters and diacritics, rather
+    # than illustrations. Preserve their relative sizes as the font changes.
+    block.pop('illustration',None)
+    images=iter(node for node in element.iter() if _tag(node)=='img')
+    for run in block.get('runs',[]):
+        run['marks']=list(dict.fromkeys(run.get('marks',[])))
+        if run['type']=='image':
+            image=next(images);asset=assets[_epub_target(filename,image.get('src',''))]
+            run['height_em']=round(max(.15,min(3,asset['height']/16)),4)
+    style={}
+    for cls in element.get('class','').split():style.update(css.get(cls,{}))
+    indent=style.get('text-indent','')
+    if re.fullmatch(r'-?\d+(?:\.\d+)?%',indent):
+        block.setdefault('presentation',{})['indent_percent']=max(-10,min(15,float(indent[:-1])))
+    block['dictionary_style']=('testament' if block['text'] in ('Old Testament','New Testament') else
+        'section' if block['type']=='heading' else 'numbered' if re.match(r'^(?:\d+\.|\(\d+\))\s',block['text']) else 'paragraph')
+    return block
+
+
 def parse_dictionary_epub(data, family):
     if family not in {'mounce', 'vine'}:
         raise SyncError('Unsupported dictionary source.')
@@ -1707,6 +2118,7 @@ def parse_dictionary_epub(data, family):
             entries.append(current)
         current = None
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        css=_resource_css(archive)
         for filename, content in _epub_documents(data):
             root = _xml(content)
             if family == 'vine':
@@ -1728,7 +2140,7 @@ def parse_dictionary_epub(data, family):
                                        headword=_text(''.join(paragraph.itertext())),
                                        section='Expository dictionary', language=language, blocks=[])
                     elif current and paragraph.attrib.get('class') != 'ah':
-                        block = _dictionary_block(paragraph, filename, archive, assets)
+                        block = _expository_block(paragraph, filename, archive, assets,css,family)
                         if block['text'].strip():
                             current['blocks'].append(block)
             else:
@@ -1756,7 +2168,7 @@ def parse_dictionary_epub(data, family):
                         current = dict(family=family, locator=filename+'#p'+str(ordinal), headword=headword,
                                        section=section, language='' if is_main else language, blocks=[])
                     if current and not is_main:
-                        block = _dictionary_block(paragraph, filename, archive, assets)
+                        block = _expository_block(paragraph, filename, archive, assets,css,family)
                         if block['text'].strip():
                             current['blocks'].append(block)
                     if section and paragraph.attrib.get('id') in {'about', 'publisher'}:
@@ -1766,20 +2178,294 @@ def parse_dictionary_epub(data, family):
         finish()
     if not entries:
         raise SyncError('No supported ' + family.title() + ' dictionary entries were found.')
-    return dict(entries=entries, assets=assets)
+    return dict(entries=entries, assets=assets,presentation_version=DICTIONARY_PRESENTATION_VERSION)
 
 
-def search_dictionaries(conn, query, offset=0, family=None):
+def _thompson_named_topics(conn, query):
+    """Find printed headings, excluding words that occur only in quoted verses."""
+    if conn.execute('PRAGMA user_version').fetchone()[0]<4: return []
+    term=normalize_term(query)
+    if len(term)<3: return []
+    pattern=re.compile(r'(?<!\w)'+re.escape(term)+r'(?!\w)',re.I)
+    rows=conn.execute('''SELECT t.* FROM bible_chain_topics t JOIN bible_editions e ON e.id=t.edition_id
+        JOIN bible_import_runs r ON r.id=e.import_run_id JOIN bible_edition_details d ON d.edition_id=e.id
+        WHERE e.translation='NIV' AND e.is_active=1 AND e.status='ready' AND r.status='validated'
+        AND d.source_kind='thompson_pdf' AND (instr(lower(t.content_json),?)>0 OR instr(lower(t.title),?)>0)
+        ORDER BY t.topic_key,t.id''',(term,term)).fetchall()
+    matches=[]
+    for row in rows:
+        blocks=json.loads(row['content_json'])
+        headings=[(-1,row['title'])]+[(i,b['text']) for i,b in enumerate(blocks) if b['type']=='heading']
+        for index,label in headings:
+            label=re.sub(r'^\s*(?:\d+|[a-z])[.)]\s+','',label,flags=re.I).strip(' ,.;')
+            aliases=[normalize_term(part) for part in label.split('/')]
+            if not any(pattern.search(alias) for alias in aliases): continue
+            end=next((i for i in range(index+1,len(blocks)) if blocks[i]['type']=='heading'),len(blocks)) if index>=0 else len(blocks)
+            excerpt=blocks[index:end] if index>=0 else blocks
+            matches.append(dict(headword=label,aliases=aliases,blocks=excerpt,related=[],topic_id=row['id'],
+                topic_key=row['topic_key'],source_page=row['source_page'],
+                source_label='Thompson Chain-Reference Bible · '+row['title']+' · '+row['topic_key']+' · PDF page '+str(row['source_page'])))
+            # A matching topic title already includes all its printed subsections.
+            if index<0: break
+    return matches
+
+
+def dictionary_lookup_phrase(conn, token, family=None):
+    """Resolve a clicked component using phrases explicitly named by the sources."""
+    words=conn.execute('SELECT * FROM bible_tokens WHERE verse_id=? ORDER BY token_index',(token['verse_id'],)).fetchall()
+    position=next(i for i,word in enumerate(words) if word['token_index']==token['token_index'])
+    verse=conn.execute('SELECT text FROM bible_verses WHERE id=?',(token['verse_id'],)).fetchone()[0]
+    candidates={}
+    for length in range(2,5):
+        for first in range(max(0,position-length+1),min(position+1,len(words)-length+1)):
+            span=words[first:first+length]
+            if any(not re.fullmatch(r'\s+',verse[a['end_offset']:b['start_offset']]) for a,b in zip(span,span[1:])): continue
+            phrase=verse[span[0]['start_offset']:span[-1]['end_offset']]
+            if len(phrase)<=100: candidates[normalize_term(phrase)]=(phrase,[w['token_index'] for w in span])
+    if not candidates: return token['text'],[token['token_index']]
+    printed=set()
+    if conn.execute('PRAGMA user_version').fetchone()[0]>=2:
+        families=(family,) if family else ('harper','mounce','vine')
+        printed={r[0] for r in conn.execute('''SELECT DISTINCT t.term FROM bible_dictionary_terms t
+            JOIN bible_dictionary_entries e ON e.id=t.entry_id JOIN bible_dictionary_versions d ON d.id=e.version_id
+            JOIN bible_import_runs r ON r.id=d.import_run_id WHERE t.kind='headword' AND d.family IN ('''+','.join('?' for _ in families)+''')
+            AND d.is_active=1 AND r.status='validated' AND t.term IN ('''+','.join('?' for _ in candidates)+')',(*families,*candidates))}
+    if not family:
+        for topic in _thompson_named_topics(conn,token['text']): printed.update(topic['aliases'])
+    matches=[value for term,value in candidates.items() if term in printed]
+    return max(matches,key=lambda match:len(match[1])) if matches else (token['text'],[token['token_index']])
+
+
+def _native_spelling_suggestions(conn,version_id,query):
+    """Dictionary-backed spellings, never an asserted morphological analysis."""
+    term=normalize_term(query)
+    if len(term)<4 or ' ' in term:return []
+    rows=conn.execute('''SELECT t.term,MIN(e.preview) AS preview,
+        MAX(CASE WHEN e.section='name' THEN 1 ELSE 0 END) AS named FROM bible_dictionary_terms t
+        JOIN bible_dictionary_entries e ON e.id=t.entry_id WHERE e.version_id=? AND t.kind='headword' AND t.term!=?
+        AND ((length(t.term)>=4 AND length(t.term)*2>=? AND instr(?,t.term)>0)
+            OR (abs(length(t.term)-?)<=1 AND substr(t.term,1,1)=? AND substr(t.term,-1)=?)) GROUP BY t.term''',
+        (version_id,term,len(term),term,len(term),term[:1],term[-1:])).fetchall()
+    suggestions=[]
+    for row in rows:
+        candidate=row['term']
+        if candidate in term:
+            if not (term.startswith(candidate) or term.endswith(candidate)):continue
+            score=(0,-len(candidate))
+        else:
+            short,long=sorted((term,candidate),key=len)
+            if len(short)==len(long):close=sum(a!=b for a,b in zip(short,long))==1
+            else:
+                i=next((i for i,(a,b) in enumerate(zip(short,long)) if a!=b),len(short))
+                close=short[i:]==long[i+1:]
+            if not close:continue
+            score=(1,0 if query[:1].isupper() and row['named'] else 1,abs(len(candidate)-len(term)))
+        suggestions.append((score,candidate,row['preview'][:140]))
+    return [dict(word=word,preview=preview) for _,word,preview in sorted(suggestions)[:6]]
+
+
+def native_dictionary_study(conn,query,translation):
+    """Native headwords/forms first; English meanings require the reader's choice."""
+    family=NATIVE_DICTIONARY_FAMILIES[translation]
+    result=dict(query=query,translation=translation,input_language=DICTIONARY_LABELS[family],
+        verified=False,result_type='native_dictionary',sources=[],translations=[],accuracy_notice=NATIVE_DICTIONARY_NOTICE,
+        dictionary=dict(source=family,label=DICTIONARY_LABELS[family],available=False,entries=[]),suggestions=[])
+    if conn.execute('PRAGMA user_version').fetchone()[0]<8:return result
+    version=conn.execute('''SELECT d.id FROM bible_dictionary_versions d JOIN bible_import_runs r ON r.id=d.import_run_id
+        WHERE d.family=? AND d.is_active=1 AND r.status='validated' ''',(family,)).fetchone()
+    if not version:return result
+    result['dictionary']['available']=True
+    rows=conn.execute('''SELECT DISTINCT e.* FROM bible_dictionary_terms t JOIN bible_dictionary_entries e ON e.id=t.entry_id
+        WHERE e.version_id=? AND t.kind='headword' AND t.term=?
+        ORDER BY CASE WHEN lower(e.headword)=lower(?) THEN 0 ELSE 1 END,e.id LIMIT 20''',
+        (version[0],normalize_term(query),query)).fetchall()
+    english_parts={}
+    for row in rows:
+        blocks=json.loads(row['content_json']);native_part=_dictionary_part(row['section']);choices=[];seen=set()
+        for block in blocks:
+            if block.get('source_quote'):continue
+            for equivalent in _gloss_equivalents(block['text']):
+                if equivalent.startswith('be '):equivalent=equivalent[3:]
+                if (equivalent in seen or len(equivalent)>80 or len(equivalent.split())>6
+                        or not re.fullmatch(r"[a-z]+(?:[ ’'-][a-z]+)*",equivalent)
+                        or equivalent in {'a','an','the','and','or','to'}
+                        or re.search(r'\b(?:form|tense|plural|singular|inflection|spelling) of\b',equivalent)):continue
+                seen.add(equivalent)
+                if equivalent not in english_parts:english_parts[equivalent]=_query_source_parts(conn,equivalent)
+                parts=english_parts[equivalent]
+                part=next(iter(parts)) if len(parts)==1 else native_part if native_part in parts else 'all'
+                choices.append(dict(word=equivalent,part=part,meaning=block['text']))
+                if len(choices)>=8:break
+            if len(choices)>=8:break
+        result['dictionary']['entries'].append(dict(id=row['id'],headword=row['headword'],section=row['section'],
+            language=row['language'],part=native_part,preview=row['preview'],preview_references=[],english_equivalents=choices,
+            matched_form=query,is_recorded_form=normalize_term(row['headword'])!=normalize_term(query)))
+    if not rows:result['suggestions']=_native_spelling_suggestions(conn,version[0],query)
+    return result
+
+
+def _dictionary_article_mentions(conn,version_id,query,offset):
+    term=normalize_term(query)
+    if len(term)<3 or term in {'the','and','for','with','from','that','this','those','these','not','but','was','were','are','has','had','have'}:
+        return [],None
+    variants=english_word_forms(query)
+    pattern=re.compile(r'(?<!\w)(?:'+'|'.join(r'\s+'.join(re.escape(part) for part in variant.split()) for variant in variants)+r')(?!\w)',re.I)
+    candidates=[]
+    for row in conn.execute('''SELECT id,headword,section,language,plain_text FROM bible_dictionary_entries
+        WHERE version_id=? AND ('''+ ' OR '.join('instr(lower(plain_text),?)>0' for _ in variants)+
+        ') ORDER BY length(plain_text),id',(version_id,*variants)):
+        match=pattern.search(row['plain_text'])
+        if not match: continue
+        text=row['plain_text'];first=max(0,match.start()-100)
+        if first: first=text.find(' ',first,match.start())+1 or first
+        last=min(len(text),max(first+360,match.end()))
+        if last<len(text):
+            boundary=text.rfind(' ',match.end(),last)
+            if boundary>=match.end(): last=boundary
+        preview=('…' if first else '')+text[first:last].strip()+('…' if last<len(text) else '')
+        candidates.append(dict(id=row['id'],headword=row['headword'],section=row['section'],language=row['language'],
+            preview=preview,preview_references=scripture_references(preview),match_type='article_text',matched_query=query))
+    page=candidates[offset:offset+8]
+    for entry in page:
+        entry['preview_block']=_dictionary_navigation_blocks(conn,version_id,
+            [dict(type='paragraph',text=entry['preview'],references=entry['preview_references'])],entry['id'])[0]
+    return page,offset+8 if len(candidates)>offset+8 else None
+
+
+WORD_STUDY_PARTS = {'all', 'noun', 'name', 'verb', 'adjective', 'adverb', 'grammar'}
+
+
+def _dictionary_part(label):
+    """Normalize only grammatical labels printed by a source, never prose mentions."""
+    label=normalize_term(label).strip(' .:')
+    return {'noun':'noun','nouns':'noun','n':'noun','proper noun':'name','name':'name',
+        'verb':'verb','verbs':'verb','v':'verb','participle':'verb','participles':'verb',
+        'adj':'adjective','adjective':'adjective','adjectives':'adjective',
+        'adv':'adverb','adverb':'adverb','adverbs':'adverb',
+        'prep':'grammar','preposition':'grammar','prepositions':'grammar','particle':'grammar',
+        'particles':'grammar','pronoun':'grammar','pronouns':'grammar','conjunction':'grammar',
+        'conjunctions':'grammar','article':'grammar','determiner':'grammar','interjection':'grammar'}.get(label)
+
+
+def _definition_part(blocks, start):
+    if re.match(r'^(?:Notes?\s*:|For\s+)',blocks[start]['text'],re.I):return None
+    explicit=re.match(r'^(Proper noun|Noun|Verb|Adjective|Adverb|Preposition|Particle|Pronoun|Conjunction|Article)\s*:',
+                      blocks[start]['text'],re.I)
+    if explicit: return _dictionary_part(explicit[1])
+    # Vine's A. Nouns / B. Verbs headings govern the following lexical senses.
+    for block in reversed(blocks[:start+1]):
+        if block['type']!='heading': continue
+        label=re.sub(r'^[A-Z][.)]\s*','',block['text']).strip(' .:')
+        part=_dictionary_part(label)
+        if part:return part
+        if block['text'] in ('Old Testament','New Testament'):break
+    return None
+
+
+def _dictionary_headword_matches(headword, forms):
+    # A component of a phrase ("love feasts", "money (love of)") is not its
+    # definition. Comma-separated synonyms and an initial "to" are explicit.
+    heading=normalize_term(headword)
+    if heading in forms:return True
+    aliases=[normalize_term(re.sub(r'^to\s+','',piece.strip(),flags=re.I)) for piece in re.split(r'[,;()]',headword)]
+    return any(alias in forms and alias not in {'the','a','an','of','to','and','or'} for alias in aliases)
+
+
+def _query_source_parts(conn, query):
+    forms=english_word_forms(query); parts=set()
+    if conn.execute('PRAGMA user_version').fetchone()[0]<4:return parts
+    for row in conn.execute('''SELECT DISTINCT e.headword,e.content_json,s.block_start FROM bible_dictionary_terms t
+        JOIN bible_dictionary_entries e ON e.id=t.entry_id JOIN bible_dictionary_versions d ON d.id=e.version_id
+        JOIN bible_import_runs r ON r.id=d.import_run_id JOIN bible_dictionary_senses s ON s.entry_id=e.id
+        WHERE t.kind='headword' AND t.term IN ('''+','.join('?' for _ in forms)+''')
+        AND d.family IN ('mounce','vine') AND d.is_active=1 AND r.status='validated' ''',forms):
+        if not _dictionary_headword_matches(row['headword'],forms):continue
+        part=_definition_part(json.loads(row['content_json']),row['block_start'])
+        if part:parts.add(part)
+    if not parts:
+        # Harper prints comma-separated aliases as one heading, including
+        # "jewels, jewelry". Recognize the complete aliases in existing imports.
+        for row in conn.execute('''SELECT e.headword FROM bible_dictionary_entries e
+            JOIN bible_dictionary_versions d ON d.id=e.version_id JOIN bible_import_runs r ON r.id=d.import_run_id
+            WHERE d.family='harper' AND d.is_active=1 AND r.status='validated' AND ('''+
+            ' OR '.join('instr(lower(e.headword),?)>0' for _ in forms)+')',forms):
+            if _dictionary_headword_matches(row['headword'],forms):parts.add('noun');break
+    return parts
+
+
+def word_study_type(conn, query, token=None, indices=None, people=None, requested=None):
+    """Conservative English context rules; source morphology is not NIV alignment.
+
+    Ambiguous words stay unfiltered. The reader can always choose a word type.
+    """
+    if requested and requested!='auto':return dict(part=requested,basis='chosen')
+    word=normalize_term(query)
+    grammar={
+        'article':{'a','an','the'},
+        'pronoun':{'i','me','my','mine','you','your','yours','he','him','his','she','her','hers','it','its','we','us','our','ours','they','them','their','theirs','who','whom','whose','myself','yourself','himself','herself','itself','ourselves','themselves'},
+        'conjunction':{'and','but','or','nor','because','although','unless','if','than','whether'},
+        'preposition':{'of','in','on','at','by','with','from','into','upon','through','between','among','against','without','under','over'},
+        'determiner':{'this','that','these','those','each','every','some','any'},
+        'auxiliary verb':{'am','is','are','was','were','be','been','being','have','has','had','do','does','did','will','would','shall','should','can','could','may','might','must'},
+        'preposition / infinitive marker':{'to'},
+    }
+    for kind,words in grammar.items():
+        if word in words:return dict(part='grammar',grammar_kind=kind,basis='English grammar')
+    if people and people.get('people') and query[:1].isupper():return dict(part='name',basis='named person in source')
+    parts=_query_source_parts(conn,query)
+    previous=[];following=[]
+    if token is not None:
+        words=conn.execute('SELECT token_index,text FROM bible_tokens WHERE verse_id=? ORDER BY token_index',(token['verse_id'],)).fetchall()
+        first,last=min(indices or [token['token_index']]),max(indices or [token['token_index']])
+        previous=[normalize_term(w['text']) for w in words if w['token_index']<first][-3:]
+        following=[normalize_term(w['text']) for w in words if w['token_index']>last][:2]
+    before=previous[-1] if previous else '';after=following[0] if following else ''
+    # Participles before a known noun describe it ("sparkling jewels"). After
+    # an auxiliary they normally form a verb ("was comforted").
+    if (((word.endswith('ing') and len(word)>5) or (word.endswith('ed') and len(word)>4)) and token is not None
+            and parts!={'noun'} and 'name' not in parts):
+        next_parts=_query_source_parts(conn,after) if after else set()
+        function_words=set().union(*grammar.values())
+        next_noun=after not in function_words and ('noun' in next_parts or (after and not next_parts and conn.execute('''SELECT 1 FROM bible_dictionary_terms t
+            JOIN bible_dictionary_entries e ON e.id=t.entry_id JOIN bible_dictionary_versions d ON d.id=e.version_id
+            JOIN bible_import_runs r ON r.id=d.import_run_id WHERE t.term=? AND t.kind='headword'
+            AND d.family='harper' AND d.is_active=1 AND r.status='validated' LIMIT 1''',(after,)).fetchone()))
+        auxiliaries=grammar['auxiliary verb']|{'not','never'}
+        if next_noun and not any(w in auxiliaries for w in previous[-2:]):
+            return dict(part='adjective',basis='suggested by English verse context')
+        if before in grammar['article']|grammar['preposition'] and word.endswith('ing'):
+            return dict(part='noun',basis='suggested by English verse context')
+        if 'adjective' not in parts or any(w in auxiliaries for w in previous[-2:]):
+            return dict(part='verb',basis='suggested by English word form and verse context')
+    if token is not None and 'verb' in parts:
+        if before=='to' or before in {'i','you','he','she','we','they','will','would','shall','should','must','can','could','may','might','not'}:
+            return dict(part='verb',basis='suggested by English verse context')
+        if before in grammar['article']|{'my','your','his','her','our','their','of'} and 'noun' in parts:
+            return dict(part='noun',basis='suggested by English verse context')
+        if before in {'is','are','was','were'} and 'noun' in parts and 'adjective' not in parts:
+            return dict(part='noun',basis='suggested by English verse context')
+        if after in {'me','you','him','her','us','them','one','each'} and before not in grammar['article']:
+            return dict(part='verb',basis='suggested by English verse context')
+    if len(parts)==1:return dict(part=next(iter(parts)),basis='dictionary word type')
+    if not parts and ' ' in word and _thompson_named_topics(conn,word):
+        return dict(part='noun',basis='named background topic')
+    return dict(part='all',basis='word type is ambiguous' if parts else 'word type is not specified by the source')
+
+
+def search_dictionaries(conn, query, offset=0, family=None, *, word_type=None, related=False):
     query = _text(query)[:100]
+    word_type=word_type or word_study_type(conn,query)
+    part=word_type['part']; filter_part=part if part!='all' else None
     groups = []
     ready = conn.execute('PRAGMA user_version').fetchone()[0] >= 2
     term = normalize_term(query)
     strong = re.fullmatch(r'([HG])\s*0*(\d+)', query, re.I)
     gk = re.fullmatch(r'GK\s*[: -]?\s*(?:(Hebrew|Greek|H|G)\s*[: -]?\s*)?0*(\d+)', query, re.I)
-    for source in ('mounce', 'vine'):
+    for source in ('harper', 'vine', 'mounce'):
         if family and family != source:
             continue
-        group = dict(source=source, label='Mounce' if source=='mounce' else 'Vine', entries=[], next_offset=None, available=False)
+        group = dict(source=source, label=DICTIONARY_LABELS[source], entries=[], other_entries=[], related_entries=[],
+                     next_offset=None, related_next_offset=None, available=False)
         groups.append(group)
         if not ready:
             continue
@@ -1788,6 +2474,9 @@ def search_dictionaries(conn, query, offset=0, family=None):
         if not version:
             continue
         group['available'] = True
+        if related and part!='grammar':
+            group['related_entries'],group['related_next_offset']=_dictionary_article_mentions(conn,version[0],query,offset)
+            continue
         parameters = [version[0]]
         if strong or gk:
             match = strong or gk
@@ -1796,7 +2485,7 @@ def search_dictionaries(conn, query, offset=0, family=None):
                 AND i.scheme=? AND i.number=? AND (? IS NULL OR i.language=?))'''
             parameters.extend(['strong' if strong else 'gk', int(match[2]), language, language])
         else:
-            variants = [term]
+            variants = english_word_forms(query)
             # English spelling variants only select dictionary headwords, never
             # original-language mappings. Always show the source's actual heading.
             if re.fullmatch('[a-z]{4,}', term):
@@ -1805,16 +2494,56 @@ def search_dictionaries(conn, query, offset=0, family=None):
                 elif term.endswith('s') and not term.endswith('ss'):
                     variants.extend([term[:-1], term[:-2] if term.endswith('es') else term[:-1]])
             variants = list(dict.fromkeys(variants))
-            where = 'EXISTS(SELECT 1 FROM bible_dictionary_terms t WHERE t.entry_id=e.id AND t.term IN ('+','.join('?' for _ in variants)+'))'
-            parameters.extend(variants)
-        rows = conn.execute('''SELECT e.id,e.headword,e.section,e.language,e.preview FROM bible_dictionary_entries e
+            where = '''EXISTS(SELECT 1 FROM bible_dictionary_terms t WHERE t.entry_id=e.id AND
+                ((t.kind='headword' AND t.term IN ('''+','.join('?' for _ in variants)+''')) OR t.term=?))'''
+            parameters.extend([*variants,term])
+            if source=='harper':
+                where='('+where+' OR ('+' OR '.join('instr(lower(e.headword),?)>0' for _ in variants)+'))'
+                parameters.extend(variants)
+        rows = conn.execute('''SELECT e.id,e.headword,e.section,e.language,e.preview,e.content_json FROM bible_dictionary_entries e
             WHERE e.version_id=? AND ''' + where + ''' ORDER BY CASE WHEN lower(e.headword)=? THEN 0 ELSE 1 END,
             CASE WHEN EXISTS(SELECT 1 FROM bible_dictionary_terms t WHERE t.entry_id=e.id AND t.term=? AND t.kind='headword') THEN 0 ELSE 1 END,
-            CASE WHEN e.section='Expository dictionary' THEN 0 ELSE 1 END,e.id LIMIT 9 OFFSET ?''',
-                            (*parameters, term, term, offset)).fetchall()
-        group['entries'] = [{**dict(row), 'preview_references': scripture_references(row['preview'])} for row in rows[:8]]
-        group['next_offset'] = offset+8 if len(rows)>8 else None
-    return dict(query=query, sources=groups, message='Dictionary search results; these are not exact NIV original-language matches.')
+            CASE WHEN e.section='Expository dictionary' THEN 0 ELSE 1 END,e.id''',
+                            (*parameters, term, term)).fetchall()
+        primary=[];other=[]
+        for row in rows:
+            blocks=json.loads(row['content_json'])
+            if not strong and not gk and not _dictionary_headword_matches(row['headword'],variants):
+                # An exact transliteration/original spelling must be in a lexical
+                # introduction, not an italicized "see comfort" cross-reference.
+                senses=list(dictionary_senses(dict(family=source,section=row['section'],language=row['language'],blocks=blocks)))
+                intros=[re.split(r'\bGK\s*\d|\b\d+x\b|\)\s*,?',blocks[s['block_start']]['text'],maxsplit=1)[0] for s in senses]
+                if not any(re.search(r'(?<![\w\ufffc])'+re.escape(term)+r'(?![\w\ufffc])',normalize_term(intro)) for intro in intros):continue
+            blocks=_dictionary_navigation_blocks(conn,version[0],blocks,row['id'])
+            entry={k:v for k,v in dict(row).items() if k!='content_json'}
+            entry['source']=source
+            entry['preview_references']=scripture_references(row['preview'])
+            if blocks:entry['preview_block']=_dictionary_preview_block(blocks[0])
+            # Background dictionaries describe people, places, things and concepts.
+            # A headword can also have lexical senses in Mounce and Vine.
+            if source=='harper':
+                entry['part']='name' if part=='name' else 'noun'
+                (primary if filter_part in (None,'noun','name') else other).append(entry)
+                continue
+            if source in ('mounce','vine'):
+                # The source article is the reading unit. Its own testament and
+                # grammatical divisions remain together in their printed order.
+                # Word type continues to guide equivalents, not split articles.
+                entry['full_article']=True
+                first=next((b for b in blocks if b['type']!='heading'),blocks[0] if blocks else None)
+                if first:entry['preview_block']=_dictionary_preview_block(first)
+                primary.append(entry)
+                continue
+            entry['part']=None
+            (primary if not filter_part else other).append(entry)
+        group['entries']=primary[offset:offset+8]
+        group['other_entries']=other[:8] if offset==0 else []
+        group['next_offset'] = offset+8 if len(primary)>offset+8 else None
+        if not strong and not gk and not primary and not other and part!='grammar':
+            group['related_entries'],group['related_next_offset']=_dictionary_article_mentions(conn,version[0],query,offset)
+    return dict(query=query, sources=groups,word_type=word_type,
+        translations=reverse_dictionary_matches(conn,query,filter_part),
+        message='Dictionary search results; these are not exact NIV original-language matches.')
 
 
 STEP_BOOK_IDS = {name: i for i, name in enumerate(('Gen Exo Lev Num Deu Jos Jdg Rut 1Sa 2Sa 1Ki 2Ki '
@@ -2515,7 +3244,7 @@ def sync_translation_sources(path, folder_id, progress, *, drive=None, fetch=Non
 
 
 def _download_source(drive, source):
-    limit = 96 * 1024 * 1024
+    limit = (256 if source.get('name','').lower().endswith('.jsonl') else 96) * 1024 * 1024
     file_id = str(source['drive_file_id'])
     if not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', file_id) or int(source.get('size') or 0) > limit:
         raise SyncError('A source file is invalid or exceeds the supported download size.')
@@ -2526,7 +3255,7 @@ def _download_source(drive, source):
         for chunk in response.iter_content(1024 * 1024):
             data.extend(chunk)
             if len(data) > limit:
-                raise SyncError('An EPUB download exceeds the supported size.')
+                raise SyncError('A study source download exceeds the supported size.')
     return bytes(data)
 
 
@@ -2663,14 +3392,19 @@ def _official_drive_sources(drive, folder_id=''):
     selected, ignored = {}, []
     for item in files:
         name = item.get('name', '')
-        if not name.lower().endswith(('.epub','.pdf')):
+        if not name.lower().endswith(('.epub','.pdf','.jsonl','.zip')):
             ignored.append(name)
             continue
         normalized = re.sub(r'[^a-z0-9]+', ' ', name.casefold()).strip()
         thompson=name.lower().endswith('.pdf') and all(term in normalized for term in ('niv','thompson','chain reference'))
-        family = ('NIV' if normalized == 'holy bible niv epub' or thompson else
-                  'mounce' if normalized.startswith('mounce') and 'expository dictionary' in normalized else
-                  'vine' if normalized.startswith('vine') and 'expository dictionary' in normalized else '')
+        family = ('illustrations' if name.casefold()=='sermon_illustrations_codex_v2.zip' else
+                  'NIV' if normalized == 'holy bible niv epub' or thompson else
+                  'mounce' if normalized.startswith('mounce') and 'expository dictionary' in normalized and name.lower().endswith('.epub') else
+                  'vine' if normalized.startswith('vine') and 'expository dictionary' in normalized and name.lower().endswith('.epub') else
+                  'harper' if 'harpercollins' in normalized and 'bible dictionary' in normalized and name.lower().endswith('.epub') else
+                  'tagalog' if name=='kaikki.org-dictionary-Tagalog.jsonl' else
+                  'cebuano' if name=='kaikki.org-dictionary-Cebuano.jsonl' else
+                  'be:'+item['id'] if normalized.startswith('be ') and 'wiersbe' in normalized and name.lower().endswith('.epub') else '')
         if not family:
             ignored.append(name)
             continue
@@ -2691,6 +3425,11 @@ def _official_drive_sources(drive, folder_id=''):
 
 def _validate_dictionary(parsed, family):
     entries = parsed['entries']
+    if family in ('harper','tagalog','cebuano'):
+        minimum={'harper':3000,'tagalog':30000,'cebuano':15000}[family]
+        if len(entries)<minimum or len({e['locator'] for e in entries})!=len(entries):
+            raise SyncError(f'{family.title()} validation failed; existing data was kept.')
+        return
     if len(entries) < (13000 if family == 'mounce' else 3000):
         raise SyncError(f'{family.title()} validation found fewer entries than expected. Existing data was kept.')
     sections = {entry['section'] for entry in entries}
@@ -2712,7 +3451,12 @@ def _validate_niv_source(content):
 def _active_source_hash(conn, family):
     if family!='NIV' and conn.execute('PRAGMA user_version').fetchone()[0]<2:
         return ''
-    if family == 'NIV':
+    if family.startswith('be:'):
+        if conn.execute('PRAGMA user_version').fetchone()[0]<8: return ''
+        row=conn.execute('''SELECT s.sha256 FROM bible_commentary_versions v JOIN bible_sources s ON s.id=v.source_id
+            JOIN bible_import_runs r ON r.id=v.import_run_id WHERE v.is_active=1 AND r.status='validated' AND s.source_path=?''',
+            ('drive:'+family[3:],)).fetchone()
+    elif family == 'NIV':
         row = conn.execute('''SELECT s.sha256 FROM bible_editions e JOIN bible_sources s ON s.id=e.source_id
             JOIN bible_import_runs r ON r.id=e.import_run_id WHERE e.translation='NIV' AND e.is_active=1
             AND e.status='ready' AND r.status='validated' ''').fetchone()
@@ -2720,6 +3464,36 @@ def _active_source_hash(conn, family):
         row = conn.execute('''SELECT s.sha256 FROM bible_dictionary_versions d JOIN bible_sources s ON s.id=d.source_id
             JOIN bible_import_runs r ON r.id=d.import_run_id WHERE d.family=? AND d.is_active=1 AND r.status='validated' ''', (family,)).fetchone()
     return row[0] if row else ''
+
+
+def _dictionary_text_identity(blocks):
+    """Immutable article content; source typography and citation links may refresh."""
+    result=copy.deepcopy(blocks)
+    for block in result:
+        for key in ('presentation','dictionary_style','illustration','references'):block.pop(key,None)
+        for run in block.get('runs',[]):
+            run.pop('marks',None);run.pop('height_em',None);run.pop('epub_target',None)
+    return json.dumps(result,ensure_ascii=False,sort_keys=True)
+
+
+def _refresh_dictionary_presentation(conn,version_id,family,digest,content):
+    if content.get('presentation_version')!=DICTIONARY_PRESENTATION_VERSION:return 0
+    rows=conn.execute('''SELECT id,locator,headword,section,language,content_json,plain_text
+        FROM bible_dictionary_entries WHERE version_id=?''',(version_id,)).fetchall()
+    indexed={row[1]:row for row in rows}
+    if len(indexed)!=len(content['entries']):raise SyncError('Dictionary formatting validation found different article boundaries. Existing entries were kept.')
+    changed=0
+    for entry in content['entries']:
+        row=indexed.get(entry['locator'])
+        if (not row or tuple(row[2:5])!=(entry['headword'],entry['section'],entry['language'])
+                or row[6]!=entry['plain_text'] or _dictionary_text_identity(json.loads(row[5]))!=_dictionary_text_identity(entry['blocks'])):
+            raise SyncError('Dictionary formatting changed source text or identifiers. Existing entries were kept.')
+        serialized=json.dumps(entry['blocks'],ensure_ascii=False)
+        if row[5]!=serialized:
+            conn.execute('UPDATE bible_dictionary_entries SET content_json=? WHERE id=?',(serialized,row[0]));changed+=1
+    conn.execute('INSERT INTO bible_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        ('dictionary_presentation:'+family,json.dumps(dict(version=DICTIONARY_PRESENTATION_VERSION,sha256=digest))))
+    return changed
 
 
 def _sync_preserved_state(conn,baseline=None):
@@ -2730,7 +3504,16 @@ def _sync_preserved_state(conn,baseline=None):
                           'bible_dictionary_assets','bible_dictionary_entry_assets','bible_lexicon','bible_concordance')
             or row[0].startswith(('bible_original_','bible_niv_alignment'))]
         baseline={name:(conn.execute(f'SELECT COALESCE(MAX(rowid),0) FROM {name}').fetchone()[0],0,'') for name in names}
-    return _step_preserved_state(conn,baseline)
+    result=_step_preserved_state(conn,{name:value for name,value in baseline.items() if name!='bible_dictionary_entries'})
+    if 'bible_dictionary_entries' in baseline:
+        limit=baseline['bible_dictionary_entries'][0];digest=hashlib.sha256();count=0
+        cursor=conn.execute('SELECT * FROM bible_dictionary_entries WHERE rowid<=? ORDER BY rowid',(limit,))
+        content_index=[column[0] for column in cursor.description].index('content_json')
+        for row in cursor:
+            values=list(row);values[content_index]=_dictionary_text_identity(json.loads(values[content_index]))
+            digest.update(repr(tuple(values)).encode('utf-8'));count+=1
+        result['bible_dictionary_entries']=(limit,count,digest.hexdigest())
+    return result
 
 
 def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, check_preservation=False):
@@ -2740,19 +3523,24 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('BEGIN IMMEDIATE')
         preserved=_sync_preserved_state(conn) if check_preservation else None
-        changed = False
+        changed = False;formatting_entries=0
         for family, content in parsed.items():
             source = selected[family]
             digest = source['sha256']
             if _active_source_hash(conn, family) == digest:
+                if family in ('mounce','vine'):
+                    version_id=conn.execute('SELECT id FROM bible_dictionary_versions WHERE family=? AND is_active=1',(family,)).fetchone()[0]
+                    updated=_refresh_dictionary_presentation(conn,version_id,family,digest,content)
+                    formatting_entries+=updated;changed|=bool(updated)
                 if family == 'NIV' and content.get('concordance'):
                     edition_id=conn.execute("SELECT id FROM bible_editions WHERE translation='NIV' AND is_active=1").fetchone()[0]
                     _publish_thompson_concordance(conn,edition_id,content['concordance'])
                     changed = True
                     if content.get('studies'):_publish_thompson_studies(conn,edition_id,content['studies'])
                 continue
-            conn.execute('''INSERT OR IGNORE INTO bible_sources(title,edition,sha256,source_path,attribution,created_at)
-                VALUES(?,?,?,?,?,?)''', (source['title'], family, digest, 'drive:' + source['drive_file_id'], source['title'], now))
+            conn.execute('''INSERT OR IGNORE INTO bible_sources(title,edition,sha256,source_path,attribution,rights_note,created_at)
+                VALUES(?,?,?,?,?,?,?)''', (source['title'], family, digest, 'drive:' + source['drive_file_id'],
+                source.get('attribution',source['title']),source.get('rights_note',''),now))
             source_id = conn.execute('SELECT id FROM bible_sources WHERE sha256=?', (digest,)).fetchone()[0]
             run_id = conn.execute("INSERT INTO bible_import_runs(source_id,status,started_at,finished_at) VALUES(?,'validated',?,?)", (source_id, now, now)).lastrowid
             changed = True
@@ -2798,11 +3586,29 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
                     if content.get('concordance'):
                         _publish_thompson_concordance(conn,edition_id,content['concordance'])
                     if content.get('studies'):_publish_thompson_studies(conn,edition_id,content['studies'])
+            elif family.startswith('be:'):
+                volume=content['volume_key']
+                conn.execute('UPDATE bible_commentary_versions SET is_active=0 WHERE volume_key=?',(volume,))
+                existing=conn.execute('SELECT id FROM bible_commentary_versions WHERE source_id=? AND volume_key=?',(source_id,volume)).fetchone()
+                if existing:
+                    conn.execute('UPDATE bible_commentary_versions SET is_active=1 WHERE id=?',(existing[0],))
+                    continue
+                version_id=conn.execute('''INSERT INTO bible_commentary_versions(source_id,import_run_id,volume_key,is_active)
+                    VALUES(?,?,?,1)''',(source_id,run_id,volume)).lastrowid
+                for asset in content['assets'].values():
+                    conn.execute('INSERT OR IGNORE INTO bible_dictionary_assets VALUES(?,?,?)',(asset['sha256'],asset['mime_type'],asset['data']))
+                    conn.execute('INSERT INTO bible_commentary_assets VALUES(?,?)',(version_id,asset['sha256']))
+                for ordinal,section in enumerate(content['sections'],1):
+                    conn.execute('''INSERT INTO bible_commentary_sections(version_id,ordinal,title,passage,ranges_json,content_json,plain_text,locator)
+                        VALUES(?,?,?,?,?,?,?,?)''',(version_id,ordinal,section['title'],section['passage'],json.dumps(section['ranges']),
+                        json.dumps(section['blocks'],ensure_ascii=False),section['text'],section['locator']))
             else:
                 existing = conn.execute('SELECT id FROM bible_dictionary_versions WHERE source_id=? AND family=?', (source_id, family)).fetchone()
                 conn.execute('UPDATE bible_dictionary_versions SET is_active=0 WHERE family=?', (family,))
                 if existing:
                     conn.execute('UPDATE bible_dictionary_versions SET is_active=1 WHERE id=?', (existing[0],))
+                    if family in ('mounce','vine'):
+                        formatting_entries+=_refresh_dictionary_presentation(conn,existing[0],family,digest,content)
                     continue
                 version_id = conn.execute('INSERT INTO bible_dictionary_versions(source_id,import_run_id,family,is_active) VALUES(?,?,?,1)', (source_id, run_id, family)).lastrowid
                 for asset in content['assets'].values():
@@ -2822,8 +3628,13 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
                     references = [ref for block in entry['blocks'] for ref in block['references']]
                     conn.executemany('''INSERT INTO bible_dictionary_references(entry_id,book_id,chapter,verse,end_chapter,end_verse,source_text)
                         VALUES(?,?,?,?,?,?,?) ON CONFLICT(entry_id,book_id,chapter,verse,end_chapter,end_verse) DO NOTHING''', ((entry_id, ref['book_id'], ref['chapter'], ref['verse'], ref['end_chapter'], ref['end_verse'], ref['source_text']) for ref in references))
-                    used = {run['asset'] for block in entry['blocks'] for run in block['runs'] if run['type'] == 'image'}
+                    used = _block_assets(entry['blocks'])
                     conn.executemany('INSERT INTO bible_dictionary_entry_assets(entry_id,sha256) VALUES(?,?)', ((entry_id, asset) for asset in used))
+                    conn.executemany('INSERT INTO bible_dictionary_gloss_terms(entry_id,term,weight) VALUES(?,?,?)',
+                        ((entry_id,term,weight) for term,weight in entry.get('gloss_terms',{}).items()))
+                if family in ('mounce','vine') and content.get('presentation_version')==DICTIONARY_PRESENTATION_VERSION:
+                    conn.execute('INSERT INTO bible_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                        ('dictionary_presentation:'+family,json.dumps(dict(version=DICTIONARY_PRESENTATION_VERSION,sha256=digest))))
         for family, source in selected.items():
             if source.get('sha256'):
                 conn.execute('INSERT INTO bible_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
@@ -2842,10 +3653,12 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
                 JOIN bible_editions e ON e.id=s.edition_id WHERE s.kind='book' AND e.is_active=1''').fetchone()[0]
             counts['person_profiles']=conn.execute('''SELECT COUNT(*) FROM bible_person_profiles p
                 JOIN bible_editions e ON e.id=p.edition_id WHERE e.is_active=1''').fetchone()[0]
-        for family in ('mounce', 'vine'):
+        for family in DICTIONARY_LABELS:
             counts[family+'_entries'] = conn.execute('SELECT COUNT(*) FROM bible_dictionary_entries e JOIN bible_dictionary_versions d ON d.id=e.version_id WHERE d.family=? AND d.is_active=1', (family,)).fetchone()[0]
+        counts['be_volumes']=conn.execute('SELECT COUNT(*) FROM bible_commentary_versions WHERE is_active=1').fetchone()[0]
+        counts['be_sections']=conn.execute('''SELECT COUNT(*) FROM bible_commentary_sections c JOIN bible_commentary_versions v ON v.id=c.version_id WHERE v.is_active=1''').fetchone()[0]
         report = dict(status='completed', message='Bible Study sync completed.' if changed else 'Sources are unchanged. Bible Study is already up to date.',
-                      counts=counts, warnings=warnings, updated_at=now)
+                      counts=counts, warnings=warnings, updated_at=now,formatting_entries=formatting_entries)
         conn.execute("INSERT INTO bible_metadata(key,value) VALUES('sync_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(report),))
         if preserved is not None and _sync_preserved_state(conn,preserved)!=preserved:
             raise SyncError('Validation detected a change to preserved Bible Study records. The update was rolled back.')
@@ -2893,7 +3706,31 @@ def _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress):
     return dict(**report,temporary_validation='passed',backup=str(backup) if backup else None)
 
 
-def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translation_folder_id=None):
+def purge_migrated_ai_sources(database_path, ai_database):
+    """Delete only successfully imported editions; PDFs outside the study folder survive."""
+    if not ai_database or not Path(ai_database).is_file(): return 0
+    with closing(sqlite3.connect(Path(database_path).resolve().as_uri()+'?mode=ro',uri=True)) as study:
+        if study.execute('PRAGMA user_version').fetchone()[0]<8: return 0
+        paths={r[0][6:] for r in study.execute('''SELECT DISTINCT s.source_path FROM bible_sources s
+            JOIN bible_import_runs r ON r.source_id=s.id WHERE r.status='validated' AND s.source_path LIKE 'drive:%'
+            AND (EXISTS(SELECT 1 FROM bible_dictionary_versions v WHERE v.source_id=s.id AND v.is_active=1)
+              OR EXISTS(SELECT 1 FROM bible_commentary_versions v WHERE v.source_id=s.id AND v.is_active=1)
+              OR EXISTS(SELECT 1 FROM bible_editions v WHERE v.source_id=s.id AND v.is_active=1))''')}
+        volumes={re.split(r'\s*[:(]',r[0],maxsplit=1)[0].strip().casefold() for r in study.execute('''SELECT s.title FROM bible_sources s
+            JOIN bible_commentary_versions v ON v.source_id=s.id WHERE v.is_active=1''')}
+    with closing(sqlite3.connect(Path(ai_database).resolve().as_uri()+'?mode=rw',uri=True,timeout=60)) as ai, ai:
+        tables={r[0] for r in ai.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'pij_library_documents' not in tables: return 0
+        ids=[(r[0],) for r in ai.execute("SELECT id,drive_file_id,title,author,format FROM pij_library_documents WHERE source_type='public_ebook'")
+             if r[1] in paths or (str(r[4] or '').casefold()=='epub' and 'wiersbe' in (r[3] or '').casefold()
+                 and re.split(r'\s*[:(]',r[2],maxsplit=1)[0].strip().casefold() in volumes)]
+        for table in ('pij_library_chunks_fts','pij_library_source_formats','pij_library_chunks'):
+            if table in tables: ai.executemany(f'DELETE FROM {table} WHERE document_id=?',ids)
+        ai.executemany('DELETE FROM pij_library_documents WHERE id=?',ids)
+        return len(ids)
+
+
+def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translation_folder_id=None, ai_database=None, illustration_database=None):
     """Independent Drive -> Bible Study SQLite sync; no AI/library DB dependency."""
     owned = drive is None
     drive = drive or resources.get_drive_session()
@@ -2904,13 +3741,34 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
             with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
                 stored = conn.execute("SELECT value FROM bible_metadata WHERE key='official_drive_folder'").fetchone()
         folder_id, selected, ignored = _official_drive_sources(drive, folder_id or (stored[0] if stored else ''))
+        illustration_source=selected.pop('illustrations',None)
+        illustration_report=None
+        if illustration_source:
+            illustration_path=illustration_database_path(path,illustration_database,protected_paths=(ai_database,))
+            progress('Validating the separate Sermon Illustrations library.')
+            same=False
+            if illustration_path.is_file():
+                with illustration_connection(illustration_path) as library:
+                    metadata=dict(library.execute('SELECT key,value FROM illustration_metadata'))
+                    same=(json.loads(metadata.get('source','{}')).get('fingerprint')==illustration_source['fingerprint']
+                        and bool(illustration_source['fingerprint'].get('modifiedTime'))
+                        and metadata.get('import_version')==str(ILLUSTRATION_IMPORT_VERSION))
+                    if same:illustration_report=dict(status='unchanged',**json.loads(metadata['report']))
+            if not same:
+                data=fetch(illustration_source) if fetch else _download_source(drive,illustration_source)
+                illustration_report=import_illustration_archive(illustration_path,data,source=illustration_source)
+        if not selected:
+            result=dict(status='completed',message='Sermon Illustrations library is ready.',
+                counts={k:v for k,v in (illustration_report or {}).items() if isinstance(v,int)},warnings=[])
+            if path.exists():_write_sync_status(path,result)
+            return result
         parsed, warnings = {}, []
         warnings.append('Dictionary matches are searches, not verified NIV original-language alignments.')
         warnings.append('Mounce images are preserved; image-only spellings are not guessed as Unicode.')
         warnings.append('Legacy KJV/Strong’s records and all personal records are retained.')
         if ignored:
             warnings.append(f'{len(ignored)} unsupported files or subfolders were skipped.')
-        for family in ('NIV', 'mounce', 'vine'):
+        for family in dict.fromkeys(('NIV', 'mounce', 'vine', *selected)):
             if family not in selected:
                 warnings.append(f'{family.title()} EPUB not found; any previous version was kept.')
                 continue
@@ -2922,6 +3780,10 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
                 old = json.loads(old[0]) if old else {}
                 unchanged = (source['fingerprint'].get('modifiedTime') and old.get('fingerprint') == source['fingerprint']
                              and old.get('sha256') == _active_source_hash(conn, family))
+                if unchanged and family in ('mounce','vine'):
+                    presentation=conn.execute('SELECT value FROM bible_metadata WHERE key=?',('dictionary_presentation:'+family,)).fetchone()
+                    presentation=json.loads(presentation[0]) if presentation else {}
+                    unchanged=(presentation.get('version')==DICTIONARY_PRESENTATION_VERSION and presentation.get('sha256')==old.get('sha256'))
                 if unchanged and source.get('thompson'):
                     unchanged = (conn.execute('PRAGMA user_version').fetchone()[0]>=5
                         and conn.execute('''SELECT 1 FROM bible_thompson_concordance c JOIN bible_editions e ON e.id=c.edition_id
@@ -2936,23 +3798,42 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
                 source['sha256'] = old['sha256']
                 progress(f'{family.title()} is unchanged; keeping its indexed version.')
                 continue
-            progress('Downloading and indexing ' + family.title() + '.')
+            progress('Downloading and indexing ' + source.get('name',family.title()) + '.')
             data = fetch(source) if fetch else _download_source(drive, source)
             source['sha256'] = hashlib.sha256(data).hexdigest()
             if family == 'NIV':
                 content = parse_thompson_pdf(data,progress) if source.get('thompson') else parse_niv_epub(data)
                 _validate_niv_source(content)
+            elif family.startswith('be:'):
+                content=parse_be_epub(data,source['title'])
+                source['title']=content['title']
+                warnings.extend(content.get('warnings',[]))
+            elif family in ('tagalog','cebuano','harper'):
+                content=parse_harper_epub(data) if family=='harper' else parse_language_dictionary(data,family)
+                _validate_dictionary(content,family)
+                if family in ('tagalog','cebuano'):
+                    source['attribution']='Wiktionary contributors · extracted by Kaikki.org / Wiktextract'
+                    source['rights_note']='CC BY-SA 4.0 / GFDL · https://kaikki.org/dictionary/ · https://en.wiktionary.org/wiki/Wiktionary:Copyrights'
             else:
                 content = parse_dictionary_epub(data, family)
                 _validate_dictionary(content, family)
             parsed[family] = content
         progress('Publishing validated sources. Existing verses and personal records are preserved.')
         result = _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress)
+        if illustration_report:
+            result['illustrations']=illustration_report
+            result['counts'].update({k:v for k,v in illustration_report.items() if isinstance(v,int)})
+            result['warnings'].append('Illustration topic connections are suggestions; invalid source references remain flagged for review.')
+            _write_sync_status(path,result)
         if translation_folder_id:
             progress('Importing Cebuano and Tagalog into Bible Study only.')
             translations = sync_translation_sources(path,translation_folder_id,progress,drive=drive,fetch=fetch)
             result['counts'].update(translations['counts'])
             result['message'] += ' ' + translations['message']
+            _write_sync_status(path,result)
+        if ai_database:
+            progress('Removing successfully imported study editions from the AI index.')
+            result['removed_ai_documents']=purge_migrated_ai_sources(path,ai_database)
             _write_sync_status(path,result)
         return result
     finally:
@@ -2967,6 +3848,10 @@ def _run_sync(app, path, lock):
         with app.app_context():
             options = ({'translation_folder_id':app.config['BIBLE_STUDY_TRANSLATION_FOLDER_ID']}
                        if app.config.get('BIBLE_STUDY_TRANSLATION_FOLDER_ID') else {})
+            # Bible Study sync reads its dedicated sources; do not mutate the AI
+            # index while importing the illustration library. Legacy cleanup is
+            # still an explicit maintenance CLI option.
+            if app.config.get('BIBLE_ILLUSTRATIONS_DATABASE'):options['illustration_database']=app.config['BIBLE_ILLUSTRATIONS_DATABASE']
             sync_sources(path, app.config.get('BIBLE_STUDY_DRIVE_FOLDER_ID', ''), progress, **options)
     except Exception as error:
         logging.getLogger(__name__).exception('Bible Study sync failed')
@@ -3276,7 +4161,7 @@ def _wiersbe_reader_blocks(blocks, title):
     for block in blocks:
         block.pop('role',None);block.pop('level',None)
         text=block['text'];runs=block.get('runs',[])
-        bold=bool(runs) and all('strong' in run.get('marks',[]) for run in runs if run['text'].strip())
+        bold=bool(runs) and any(run.get('text','').strip() for run in runs) and all('strong' in run.get('marks',[]) for run in runs if run.get('text','').strip())
         heading=block.get('source_heading')
         if heading or (bold and len(text)<180):
             block.update(type='heading',role='commentary_heading',level=max(1,min(3,(heading or 2)-1)))
@@ -4577,7 +5462,7 @@ def initialize_database(database_path, **path_options):
             conn.executemany('INSERT INTO bible_books(id,name,chapter_count) VALUES(?,?,?)',
                              [(index, name, count) for index, (name, count) in enumerate(BOOKS, 1)])
             conn.execute("INSERT INTO bible_metadata(key,value) VALUES('offset_unit','unicode_codepoint')")
-        elif version not in (1, 2, 3, 4, 5, 6) or application_id != APPLICATION_ID:
+        elif version not in (1, 2, 3, 4, 5, 6, 7) or application_id != APPLICATION_ID:
             raise ValueError('Unsupported Bible Study migration; existing records were kept.')
         migrations = ((DICTIONARY_SCHEMA_SQL if version < 2 else '')
                       + (ORIGINAL_SCHEMA_SQL if version < 3 else '')
@@ -4601,6 +5486,18 @@ def initialize_database(database_path, **path_options):
                 if column.split()[0] not in {row[1] for row in conn.execute('PRAGMA table_info('+table+')')}:
                     conn.execute('ALTER TABLE '+table+' ADD COLUMN '+column)
             conn.execute('CREATE INDEX IF NOT EXISTS bible_token_word ON bible_tokens(normalized_text,verse_id)')
+        if version < 8:
+            if version >= 2:
+                # Preserve entry IDs and every incoming foreign key while widening
+                # the source constraint. Foreign keys are checked before commit.
+                definition = re.search(r'CREATE TABLE bible_dictionary_versions \(.*?\);', DICTIONARY_SCHEMA_SQL,re.S)[0]
+                conn.execute(definition.replace('CREATE TABLE bible_dictionary_versions (','CREATE TABLE bible_dictionary_versions_v8 ('))
+                conn.execute('INSERT INTO bible_dictionary_versions_v8 SELECT * FROM bible_dictionary_versions')
+                conn.execute('DROP TABLE bible_dictionary_versions')
+                conn.execute('ALTER TABLE bible_dictionary_versions_v8 RENAME TO bible_dictionary_versions')
+                conn.execute('CREATE UNIQUE INDEX bible_active_dictionary ON bible_dictionary_versions(family) WHERE is_active=1')
+            for statement in STUDY_RESOURCE_SCHEMA_SQL.split(';'):
+                if statement.strip(): conn.execute(statement)
         if conn.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('Bible Study migration failed foreign-key validation.')
         if version < 4:
@@ -4720,8 +5617,336 @@ def _study_saved_items(conn, user_key):
     return items
 
 
+ILLUSTRATION_SOURCES = {'connect_1001':'1001 Illustrations That Connect',
+    'best_2000':'The Best Sermon Illustrations', 'sermonillustrations_web':'SermonIllustrations.com'}
+ILLUSTRATION_APPLICATION_ID = 0x494C4C55
+ILLUSTRATION_IMPORT_VERSION = 2
+# Recreate only approved tables: never run SQL, triggers, or views from a ZIP.
+ILLUSTRATION_TABLES = {
+    'illustrations': 'id TEXT PRIMARY KEY,source TEXT NOT NULL,original_number INTEGER,title TEXT NOT NULL,category TEXT,topics_json TEXT NOT NULL,bible_references_json TEXT NOT NULL,body_html TEXT NOT NULL,body_text TEXT NOT NULL,source_credit TEXT,source_file TEXT NOT NULL,review_flags_json TEXT NOT NULL',
+    'illustration_topics': 'illustration_id TEXT NOT NULL REFERENCES illustrations(id),topic TEXT NOT NULL',
+    'scripture_verse_links': 'illustration_id TEXT NOT NULL REFERENCES illustrations(id),book TEXT NOT NULL,chapter_start INTEGER NOT NULL,chapter_end INTEGER NOT NULL,verse_start INTEGER,verse_end INTEGER,display_reference TEXT NOT NULL,link_type TEXT NOT NULL,priority INTEGER NOT NULL,theme TEXT,confidence TEXT NOT NULL,match_basis TEXT NOT NULL,review_status TEXT NOT NULL',
+    'annotation_summary': 'illustration_id TEXT PRIMARY KEY REFERENCES illustrations(id),original_reference_count INTEGER NOT NULL,suggested_reference_count INTEGER NOT NULL,max_suggestion_confidence TEXT,primary_matched_theme TEXT,needs_human_review INTEGER NOT NULL',
+    'browse_topics': 'topic_key TEXT PRIMARY KEY,display_name TEXT NOT NULL,initial_letter TEXT NOT NULL,illustration_count INTEGER NOT NULL,source_count INTEGER NOT NULL',
+    'browse_topic_illustrations': 'topic_key TEXT NOT NULL REFERENCES browse_topics(topic_key),illustration_id TEXT NOT NULL REFERENCES illustrations(id),sort_title TEXT NOT NULL,PRIMARY KEY(topic_key,illustration_id)',
+}
+
+
+def illustration_database_path(bible_path, value=None, **options):
+    bible_path=_database_path(bible_path,**options)
+    path=_database_path(value or bible_path.with_name('sermon_illustrations.db'),
+        **dict(options,protected_paths=(*options.get('protected_paths',()),bible_path)))
+    return path
+
+
+@contextmanager
+def illustration_connection(path):
+    conn=None
+    try:
+        conn=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=5)
+        conn.row_factory=sqlite3.Row
+        conn.execute('PRAGMA query_only=ON');conn.execute('PRAGMA trusted_schema=OFF')
+        if conn.execute('PRAGMA application_id').fetchone()[0]!=ILLUSTRATION_APPLICATION_ID:
+            raise StorageUnavailable('illustrations_not_initialized')
+        yield conn
+    finally:
+        if conn is not None:conn.close()
+
+
+def _approve_illustration_rows(conn, approved_by):
+    """Owner approval permits use; it does not certify theological applicability."""
+    pending="review_status IN ('needs_review','original_not_reviewed','pending','pending_review','unreviewed')"
+    previous=[dict(status=r[0],count=r[1]) for r in conn.execute(
+        'SELECT review_status,COUNT(*) FROM scripture_verse_links WHERE '+pending+' GROUP BY review_status')]
+    for table in ('scripture_verse_links','illustration_valid_links'):
+        conn.execute('UPDATE '+table+" SET review_status='approved_for_use' WHERE "+pending)
+    summaries=conn.execute('UPDATE annotation_summary SET needs_human_review=0 WHERE needs_human_review!=0').rowcount
+    approval=dict(approved_by=approved_by,approved_at=datetime.now(timezone.utc).isoformat(),
+        approved_links=sum(r['count'] for r in previous),approved_articles=summaries,previous_statuses=previous,
+        policy='Pastors decide passage applicability; original/suggested provenance and confidence remain unchanged.')
+    conn.execute("INSERT INTO illustration_metadata VALUES('review_policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",('pastor_discretion',))
+    conn.execute("INSERT INTO illustration_metadata VALUES('review_approval',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(approval),))
+    conn.execute("INSERT INTO illustration_metadata VALUES('import_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(ILLUSTRATION_IMPORT_VERSION),))
+    return approval
+
+
+def approve_illustration_reviews(database_path, approved_by='Owner request'):
+    path=_database_path(database_path);lock=_sync_lock(path,create=True)
+    if lock is None:raise SyncError('An illustration update is already running.')
+    try:
+        with illustration_connection(path) as existing:
+            policy=existing.execute("SELECT value FROM illustration_metadata WHERE key='review_policy'").fetchone()
+            pending=any(existing.execute('SELECT 1 FROM '+table+" WHERE review_status IN ('needs_review','original_not_reviewed','pending','pending_review','unreviewed') LIMIT 1").fetchone()
+                for table in ('scripture_verse_links','illustration_valid_links'))
+            pending=pending or existing.execute('SELECT 1 FROM annotation_summary WHERE needs_human_review!=0 LIMIT 1').fetchone()
+            if policy and policy[0]=='pastor_discretion' and not pending:return dict(status='unchanged')
+            directory=path.parent/'backups';directory.mkdir(exist_ok=True)
+            backup=directory/('illustrations_before_approval_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_')+secrets.token_hex(3)+'.db')
+            with closing(sqlite3.connect(backup)) as saved:
+                existing.backup(saved)
+                if saved.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise SyncError('Illustration backup failed validation.')
+        with closing(sqlite3.connect(path.as_uri()+'?mode=rw',uri=True)) as conn,conn:
+            conn.execute('BEGIN IMMEDIATE')
+            approval=_approve_illustration_rows(conn,approved_by)
+        return dict(status='completed',backup=str(backup),**approval)
+    finally:_release_sync_lock(lock)
+
+
+def import_illustration_archive(database_path, archive, *, source=None, expected_count=8961, dry_run=False):
+    """Validate a staged, independent library; preserve all source text and IDs."""
+    path=_database_path(database_path)
+    data=archive if isinstance(archive,bytes) else Path(archive).read_bytes()
+    if len(data)>96*1024*1024:raise SyncError('Illustration archive exceeds the supported size.')
+    digest=hashlib.sha256(data).hexdigest()
+    expected_digest=((source or {}).get('fingerprint') or {}).get('sha256Checksum')
+    if expected_digest and expected_digest!=digest:raise SyncError('The illustration archive changed during download. Retry sync.')
+    path.parent.mkdir(parents=True,exist_ok=True)
+    lock=_sync_lock(path,create=True)
+    if lock is None:raise SyncError('An illustration import is already running.')
+    try:
+        if path.is_file():
+            with illustration_connection(path) as existing:
+                previous=dict(existing.execute('SELECT key,value FROM illustration_metadata'))
+                if previous.get('sha256')==digest and previous.get('import_version')==str(ILLUSTRATION_IMPORT_VERSION):
+                    return dict(status='unchanged',**json.loads(previous['report']))
+        with zipfile.ZipFile(io.BytesIO(data)) as zipped:
+            names=zipped.namelist()
+            if len(names)!=len(set(names)) or len(names)>30:raise SyncError('Illustration ZIP has duplicate paths or too many files.')
+            name='sermon_illustrations_scripture_enriched.sqlite3'
+            if name not in names:raise SyncError('Use the enriched v2 illustration ZIP containing '+name+'.')
+            info=zipped.getinfo(name)
+            if info.file_size>128*1024*1024 or info.flag_bits&1:raise SyncError('Illustration database is oversized or encrypted.')
+            payload=zipped.read(name)
+        with tempfile.TemporaryDirectory(prefix='.illustrations_',dir=path.parent) as directory:
+            raw=Path(directory)/'input.sqlite3';raw.write_bytes(payload)
+            staged=Path(directory)/'validated.db'
+            with closing(sqlite3.connect(raw.as_uri()+'?mode=ro',uri=True)) as original, closing(sqlite3.connect(staged)) as target:
+                original.row_factory=sqlite3.Row
+                original.execute('PRAGMA query_only=ON');original.execute('PRAGMA trusted_schema=OFF')
+                if original.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise SyncError('Illustration database failed its integrity check.')
+                target.execute('PRAGMA foreign_keys=ON')
+                for table,definition in ILLUSTRATION_TABLES.items():
+                    record=original.execute('SELECT type,sql FROM sqlite_master WHERE name=?',(table,)).fetchone()
+                    if not record or record['type']!='table' or 'VIRTUAL TABLE' in record['sql'].upper():
+                        raise SyncError('Illustration package is missing a supported table: '+table)
+                    target.execute('CREATE TABLE '+table+' ('+definition+')')
+                    columns=[r[1] for r in target.execute('PRAGMA table_info('+table+')')]
+                    if not set(columns).issubset({r[1] for r in original.execute('PRAGMA table_info('+table+')')}):
+                        raise SyncError('Illustration table has unsupported columns: '+table)
+                    cursor=original.execute('SELECT '+','.join(columns)+' FROM '+table)
+                    count=0
+                    while True:
+                        rows=cursor.fetchmany(500)
+                        if not rows:break
+                        count+=len(rows)
+                        if count>200000:raise SyncError('Illustration table exceeds supported limits.')
+                        target.executemany('INSERT INTO '+table+' VALUES('+','.join('?' for _ in columns)+')',[tuple(r) for r in rows])
+                count=target.execute('SELECT COUNT(*) FROM illustrations').fetchone()[0]
+                if count!=expected_count:raise SyncError(f'Expected {expected_count:,} illustrations; found {count:,}. Existing library was kept.')
+                if target.execute('SELECT COUNT(*) FROM illustrations WHERE source NOT IN (?,?,?)',tuple(ILLUSTRATION_SOURCES)).fetchone()[0]:
+                    raise SyncError('Illustration package contains an unknown source.')
+                missing=len({r[0] for r in target.execute('SELECT id FROM illustrations')}-{r[0] for r in target.execute('SELECT illustration_id FROM browse_topic_illustrations')})
+                if missing:raise SyncError('Every illustration must remain reachable through topic browsing.')
+                if target.execute('PRAGMA foreign_key_check').fetchone():raise SyncError('Illustration package has broken topic or reference relationships.')
+                target.executescript('''CREATE TABLE illustration_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                    CREATE TABLE illustration_reading(id TEXT PRIMARY KEY REFERENCES illustrations(id),body_hash TEXT NOT NULL,preview TEXT NOT NULL,has_content INTEGER NOT NULL);
+                    CREATE TABLE illustration_valid_links(illustration_id TEXT NOT NULL REFERENCES illustrations(id),book_id INTEGER NOT NULL,
+                        chapter_start INTEGER NOT NULL,chapter_end INTEGER NOT NULL,verse_start INTEGER,verse_end INTEGER,
+                        display_reference TEXT NOT NULL,link_type TEXT NOT NULL,priority INTEGER NOT NULL,theme TEXT,confidence TEXT NOT NULL,
+                        match_basis TEXT NOT NULL,review_status TEXT NOT NULL);
+                    CREATE TABLE illustration_reference_issues(illustration_id TEXT,display_reference TEXT,reason TEXT);
+                    CREATE VIRTUAL TABLE illustrations_fts USING fts5(id UNINDEXED,title,category,topics,body_text,tokenize='unicode61');
+                    CREATE INDEX illustration_browse_id ON browse_topic_illustrations(illustration_id);
+                    CREATE INDEX illustration_browse_topic ON browse_topic_illustrations(topic_key,sort_title,illustration_id);
+                    CREATE INDEX illustration_letters ON browse_topics(initial_letter,display_name);
+                    CREATE INDEX illustration_passages ON illustration_valid_links(book_id,chapter_start,chapter_end);
+                    CREATE INDEX illustration_links_id ON illustration_valid_links(illustration_id);
+                    CREATE INDEX illustration_hash ON illustration_reading(body_hash);''')
+                target.row_factory=sqlite3.Row
+                for row in target.execute('SELECT * FROM illustrations').fetchall():
+                    if not re.fullmatch(r'[A-Za-z0-9_-]{1,120}',row['id']) or max(len(row['body_html']),len(row['body_text']))>2*1024*1024:
+                        raise SyncError('Illustration ID or body exceeds supported limits.')
+                    for key in ('topics_json','bible_references_json','review_flags_json'):
+                        values=json.loads(row[key])
+                        if not isinstance(values,list) or not all(isinstance(v,str) for v in values):raise SyncError('Illustration metadata must contain text lists.')
+                    normalized=' '.join(row['body_text'].casefold().split())
+                    target.execute('INSERT INTO illustration_reading VALUES(?,?,?,?)',(row['id'],hashlib.sha256(normalized.encode()).hexdigest(),_text(row['body_text'])[:230],bool(normalized)))
+                    target.execute('INSERT INTO illustrations_fts(id,title,category,topics,body_text) VALUES(?,?,?,?,?)',
+                        (row['id'],row['title'],row['category'],' '.join(json.loads(row['topics_json'])),row['body_text']))
+                invalid=0
+                for row in target.execute('SELECT * FROM scripture_verse_links').fetchall():
+                    book=BOOK_BY_NAME.get(row['book'].casefold())
+                    a,zv,va,vz=row['chapter_start'],row['chapter_end'],row['verse_start'],row['verse_end']
+                    valid=(book and type(a) is int and type(zv) is int and 1<=a<=zv<=book[2]
+                        and ((va is None and vz is None) or (type(va) is int and type(vz) is int and 1<=va<=176 and 1<=vz<=176 and (a,va)<=(zv,vz))))
+                    if row['link_type'] not in ('original','suggested') or row['confidence'] not in ('source','high','medium','low'):
+                        raise SyncError('Illustration link type or confidence is invalid.')
+                    if not valid:
+                        invalid+=1;target.execute('INSERT INTO illustration_reference_issues VALUES(?,?,?)',(row['illustration_id'],row['display_reference'],'Invalid Bible book/chapter/verse range; source metadata retained.'));continue
+                    target.execute('INSERT INTO illustration_valid_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (row['illustration_id'],book[0],a,zv,va,vz,row['display_reference'],row['link_type'],row['priority'],row['theme'],row['confidence'],row['match_basis'],row['review_status']))
+                topics=target.execute('SELECT COUNT(*) FROM browse_topics').fetchone()[0]
+                report=dict(illustration_entries=count,illustration_topics=topics,invalid_references=invalid,
+                    empty_articles=target.execute('SELECT COUNT(*) FROM illustration_reading WHERE has_content=0').fetchone()[0])
+                target.executemany('INSERT INTO illustration_metadata VALUES(?,?)',[
+                    ('sha256',digest),('import_version',str(ILLUSTRATION_IMPORT_VERSION)),('report',json.dumps(report)),
+                    ('source',json.dumps(source or {})),('updated_at',datetime.now(timezone.utc).isoformat())])
+                _approve_illustration_rows(target,'Owner-approved pastor-discretion policy')
+                target.execute(f'PRAGMA application_id={ILLUSTRATION_APPLICATION_ID}');target.execute('PRAGMA user_version=1');target.commit()
+                if target.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or target.execute('PRAGMA foreign_key_check').fetchone():raise SyncError('Validated illustration library failed its final checks.')
+            if dry_run:return dict(status='validated',**report)
+            backup=None
+            if path.exists():
+                directory=path.parent/'backups';directory.mkdir(exist_ok=True)
+                backup=directory/('illustrations_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_')+secrets.token_hex(3)+'.db')
+                with illustration_connection(path) as existing,closing(sqlite3.connect(backup)) as saved:existing.backup(saved)
+            os.replace(staged,path)
+            return dict(status='completed',backup=str(backup) if backup else None,**report)
+    except (sqlite3.DatabaseError,ValueError,KeyError,TypeError,AttributeError,zipfile.BadZipFile) as error:
+        raise SyncError('Illustration import failed validation; existing library was kept: '+str(error)) from error
+    finally:_release_sync_lock(lock)
+
+
+class _IllustrationHTML(HTMLParser):
+    """Convert allowed HTML to text runs; never expose raw HTML to the browser."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks=[];self.runs=[];self.marks=[];self.skip=0;self.quote=0;self.presentation={};self.list_item=False
+
+    def flush(self):
+        text=''.join(r['text'] for r in self.runs)
+        if text.strip():
+            block=dict(type='paragraph',text=text,runs=self.runs,references=scripture_references(text))
+            if self.quote:block['source_quote']=True
+            if self.presentation:block['presentation']=self.presentation.copy()
+            if self.list_item:block.update(list_kind='bullet',list_level=1)
+            self.blocks.append(block)
+        self.runs=[]
+
+    def handle_starttag(self,tag,attrs):
+        if tag in ('script','style','iframe','object','svg'):
+            self.skip+=1;return
+        if self.skip:return
+        if tag in ('p','div','li','blockquote','h1','h2','h3','h4'):
+            self.flush();self.list_item=tag=='li';self.presentation={}
+            attributes=dict(attrs);align=attributes.get('align')
+            match=re.search(r'(?:^|;)\s*text-align\s*:\s*(left|right|center|justify)\b',attributes.get('style',''),re.I)
+            if match:align=match[1].lower()
+            if align in ('left','right','center','justify'):self.presentation['align']=align
+            if tag=='blockquote':self.quote+=1
+        mark={'b':'strong','strong':'strong','i':'em','em':'em','u':'u','sub':'sub','sup':'sup'}.get(tag)
+        if mark:self.marks.append((tag,mark))
+        if tag=='br':self.runs.append(dict(type='text',text='\n',marks=[m for _,m in self.marks]))
+
+    def handle_endtag(self,tag):
+        if self.skip:
+            if tag in ('script','style','iframe','object','svg'):self.skip-=1
+            return
+        if tag in ('p','div','li','blockquote','h1','h2','h3','h4'):
+            self.flush();self.list_item=False;self.presentation={}
+            if tag=='blockquote':self.quote=max(0,self.quote-1)
+        for i in range(len(self.marks)-1,-1,-1):
+            if self.marks[i][0]==tag:del self.marks[i];break
+
+    def handle_data(self,text):
+        # HTML source line wrapping is whitespace; explicit <br> stays a break.
+        if not self.skip:self.runs.append(dict(type='text',text=re.sub(r'[\t\r\n ]+',' ',text),marks=[m for _,m in self.marks]))
+
+
+def _illustration_card(row):
+    return dict(id=row['id'],title=row['title'],topic=row['category'],source=row['source'],
+        source_title=ILLUSTRATION_SOURCES[row['source']],preview=row['preview'],needs_source_review=not row['has_content'])
+
+
+def illustration_suggestions(conn,book_id,chapter,verse=None,end_verse=None):
+    # Whole-chapter links and bounded verse intervals have separate predicates.
+    params=[book_id,chapter,chapter]
+    overlap=''
+    if verse is not None:
+        overlap=''' AND (l.verse_start IS NULL OR
+            ((l.chapter_start<? OR (l.chapter_start=? AND l.verse_start<=?))
+             AND (l.chapter_end>? OR (l.chapter_end=? AND l.verse_end>=?))))'''
+        params.extend([chapter,chapter,end_verse or verse,chapter,chapter,verse])
+    rows=conn.execute('''WITH ranked AS (
+        SELECT i.id,i.title,i.category,i.source,r.preview,r.has_content,r.body_hash,l.display_reference,l.link_type,l.confidence,l.theme,
+            ROW_NUMBER() OVER(PARTITION BY r.body_hash ORDER BY
+                CASE WHEN l.link_type='original' THEN 0 WHEN l.confidence='high' THEN 1 WHEN l.confidence='medium' THEN 2 ELSE 3 END,
+                CASE WHEN l.verse_start IS NULL THEN 1 ELSE 0 END,l.priority,
+                CASE i.source WHEN 'connect_1001' THEN 0 WHEN 'best_2000' THEN 1 ELSE 2 END,
+                i.title COLLATE NOCASE,i.id,l.display_reference) AS item_rank,
+            CASE WHEN l.link_type='original' THEN 0 WHEN l.confidence='high' THEN 1 ELSE 2 END AS source_rank,
+            CASE l.confidence WHEN 'source' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END AS confidence_rank,
+            CASE WHEN l.verse_start IS NULL THEN 1 ELSE 0 END AS chapter_rank,l.priority
+        FROM illustration_valid_links l JOIN illustrations i ON i.id=l.illustration_id JOIN illustration_reading r ON r.id=i.id
+        WHERE l.book_id=? AND l.chapter_start<=? AND l.chapter_end>=? AND r.has_content=1
+            AND (l.link_type='original' OR l.confidence IN ('high','medium') OR l.review_status='approved_for_use')'''+overlap+'''),
+        collections AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY source ORDER BY source_rank,chapter_rank,confidence_rank,priority,title COLLATE NOCASE,id) AS collection_position
+            FROM ranked WHERE item_rank=1)
+        SELECT * FROM collections WHERE collection_position<=30
+        ORDER BY CASE source WHEN 'connect_1001' THEN 0 WHEN 'best_2000' THEN 1 ELSE 2 END,
+            source_rank,chapter_rank,confidence_rank,priority,title COLLATE NOCASE,id''',params).fetchall()
+    # The first page reserves five places for 1001; the other five compete
+    # across both other collections. All subsequent places use the same rank
+    # across all sources. Fill shortfalls with available relevant matches.
+    ranked=sorted(rows,key=lambda r:(r['source_rank'],r['chapter_rank'],r['confidence_rank'],
+        r['priority'],r['title'].casefold(),r['id']))
+    first=([r for r in ranked if r['source']=='connect_1001'][:5]
+        +[r for r in ranked if r['source']!='connect_1001'][:5])
+    selected={r['id'] for r in first}
+    remaining=[r for r in ranked if r['id'] not in selected]
+    fill=max(0,10-len(first))
+    first.extend(remaining[:fill])
+    ordered=first+remaining[fill:fill+30-len(first)]
+    return [dict(_illustration_card(r),match=dict(reference=r['display_reference'],link_type=r['link_type'],
+        confidence=r['confidence'],theme=r['theme'])) for r in ordered]
+
+
+def illustration_browse(conn, *, letter='A',query='',topic='',source='',offset=0):
+    params=[];where=[];join=''
+    if query:
+        words=re.findall(r'\w+',query,flags=re.UNICODE)[:12]
+        if not words:return dict(entries=[],topics=[],next_offset=None)
+        match=' AND '.join('"'+word+'"' for word in words)
+        join=' JOIN illustrations_fts f ON f.id=i.id';where.append('illustrations_fts MATCH ?');params.append(match)
+    if topic:
+        join+=' JOIN browse_topic_illustrations b ON b.illustration_id=i.id';where.append('b.topic_key=?');params.append(topic)
+    if source:where.append('i.source=?');params.append(source)
+    entries=[];next_offset=None
+    if query or topic:
+        ordering='bm25(illustrations_fts,0,8,5,5,1),' if query else ''
+        rows=conn.execute('''SELECT i.id,i.title,i.category,i.source,r.preview,r.has_content FROM illustrations i
+            JOIN illustration_reading r ON r.id=i.id'''+join+' WHERE '+' AND '.join(where)+' ORDER BY '+ordering+'i.title COLLATE NOCASE,i.id LIMIT 31 OFFSET ?',(*params,offset)).fetchall()
+        entries=[_illustration_card(r) for r in rows[:30]];next_offset=offset+30 if len(rows)>30 else None
+    topic_where='t.display_name LIKE ? ESCAPE \'\\\'' if query else 't.initial_letter=?'
+    topic_params=['%'+query.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%' if query else letter]
+    if source:
+        topic_where+=' AND i.source=?';topic_params.append(source)
+    topics=[dict(r) for r in conn.execute('''SELECT t.topic_key,t.display_name,COUNT(*) AS illustration_count FROM browse_topics t
+        JOIN browse_topic_illustrations b ON b.topic_key=t.topic_key JOIN illustrations i ON i.id=b.illustration_id
+        WHERE '''+topic_where+' GROUP BY t.topic_key ORDER BY t.display_name COLLATE NOCASE',topic_params)]
+    return dict(entries=entries,topics=topics,next_offset=next_offset)
+
+
+def illustration_article(conn,identifier):
+    row=conn.execute('SELECT i.*,r.preview,r.has_content,r.body_hash FROM illustrations i JOIN illustration_reading r ON r.id=i.id WHERE i.id=?',(identifier,)).fetchone()
+    if row is None:return None
+    parser=_IllustrationHTML();parser.feed(row['body_html']);parser.close();parser.flush()
+    blocks=parser.blocks
+    if not blocks and row['body_text'].strip():blocks=[dict(type='paragraph',text=p,references=scripture_references(p)) for p in row['body_text'].split('\n\n') if p.strip()]
+    links=[dict(r) for r in conn.execute('SELECT * FROM illustration_valid_links WHERE illustration_id=? ORDER BY CASE link_type WHEN \'original\' THEN 0 ELSE 1 END,priority,display_reference',(identifier,))]
+    issues=[dict(r) for r in conn.execute('SELECT display_reference,reason FROM illustration_reference_issues WHERE illustration_id=?',(identifier,))]
+    credit=row['source_credit'] or ''
+    # Preserve the body; avoid adding a second copy of its final credit.
+    credit_in_body=bool(credit and _text(credit).casefold() in _text(row['body_text']).casefold())
+    return dict(_illustration_card(row),blocks=blocks,body_text=row['body_text'],topics=json.loads(row['topics_json']),
+        source_credit=credit,credit_in_body=credit_in_body,source_file=row['source_file'],
+        original_reference_metadata=json.loads(row['bible_references_json']),references=links,reference_issues=issues,
+        review_flags=json.loads(row['review_flags_json']))
+
+
 def register_bible_study_routes(app):
     app.config.setdefault('BIBLE_STUDY_DATABASE', str(BASE_DIR / 'bible_study_data' / 'bible_study.db'))
+    app.config.setdefault('BIBLE_ILLUSTRATIONS_DATABASE',os.getenv('BIBLE_ILLUSTRATIONS_DATABASE',''))
     app.config.setdefault('AI_DATABASE', os.getenv('AI_DATABASE', str(BASE_DIR / 'ai_index.db')))
     app.config.setdefault('BIBLE_STUDY_TRANSLATION_FOLDER_ID', resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID)
     blueprint = Blueprint('bible_study', __name__, url_prefix='/pastor-resources/bible-study')
@@ -4736,6 +5961,11 @@ def register_bible_study_routes(app):
         return _database_path(app.config['BIBLE_STUDY_DATABASE'], static_folder=app.static_folder,
                               protected_paths=(app.config.get('DATABASE'), app.config.get('AI_DATABASE'),
                                                app.config.get('BIBLE_STUDY_LIBRARY_DATABASE')))
+
+    def configured_illustrations():
+        return illustration_database_path(configured_path(),app.config.get('BIBLE_ILLUSTRATIONS_DATABASE'),
+            static_folder=app.static_folder,protected_paths=(app.config.get('DATABASE'),app.config.get('AI_DATABASE'),
+                app.config.get('BIBLE_STUDY_LIBRARY_DATABASE')))
 
     @contextmanager
     def database(write=False):
@@ -4873,7 +6103,7 @@ def register_bible_study_routes(app):
         try:
             with database() as conn:
                 row = conn.execute("SELECT value FROM bible_metadata WHERE key='sync_status'").fetchone()
-                report = json.loads(row['value']) if row else {'status': 'idle', 'message': 'Ready to sync NIV, Mounce and Vine directly from For Scripture Study App.'}
+                report = json.loads(row['value']) if row else {'status': 'idle', 'message': 'Ready to sync Bible Study resources directly from For Scripture Study App.'}
             if report['status'] == 'running':
                 lock = _sync_lock(configured_path())
                 if lock is not None:
@@ -5017,19 +6247,35 @@ def register_bible_study_routes(app):
 
     @blueprint.get('/api/word/<int:verse_id>/<int:token_index>')
     def word_api(verse_id, token_index):
+        requested=request.args.get('part','auto')
+        if requested not in WORD_STUDY_PARTS|{'auto'}:
+            return jsonify(ok=False,error='Choose a valid word type.'),400
         try:
             with database() as conn:
-                token = conn.execute('''SELECT t.*,v.book_id,v.chapter,v.verse,v.content_hash FROM bible_tokens t
+                token = conn.execute('''SELECT t.*,v.book_id,v.chapter,v.verse,v.content_hash,e.translation FROM bible_tokens t
                     JOIN bible_verses v ON v.id=t.verse_id JOIN bible_editions e ON e.id=v.edition_id
                     JOIN bible_import_runs r ON r.id=e.import_run_id
-                    WHERE t.verse_id=? AND t.token_index=? AND e.translation='NIV' AND e.is_active=1
+                    WHERE t.verse_id=? AND t.token_index=? AND e.translation IN ('NIV','TCB','CEBOCB') AND e.is_active=1
                     AND e.status='ready' AND r.status='validated' AND v.is_active=1''', (verse_id, token_index)).fetchone()
                 if not token:
                     return jsonify(ok=False, error='This indexed Bible word is unavailable.'), 404
+                if token['translation'] in NATIVE_DICTIONARY_FAMILIES:
+                    query,indices=dictionary_lookup_phrase(conn,token,NATIVE_DICTIONARY_FAMILIES[token['translation']])
+                    return jsonify(ok=True,word=token['text'],lookup_token_indices=indices,
+                                   **native_dictionary_study(conn,query,token['translation']))
                 result = verified_word_study(conn, token)
+                query,indices=dictionary_lookup_phrase(conn,token)
+                if len(indices)>1:
+                    result=dict(verified=False,message=NO_VERIFIED_ALIGNMENT)
+                people=person_study(conn,query,(token['book_id'],token['chapter'],token['verse'])) if query[:1].isupper() else dict(people=[],selected=None)
+                word_type=word_study_type(conn,query,token,indices,people,requested)
+                dictionaries=search_dictionaries(conn,query,word_type=word_type)
+                result.update(sources=dictionaries['sources'],translations=dictionaries['translations'],query=query,
+                              lookup_token_indices=indices,word_type=word_type)
                 if not result.get('verified'):
-                    result=contextual_dictionary_study(conn,token)
-                people=person_study(conn,token['text'],(token['book_id'],token['chapter'],token['verse'])) if token['text'][:1].isupper() else dict(people=[],selected=None)
+                    result.pop('original_tokens',None)
+                    result.update(result_type='dictionary',explanation='Dictionary explanations, not a verified NIV word alignment.')
+                if word_type['part'] not in ('name','all'):people=dict(people=[],selected=None)
                 return jsonify(ok=True, word=token['text'], people=people, **result)
         except StorageUnavailable:
             return jsonify(ok=False, error='Bible Study data is unavailable.'), 503
@@ -5038,15 +6284,25 @@ def register_bible_study_routes(app):
     def dictionary_search_api():
         query = request.args.get('q', '').strip()
         family = request.args.get('source') or None
+        requested=request.args.get('part','auto')
+        related=request.args.get('related')=='1'
+        translation=request.args.get('translation','NIV')
         try:
             offset = max(0, min(100000, int(request.args.get('offset', '0'))))
         except ValueError:
             return jsonify(ok=False, error='Invalid result offset.'), 400
-        if not query or len(query)>100 or family not in (None, 'mounce', 'vine'):
+        if (not query or len(query)>100 or family not in (None, 'harper', 'mounce', 'vine')
+                or requested not in WORD_STUDY_PARTS|{'auto'} or translation not in READER_TRANSLATIONS
+                or (translation!='NIV' and family is not None)):
             return jsonify(ok=False, error='Enter a word, transliteration, Strong’s number or GK number.'), 400
         try:
             with database() as conn:
-                return jsonify(ok=True, people=person_study(conn,query), **search_dictionaries(conn, query, offset, family))
+                if translation in NATIVE_DICTIONARY_FAMILIES:
+                    return jsonify(ok=True,word=query,**native_dictionary_study(conn,query,translation))
+                people=person_study(conn,query)
+                word_type=word_study_type(conn,query,people=people,requested=requested)
+                if word_type['part'] not in ('name','all'):people=dict(people=[],selected=None)
+                return jsonify(ok=True, people=people, **search_dictionaries(conn, query, offset, family,word_type=word_type,related=related))
         except StorageUnavailable:
             return jsonify(ok=False, error='Bible Study data is unavailable.'), 503
 
@@ -5056,13 +6312,13 @@ def register_bible_study_routes(app):
             with database() as conn:
                 if conn.execute('PRAGMA user_version').fetchone()[0]<2:
                     return jsonify(ok=False, error='Dictionaries have not been synced yet.'), 404
-                row = conn.execute('''SELECT e.*,d.family,s.title AS source_title FROM bible_dictionary_entries e
+                row = conn.execute('''SELECT e.*,d.family,s.title AS source_title,s.attribution,s.rights_note FROM bible_dictionary_entries e
                     JOIN bible_dictionary_versions d ON d.id=e.version_id JOIN bible_sources s ON s.id=d.source_id
                     JOIN bible_import_runs r ON r.id=d.import_run_id WHERE e.id=? AND d.is_active=1 AND r.status='validated' ''', (entry_id,)).fetchone()
                 if not row:
                     return jsonify(ok=False, error='This dictionary entry is unavailable. Search again after syncing.'), 404
                 identifiers = conn.execute('SELECT scheme,language,number,qualifier,source_text FROM bible_dictionary_identifiers WHERE entry_id=? ORDER BY scheme,language,number', (entry_id,)).fetchall()
-                blocks=json.loads(row['content_json']);language=row['language']
+                blocks=json.loads(row['content_json']);language=row['language'];context_blocks=[]
                 if request.args.get('sense'):
                     try:sense_id=int(request.args['sense'])
                     except ValueError:return jsonify(ok=False,error='Invalid dictionary definition.'),400
@@ -5070,11 +6326,17 @@ def register_bible_study_routes(app):
                         return jsonify(ok=False,error='Definition index is unavailable. Sync Bible Study.'),404
                     sense=conn.execute('SELECT * FROM bible_dictionary_senses WHERE id=? AND entry_id=?',(sense_id,entry_id)).fetchone()
                     if not sense:return jsonify(ok=False,error='Dictionary definition not found.'),404
+                    for block in blocks[:sense['block_start']]:
+                        if block['type']!='heading':continue
+                        if block['text'] in ('Old Testament','New Testament'):context_blocks=[block]
+                        else:context_blocks=[b for b in context_blocks if b['text'] in ('Old Testament','New Testament')]+[block]
                     blocks=blocks[sense['block_start']:sense['block_end']];language=sense['language']
                     identifiers=conn.execute('SELECT scheme,language,number,qualifier,source_text FROM bible_dictionary_sense_identifiers WHERE sense_id=?',(sense_id,)).fetchall()
+                blocks=_dictionary_navigation_blocks(conn,row['version_id'],blocks,row['id'])
                 return jsonify(ok=True, entry=dict(id=row['id'], headword=row['headword'], source=row['family'],
                     source_title=row['source_title'], section=row['section'], language=language,
-                    blocks=blocks, identifiers=[dict(item) for item in identifiers]))
+                    attribution=row['attribution'],rights_note=row['rights_note'],
+                    blocks=blocks,context_blocks=context_blocks, identifiers=[dict(item) for item in identifiers]))
         except StorageUnavailable:
             return jsonify(ok=False, error='Dictionary data is unavailable.'), 503
 
@@ -5090,6 +6352,11 @@ def register_bible_study_routes(app):
                     SELECT 1 FROM bible_dictionary_entry_assets x JOIN bible_dictionary_entries e ON e.id=x.entry_id
                     JOIN bible_dictionary_versions d ON d.id=e.version_id JOIN bible_import_runs r ON r.id=d.import_run_id
                     WHERE x.sha256=a.sha256 AND d.is_active=1 AND r.status='validated')''', (digest,)).fetchone()
+                if not row and conn.execute('PRAGMA user_version').fetchone()[0]>=8:
+                    row=conn.execute('''SELECT a.mime_type,a.data FROM bible_dictionary_assets a WHERE a.sha256=? AND EXISTS(
+                        SELECT 1 FROM bible_commentary_assets x JOIN bible_commentary_versions v ON v.id=x.version_id
+                        JOIN bible_import_runs r ON r.id=v.import_run_id
+                        WHERE x.sha256=a.sha256 AND v.is_active=1 AND r.status='validated')''',(digest,)).fetchone()
             if not row:
                 return Response(status=404)
             return Response(row['data'], mimetype=row['mime_type'])
@@ -5129,10 +6396,14 @@ def register_bible_study_routes(app):
         if not book or not 1 <= chapter <= book[2] or not 1 <= verse <= 176:
             return jsonify(ok=False,error='Choose a valid Bible passage.'),400
         try:
+            if series=='wiersbe':
+                with database() as conn:
+                    data=bible_study_be_commentary(conn,book[0],chapter,verse)
+                return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
             arguments=(app.config.get('AI_DATABASE') or BASE_DIR / 'ai_index.db',book[0],chapter,verse)
             data = providers[series](*arguments,section_kind) if series=='pulpit' else providers[series](*arguments)
             return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
-        except (OSError, sqlite3.DatabaseError):
+        except (OSError, sqlite3.DatabaseError, StorageUnavailable):
             logging.getLogger(__name__).warning('Commentary index unavailable (%s)',series,exc_info=True)
             return jsonify(ok=False,error='Commentary is temporarily unavailable. Please try again.'),503
 
@@ -5148,6 +6419,50 @@ def register_bible_study_routes(app):
                 return jsonify(ok=True,match=pulpit_greek_dictionary_match(conn,spelling,book[0],chapter,verse))
         except StorageUnavailable:
             return jsonify(ok=True,match=None)
+
+    @blueprint.get('/api/illustrations/suggested')
+    def illustrations_suggested_api():
+        book=BOOK_BY_NAME.get(request.args.get('book','').casefold())
+        chapter=request.args.get('chapter',type=int)
+        verse=request.args.get('verse',type=int);end=request.args.get('end_verse',type=int)
+        if (not book or chapter is None or not 1<=chapter<=book[2]
+                or ('verse' in request.args and (verse is None or not 1<=verse<=176))
+                or ('end_verse' in request.args and (end is None or verse is None or not verse<=end<=176))):
+            return jsonify(ok=False,error='Choose a valid chapter, verse, or verse range.'),400
+        reference=f'{book[1]} {chapter}'+(f':{verse}'+(f'–{end}' if end and end!=verse else '') if verse else '')
+        try:
+            with illustration_connection(configured_illustrations()) as conn:
+                entries=illustration_suggestions(conn,book[0],chapter,verse,end)
+            return jsonify(ok=True,available=True,reference=reference,entries=entries)
+        except (StorageUnavailable,sqlite3.DatabaseError,OSError):
+            return jsonify(ok=True,available=False,reference=reference,entries=[])
+        except ValueError:return jsonify(ok=False,error='Configure a separate private illustration database.'),503
+
+    @blueprint.get('/api/illustrations/browse')
+    def illustrations_browse_api():
+        letter=request.args.get('letter','A').upper();query=request.args.get('q','').strip()
+        topic=request.args.get('topic','');source=request.args.get('source','');offset=request.args.get('offset',0,type=int)
+        if (not re.fullmatch('[A-Z]',letter) or len(query)>100 or len(topic)>200 or offset is None or not 0<=offset<=100000
+                or source and source not in ILLUSTRATION_SOURCES):
+            return jsonify(ok=False,error='Choose a valid letter, topic, source, or search.'),400
+        try:
+            with illustration_connection(configured_illustrations()) as conn:
+                result=illustration_browse(conn,letter=letter,query=query,topic=topic,source=source,offset=offset)
+            return jsonify(ok=True,available=True,**result)
+        except (StorageUnavailable,sqlite3.DatabaseError,OSError):
+            return jsonify(ok=True,available=False,entries=[],topics=[],next_offset=None)
+        except ValueError:return jsonify(ok=False,error='Configure a separate private illustration database.'),503
+
+    @blueprint.get('/api/illustrations/entry/<identifier>')
+    def illustration_entry_api(identifier):
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,120}',identifier):return jsonify(ok=False,error='Illustration not found.'),404
+        try:
+            with illustration_connection(configured_illustrations()) as conn:article=illustration_article(conn,identifier)
+            if article is None:return jsonify(ok=False,error='Illustration not found.'),404
+            return jsonify(ok=True,illustration=article)
+        except (StorageUnavailable,sqlite3.DatabaseError,OSError):
+            return jsonify(ok=False,error='The illustration library is unavailable. Sync Bible Study to import it.'),503
+        except ValueError:return jsonify(ok=False,error='Configure a separate private illustration database.'),503
 
     @blueprint.get('/api/sermons')
     def sermons_api():
@@ -5314,7 +6629,11 @@ def register_bible_study_routes(app):
                 edition=conn.execute('''SELECT e.id FROM bible_editions e JOIN bible_import_runs r ON r.id=e.import_run_id
                     JOIN bible_edition_details d ON d.edition_id=e.id WHERE e.is_active=1 AND e.status='ready'
                     AND r.status='validated' AND d.source_kind='thompson_pdf' ''').fetchone()
-                if not edition or not conn.execute('SELECT 1 FROM bible_thompson_concordance WHERE edition_id=? LIMIT 1',(edition[0],)).fetchone():
+                if not edition:
+                    return jsonify(ok=True,query=query,available=False,entries=[],next_offset=None)
+                printed=bool(conn.execute('SELECT 1 FROM bible_thompson_concordance WHERE edition_id=? LIMIT 1',(edition[0],)).fetchone())
+                named=bool(conn.execute('SELECT 1 FROM bible_chain_topics WHERE edition_id=? LIMIT 1',(edition[0],)).fetchone())
+                if not printed and not named:
                     return jsonify(ok=True,query=query,available=False,entries=[],next_offset=None)
                 term=normalize_term(query)
                 exact=conn.execute('SELECT id FROM bible_thompson_concordance WHERE edition_id=? AND normalized_term=?',(edition[0],term)).fetchone()
@@ -5335,6 +6654,14 @@ def register_bible_study_routes(app):
                             related.append(word)
                     entries.append(dict(headword=row['headword'],blocks=json.loads(row['content_json']),
                                         related=related,source_page=row['source_page']))
+                if not rows and not exact:
+                    has_related=conn.execute('''SELECT 1 FROM bible_thompson_concordance c WHERE c.edition_id=?
+                        AND EXISTS(SELECT 1 FROM json_each(c.related_json) WHERE lower(value)=?) LIMIT 1''',(edition[0],term)).fetchone()
+                    if not has_related:
+                        topics=_thompson_named_topics(conn,query)
+                        entries=topics[offset:offset+10]
+                        return jsonify(ok=True,query=query,available=True,entries=entries,
+                                       next_offset=offset+10 if len(topics)>offset+10 else None)
                 return jsonify(ok=True,query=query,available=True,entries=entries,next_offset=offset+10 if len(rows)>10 else None)
         except StorageUnavailable:
             return jsonify(ok=False,error='Bible Study data is unavailable.'),503
@@ -5643,10 +6970,10 @@ def register_bible_study_routes(app):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Bible Study maintenance; does not import or start app.py.')
-    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'sync-drive', 'sync-translations', 'format-thompson', 'import-concordance', 'import-studies'])
+    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'import-illustrations', 'sync-drive', 'sync-translations', 'format-thompson', 'import-concordance', 'import-studies'])
     parser.add_argument('--database', required=True, help='Absolute path to a separate Bible Study .db file.')
-    parser.add_argument('--archive', help='Local official STEPBible-Data ZIP, required for import-step.')
-    parser.add_argument('--ai-database', help='Existing private AI index, required for prepare-readers.')
+    parser.add_argument('--archive', help='Local ZIP, required for import-step or import-illustrations.')
+    parser.add_argument('--ai-database', help='Existing private AI index; sync-drive removes successfully migrated study editions from it.')
     parser.add_argument('--pdf', help='Matching local Thompson PDF, required for format-thompson, import-concordance or import-studies.')
     parser.add_argument('--folder-id', default='', help='Official Bible Study Drive folder ID; otherwise use saved/discovered folder.')
     parser.add_argument('--translation-folder-id', default=resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID,
@@ -5655,7 +6982,10 @@ if __name__ == '__main__':
     parser.add_argument('--dry-run', action='store_true', help='Validate without applying changes to the live database.')
     arguments = parser.parse_args()
     try:
-        if arguments.command=='prepare-readers':
+        if arguments.command=='import-illustrations':
+            if not arguments.archive:parser.error('--archive is required for import-illustrations.')
+            print(json.dumps(import_illustration_archive(arguments.database,arguments.archive,dry_run=arguments.dry_run),indent=2))
+        elif arguments.command=='prepare-readers':
             if not arguments.ai_database:parser.error('--ai-database is required for prepare-readers.')
             if arguments.dry_run:parser.error('prepare-readers writes only disposable private derived caches; omit --dry-run.')
             print(json.dumps(prepare_reader_catalogues(arguments.ai_database),indent=2))
@@ -5684,7 +7014,7 @@ if __name__ == '__main__':
                 progress=lambda message:print(message,flush=True)
                 result=(sync_translation_sources(path,arguments.translation_folder_id,progress)
                         if arguments.command=='sync-translations' else
-                        sync_sources(path,arguments.folder_id,progress,translation_folder_id=arguments.translation_folder_id))
+                        sync_sources(path,arguments.folder_id,progress,translation_folder_id=arguments.translation_folder_id,ai_database=arguments.ai_database))
                 print(json.dumps(result,indent=2))
             finally:_release_sync_lock(lock)
         else:

@@ -15,10 +15,14 @@
     let copiedVerse = "", syncTimer = null, syncBusy = false;
     let navigationBook = state.book, chainRequest = 0;
     let studyTab = "word", selectedWord = null, concordanceRequest = 0, currentChain = null;
+    let dictionaryPreviewRequest=0,currentDictionaryPreview=null;
+    const dictionaryHistory=[];
     let navigationTestament = "old", readerTab = "bible", bookStudyRequest = 0, bookStudyBook = "";
     const readerScroll = {bible: 0, book: 0};
     let readerPassageChanged = false;
     let commentaryRequest = 0, commentarySeries = "wiersbe", pulpitSection = "exposition", greekRequest = 0;
+    let illustrationMode="suggested",illustrationRequest=0,illustrationPassage=null,illustrationSuggestionKey="";
+    let illustrationLetter="A",illustrationTopic="",illustrationQuery="",illustrationSource="",illustrationArticle=null,illustrationListScroll=0;
     const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus", moody: "The Moody Bible Commentary", pulpit: "The Pulpit Commentary"};
     function sizeWorkspace() {
         if(document.body.classList.contains("bible-study-page")) {
@@ -217,9 +221,9 @@
         element("Translation").value = state.translation;
         element("EditionLabel").textContent = translationLabel();
         element("BibleKicker").textContent = "The Holy Bible · " + translationNames[state.translation];
-        element("WordTab").disabled = state.translation !== "NIV";
-        element("WordTab").title = state.translation === "NIV" ? "" : "English word study is available with NIV. Use Concordance for this translation.";
-        if (state.translation !== "NIV" && studyTab === "word") selectStudyTab("concordance");
+        element("WordTab").disabled = false;
+        element("WordTab").title = state.translation === "NIV" ? "" : "Study this translation with its own dictionary, then choose an English equivalent.";
+        element("Search").placeholder=state.translation === "NIV" ? "Word, transliteration, H5800 or GK 6440" : state.translation === "TCB" ? "Search a Tagalog dictionary word" : "Search a Cebuano dictionary word";
     }
     element("Translation").addEventListener("change", () => {
         state.translation = element("Translation").value;
@@ -256,6 +260,7 @@
                     element("Verses").append(node("h3", verse.heading)); lastHeading = verse.heading;
                 }
                 const row = node("div", undefined, (verse.topics || []).length ? "bs-verse-row" : "");
+                const verseBody=node("div",undefined,"bs-verse-body");row.append(verseBody);
                 const paragraph = node("p", undefined, "bs-verse" + (verse.layout === "poetry" || ["Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Songs"].includes(state.book) ? " bs-poetry" : ""));
                 paragraph.id = "bsVerse" + verse.verse;
                 paragraph.dataset.verseId = verse.id;
@@ -268,6 +273,7 @@
                 for (const token of verse.tokens) {
                     appendScriptureText(textContainer, characters, offset, token.start_offset, verse.red_spans || []);
                     const button = node("span", token.text, "bs-word");
+                    button.dataset.tokenIndex=token.token_index;
                     button.setAttribute("role", "button"); button.tabIndex = 0;
                     if ((verse.red_spans || []).some(span => token.start_offset < span.end_offset && token.end_offset > span.start_offset)) button.classList.add("bs-red-letter");
                     button.addEventListener("click", () => {
@@ -275,13 +281,14 @@
                         clearSelectionActions();
                         root.querySelectorAll(".bs-word.is-selected").forEach(item => item.classList.remove("is-selected"));
                         button.classList.add("is-selected"); state.verse = verse.verse;
+                        setIllustrationPassage(verse.verse,verse.verse_end || verse.verse);
                         savePreferences();
                         selectedWord = {word: token.text, verseId: verse.id, tokenIndex: token.token_index};
                         ++wordRequest; ++concordanceRequest;
                         element("Search").value = element("ConcordanceSearch").value = token.text;
                         if (studyTab === "concordance") loadConcordance(token.text);
                         else if (studyTab === "commentary") loadCommentary();
-                        else if (studyTab === "word" && state.translation === "NIV") loadWord(verse.id, token.token_index);
+                        else if (studyTab === "word") loadWord(verse.id, token.token_index);
                         else scheduleBackgroundStudy();
                         if (mobile.matches) requestAnimationFrame(() => {
                             const pane = element("Bible"), bounds = paragraph.getBoundingClientRect();
@@ -297,12 +304,12 @@
                     textContainer.append(button); offset = token.end_offset;
                 }
                 appendScriptureText(textContainer, characters, offset, characters.length, verse.red_spans || []);
-                row.append(paragraph);
+                verseBody.append(paragraph);
                 if (verse.footnotes?.length) {
                     const notes = node("details", undefined, "bs-verse-footnotes");
                     notes.append(node("summary", "Notes · " + verse.verse));
                     for (const note of verse.footnotes) notes.append(node("p", note.text));
-                    row.append(notes);
+                    verseBody.append(notes);
                 }
                 if ((verse.topics || []).length) {
                     const margin = node("aside", undefined, "bs-chain-margin"); margin.setAttribute("aria-label", "Chain topics for verse " + verse.verse);
@@ -374,6 +381,8 @@
     }
     function showSelectionActions(ranges) {
         pendingSelection = {ranges, reference: selectionReference(ranges)};
+        const selected=ranges.map(range=>verseData.get(range.verse_id)).filter(Boolean);
+        if(selected.length)setIllustrationPassage(Math.min(...selected.map(v=>v.verse)),Math.max(...selected.map(v=>v.verse_end || v.verse)));
         element("SelectionReference").textContent = pendingSelection.reference;
         placeSelectionToolbar();
         element("SelectionToolbar").hidden = false;
@@ -384,7 +393,7 @@
         pendingSelection.wholeVerse = true;
     }
     function captureSelection() {
-        if (selectionBusy || [...root.querySelectorAll("dialog[open]")].some(dialog=>!["bsChainDialog","bsVerseDialog","bsSavedStudyDialog","bsGreekDialog"].includes(dialog.id))) return;
+        if (selectionBusy || [...root.querySelectorAll("dialog[open]")].some(dialog=>!["bsChainDialog","bsVerseDialog","bsSavedStudyDialog","bsGreekDialog","bsDictionaryDialog"].includes(dialog.id))) return;
         const selected = window.getSelection();
         if (!selected?.rangeCount || selected.isCollapsed) {
             if (pendingSelection?.wholeVerse) return;
@@ -436,9 +445,9 @@
     document.addEventListener("selectionchange", () => { clearTimeout(selectionTimer); selectionTimer = setTimeout(captureSelection, 100); });
     element("SelectionToolbar").addEventListener("pointerdown", () => { selectionInteractionUntil = performance.now() + 800; });
     element("DismissSelection").addEventListener("click", () => { window.getSelection()?.removeAllRanges(); clearSelectionActions(); });
-    async function copyScripture(text) {
+    async function copyScripture(text,kind="Scripture") {
         if (navigator.clipboard?.writeText && window.isSecureContext) {
-            try { await navigator.clipboard.writeText(text); toast("Scripture copied with its reference."); return; } catch (_error) {}
+            try { await navigator.clipboard.writeText(text); toast(kind+" copied with its reference."); return; } catch (_error) {}
         }
         // Local Wi-Fi HTTP does not expose the Clipboard API on mobile browsers.
         const fallback = document.createElement("textarea"); fallback.value = text;
@@ -447,8 +456,9 @@
         let copied = false;
         try { copied = document.execCommand("copy"); } catch (_error) {}
         fallback.remove();
-        if (copied) toast("Scripture copied with its reference.");
+        if (copied) toast(kind+" copied with its reference.");
         else {
+            element("CopyTitle").textContent="Copy "+kind;element("CopyText").setAttribute("aria-label",kind+" to copy");
             element("CopyText").value = text; element("CopyDialog").showModal();
             element("CopyText").focus(); element("CopyText").select(); element("CopyText").setSelectionRange(0, text.length);
         }
@@ -593,6 +603,7 @@
         const target = element("Verse" + (verse?.verse || number));
         if (!target) return;
         state.verse = number;
+        setIllustrationPassage(number,number);
         element("Bible").scrollTop += target.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 14;
         target.classList.add("bs-jump-target"); setTimeout(() => target.classList.remove("bs-jump-target"), 2500);
     }
@@ -642,15 +653,24 @@
         if(target)requestAnimationFrame(()=>target.scrollIntoView({block:"center"}));
     }
 
-    function loadWord(verseId,tokenIndex){return visibleStudy(()=>fetchWord(verseId,tokenIndex));}
-    async function fetchWord(verseId, tokenIndex) {
+    function loadWord(verseId,tokenIndex,part=selectedWord?.part || "auto"){return visibleStudy(()=>fetchWord(verseId,tokenIndex,part));}
+    async function fetchWord(verseId, tokenIndex, part="auto") {
         const requestId = ++wordRequest;
         const results = element("WordResults");
         results.replaceChildren(node("p", "Looking up this word…"));
         try {
-            const data = await api(apiBase + "/word/" + verseId + "/" + tokenIndex);
+            const data = await api(apiBase + "/word/" + verseId + "/" + tokenIndex + (part!=="auto" ? "?part="+part : ""));
             if (requestId !== wordRequest) return;
-            element("Search").value = data.word;
+            const query=data.query || data.word;
+            element("Search").value = element("ConcordanceSearch").value = query;
+            if(selectedWord?.verseId===verseId&&selectedWord.tokenIndex===tokenIndex){selectedWord.word=query;selectedWord.part=part;}
+            if(data.lookup_token_indices?.length){
+                const indices=new Set(data.lookup_token_indices);
+                root.querySelectorAll('[data-verse-id="'+verseId+'"] .bs-word').forEach(word=>word.classList.toggle("is-selected",indices.has(Number(word.dataset.tokenIndex))));
+            }
+            if(data.result_type==="native_dictionary"){
+                renderNativeDictionaryResults(data,requestId);return;
+            }
             if (data.verified !== true && data.result_type !== "dictionary") {
                 results.replaceChildren(node("h3", data.word), node("p", "No verified original-language equivalent is available for this word in this verse."));
                 renderPeople(data.people, requestId);
@@ -674,7 +694,7 @@
                 }
                 original.append(card);
             }
-            results.insertBefore(original, results.children[1] || null);
+            results.append(original);
         } catch (error) {
             if (requestId === wordRequest) results.replaceChildren(node("p", error.message));
         }
@@ -716,8 +736,79 @@
         if(!element("GreekDialog").open)++greekRequest;
     });
 
+    function renderDictionaryPreview(data,scrollTop=0){
+        currentDictionaryPreview=data;
+        element("DictionaryTitle").textContent=data.title;
+        element("DictionaryBack").hidden=!dictionaryHistory.length;element("DictionaryBack").disabled=false;
+        const content=element("DictionaryContent");content.replaceChildren();
+        for(const entry of data.entries){
+            const article=node("article");
+            const expository=["mounce","vine"].includes(entry.source);
+            if(expository){article.classList.add("bs-expository");article.dataset.dictionaryFamily=entry.source;}
+            if(data.entries.length>1||expository)article.append(node("h4",entry.headword,"bs-dictionary-title"));
+            article.append(node("p",[entry.source_title,entry.section,entry.language].filter(Boolean).join(" · "),"bs-attribution"));
+            appendSourceBlocks(article,entry.context_blocks || []);
+            appendSourceBlocks(article,entry.blocks || []);
+            if(entry.attribution)article.append(node("p",entry.attribution,"bs-attribution"));
+            if(entry.rights_note)article.append(node("p",entry.rights_note,"bs-attribution"));
+            content.append(article);
+        }
+        element("DictionaryDialog").scrollTop=scrollTop;
+    }
+    async function previewDictionaryReference(link){
+        const ids=[...new Set(link.entry_ids || [])].filter(id=>Number.isSafeInteger(id)&&id>0);
+        if(!ids.length)return;
+        const dialog=element("DictionaryDialog"),requestId=++dictionaryPreviewRequest;
+        const previous=dialog.open&&currentDictionaryPreview ? {data:currentDictionaryPreview,scrollTop:dialog.scrollTop} : null;
+        if(!dialog.open){dictionaryHistory.length=0;currentDictionaryPreview=null;}
+        element("DictionaryTitle").textContent=link.headword;
+        element("DictionaryBack").disabled=true;
+        element("DictionaryBack").hidden=!dictionaryHistory.length&&!previous;
+        element("DictionaryContent").replaceChildren(node("p","Loading dictionary article…"));
+        if(!dialog.open)dialog.showModal();
+        try{
+            const entries=await Promise.all(ids.map(async id=>(await api(apiBase+"/dictionaries/entry/"+id)).entry));
+            if(requestId!==dictionaryPreviewRequest||!dialog.open)return;
+            if(previous){dictionaryHistory.push(previous);if(dictionaryHistory.length>20)dictionaryHistory.shift();}
+            renderDictionaryPreview({title:link.headword,entries});
+        }catch(error){
+            if(requestId!==dictionaryPreviewRequest||!dialog.open)return;
+            if(previous){renderDictionaryPreview(previous.data,previous.scrollTop);element("DictionaryContent").prepend(node("p",error.message));}
+            else{
+                const retry=node("button","Retry");retry.type="button";retry.addEventListener("click",()=>previewDictionaryReference(link));
+                element("DictionaryContent").replaceChildren(node("p",error.message),retry);
+            }
+        }
+    }
+    element("DictionaryBack").addEventListener("click",()=>{
+        const previous=dictionaryHistory.pop();
+        if(previous){++dictionaryPreviewRequest;renderDictionaryPreview(previous.data,previous.scrollTop);}
+    });
+    element("CloseDictionary").addEventListener("click",()=>element("DictionaryDialog").close());
+    element("DictionaryDialog").addEventListener("close",()=>{++dictionaryPreviewRequest;currentDictionaryPreview=null;dictionaryHistory.length=0;});
+
     function renderSourceBlock(block, sourceBlocks=null) {
+        if (block.type === "table") {
+            const wrapper=node("div",undefined,"bs-source-table-wrap"), table=node("table",undefined,"bs-source-table");
+            for(const row of block.rows || []) {
+                const tr=node("tr");
+                for(const cell of row) {
+                    const td=node(cell.header ? "th" : "td");
+                    td.colSpan=cell.colspan || 1;td.append(renderSourceBlock(cell.block,sourceBlocks));tr.append(td);
+                }
+                table.append(tr);
+            }
+            wrapper.append(table);return wrapper;
+        }
         const paragraph = node(block.role === "commentary_heading" && block.level > 1 ? "h6" : block.type === "heading" ? "h5" : "p");
+        if(block.illustration)paragraph.classList.add("bs-illustration");
+        if(["testament","section","numbered","paragraph"].includes(block.dictionary_style))paragraph.classList.add("bs-dictionary-"+block.dictionary_style);
+        if(block.presentation){
+            if(["center","right","left","justify"].includes(block.presentation.align))paragraph.style.textAlign=block.presentation.align;
+            if(Number.isFinite(block.presentation.indent))paragraph.style.textIndent=block.presentation.indent+"em";
+            if(Number.isFinite(block.presentation.indent_percent)&&Math.abs(block.presentation.indent_percent)<=15)paragraph.style.textIndent=block.presentation.indent_percent+"%";
+            if(Number.isFinite(block.presentation.inset))paragraph.style.marginLeft=block.presentation.inset+"em";
+        }
         if (block.role === "major_chain") paragraph.classList.add("bs-major-chain");
         if (["commentary_main_idea", "commentary_outline", "commentary_outline_continuation", "commentary_heading", "commentary_reference", "commentary_section", "sermon_heading", "sermon_subpoint", "sermon_reference", "sermon_paragraph", "sermon_list_item"].includes(block.role)) {
             paragraph.classList.add("bs-" + block.role.replaceAll("_", "-"));
@@ -740,12 +831,14 @@
                     content = document.createElement("img");
                     content.src = apiBase + "/dictionaries/asset/" + item.run.asset;
                     content.alt = "Source spelling or symbol"; content.className = "bs-source-image";
+                    if(Number.isFinite(item.run.height_em)&&item.run.height_em>=.15&&item.run.height_em<=3){content.classList.add("bs-inline-glyph");content.style.height=item.run.height_em+"em";}
                 } else {
                     const characters = Array.from(item.run.text);
                     content = document.createTextNode(characters.slice(Math.max(0, from - item.start), Math.min(characters.length, to - item.start)).join(""));
                 }
                 for (const mark of (item.run.marks || [])) {
-                    if (!["em", "strong", "sup", "sub"].includes(mark)) continue;
+                    if(mark === "smallcaps") {const wrapper=node("span",undefined,"bs-smallcaps");wrapper.append(content);content=wrapper;continue;}
+                    if (!["em", "strong", "sup", "sub", "u"].includes(mark)) continue;
                     const wrapper = document.createElement(mark); wrapper.append(content); content = wrapper;
                 }
                 parent.append(content);
@@ -753,19 +846,21 @@
         }
         let offset = 0;
         const links = [...(block.references || []), ...(block.chain_links || []).map(link => ({...link, chain: true})),
-            ...(block.greek_links || []).map(link=>({...link,greek:true}))].sort((a, b) => a.start - b.start);
+            ...(block.greek_links || []).map(link=>({...link,greek:true})),
+            ...(block.dictionary_links || []).map(link=>({...link,dictionary:true}))].sort((a, b) => a.start - b.start);
         for (const reference of links) {
             if (reference.start < offset || reference.end > position) continue;
             appendSlice(sourceText, offset, reference.start);
-            const button = node("button", undefined, reference.greek ? "bs-greek-ref" : reference.chain ? "bs-chain-ref" : "bs-scripture-ref"); button.type = "button";
+            const button = node("button", undefined, reference.dictionary ? "bs-dictionary-ref" : reference.greek ? "bs-greek-ref" : reference.chain ? "bs-chain-ref" : "bs-scripture-ref"); button.type = "button";
             appendSlice(button, reference.start, reference.end);
             let pressedAt=0;
             button.addEventListener("pointerdown",()=>{pressedAt=performance.now();});
             button.addEventListener("click", event => {
                 if(reference.greek && (performance.now()<suppressWordClickUntil || window.getSelection()?.toString().trim()
                     || (event.detail && pressedAt && performance.now()-pressedAt>450)))return;
-                if(reference.greek)previewGreek(reference,block,sourceBlocks);
-                else if(reference.chapter_only)navigatePassage(reference.book,reference.chapter,1);
+                if(reference.dictionary)previewDictionaryReference(reference);
+                else if(reference.greek)previewGreek(reference,block,sourceBlocks);
+                else if(reference.chapter_only)navigatePassage(reference.book,reference.chapter,1,true);
                 else if(reference.chain)previewChain(reference.topic_id,true,reference.key);
                 else previewVerse(reference);
             });
@@ -807,40 +902,52 @@
     }
 
     function dictionaryEntryCard(entry, ownerRequest) {
-        const card = node("article", undefined, "bs-entry");
-        card.append(node("h4", entry.headword), node("p", [entry.section, entry.language].filter(Boolean).join(" · "), "bs-attribution"));
+        const card = node("article", undefined, "bs-definition");
+        const title=node("h4",entry.headword,"bs-dictionary-title");
+        card.append(title, node("p", [entry.part ? entry.part[0].toUpperCase()+entry.part.slice(1) : "", entry.section, entry.language].filter(Boolean).join(" · "), "bs-attribution"));
+        if(entry.match_type==="article_text")card.append(node("p","“"+entry.matched_query+"” appears in this article.","bs-attribution"));
         if (entry.evidence?.length) card.append(node("p", entry.evidence.join(" · "), "bs-evidence"));
         if (entry.identifiers?.length) card.append(node("p", entry.identifiers.filter(item => item.scheme === "strong").map(item => (item.language === "Hebrew" ? "H" : "G") + item.number + item.qualifier).join(" · "), "bs-attribution"));
         const preview = renderSourceBlock(entry.preview_block || {type: "paragraph", text: entry.preview, references: entry.preview_references || []});
         card.append(preview);
         const full = node("div", undefined, "bs-source-content"); full.hidden = true; card.append(full);
-        const more = node("button", "Show more", "bs-show-more"); more.type = "button";
+        const more = node("button", "Read more", "bs-show-more"); more.type = "button";
         more.setAttribute("aria-expanded", "false"); card.append(more);
+        function expositoryLayout(family){
+            if(!["mounce","vine"].includes(family))return;
+            card.classList.add("bs-expository");card.dataset.dictionaryFamily=family;
+        }
+        expositoryLayout(entry.source);
         let loaded = false;
         more.addEventListener("click", async () => {
             if (!full.hidden) {
-                full.hidden = true; preview.hidden = false; more.textContent = "Show more"; more.setAttribute("aria-expanded", "false"); return;
+                full.hidden = true; preview.hidden = false; more.textContent = "Read more"; more.setAttribute("aria-expanded", "false"); return;
             }
             more.disabled = true;
             try {
                 if (!loaded) {
-                    const data = await api(apiBase + "/dictionaries/entry/" + entry.id + (entry.sense_id ? "?sense=" + entry.sense_id : ""));
+                    const data = await api(apiBase + "/dictionaries/entry/" + entry.id);
                     if (ownerRequest !== wordRequest) return;
                     const source = data.entry;
+                    expositoryLayout(source.source);
                     full.append(node("p", source.source_title, "bs-attribution"));
+                    if(source.attribution && source.attribution!==source.source_title)full.append(node("p",source.attribution,"bs-attribution"));
+                    if(source.rights_note)full.append(node("p",source.rights_note,"bs-attribution"));
                     if (source.identifiers.length) {
                         const identifiers = source.identifiers.map(identifier => (identifier.scheme === "strong"
                             ? (identifier.language === "Hebrew" ? "H" : "G") : "GK " + identifier.language + " ")
                             + identifier.number + identifier.qualifier);
                         full.append(node("p", [...new Set(identifiers)].join(" · "), "bs-attribution"));
                     }
-                    for (const block of source.blocks) full.append(renderSourceBlock(block));
+                    appendSourceBlocks(full,source.context_blocks || []);
+                    appendSourceBlocks(full,source.blocks);
                     if (!source.blocks.length) full.append(node("p", "This source lists the heading without a separate definition."));
                     loaded = true;
                 }
                 full.hidden = false; preview.hidden = true; more.textContent = "Show less"; more.setAttribute("aria-expanded", "true");
             } catch (error) {
                 full.replaceChildren(node("p", error.message)); full.hidden = false;
+                more.textContent="Retry";
             } finally {
                 more.disabled = false;
             }
@@ -848,28 +955,187 @@
         return card;
     }
 
-    function renderDictionaryResults(data, ownerRequest) {
-        const results = element("WordResults");
+    function translationChoices(translation, ownerRequest) {
+        const section=node("section",undefined,"bs-translations");
+        section.setAttribute("aria-label",translation.label+" possible equivalents");
+        const line=node("p",undefined,"bs-translation-choices");
+        line.append(node("strong","("+translation.label+") ","bs-translation-label"));section.append(line);
+        if(!translation.available){line.append(document.createTextNode("This dictionary has not been synced yet."));return section;}
+        if(!translation.entries.length){line.append(document.createTextNode("No direct dictionary match found."));return section;}
+        const panel=node("div",undefined,"bs-translation-definition");panel.hidden=true;
+        panel.id="bsTranslationDefinition"+ownerRequest+translation.label.replace(/[^a-z]/gi,"");
+        const buttons=new Map(),cache=new Map();let active=null,revision=0;
+        const close=()=>{
+            ++revision;active=null;panel.hidden=true;panel.removeAttribute("aria-busy");
+            for(const button of buttons.values())button.setAttribute("aria-expanded","false");
+        };
+        async function show(entry,retry=false){
+            const ids=entry.entry_ids || [entry.id],key=ids.join(",");
+            if(active===key&&!retry){close();return;}
+            active=key;const request=++revision;
+            for(const [candidate,button] of buttons)button.setAttribute("aria-expanded",String(candidate===key));
+            panel.hidden=false;panel.setAttribute("aria-busy","true");
+            const dismiss=node("button","Close","bs-translation-close");dismiss.type="button";
+            dismiss.setAttribute("aria-label","Close "+translation.label+" definition");dismiss.addEventListener("click",close);
+            const content=node("div",undefined,"bs-source-content");content.append(node("p","Loading definition…"));
+            panel.replaceChildren(dismiss,node("h4",entry.headword),content);
+            try{
+                let sources=cache.get(key);
+                if(!sources){
+                    sources=await Promise.all(ids.map(async id=>(await api(apiBase+"/dictionaries/entry/"+id)).entry));
+                    cache.set(key,sources);
+                }
+                if(request!==revision||ownerRequest!==wordRequest||!section.isConnected)return;
+                content.replaceChildren();
+                for(const source of sources){
+                    content.append(node("p",[source.section,source.language].filter(Boolean).join(" · "),"bs-attribution"));
+                    appendSourceBlocks(content,source.blocks || []);
+                    if(source.attribution)content.append(node("p",source.attribution,"bs-attribution"));
+                    if(source.rights_note)content.append(node("p",source.rights_note,"bs-attribution"));
+                }
+                paintStudyMarks();
+            }catch(error){
+                if(request!==revision||ownerRequest!==wordRequest)return;
+                const again=node("button","Retry");again.type="button";again.addEventListener("click",()=>show(entry,true));
+                content.replaceChildren(node("p",error.message),again);
+            }finally{if(request===revision)panel.removeAttribute("aria-busy");}
+        }
+        translation.entries.forEach((entry,index)=>{
+            if(index)line.append(document.createTextNode(", "));
+            const button=node("button",entry.headword,"bs-translation-choice");button.type="button";
+            button.title=entry.preview || "Open full dictionary entry";
+            button.setAttribute("aria-expanded","false");button.setAttribute("aria-controls",panel.id);
+            button.addEventListener("click",()=>show(entry));buttons.set((entry.entry_ids || [entry.id]).join(","),button);line.append(button);
+        });
+        section.append(panel);return section;
+    }
+
+    function renderNativeDictionaryResults(data,ownerRequest,originWord=null){
+        const results=element("WordResults"),dictionary=data.dictionary;
+        results.replaceChildren(node("h3",originWord || data.query || data.word),node("p",dictionary.label+" dictionary","bs-kicker"));
+        if(originWord&&originWord!==data.query)results.append(node("p","Dictionary spelling: "+data.query));
+        results.append(node("p",data.accuracy_notice,"bs-notice bs-native-notice"));
+        if(!dictionary.available){results.append(node("p","This dictionary has not been synced yet."));return;}
+        if(!dictionary.entries.length){
+            results.append(node("p","No exact dictionary entry found. Try a base form or another spelling."));
+            if(data.suggestions?.length){
+                results.append(node("p","Possible dictionary spellings — these are suggestions, not confirmed base forms.","bs-attribution"));
+                const choices=node("div",undefined,"bs-native-spellings");
+                for(const suggestion of data.suggestions){
+                    const button=node("button",suggestion.word);button.type="button";
+                    button.addEventListener("click",()=>{if(ownerRequest===wordRequest){element("Search").value=suggestion.word;searchDictionaryWord(suggestion.word,"auto",originWord || data.query);}});
+                    const candidate=node("div",undefined,"bs-native-spelling");candidate.append(button);
+                    if(suggestion.preview)candidate.append(node("p",suggestion.preview,"bs-attribution"));
+                    choices.append(candidate);
+                }
+                results.append(choices);
+            }
+            return;
+        }
+        const englishArea=node("section",undefined,"bs-native-english");englishArea.hidden=true;
+        englishArea.append(node("h4","English dictionary study"),node("p",data.accuracy_notice,"bs-notice bs-native-notice"));
+        const englishResults=node("div");englishArea.append(englishResults);
+        let englishRequest=0;const englishButtons=[];
+        async function lookupEnglish(choice,part=choice.part || "all"){
+            const revision=++englishRequest,finish=beginStudyLoad();
+            englishArea.hidden=false;englishResults.replaceChildren(node("p","Looking up “"+choice.word+"”…"));
+            for(const item of englishButtons)item.button.setAttribute("aria-pressed",String(item.choice===choice));
+            try{
+                const page=await api(apiBase+"/dictionaries/search?"+new URLSearchParams({q:choice.word,part}));
+                if(ownerRequest!==wordRequest||revision!==englishRequest||!results.isConnected)return;
+                renderDictionaryResults({...page,translations:[]},ownerRequest,englishResults,value=>lookupEnglish(choice,value));
+                renderPeople(page.people,ownerRequest,englishResults);
+            }catch(error){if(ownerRequest===wordRequest&&revision===englishRequest)englishResults.replaceChildren(node("p",error.message));}
+            finally{finish();}
+        }
+        for(const entry of dictionary.entries){
+            const section=node("section",undefined,"bs-native-entry");
+            if(entry.is_recorded_form)section.append(node("p","Recorded dictionary form of “"+entry.headword+"”.","bs-attribution"));
+            section.append(dictionaryEntryCard(entry,ownerRequest));
+            if(entry.english_equivalents?.length){
+                const toggle=node("button","Explore English equivalents");toggle.type="button";toggle.setAttribute("aria-expanded","false");
+                const choices=node("div",undefined,"bs-native-equivalents");choices.hidden=true;
+                choices.append(node("p","Choose the meaning that fits this verse:","bs-attribution"));
+                for(const choice of entry.english_equivalents){
+                    const button=node("button",choice.word,"bs-english-equivalent");button.type="button";button.title=choice.meaning;button.setAttribute("aria-pressed","false");
+                    button.addEventListener("click",()=>{if(ownerRequest===wordRequest)lookupEnglish(choice);});
+                    englishButtons.push({button,choice});choices.append(button);
+                }
+                toggle.addEventListener("click",()=>{choices.hidden=!choices.hidden;toggle.setAttribute("aria-expanded",String(!choices.hidden));});
+                section.append(toggle,choices);
+            }else section.append(node("p","No short English equivalent is listed for this entry. Read the full definition.","bs-attribution"));
+            results.append(section);
+        }
+        results.append(englishArea);
+    }
+
+    function renderDictionaryResults(data, ownerRequest, results=element("WordResults"), onTypeChange=null) {
         results.replaceChildren(node("h3", data.query || data.word));
-        for (const group of data.sources) {
+        if(data.word_type){
+            const labels={all:"All word types",name:"Person / name",noun:"Noun",verb:"Verb",adjective:"Adjective",adverb:"Adverb",grammar:"Grammar word"};
+            const type=data.word_type,control=node("div",undefined,"bs-word-type"),label=node("label","Word type for equivalents ");
+            const select=node("select");select.setAttribute("aria-label","Word type");
+            for(const [value,text] of [["auto","Auto"],...Object.entries(labels)]){const option=node("option",text);option.value=value;select.append(option);}
+            select.value=type.basis==="chosen" ? type.part : "auto";
+            label.append(select);control.append(label,node("span",(type.grammar_kind || labels[type.part] || "All word types")+" · "+type.basis,"bs-attribution"));
+            select.addEventListener("change",()=>{
+                if(ownerRequest!==wordRequest)return;
+                if(onTypeChange)onTypeChange(select.value);
+                else if(selectedWord?.verseId!==undefined)loadWord(selectedWord.verseId,selectedWord.tokenIndex,select.value);
+                else searchDictionaryWord(data.query || data.word,select.value);
+            });
+            results.append(control);
+            if(type.part==="grammar"){
+                const notes={article:"Introduces a noun; “the” usually identifies something specific, while “a” and “an” introduce a nonspecific item.",pronoun:"Refers to a person or thing. Its reference depends on the surrounding sentence.",conjunction:"Connects words or clauses and helps show how their ideas relate.",preposition:"Expresses a relationship such as place, direction, time, or association.",determiner:"Identifies or limits the noun that follows.","auxiliary verb":"Helps express tense, possibility, obligation, or a question. Some of these words also function as main verbs.","preposition / infinitive marker":"Can introduce a relationship or a verb in its infinitive form. Read the surrounding phrase to distinguish the uses."};
+                results.append(node("p",notes[type.grammar_kind] || "Study this word through its role in the sentence and any grammatical definitions below.","bs-grammar-note"));
+            }
+        }
+        for(const translation of data.translations || [])results.append(translationChoices(translation,ownerRequest));
+        const sourceOrder=["harper","vine","mounce"];
+        for (const group of [...data.sources].sort((a,b)=>sourceOrder.indexOf(a.source)-sourceOrder.indexOf(b.source))) {
             const section = node("section", undefined, "bs-dictionary");
+            section.dataset.dictionarySource=group.source;
             const toggle = node("button", group.label, "bs-source-toggle"); toggle.type = "button"; toggle.setAttribute("aria-expanded", "true");
             const body = node("div");
             toggle.addEventListener("click", () => { body.hidden = !body.hidden; toggle.setAttribute("aria-expanded", String(!body.hidden)); });
             section.append(toggle, body); results.append(section);
             if (!group.available) body.append(node("p", "This dictionary has not been synced yet."));
-            else if (!group.entries.length) body.append(node("p", "No matching entry found in this book."));
-            for (const entry of group.entries) body.append(dictionaryEntryCard(entry, ownerRequest));
-            if (group.next_offset !== null) {
+            else if (!group.entries.length) body.append(node("p", group.source==="harper" && data.word_type?.part && data.word_type.part!=="all" ? "No direct definition for this word type in this book." : "No matching entry found in this book."));
+            for(const entry of group.entries)body.append(dictionaryEntryCard(entry, ownerRequest));
+            if(group.other_entries?.length){
+                const details=node("details",undefined,"bs-other-definitions");details.append(node("summary","Other word types / unclassified senses"));
+                for(const entry of group.other_entries)details.append(dictionaryEntryCard(entry,ownerRequest));
+                body.append(details);
+            }
+            if(group.related_entries?.length){
+                const details=node("details",undefined,"bs-related-articles");details.append(node("summary","Related articles mentioning this word"));
+                details.append(node("p","These are article mentions, rather than direct definitions.","bs-attribution"));
+                for(const entry of group.related_entries)details.append(dictionaryEntryCard(entry,ownerRequest));
+                body.append(details);
+                if(group.related_next_offset!=null){
+                    const more=node("button","More related articles");more.type="button";details.append(more);let offset=group.related_next_offset;
+                    more.addEventListener("click",async()=>{
+                        more.disabled=true;
+                        try{
+                            const params=new URLSearchParams({q:data.query,source:group.source,offset,related:1,part:data.word_type?.part || "all"});
+                            const page=await api(apiBase+"/dictionaries/search?"+params);
+                            if(ownerRequest!==wordRequest)return;
+                            for(const entry of page.sources[0].related_entries)details.insertBefore(dictionaryEntryCard(entry,ownerRequest),more);
+                            offset=page.sources[0].related_next_offset;more.hidden=offset===null;
+                        }catch(error){more.textContent=error.message;}finally{more.disabled=false;}
+                    });
+                }
+            }
+            if (group.next_offset != null) {
                 const next = node("button", "More matching entries"); next.type = "button"; body.append(next);
                 let offset = group.next_offset;
                 next.addEventListener("click", async () => {
                     next.disabled = true;
                     try {
-                        const query = new URLSearchParams({q: data.query, source: group.source, offset});
+                        const query = new URLSearchParams({q: data.query, source: group.source, offset, part:data.word_type?.part || "all"});
                         const page = await api(apiBase + "/dictionaries/search?" + query);
                         if (ownerRequest !== wordRequest) return;
-                        for (const entry of page.sources[0].entries) body.insertBefore(dictionaryEntryCard(entry, ownerRequest), next);
+                        for (const entry of page.sources[0].entries)body.insertBefore(dictionaryEntryCard(entry, ownerRequest), next);
                         offset = page.sources[0].next_offset;
                         next.hidden = offset === null;
                     } catch (error) { next.textContent = error.message; }
@@ -883,48 +1149,55 @@
         event.preventDefault();
         const query = element("Search").value.trim();
         if (!query) return;
+        await searchDictionaryWord(query);
+    });
+
+    async function searchDictionaryWord(query,part="auto",nativeOrigin=null) {
         const finish=beginStudyLoad();
-        selectedWord = {word: query}; element("ConcordanceSearch").value = query;
+        selectedWord = {word: query,part,nativeOrigin}; element("ConcordanceSearch").value = query;
         ++concordanceRequest;
         const requestId = ++wordRequest;
-        element("WordResults").replaceChildren(node("p", "Searching Mounce and Vine…"));
+        element("WordResults").replaceChildren(node("p", "Searching dictionaries…"));
         try {
-            const data = await api(apiBase + "/dictionaries/search?" + new URLSearchParams({q: query}));
-            if (requestId === wordRequest) { renderDictionaryResults(data, requestId); renderPeople(data.people, requestId); }
+            const data = await api(apiBase + "/dictionaries/search?" + new URLSearchParams({q: query,part,translation:state.translation}));
+            if (requestId === wordRequest) {
+                if(data.result_type==="native_dictionary")renderNativeDictionaryResults(data,requestId,nativeOrigin);
+                else {renderDictionaryResults(data, requestId); renderPeople(data.people, requestId);}
+            }
         } catch (error) {
             if (requestId === wordRequest) element("WordResults").replaceChildren(node("p", error.message));
         } finally{finish();}
-    });
+    }
 
     function selectStudyTab(name, focus = false) {
-        if (!["word", "concordance", "commentary", "sermon"].includes(name)) return;
-        if (name === "word" && state.translation !== "NIV") name = "concordance";
+        if (!["word", "concordance", "commentary", "sermon", "illustrations"].includes(name)) return;
         const changed = studyTab !== name;
-        if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; }
+        if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; ++illustrationRequest; }
         studyTab = name;
         cancelBackgroundStudy();
         if(["commentary","sermon"].includes(name))preferredStudy=name;
-        for (const [tab, prefix] of [["word", "Word"], ["concordance", "Concordance"], ["commentary", "Commentary"], ["sermon", "Sermon"]]) {
+        for (const [tab, prefix] of [["word", "Word"], ["concordance", "Concordance"], ["commentary", "Commentary"], ["sermon", "Sermon"], ["illustrations","Illustrations"]]) {
             const active = tab === name;
             element(prefix + "Tab").setAttribute("aria-selected", String(active));
             element(prefix + "Tab").tabIndex = active ? 0 : -1;
             element(prefix + "Panel").hidden = !active;
         }
-        if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon"})[name]+"Tab").focus();
+        if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon",illustrations:"Illustrations"})[name]+"Tab").focus();
+        if (name === "illustrations") {loadIllustrations();return;}
         if (name === "sermon") { loadSermons(); return; }
         if (name === "commentary") { loadCommentary(); return; }
         if (!changed || !selectedWord) {scheduleBackgroundStudy();return;}
         element("Search").value = element("ConcordanceSearch").value = selectedWord.word;
         if (name === "concordance") loadConcordance(selectedWord.word);
         else if (selectedWord.verseId !== undefined) loadWord(selectedWord.verseId, selectedWord.tokenIndex);
-        else element("SearchForm").requestSubmit();
+        else searchDictionaryWord(selectedWord.word,selectedWord.part || "auto",selectedWord.nativeOrigin);
     }
     root.querySelectorAll("[data-study-tab]").forEach(button => {
         button.addEventListener("click", () => selectStudyTab(button.dataset.studyTab));
         button.addEventListener("keydown", event => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             event.preventDefault();
-            const tabs = ["word", "concordance", "commentary", "sermon"];
+            const tabs = ["word", "concordance", "commentary", "sermon", "illustrations"];
             const next = (tabs.indexOf(studyTab) + (event.key === "ArrowLeft" ? -1 : 1) + tabs.length) % tabs.length;
             selectStudyTab(event.key === "Home" ? tabs[0] : event.key === "End" ? tabs.at(-1) : tabs[next], true);
         });
@@ -973,6 +1246,138 @@
     });
 
     function loadCommentary(){return visibleStudy(fetchCommentary);}
+    function setIllustrationPassage(verse,end=verse){
+        const next={verse,end_verse:end};
+        if(JSON.stringify(next)===JSON.stringify(illustrationPassage))return;
+        illustrationPassage=next;illustrationSuggestionKey="";
+        if(studyTab==="illustrations" && illustrationMode==="suggested")loadIllustrations();
+    }
+    function illustrationReaderClosed(){
+        illustrationArticle=null;element("IllustrationsReader").hidden=true;element("IllustrationsDiscovery").hidden=false;
+    }
+    function illustrationCard(entry){
+        const card=node("article",undefined,"bs-illustration-card");card.dataset.illustrationId=entry.id;
+        card.append(node("h4",entry.title),node("p",[entry.topic,entry.source_title].filter(Boolean).join(" · "),"bs-attribution"));
+        if(entry.needs_source_review)card.append(node("p","Content needs source review.","bs-notice"));
+        else card.append(node("p",entry.preview));
+        if(entry.match){
+            const match=entry.match;
+            card.append(node("p",(match.link_type==="original"?"Source-provided reference: ":"Suggested topic connection: ")+match.reference+(match.theme?" · "+match.theme:""),"bs-illustration-match"));
+        }
+        const read=node("button","Read Full Illustration");read.type="button";read.addEventListener("click",()=>openIllustration(entry.id));card.append(read);
+        return card;
+    }
+    function loadIllustrations(){return visibleStudy(()=>illustrationMode==="suggested"?fetchIllustrationSuggestions():fetchIllustrationBrowse());}
+    async function fetchIllustrationSuggestions(){
+        const params=new URLSearchParams({book:state.book,chapter:state.chapter,...illustrationPassage});
+        const key=params.toString();
+        if(illustrationSuggestionKey===key){illustrationReaderClosed();return;}
+        const requestId=++illustrationRequest,results=element("IllustrationsSuggestions");
+        illustrationReaderClosed();results.replaceChildren(node("p","Finding illustrations for this passage…"));
+        element("IllustrationsReference").textContent=state.book+" "+state.chapter+(illustrationPassage?":"+illustrationPassage.verse+(illustrationPassage.end_verse!==illustrationPassage.verse?"–"+illustrationPassage.end_verse:""):"");
+        try{
+            const data=await api(apiBase+"/illustrations/suggested?"+params);
+            if(requestId!==illustrationRequest || studyTab!=="illustrations" || illustrationMode!=="suggested")return;
+            results.replaceChildren();element("IllustrationsReference").textContent=data.reference;
+            if(!data.available){results.append(node("p","The illustration library has not been imported yet. Use Sync Bible Study in reading settings."));return;}
+            illustrationSuggestionKey=key;
+            if(!data.entries.length){results.append(node("p","No reliable illustration match was found for this passage. Browse by Topic to explore the library."));return;}
+            const entries=data.entries.slice(0,30);
+            for(const entry of entries.slice(0,10))results.append(illustrationCard(entry));
+            if(entries.length>10){
+                const more=node("button","See More","bs-illustrations-more");more.type="button";
+                more.addEventListener("click",()=>{for(const entry of entries.slice(10))results.insertBefore(illustrationCard(entry),more);more.remove();});results.append(more);
+            }
+        }catch(error){if(requestId===illustrationRequest)results.replaceChildren(node("p",error.message));}
+    }
+    async function fetchIllustrationBrowse(offset=0){
+        const requestId=++illustrationRequest,results=element("IllustrationsBrowseResults"),topics=element("IllustrationsTopics");
+        illustrationReaderClosed();
+        const params=new URLSearchParams({letter:illustrationLetter,q:illustrationQuery,topic:illustrationTopic,source:illustrationSource,offset});
+        if(!offset){results.replaceChildren(node("p","Loading illustrations…"));topics.replaceChildren();}
+        try{
+            const data=await api(apiBase+"/illustrations/browse?"+params);
+            if(requestId!==illustrationRequest || studyTab!=="illustrations" || illustrationMode!=="browse")return;
+            if(!offset){
+                results.replaceChildren();element("IllustrationsTopicsBack").hidden=!illustrationTopic;
+                element("IllustrationsTopicHeading").textContent=illustrationTopic?element("IllustrationsTopicHeading").dataset.topicLabel:illustrationQuery?"Search results":"Topics · "+illustrationLetter;
+                topics.hidden=Boolean(illustrationTopic);
+                if(!data.available){results.append(node("p","The illustration library has not been imported yet. Use Sync Bible Study in reading settings."));return;}
+                if(!illustrationTopic)for(const topic of data.topics){
+                    const button=node("button",topic.display_name+" ("+topic.illustration_count+")");button.type="button";
+                    button.addEventListener("click",()=>{illustrationTopic=topic.topic_key;illustrationQuery="";element("IllustrationsSearch").value="";element("IllustrationsTopicHeading").dataset.topicLabel=topic.display_name;loadIllustrations();});topics.append(button);
+                }
+                if(!illustrationTopic&&!illustrationQuery&&!data.topics.length)topics.append(node("p","No topics for this letter and collection."));
+                if((illustrationTopic||illustrationQuery)&&!data.entries.length)results.append(node("p","No illustrations match this search."));
+            }
+            for(const entry of data.entries)results.append(illustrationCard(entry));
+            if(data.next_offset!==null){
+                const more=node("button","More illustrations");more.type="button";
+                more.addEventListener("click",async()=>{more.disabled=true;await visibleStudy(()=>fetchIllustrationBrowse(data.next_offset));more.remove();});results.append(more);
+            }
+        }catch(error){if(requestId===illustrationRequest){if(!offset)results.replaceChildren();results.append(node("p",error.message));}}
+    }
+    async function openIllustration(id){
+        const requestId=++illustrationRequest;illustrationListScroll=element("Study").scrollTop;
+        element("IllustrationsDiscovery").hidden=true;element("IllustrationsReader").hidden=false;
+        element("IllustrationsTitle").textContent="Loading illustration…";element("IllustrationsMetadata").textContent="";
+        element("IllustrationsContent").replaceChildren();element("IllustrationsReferences").replaceChildren();element("IllustrationsCredit").textContent="";element("IllustrationsCopy").disabled=true;
+        illustrationArticle=null;
+        try{
+            const data=await visibleStudy(()=>api(apiBase+"/illustrations/entry/"+encodeURIComponent(id)));
+            if(requestId!==illustrationRequest || studyTab!=="illustrations")return;
+            const article=illustrationArticle=data.illustration,content=element("IllustrationsContent");
+            element("IllustrationsTitle").textContent=article.title;
+            element("IllustrationsMetadata").textContent=[article.source_title,...(article.topics.length?article.topics:[article.topic])].filter(Boolean).join(" · ");
+            appendSourceBlocks(content,article.blocks);
+            if(article.needs_source_review)content.append(node("p","Content needs source review. This record has no stored illustration body.","bs-notice"));
+            const credit=element("IllustrationsCredit");
+            if(article.source_credit&&!article.credit_in_body)credit.append(document.createTextNode(article.source_credit+" · "));
+            credit.append(document.createTextNode("Source: "+article.source_title));
+            if(article.source_file){
+                credit.append(document.createTextNode(" · "));
+                let sourceUrl=null;try{sourceUrl=new URL(article.source_file);}catch(_){}
+                if(sourceUrl&&["https:","http:"].includes(sourceUrl.protocol)){
+                    const link=node("a","Original source");link.href=sourceUrl.href;link.target="_blank";link.rel="noopener noreferrer";credit.append(link);
+                }else credit.append(document.createTextNode(article.source_file));
+            }
+            const references=element("IllustrationsReferences");
+            for(const [kind,label] of [["original","Original Bible references"],["suggested","Suggested related Scripture"]]){
+                const section=node("section",undefined,"bs-illustration-references");section.append(node("h4",label));
+                const links=article.references.filter(ref=>ref.link_type===kind);
+                if(kind==="suggested")section.append(node("p","These topic connections are provided for you to assess against the passage.","bs-attribution"));
+                if(!links.length)section.append(node("p",kind==="original"?"No usable source-provided references recorded.":"No suggested references recorded."));
+                for(const ref of links){
+                    const line=node("p"),button=node("button",ref.display_reference,"bs-scripture-ref");button.type="button";
+                    button.addEventListener("click",()=>{const book=books[ref.book_id-1].name;if(ref.verse_start===null)navigatePassage(book,ref.chapter_start,1,true);else previewVerse({book,chapter:ref.chapter_start,verse:ref.verse_start,end_chapter:ref.chapter_end,end_verse:ref.verse_end});});line.append(button);
+                    if(kind==="suggested"&&ref.theme)line.append(document.createTextNode(" · "+ref.theme));section.append(line);
+                }
+                references.append(section);
+            }
+            if(article.reference_issues.length){const note=node("details");note.append(node("summary","Source references needing review"));for(const issue of article.reference_issues)note.append(node("p",issue.display_reference+" · "+issue.reason));references.append(note);}
+            element("IllustrationsCopy").disabled=article.needs_source_review;
+            element("IllustrationsTitle").focus({preventScroll:true});element("Study").scrollTop=Math.max(0,element("Study").scrollTop+element("IllustrationsReader").getBoundingClientRect().top-element("Study").getBoundingClientRect().top-60);
+        }catch(error){if(requestId===illustrationRequest)element("IllustrationsTitle").textContent=error.message;}
+    }
+    element("IllustrationsBack").addEventListener("click",()=>{++illustrationRequest;illustrationReaderClosed();element("Study").scrollTop=illustrationListScroll;});
+    element("IllustrationsCopy").addEventListener("click",()=>{if(illustrationArticle){const a=illustrationArticle;copyScripture([a.title,a.body_text,a.credit_in_body?"":a.source_credit,a.source_title,a.source_file].filter(Boolean).join("\n\n"),"Illustration");}});
+    function selectIllustrationMode(mode,focus=false){
+        illustrationMode=mode;++illustrationRequest;illustrationReaderClosed();
+        for(const button of root.querySelectorAll("[data-illustration-mode]")){const active=button.dataset.illustrationMode===mode;button.setAttribute("aria-selected",String(active));button.tabIndex=active?0:-1;if(active&&focus)button.focus();}
+        element("IllustrationsSuggested").hidden=mode!=="suggested";element("IllustrationsBrowse").hidden=mode!=="browse";loadIllustrations();
+    }
+    root.querySelectorAll("[data-illustration-mode]").forEach(button=>{
+        button.addEventListener("click",()=>selectIllustrationMode(button.dataset.illustrationMode));
+        button.addEventListener("keydown",event=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();selectIllustrationMode(event.key==="Home"?"suggested":event.key==="End"?"browse":illustrationMode==="suggested"?"browse":"suggested",true);}});
+    });
+    for(const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ"){
+        const button=node("button",letter);button.type="button";button.setAttribute("aria-pressed",String(letter===illustrationLetter));
+        button.addEventListener("click",()=>{illustrationLetter=letter;illustrationTopic="";illustrationQuery="";element("IllustrationsSearch").value="";for(const other of element("IllustrationsAlphabet").children)other.setAttribute("aria-pressed",String(other===button));loadIllustrations();});element("IllustrationsAlphabet").append(button);
+    }
+    element("IllustrationsSearchForm").addEventListener("submit",event=>{event.preventDefault();illustrationQuery=element("IllustrationsSearch").value.trim();illustrationTopic="";loadIllustrations();});
+    element("IllustrationsSource").addEventListener("change",event=>{illustrationSource=event.target.value;loadIllustrations();});
+    element("IllustrationsTopicsBack").addEventListener("click",()=>{illustrationTopic="";loadIllustrations();});
+
     async function fetchCommentary() {
         const renderedKey=[state.book,state.chapter,state.verse,commentarySeries,pulpitSection].join("|");
         if(commentaryRenderedKey===renderedKey && Date.now()-commentaryRenderedAt<sourceCacheLifetime)return;
@@ -1040,7 +1445,7 @@
             if (requestId !== concordanceRequest) return;
             if (offset === 0) results.replaceChildren(node("h3", data.query));
             if (!data.available) { results.append(node("p", state.translation === "NIV" ? "The Thompson concordance has not been synced yet." : "This translation has not been imported yet.")); return; }
-            if (!data.entries.length && offset === 0) results.append(node("p", state.translation === "NIV" ? "No entry for this word is listed in the Thompson concordance." : "No verses contain this exact word in the selected translation."));
+            if (!data.entries.length && offset === 0) results.append(node("p", state.translation === "NIV" ? "No matching entry found in Thompson." : "No verses contain this exact word in the selected translation."));
             for (const entry of data.entries) {
                 const card = node("article", undefined, "bs-concordance-entry");
                 card.append(node("h4", entry.headword));
@@ -1059,6 +1464,10 @@
                 const content = node("div", undefined, "bs-concordance-excerpts bs-source-content");
                 for (const block of entry.blocks) content.append(renderSourceBlock(block));
                 card.append(content, node("p", entry.source_label || "Thompson concordance · PDF page " + entry.source_page, "bs-attribution"));
+                if(entry.topic_id){
+                    const open=node("button","Open chain topic");open.type="button";
+                    open.addEventListener("click",()=>previewChain(entry.topic_id));card.append(open);
+                }
                 if (entry.passage) {
                     const read = node("button", "Read passage"); read.type = "button";
                     read.addEventListener("click", () => navigatePassage(entry.passage.book, entry.passage.chapter, entry.passage.verse));
@@ -1105,7 +1514,7 @@
         details.append(content); return details;
     }
 
-    function renderPeople(data, ownerRequest) {
+    function renderPeople(data, ownerRequest, target=element("WordResults")) {
         if (!data?.people?.length) return;
         const card = node("section", undefined, "bs-person-study");
         card.append(node("p", "Thompson person study", "bs-kicker"));
@@ -1144,7 +1553,7 @@
             }
         }
         if (data.selected) show(data.selected);
-        element("WordResults").insertBefore(card, element("WordResults").children[1] || null);
+        target.insertBefore(card, target.children[1] || null);
     }
 
     function loadBookStudy(){return visibleStudy(fetchBookStudy);}
@@ -1418,11 +1827,13 @@
         }
         cancelBackgroundStudy();
         ++commentaryRequest;
+        ++illustrationRequest;illustrationPassage=null;illustrationSuggestionKey="";
         if (sermonChapter !== state.book+" "+state.chapter) { ++sermonRequest; sermonChapter=""; }
         const passageReady=chapterLoadPromise=loadChapter();
         if(readerTab==="book")passageReady.then(()=>{if(passageReady===chapterLoadPromise&&readerTab==="book"&&bookStudyBook!==state.book)loadBookStudy();});
         if (studyTab === "commentary") loadCommentary();
         if (studyTab === "sermon") loadSermons();
+        if (studyTab === "illustrations") loadIllustrations();
         else if(studyTab!=="commentary")chapterLoadPromise.then(scheduleBackgroundStudy);
     }
 
@@ -1547,7 +1958,7 @@
         }
     }, true);
     root.addEventListener("click",event=>{
-        if(event.target.closest(".bs-scripture-ref,.bs-chain-ref")&&(window.getSelection()?.toString()||(pendingSelection?.study&&performance.now()<suppressWordClickUntil))){event.preventDefault();event.stopImmediatePropagation();}
+        if(event.target.closest(".bs-scripture-ref,.bs-chain-ref,.bs-dictionary-ref")&&(window.getSelection()?.toString()||(pendingSelection?.study&&performance.now()<suppressWordClickUntil))){event.preventDefault();event.stopImmediatePropagation();}
     },true);
 
     element("Book").addEventListener("change", event => {
@@ -1574,16 +1985,17 @@
                 const button = node("button", number); button.type = "button";
                 button.setAttribute("aria-label", book.name + " " + number);
                 if (state.book === book.name && state.chapter === number) button.setAttribute("aria-current", "true");
-                button.addEventListener("click", () => navigatePassage(book.name, number, 1)); grid.append(button);
+                button.addEventListener("click", () => navigatePassage(book.name, number, 1,true)); grid.append(button);
             }
             element("ChapterGrid").replaceChildren(node("h3", book.name), grid);
         }
     }
-    function navigatePassage(book, chapter, verse) {
+    function navigatePassage(book, chapter, verse=1, wholeChapter=false) {
         readerScroll.bible = 0;
         state.book = book; state.chapter = chapter; state.verse = verse;
         for (const name of ["NavigationDialog", "HistoryDialog"]) if (element(name).open) element(name).close();
         updateChapter(); savePreferences();
+        if(!wholeChapter)setIllustrationPassage(verse,verse);
     }
     function drawBookGrid() {
         const panel = element("BookGrid"); panel.replaceChildren();
@@ -1636,7 +2048,7 @@
             try { await api(config.verseUrl + "?" + new URLSearchParams({translation: state.translation, book: book.name, chapter: match[2], verse: match[3]})); }
             catch (error) { element("NavigationError").textContent = error.message; return; }
         }
-        navigatePassage(book.name, Number(match[2]), Number(match[3] || 1));
+        navigatePassage(book.name, Number(match[2]), Number(match[3] || 1),!match[3]);
     });
     element("History").addEventListener("click", async () => {
         element("HistoryList").replaceChildren(node("p", "Loading reading history…")); element("HistoryDialog").showModal();
@@ -1744,6 +2156,7 @@
         }
         applyTranslation(); await refreshTranslations();
         updateChapter(); applyAppearance(); setRatio(mobile.matches ? (localSettings.mobileRatio || 50) : state.split_ratio); setMode(state.layout_mode);
+        if(kind || state.verse>1)setIllustrationPassage(state.verse,state.verse);
         if(query.has("study")) {
             try { const saved=await api(apiBase+"/study-saves/"+encodeURIComponent(query.get("study")));await openSavedStudy(saved.item); }
             catch(error){toast(error.message);}

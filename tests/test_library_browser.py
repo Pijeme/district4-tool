@@ -253,9 +253,19 @@ class BibleStudyBrowserTests(unittest.TestCase):
                 const verse=document.querySelector('.bs-verse-text');
                 check(verse.textContent===word+' synthetic.\\nNext line.','Selected translation text/line breaks lost');
                 check(document.querySelector('.bs-verse-number').textContent==='2–3','Combined verse was split incorrectly');
-                check(document.getElementById('bsWordTab').disabled,'Unverified original-language mapping enabled');
-                check(document.getElementById('bsConcordanceTab').getAttribute('aria-selected')==='true','Native word matching not selected');
+                check(!document.getElementById('bsWordTab').disabled,'Native dictionary Word Study is disabled');
+                document.getElementById('bsConcordanceTab').click();
+                check(document.getElementById('bsConcordanceTab').getAttribute('aria-selected')==='true','Concordance selection failed');
                 check(document.querySelector('.bs-verse-footnotes').textContent.includes('Synthetic footnote.'),'Footnote missing');
+                const row=document.querySelector('.bs-verse-row'),body=row.querySelector('.bs-verse-body'),margin=row.querySelector('.bs-chain-margin');
+                check(body.contains(row.querySelector('.bs-verse-footnotes')),'Footnotes occupy a separate grid column');
+                const checkMargin=()=>{
+                    const textBounds=body.getBoundingClientRect(),marginBounds=margin.getBoundingClientRect();
+                    check(marginBounds.left>=textBounds.right,'Thompson references left the right margin');
+                    check(Math.abs(marginBounds.top-textBounds.top)<2,'Thompson references moved to another row');
+                    check(marginBounds.right<=row.getBoundingClientRect().right+1,'Thompson references overflow the reader');
+                };
+                checkMargin();row.querySelector('.bs-verse-footnotes').open=true;checkMargin();
                 check(!verse.textContent.includes('footnote'),'Footnote changed verse annotation offsets');
                 document.querySelector('.bs-verse-number').click();
                 document.querySelector('[data-selection-action="copy"]').click();await wait();
@@ -706,7 +716,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!document.querySelector('.bs-source-toggle'),'Unverified dictionary results leaked into NIV click');
             words[0].click();await new Promise(resolve=>setTimeout(resolve,20));
             check(document.getElementById('bsWordResults').textContent.includes('Synthetic original'),'Verified original spelling missing');
-            check([...document.querySelectorAll('.bs-source-toggle')].map(button=>button.textContent).join(',')==='Mounce,Vine','Sources merged or mislabeled');
+            check([...document.querySelectorAll('.bs-source-toggle')].map(button=>button.textContent).join(',')==='Vine,Mounce','Sources merged or mislabeled');
             check(!document.getElementById('bsWordResults').textContent.includes('KJV'),'Legacy lookup still displayed');
             check(document.getElementById('bsWordResults').textContent.includes('No matching entry found in this book.'),'Missing empty source message');
             document.querySelector('.bs-show-more').click();await new Promise(resolve=>setTimeout(resolve,20));
@@ -724,6 +734,409 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const toggle=document.querySelector('.bs-source-toggle');toggle.click();
             check(toggle.getAttribute('aria-expanded')==='false','Source card not collapsible');
         ''', setup)
+
+    def test_illustrations_passage_suggestions_browse_reader_and_copy_on_mobile_and_desktop(self):
+        setup='''
+        window.illustrationRequests=[];window.illustrationCopied='';
+        Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{illustrationCopied=text}}});
+        document.execCommand=action=>{if(action==='copy')illustrationCopied=document.activeElement.value;return true;};
+        const item=n=>({id:'item-'+n,title:'Illustration '+n,topic:'Faith',source_title:n%2?'1001 Illustrations That Connect':'SermonIllustrations.com',preview:'Original preview '+n,needs_source_review:n===40,
+            match:{reference:'Ephesians 5:1',link_type:n===0?'original':'suggested',theme:n===0?null:'Faith',confidence:n===0?'source':'high'}});
+        window.fetch=async(url,options={})=>{
+            const path=String(url),params=new URL(path,'http://fixture').searchParams;illustrationRequests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:3,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Ephesians',chapter:5,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[1,2,21].map(verse=>({id:verse,verse,text:'Faith '+verse,tokens:[{text:'Faith',token_index:0,start_offset:0,end_offset:5}]}));
+            else if(path.includes('/illustrations/suggested?'))data={...data,available:true,reference:'Ephesians '+params.get('chapter')+(params.has('verse')?':'+params.get('verse')+(params.get('end_verse')!==params.get('verse')?'–'+params.get('end_verse'):''):''),entries:Array.from({length:32},(_,n)=>item(n))};
+            else if(path.includes('/illustrations/browse?'))data={...data,available:true,topics:[{topic_key:'faith',display_name:'Faith',illustration_count:45}],entries:params.has('topic')&&params.get('topic')||params.get('q')?[item(params.get('offset')==='30'?40:35)]:[],next_offset:params.get('topic')&&params.get('offset')==='0'?30:null};
+            else if(path.includes('/illustrations/entry/'))data.illustration={...item(0),title:'Complete illustration',topics:['Faith','Hope'],body_text:'Original complete text.',source_credit:'Original contributor',credit_in_body:false,source_file:'javascript:alert(1)',
+                blocks:[{type:'paragraph',text:'Original complete text.',runs:[{type:'text',text:'Original complete text.',marks:['strong','u']}],references:[]}],reference_issues:[],references:[
+                    {book_id:49,chapter_start:5,chapter_end:5,verse_start:1,verse_end:2,display_reference:'Ephesians 5:1–2',link_type:'original'},
+                    {book_id:58,chapter_start:11,chapter_end:11,verse_start:null,verse_end:null,display_reference:'Hebrews 11',link_type:'suggested',theme:'Faith',confidence:'high'}]};
+            else if(path.includes('/verse?'))data.verse={reference:'Ephesians 5:1–2',text:'Full selected passage.',attribution:'Fixture'};
+            else if(path.endsWith('/history'))data.history=[];
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const el=name=>document.getElementById('bs'+name),wait=ms=>new Promise(r=>setTimeout(r,ms||40));
+            el('IllustrationsTab').click();await wait();
+            check(el('IllustrationsPanel').hidden===false,'New tab did not open');
+            if(innerWidth<=700)for(const name of ['SermonTab','IllustrationsTab']){
+                const tab=el(name),range=document.createRange();range.selectNodeContents(tab.firstChild);
+                const second=document.createRange();second.selectNodeContents(tab.querySelector('.bs-mobile-tab-line'));
+                check(second.getBoundingClientRect().top>range.getBoundingClientRect().top,'Full mobile tab label did not wrap onto two lines');
+                check(tab.scrollHeight<=tab.clientHeight+1,'Two-line tab label is clipped');
+            }
+            if(innerWidth<=700){
+                const tabs=el('Study').querySelector('.bs-study-tabs'),bounds=tabs.getBoundingClientRect();
+                check(tabs.scrollWidth<=tabs.clientWidth,'Mobile tabs still require horizontal scrolling');
+                for(const tab of tabs.querySelectorAll('button')){
+                    const r=tab.getBoundingClientRect();check(r.left>=bounds.left&&r.right<=bounds.right+1,'A study tab is outside the mobile screen');
+                    const text=document.createRange();text.selectNodeContents(tab);
+                    for(const fragment of text.getClientRects())check(fragment.left>=r.left-1&&fragment.right<=r.right+1,'Tab text overlaps another tab');
+                }
+            }
+            check(document.querySelectorAll('[data-illustration-mode]').length===2,'Expected exactly two discovery modes');
+            let requests=illustrationRequests.filter(p=>p.includes('/illustrations/suggested?'));
+            check(!new URL(requests.at(-1),'http://fixture').searchParams.has('verse'),'Chapter view narrowed to first verse');
+            check(el('IllustrationsSuggestions').querySelectorAll('.bs-illustration-card').length===10,'Initial suggestions not 10');
+            check(el('IllustrationsSuggestions').textContent.includes('Source-provided reference')&&el('IllustrationsSuggestions').textContent.includes('Suggested topic connection'),'Match provenance missing');
+            el('IllustrationsSuggestions').querySelector('.bs-illustrations-more').click();
+            check(el('IllustrationsSuggestions').querySelectorAll('.bs-illustration-card').length===30&&!el('IllustrationsSuggestions').querySelector('.bs-illustrations-more'),'See More exceeded 30 or remained visible');
+            document.querySelector('.bs-word').click();await wait();
+            requests=illustrationRequests.filter(p=>p.includes('/illustrations/suggested?'));
+            check(new URL(requests.at(-1),'http://fixture').searchParams.get('verse')==='1','Selected verse was not followed');
+            check(el('IllustrationsSuggestions').querySelectorAll('.bs-illustration-card').length===10,'Passage change did not reset the limit');
+            const range=document.createRange(),first=el('Verse1').querySelector('.bs-verse-text'),last=el('Verse2').querySelector('.bs-verse-text');range.setStartBefore(first);range.setEndAfter(last);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait(180);
+            requests=illustrationRequests.filter(p=>p.includes('/illustrations/suggested?'));
+            const selection=new URL(requests.at(-1),'http://fixture').searchParams;
+            check(selection.get('verse')==='1'&&selection.get('end_verse')==='2','Selected verse range was lost');getSelection().removeAllRanges();
+            el('IllustrationsSuggestions').querySelector('.bs-illustration-card button').click();await wait();
+            check(!el('IllustrationsReader').hidden&&el('IllustrationsDiscovery').hidden,'Reader failed to open');
+            check(el('IllustrationsContent').querySelector('strong u,u strong'),'Source emphasis lost');
+            check(!el('IllustrationsCredit').querySelector('a'),'Unsafe source URL became clickable');
+            check(el('IllustrationsReferences').textContent.includes('Original Bible references')&&el('IllustrationsReferences').textContent.includes('Suggested related Scripture'),'Reference categories merged');
+            check(!el('IllustrationsReferences').textContent.includes('awaiting review'),'Owner-approved suggestions still ask for review');
+            el('IllustrationsReferences').querySelector('.bs-scripture-ref').click();await wait();
+            check(el('VerseDialog').open&&el('VerseText').textContent==='Full selected passage.','Illustration Scripture link failed');el('CloseVerse').click();
+            el('IllustrationsCopy').click();await wait();check(illustrationCopied.includes('Original complete text.')&&illustrationCopied.includes('Original contributor'),'Copy lost original text or credit');
+            el('IllustrationsBack').click();check(!el('IllustrationsDiscovery').hidden&&el('IllustrationsReader').hidden,'Back lost discovery view');
+            el('IllustrationsBrowseTab').click();await wait();
+            check(el('IllustrationsAlphabet').querySelectorAll('button').length===26,'Alphabet incomplete');
+            [...el('IllustrationsAlphabet').children].find(b=>b.textContent==='F').click();await wait();
+            check(el('IllustrationsTopics').textContent.includes('Faith (45)'),'Topic count missing');
+            el('IllustrationsTopics').querySelector('button').click();await wait();
+            check(el('IllustrationsTopicHeading').textContent==='Faith'&&el('IllustrationsBrowseResults').textContent.includes('Illustration 35'),'Topic drilldown failed');
+            [...el('IllustrationsBrowseResults').querySelectorAll('button')].find(b=>b.textContent==='More illustrations').click();await wait();
+            check(el('IllustrationsBrowseResults').textContent.includes('Illustration 40')&&el('IllustrationsBrowseResults').textContent.includes('Content needs source review'),'Empty record inaccessible through browsing');
+            el('IllustrationsTopicsBack').click();await wait();el('IllustrationsSearch').value='hope';el('IllustrationsSearchForm').requestSubmit();await wait();
+            check(illustrationRequests.some(p=>p.includes('/illustrations/browse?')&&new URL(p,'http://fixture').searchParams.get('q')==='hope'),'Content search failed');
+            el('IllustrationsSource').value='connect_1001';el('IllustrationsSource').dispatchEvent(new Event('change'));await wait();
+            check(new URL(illustrationRequests.filter(p=>p.includes('/illustrations/browse?')).at(-1),'http://fixture').searchParams.get('source')==='connect_1001','Collection filter ignored');
+            el('IllustrationsSuggestedTab').click();await wait();el('Chapter').value='6';el('Chapter').dispatchEvent(new Event('change'));await wait();
+            const chapter=new URL(illustrationRequests.filter(p=>p.includes('/illustrations/suggested?')).at(-1),'http://fixture').searchParams;
+            check(chapter.get('chapter')==='6'&&!chapter.has('verse'),'Chapter change retained stale selection');
+            el('ReferenceInput').value='Romans 8:28';el('DirectReference').requestSubmit();await wait();
+            const directVerse=new URL(illustrationRequests.filter(p=>p.includes('/illustrations/suggested?')).at(-1),'http://fixture').searchParams;
+            check(directVerse.get('book')==='Romans'&&directVerse.get('verse')==='28','Direct verse navigation lost its verse');
+            el('ReferenceInput').value='Hebrews 11';el('DirectReference').requestSubmit();await wait();
+            const directChapter=new URL(illustrationRequests.filter(p=>p.includes('/illustrations/suggested?')).at(-1),'http://fixture').searchParams;
+            check(directChapter.get('book')==='Hebrews'&&!directChapter.has('verse'),'Direct chapter navigation narrowed to verse one');
+            check(document.documentElement.scrollWidth<=innerWidth,'Illustration view overflows mobile width');
+        '''
+        for size in [(1100,850),(430,900),(393,852),(320,750)]:
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_illustration_stale_suggestions_cannot_replace_new_passage_or_reader(self):
+        setup='''
+        window.releaseOldIllustrations=null;window.oldIllustrationsRequested=false;
+        window.fetch=async(url)=>{
+            const path=String(url);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Romans',chapter:8,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:28,text:'good',tokens:[{text:'good',token_index:0,start_offset:0,end_offset:4}]}];
+            else if(path.includes('/illustrations/suggested?')){
+                if(!oldIllustrationsRequested){oldIllustrationsRequested=true;await new Promise(resolve=>{releaseOldIllustrations=resolve});data={...data,available:true,reference:'OLD Romans 8',entries:[]};}
+                else data={...data,available:true,reference:'Romans 8:28',entries:[{id:'current',title:'Current passage illustration',topic:'Hope',source_title:'Source',preview:'Current source preview'}]};
+            }else if(path.endsWith('/history'))data.history=[];
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(self.render_preview(),'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,40));
+            el('IllustrationsTab').click();await wait();
+            document.querySelector('.bs-word').click();await wait();
+            check(el('IllustrationsReference').textContent==='Romans 8:28','New passage response missing');
+            releaseOldIllustrations();await wait();
+            check(el('IllustrationsReference').textContent==='Romans 8:28'&&el('IllustrationsSuggestions').textContent.includes('Current passage illustration'),'Old response replaced selected passage');
+        ''',setup)
+
+    def test_word_study_source_order_whole_articles_and_harper_illustrations(self):
+        setup='''
+        window.definitionLoads=[];
+        window.fetch=async(url,options={})=>{
+            const path=String(url);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Genesis',chapter:1,verse:1,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:1,text:'Love.',tokens:[{text:'Love',token_index:0,start_offset:0,end_offset:4}]}];
+            else if(path.includes('/word/'))data={...data,word:'Love',query:'Love',verified:false,result_type:'dictionary',
+                translations:[{label:'Tagalog',available:true,entries:[{id:10,entry_ids:[10,13],headword:'ibig',preview:'love'},{id:12,headword:'amor',preview:'love; affection'}]},{label:'Cebuano',available:true,entries:[{id:11,headword:'gugma',preview:'love'}]}],
+                sources:[{source:'harper',label:'HarperCollins',available:true,next_offset:null,entries:[{id:1,headword:'love',preview:'Bible background'}]},
+                    {source:'mounce',label:'Mounce',available:true,next_offset:null,entries:[{id:2,source:'mounce',headword:'LOVE',preview:'Complete love article'}]},
+                    {source:'vine',label:'Vine',available:true,next_offset:null,entries:[]}]};
+            else if(path.includes('/dictionaries/entry/')){
+                definitionLoads.push(path);data.entry={source_title:'Original source',identifiers:[],blocks:path.endsWith('/1')?
+                    [{type:'paragraph',illustration:true,text:'Image',runs:[{type:'image',asset:'fixture',marks:[]}]},
+                     {type:'table',rows:[[{header:true,block:{type:'paragraph',text:'Heading'}},{block:{type:'paragraph',text:'Value'}}]]}]:
+                    [{type:'paragraph',text:'Full definition '+path}]};
+            }else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(self.render_preview(),'''
+            const wait=()=>new Promise(r=>setTimeout(r,25));
+            document.querySelector('.bs-word').click();await wait();
+            const results=document.getElementById('bsWordResults');
+            check([...results.children].map(n=>n.textContent).join('|').indexOf('Tagalog')<results.textContent.indexOf('HarperCollins'),'Translations follow dictionaries');
+            check([...results.querySelectorAll('.bs-translation-label')].map(n=>n.textContent.trim()).join(',')==='(Tagalog),(Cebuano)','Translation order');
+            const translations=results.querySelectorAll('.bs-translations'),choices=translations[0].querySelectorAll('.bs-translation-choice');
+            check(translations[0].querySelector('.bs-translation-choices').textContent==='(Tagalog) ibig, amor','Translation list is not compact');
+            check(!translations[0].querySelector('.bs-definition'),'Translation previews remain');
+            check(translations[0].querySelector('.bs-translation-definition').hidden,'Full translation visible before clicking');
+            choices[0].click();await wait();
+            check(definitionLoads.some(p=>p.endsWith('/10'))&&definitionLoads.some(p=>p.endsWith('/13')),'Word did not load all dictionary entries');
+            check(translations[0].textContent.includes('Full definition'),'Full meaning missing');
+            check(translations[1].querySelector('.bs-translation-definition').hidden,'Tagalog click expanded Cebuano');
+            choices[1].click();await wait();
+            check(translations[0].querySelector('.bs-translation-definition h4').textContent==='amor','Word choice did not switch the definition');
+            check(choices[0].getAttribute('aria-expanded')==='false','Previous word remains expanded');
+            translations[0].querySelector('.bs-translation-close').click();
+            check(translations[0].querySelector('.bs-translation-definition').hidden,'Close did not collapse the meaning');
+            translations[1].querySelector('.bs-translation-choice').click();await wait();
+            check(translations[1].querySelector('.bs-translation-definition h4').textContent==='gugma','Cebuano word failed to expand');
+            check([...results.querySelectorAll('.bs-source-toggle')].map(n=>n.textContent).join(',')==='HarperCollins,Vine,Mounce','Dictionary order');
+            check(!results.querySelector('.bs-entry'),'Definition boxes remain');
+            const sources=results.querySelectorAll('.bs-dictionary'),articles=sources[2].querySelectorAll('.bs-definition');
+            check(articles.length===1,'Original Mounce article divided');
+            check(articles[0].querySelectorAll('button').length===1,'Extra article action displayed');
+            articles[0].querySelector('.bs-show-more').click();await wait();
+            check(definitionLoads.at(-1).endsWith('/2'),'Whole article not fetched');
+            check(sources[0].querySelector('.bs-source-content').hidden,'Opening Mounce expanded Harper');
+            sources[0].querySelector('.bs-show-more').click();await wait();
+            check(sources[0].querySelector('.bs-illustration img'),'Harper picture missing');
+            check(sources[0].querySelector('table th').textContent==='Heading','Harper table flattened');
+            check(sources[0].querySelector('.bs-show-more').textContent==='Show less','Read more did not expand');
+            sources[0].querySelector('.bs-show-more').click();
+            check(sources[0].querySelector('.bs-source-content').hidden,'Definition failed to collapse');
+        ''',setup)
+
+    def test_expository_readers_keep_epub_headings_indents_glyph_sizes_and_complete_articles(self):
+        setup='''
+        window.epubRequests=[];
+        const testament=text=>({type:'heading',text,dictionary_style:'testament',runs:[{type:'text',text,marks:['strong','em']}],references:[]});
+        const section=text=>({type:'heading',text,dictionary_style:'section',presentation:{align:'center'},references:[]});
+        const definition={type:'paragraph',text:'Verb: image source definition',dictionary_style:'paragraph',presentation:{indent_percent:5},references:[],runs:[{type:'text',text:'Verb: ',marks:['strong']},{type:'image',asset:'glyph',height_em:.875,marks:[]},{type:'text',text:' source definition',marks:[]}]};
+        window.fetch=async(url,options={})=>{
+            const path=String(url);epubRequests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'John',chapter:3,verse:16,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:16,text:'loved',tokens:[{text:'loved',token_index:0,start_offset:0,end_offset:5}]}];
+            else if(path.includes('/word/'))data={...data,word:'loved',query:'loved',verified:false,result_type:'dictionary',translations:[],sources:
+                ['mounce','vine'].map((source,i)=>({source,label:source==='mounce'?'Mounce':'Vine',available:true,next_offset:null,entries:[{id:i+2,source,headword:'LOVE',preview:'Complete love article'}]}))};
+            else if(path.includes('/dictionaries/entry/')){
+                const mounce=path.includes('/entry/2'),sense=path.includes('?sense='),source=mounce?'mounce':'vine';
+                data.entry={source,headword:mounce?'LOVE':'LOVE (Noun and Verb)',source_title:mounce?'Mounce fixture':'Vine fixture',identifiers:[],
+                    context_blocks:sense?[mounce?testament('Old Testament'):section('A. Verbs.')]:[],
+                    blocks:sense?[definition]:mounce?[testament('Old Testament'),definition,testament('New Testament'),{type:'paragraph',text:'Full NT noun definition'}]:
+                        [section('A. Verbs.'),{type:'paragraph',text:'1. agapao, full verb meaning.',dictionary_style:'numbered'},section('B. Nouns.'),{type:'paragraph',text:'1. agape, full noun meaning.',dictionary_style:'numbered'}]};
+            }else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(r=>setTimeout(r,40)),el=name=>document.getElementById('bs'+name);
+            document.querySelector('.bs-word').click();await wait();
+            const cards=el('WordResults').querySelectorAll('.bs-definition'),mounce=el('WordResults').querySelector('[data-dictionary-family="mounce"]'),vine=el('WordResults').querySelector('[data-dictionary-family="vine"]');
+            check(cards.length===2,'Original articles divided');
+            check([...el('WordResults').querySelectorAll('.bs-source-toggle')].map(n=>n.textContent).join(',')==='Vine,Mounce','Dictionary order');
+            check(!el('WordResults').querySelector('.bs-read-article,.bs-part-heading'),'Separate full article action or word type grouping remains');
+            mounce.querySelector('.bs-show-more').click();await wait();
+            const full=mounce.querySelector('.bs-source-content');
+            check(full.querySelector('.bs-dictionary-testament').textContent==='Old Testament','Article lost testament heading');
+            check(full.querySelector('.bs-dictionary-paragraph').style.textIndent==='5%','Original paragraph indentation missing');
+            const glyph=full.querySelector('.bs-inline-glyph');check(glyph&&parseFloat(getComputedStyle(glyph).height)<32,'Inline spelling image enlarged as an illustration');
+            check(epubRequests.at(-1).endsWith('/dictionaries/entry/2'),'Full article fetched just one sense');
+            check([...full.querySelectorAll('.bs-dictionary-testament')].map(n=>n.textContent).join('|')==='Old Testament|New Testament','Full article lost source testament order');
+            check(full.textContent.includes('Full NT noun definition'),'Full source article still filtered to one word type');
+            check(vine.querySelector('.bs-source-content').hidden,'Expanding Mounce also expanded Vine');
+            vine.querySelector('.bs-show-more').click();await wait();
+            const title=vine.querySelector('.bs-dictionary-title'),sections=vine.querySelectorAll('.bs-dictionary-section');
+            check(getComputedStyle(title).textAlign==='center'&&getComputedStyle(title).fontStyle==='italic','Vine title lost original style');
+            check([...sections].map(n=>n.textContent).join('|')==='A. Verbs.|B. Nouns.','Vine lettered grammatical headings missing');
+            check([...sections].every(n=>getComputedStyle(n).textAlign==='center'),'Vine grammatical headings not centered');
+            check(el('WordResults').scrollWidth<=el('WordResults').clientWidth+1,'Source reader overflows mobile width');
+            check(!epubRequests.some(p=>p.includes('?sense=')),'Article was fetched as a separate sense');
+            mounce.querySelector('.bs-show-more').click();
+            check(full.hidden&&!vine.querySelector('.bs-source-content').hidden,'Articles did not collapse independently');
+            check(el('WordResults').querySelectorAll('.bs-dictionary').length===2&&el('Book').value==='John','Full article expansion replaced the current study');
+        '''
+        for size in [(1100,850),(430,900)]:
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_dictionary_suggestions_open_articles_and_nested_verse_preview_with_back(self):
+        setup='''
+        window.referenceRequests=[];
+        const linked=(text,term,id)=>({type:'paragraph',text,runs:[{type:'text',text,marks:['em']}],references:[],dictionary_links:[{start:text.indexOf(term),end:text.indexOf(term)+term.length,headword:term,entry_ids:[id]}]});
+        window.fetch=async(url,options={})=>{
+            const path=String(url);referenceRequests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Isaiah',chapter:54,verse:11,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:11,text:'sapphire',tokens:[{text:'sapphire',token_index:0,start_offset:0,end_offset:8}]}];
+            else if(path.includes('/word/'))data={...data,word:'sapphire',query:'sapphire',verified:false,result_type:'dictionary',translations:[],sources:[{source:'harper',label:'HarperCollins',available:true,next_offset:null,entries:[{id:1,headword:'sapphire',preview_block:linked('See breastpiece.','breastpiece',2)}]}]};
+            else if(path.includes('/dictionaries/entry/')){
+                const id=Number(path.split('/').at(-1));
+                const verse={type:'paragraph',text:'Exod. 24:10',references:[{start:0,end:11,book:'Exodus',chapter:24,verse:10}]};
+                data.entry={id,headword:id===2?'breastpiece':'jewels',source_title:'HarperCollins fixture',section:'Bible background',identifiers:[],blocks:id===2?[linked('See also jewels.','jewels',3),verse]:[{type:'paragraph',text:'Complete jewels article with preserved emphasis.',runs:[{type:'text',text:'Complete jewels article with preserved emphasis.',marks:['strong']}]}]};
+            }else if(path.includes('/verse?'))data.verse={reference:'Exodus 24:10',text:'Complete indexed verse.',attribution:'Scripture fixture'};
+            else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(r=>setTimeout(r,30)),el=name=>document.getElementById('bs'+name);
+            document.querySelector('.bs-word').click();await wait();
+            const original=el('WordResults').textContent;
+            document.querySelector('.bs-dictionary-ref').click();await wait();
+            check(el('DictionaryDialog').open&&el('DictionaryTitle').textContent==='breastpiece','Suggestion failed to open the target article');
+            check(el('DictionaryContent').querySelector('.bs-dictionary-ref em'),'Linked text lost source emphasis');
+            el('DictionaryContent').querySelector('.bs-dictionary-ref').click();await wait();
+            check(el('DictionaryTitle').textContent==='jewels','Nested suggestion failed');
+            check(el('DictionaryContent').querySelector('strong'),'Article typography was flattened');
+            el('DictionaryBack').click();
+            check(el('DictionaryTitle').textContent==='breastpiece','Back failed to restore prior article');
+            el('DictionaryContent').querySelector('.bs-scripture-ref').click();await wait();
+            check(el('VerseDialog').open&&el('DictionaryDialog').open,'Verse replaced dictionary popup');
+            check(el('VerseText').textContent==='Complete indexed verse.','Verse preview missing');
+            el('CloseVerse').click();el('CloseDictionary').click();
+            check(el('WordResults').textContent===original,'Suggestion navigation replaced the original word study');
+            check(el('Book').value==='Isaiah','Article link moved the Bible reader');
+        '''
+        for size in [(1100,850),(430,900)]:
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_native_dictionary_choices_keep_native_context_and_require_english_selection(self):
+        setup='''
+        window.nativeRequests=[];
+        const native=(word,code)=>({ok:true,word,query:word,translation:code,verified:false,result_type:'native_dictionary',
+            accuracy_notice:'English equivalents are dictionary suggestions and may not match this verse’s meaning. Check the verse context; these results may be less precise than an English Bible lookup.',
+            dictionary:{source:code==='TCB'?'tagalog':'cebuano',label:code==='TCB'?'Tagalog':'Cebuano',available:true,entries:word==='gihigugma'?[]:[{id:10,headword:word,section:'noun',language:code==='TCB'?'Tagalog':'Cebuano',preview:'love; affection',english_equivalents:[{word:'love',part:'noun',meaning:'love'},{word:'affection',part:'noun',meaning:'affection'}]}]},suggestions:word==='gihigugma'?[{word:'gugma'}]:[]});
+        window.fetch=async(url,options={})=>{
+            const path=String(url),params=new URL(path,'http://fixture').searchParams;nativeRequests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/translations'))data.translations=['NIV','TCB','CEBOCB'].map(code=>({code,label:code,available:true}));
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Genesis',chapter:1,verse:1,translation:'NIV',theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?')){const code=params.get('translation')||'NIV',word=code==='TCB'?'pag-ibig':code==='CEBOCB'?'gihigugma':'love';data.verses=[{id:code==='TCB'?9:8,verse:1,text:word,tokens:[{text:word,token_index:0,start_offset:0,end_offset:word.length}]}];}
+            else if(path.includes('/word/'))data=native(path.includes('/9/')?'pag-ibig':'gihigugma',path.includes('/9/')?'TCB':'CEBOCB');
+            else if(path.includes('/dictionaries/search?')){
+                if(params.get('translation')&&params.get('translation')!=='NIV')data=native(params.get('q'),params.get('translation'));
+                else{if(params.get('q')==='love')await new Promise(r=>setTimeout(r,60));data={...data,query:params.get('q'),word_type:{part:params.get('part')||'noun',basis:'chosen'},translations:[],sources:[{source:'harper',label:'HarperCollins',available:true,next_offset:null,entries:[{id:20,headword:params.get('q'),preview:'English dictionary explanation'}]}]};}
+            }else if(path.includes('/dictionaries/entry/10'))data.entry={headword:'Native word',source_title:'Kaikki dictionary fixture',identifiers:[],blocks:[{type:'paragraph',text:'Full native dictionary meaning.'}]};
+            else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(r=>setTimeout(r,100)),el=name=>document.getElementById('bs'+name);
+            for(const [code,word] of [['CEBOCB','gihigugma'],['TCB','pag-ibig']]){
+                el('Translation').value=code;el('Translation').dispatchEvent(new Event('change'));await wait();
+                check(!el('WordTab').disabled,'Native Word Study is disabled');
+                el('WordTab').click();document.querySelector('.bs-word').click();await wait();
+                check(el('WordResults').querySelector('h3').textContent===word,'Native word was replaced by English');
+                check(el('WordResults').textContent.includes('may not match this verse'),'Accuracy notice missing');
+                if(code==='CEBOCB'){
+                    check(el('WordResults').textContent.includes('not confirmed base forms'),'Spelling suggestions presented as proven roots');
+                    el('WordResults').querySelector('.bs-native-spellings button').click();await wait();
+                    check(nativeRequests.some(p=>p.includes('q=gugma')&&p.includes('translation=CEBOCB')),'Suggestion searched another language');
+                }
+                check(!el('WordResults').querySelector('.bs-native-english').offsetHeight,'English study opened before choosing a meaning');
+                const priorEnglish=nativeRequests.filter(p=>p.includes('/dictionaries/search?')&&p.includes('q=love')).length;
+                [...el('WordResults').querySelectorAll('button')].find(b=>b.textContent==='Explore English equivalents').click();
+                const choices=el('WordResults').querySelectorAll('.bs-english-equivalent');check(choices.length===2,'Dictionary equivalents missing');
+                check(nativeRequests.filter(p=>p.includes('/dictionaries/search?')&&p.includes('q=love')).length===priorEnglish,'English source searched without a chosen meaning');
+                choices[0].click();choices[1].click();await wait();
+                check(el('WordResults').querySelector('.bs-native-english h3').textContent==='affection','Late English result replaced the chosen meaning');
+                check(el('WordResults').querySelector('h3').textContent===word,'English lookup lost original native word');
+                const type=el('WordResults').querySelector('.bs-native-english [aria-label="Word type"]');type.value='verb';type.dispatchEvent(new Event('change'));await wait();
+                check(nativeRequests.some(p=>p.includes('q=affection')&&p.includes('part=verb')&&!p.includes('translation=TCB')&&!p.includes('translation=CEBOCB')),'English type change was sent to native dictionary');
+                check(el('WordResults').textContent.includes('less precise than an English Bible lookup'),'English selection removed accuracy notice');
+                check(el('Book').value==='Genesis','English choice moved the Bible passage');
+            }
+            check(el('WordResults').scrollWidth<=el('WordResults').clientWidth+1,'Native study overflows horizontally');
+        '''
+        for size in [(1100,850),(430,900)]:
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_word_type_selection_retains_verse_context_and_separates_related_articles(self):
+        setup='''
+        window.typeRequests=[];
+        window.fetch=async(url,options={})=>{
+            const path=String(url);typeRequests.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Isaiah',chapter:54,verse:11,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?'))data.verses=[{id:7,verse:11,text:'comforted',tokens:[{text:'comforted',token_index:0,start_offset:0,end_offset:9}]}];
+            else if(path.includes('/word/')){
+                const chosen=new URL(path,'http://fixture').searchParams.get('part'),part=chosen || 'verb';
+                data={...data,word:'comforted',query:'comforted',lookup_token_indices:[0],verified:false,result_type:'dictionary',word_type:{part,basis:chosen?'chosen':'suggested by English verse context'},
+                    translations:[{label:'Tagalog',available:true,entries:[{id:10,headword:part==='noun'?'aliw':'aliwin',preview:part+' translation'}]}],
+                    sources:[{source:'harper',label:'HarperCollins',available:true,next_offset:null,entries:[],related_next_offset:8,
+                        related_entries:[{id:1,headword:'theater',preview:'comforted appears in an unrelated article',match_type:'article_text',matched_query:'comforted'}]},
+                        {source:'mounce',label:'Mounce',available:true,next_offset:null,entries:[{id:2,source:'mounce',headword:'COMFORT',preview:'Complete comfort article'}],other_entries:[]}]};
+            }else if(path.includes('/dictionaries/search?'))data.sources=[{source:'harper',related_entries:[{id:3,headword:'Another article',preview:'Further source context.'}],related_next_offset:null}];
+            else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(r=>setTimeout(r,30)),el=name=>document.getElementById('bs'+name);
+            document.querySelector('.bs-word').click();await wait();
+            let results=el('WordResults'),sources=results.querySelectorAll('.bs-dictionary');
+            check(results.querySelector('[aria-label="Word type"]').value==='auto','Type did not default to Auto');
+            check(sources[1].querySelector(':scope>div>.bs-definition').textContent.includes('Complete comfort article'),'Whole article missing');
+            check(!sources[1].querySelector('.bs-other-definitions'),'Whole article split by word type');
+            check(!sources[0].querySelector('.bs-related-articles').open,'Article mentions mixed into main definitions');
+            check(!sources[0].querySelector(':scope>div>.bs-definition'),'Passing mention displayed as direct definition');
+            const select=results.querySelector('[aria-label="Word type"]');select.value='noun';select.dispatchEvent(new Event('change'));await wait();
+            check(typeRequests.some(p=>p.endsWith('/word/7/0?part=noun')),'Type override lost the verse');
+            results=el('WordResults');sources=results.querySelectorAll('.bs-dictionary');
+            check(results.querySelector('[aria-label="Word type"]').value==='noun','Chosen type reset');
+            check(results.querySelector('.bs-translation-choice').textContent==='aliw','Translations did not follow word type');
+            check(sources[1].querySelector(':scope>div>.bs-definition').textContent.includes('Complete comfort article'),'Word type override changed the original article');
+            const related=sources[0].querySelector('.bs-related-articles');related.querySelector('summary').click();
+            [...related.querySelectorAll('button')].find(b=>b.textContent==='More related articles').click();await wait();
+            check(related.textContent.includes('Another article'),'Related pagination failed');
+            check(typeRequests.some(p=>p.includes('related=1')&&p.includes('part=noun')),'Pagination dropped word type');
+            check(results.scrollWidth<=results.clientWidth+1,'Study view overflows');
+        '''
+        for size in [(1100,850),(430,900)]:
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_compound_selection_uses_full_phrase_for_dictionary_and_thompson_search(self):
+        setup='''
+        window.lookupEvents=[];
+        window.fetch=async(url,options={})=>{
+            const path=String(url);lookupEvents.push(path);let data={ok:true};
+            if(path.endsWith('/status'))data={...data,schema_ready:true,indexed_verses:1,message:'Ready'};
+            else if(path.endsWith('/state'))data={...data,storage_available:true,state:{book:'Isaiah',chapter:54,verse:11,theme:'paper',font_size:19,layout_mode:'split',split_ratio:60,version:0}};
+            else if(path.includes('/chapter?')){
+                const text='Foundations with lapis lazuli and turquoise.';
+                data.verses=[{id:7,verse:11,text,tokens:['lapis','lazuli','turquoise'].map((word,index)=>({text:word,token_index:index,start_offset:text.indexOf(word),end_offset:text.indexOf(word)+word.length}))}];
+            }else if(path.includes('/word/'))data={...data,word:path.endsWith('/0')?'lapis':'lazuli',query:'lapis lazuli',lookup_token_indices:[0,1],verified:false,result_type:'dictionary',translations:[],
+                sources:[{source:'harper',label:'HarperCollins',available:true,next_offset:null,entries:[{id:2,headword:'sapphire',preview:'The reference may be to lapis lazuli.',match_type:'article_text',matched_query:'lapis lazuli'}]}]};
+            else if(path.includes('/concordance?'))data={...data,available:true,query:'lapis lazuli',next_offset:null,entries:[{headword:'Lapis Lazuli/Sapphire',topic_id:22,source_label:'Thompson · Precious Stones',blocks:[{type:'paragraph',text:'Isaiah 54:11',references:[]}]}]};
+            else if(path.includes('/chain/22'))data.topic={key:'2858',title:'PRECIOUS STONES',blocks:[{type:'paragraph',text:'Original named topic and references.'}]};
+            else if(path.endsWith('/history'))data.history=[];
+            else throw Error('Unexpected URL '+path);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        verify='''
+            const wait=()=>new Promise(r=>setTimeout(r,30)),el=name=>document.getElementById('bs'+name);
+            const text=el('Verses').querySelector('.bs-verse-text').textContent;
+            for(const component of ['lapis','lazuli']){
+                [...el('Verses').querySelectorAll('.bs-word')].find(word=>word.textContent===component).click();await wait();
+                check(el('Search').value==='lapis lazuli','Lookup used only the clicked component');
+                check(el('WordResults').querySelector('h3').textContent==='lapis lazuli','Search heading lost the full phrase');
+                check(el('WordResults').textContent.includes('appears in this article'),'Article mention presented as a standalone definition');
+                check(el('WordResults').textContent.includes('sapphire'),'Actual source article title missing');
+                check(el('Verses').querySelectorAll('.bs-word.is-selected').length===2,'Compound components were not highlighted together');
+                check(el('Verses').querySelector('.bs-verse-text').textContent===text,'Phrase selection changed source text');
+            }
+            el('ConcordanceTab').click();await wait();
+            check(lookupEvents.some(path=>path.includes('/concordance?')&&new URL(path,'https://test.local').searchParams.get('q')==='lapis lazuli'),'Thompson received only the clicked component');
+            check(el('ConcordanceResults').textContent.includes('Lapis Lazuli/Sapphire'),'Thompson subheading missing');
+            [...el('ConcordanceResults').querySelectorAll('button')].find(button=>button.textContent==='Open chain topic').click();await wait();
+            check(el('ChainDialog').open&&el('ChainContent').textContent.includes('Original named topic'),'Named Thompson topic did not open');
+        '''
+        for size in ((1100,850),(420,900)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
 
     def test_thompson_navigation_dictionary_and_chain_clicks_are_independent(self):
         setup='''
@@ -753,9 +1166,9 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(document.querySelector('.bs-word.bs-red-letter'),'Verified red text not displayed');
             document.querySelector('.bs-word').click();await wait();
             check(!el('WordResults').textContent.includes('not a verified NIV'),'Hidden explanatory text still displayed');
-            check(document.querySelector('.bs-source-toggle').textContent==='Mounce','Mounce missing');
+            check([...document.querySelectorAll('.bs-source-toggle')].map(n=>n.textContent).join(',')==='Vine,Mounce','Dictionary order');
             document.querySelector('.bs-show-more').click();await wait();
-            check(events.some(e=>e.path.includes('/entry/3?sense=9')),'Whole article used instead of matching definition');
+            check(events.some(e=>e.path.endsWith('/entry/3'))&&!events.some(e=>e.path.includes('?sense=')),'Whole article not used');
             const clicks=events.filter(e=>e.path.includes('/word/')).length;
             document.querySelector('.bs-chain-margin button').click();await wait();
             check(el('ChainDialog').open,'Chain popup missing');
@@ -830,7 +1243,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             el('WordTab').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));await wait();
             check(el('ConcordanceTab').getAttribute('aria-selected')==='true','Tab keyboard navigation failed');
             el('ConcordanceSearch').value='missing';el('ConcordanceForm').requestSubmit();await wait();
-            check(el('ConcordanceResults').textContent.includes('No entry'),'Missing-entry state absent');
+            check(el('ConcordanceResults').textContent.includes('No matching entry found in Thompson.'),'Missing-entry state absent');
             el('ConcordanceSearch').value='Love';el('ConcordanceForm').requestSubmit();await wait();
             el('ConcordanceResults').querySelector('.bs-concordance-form').click();await wait();
             check(el('ConcordanceSearch').value==='LOVED','Printed related-form link failed');
@@ -876,7 +1289,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         verify='''
             const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,25));
             const headings=[...document.querySelectorAll('.bs-banner h2')];
-            check(headings.length===5,'Not all tool headings use banners');
+            check(headings.length===6,'Not all tool headings use banners');
             check(headings.every(h=>getComputedStyle(h).fontStyle==='italic'),'Heading typography differs');
             check(new Set(headings.map(h=>getComputedStyle(h).fontFamily)).size===1,'Heading fonts differ');
             check(getComputedStyle(el('WordPanel')).getPropertyValue('--bs-tool-tint')!==getComputedStyle(el('ConcordancePanel')).getPropertyValue('--bs-tool-tint'),'Tool banner colours identical');
@@ -1130,7 +1543,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
                             self.assertEqual(page.locator('#bsStudy>.bs-study-tabs').count(),1)
                             self.assertEqual(page.locator('#bsSermonTab').count(),1)
                             page.set_viewport_size(dict(width=width,height=height));page.wait_for_timeout(40)
-                            self.assertEqual(page.locator('#bsWideTabs [role=tab]').count(),6)
+                            self.assertEqual(page.locator('#bsWideTabs [role=tab]').count(),7)
                             assert_navigation()
                         context.close()
             finally:browser.close()

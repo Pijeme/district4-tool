@@ -130,14 +130,17 @@ def _db(read_only=False):
         # Filter cached document joins as well as future index candidates.
         blocked = ','.join("'" + value.replace("'", "''") + "'" for value in pastor_resources.AI_EXCLUDED_DRIVE_IDS)
         predicate = " AND ".join("LOWER(COALESCE({text},'')) NOT LIKE '" + pattern + "'" for pattern in (
-            '%cebocb%', '%open%cebuano%contemporary%bible%', '%open%tagalog%contemporary%bible%',
+            '%for scripture study app%', '%cebocb%', '%open%cebuano%contemporary%bible%', '%open%tagalog%contemporary%bible%',
             '%open%ang%pulong%sa%dios%', '%open%ang%salita%ng%diyos%'))
         db.execute("CREATE TEMP VIEW ai_allowed_library_files AS SELECT * FROM appdb.pastor_library_files "
-                   f"WHERE drive_file_id NOT IN ({blocked}) AND " + predicate.format(text="name||' '||COALESCE(folder_path,'')"))
+                   f"WHERE drive_file_id NOT IN ({blocked}) AND " + predicate.format(text="name||' '||COALESCE(folder_path,'')")
+                   + " AND NOT (LOWER(format)='epub' AND ((LOWER(name) LIKE 'be %' AND LOWER(name) LIKE '%wiersbe%')"
+                     " OR EXISTS (SELECT 1 FROM appdb.pastor_library_books b WHERE b.id=book_id"
+                     " AND LOWER(b.title) LIKE 'be %' AND LOWER(b.author) LIKE '%wiersbe%')))")
         db.execute("CREATE TEMP VIEW ai_allowed_library_books AS SELECT * FROM appdb.pastor_library_books WHERE "
-                   + predicate.format(text="title||' '||COALESCE(folder_path,'')")
-                   + " AND NOT EXISTS (SELECT 1 FROM appdb.pastor_library_files blocked_file WHERE blocked_file.book_id=appdb.pastor_library_books.id"
-                     " AND blocked_file.id NOT IN (SELECT id FROM ai_allowed_library_files))")
+                   + predicate.format(text="title")
+                   + " AND EXISTS (SELECT 1 FROM ai_allowed_library_files allowed_file"
+                     " WHERE allowed_file.book_id=appdb.pastor_library_books.id)")
         if read_only:
             db.execute("PRAGMA query_only=ON")
             deadline = time.monotonic() + 6
@@ -1128,6 +1131,13 @@ def _broad_book_request(question):
 
 
 def _query_terms(question):
+    # In recommendations, "should I read" describes the request rather than
+    # its subject. Keep "read" intact for named titles and actual reading topics.
+    if _broad_book_request(question):
+        question = re.sub(r"\b(?:should|could|can|would)\s+(?:i|we)\s+(?:read|use)\b",
+                          " ", question, flags=re.I)
+        question = re.sub(r"\b(books?|ebooks?|resources?)\s+to\s+read\b",
+                          r"\1", question, flags=re.I)
     # Requested quantities are instructions, not search topics ("ten books"
     # should search giving, not passages that happen to mention the number ten).
     question = re.sub(
@@ -1154,12 +1164,20 @@ def _term_variants(term):
         "loves": ["love"],
         "others": ["another", "neighbor", "neighbour"],
         "discipleship": ["disciple", "disciples"],
+        "disciple": ["disciples", "discipleship"],
         "disciples": ["disciple", "discipleship"],
+        "prayer": ["pray", "praying", "prayers"],
+        "pray": ["prayer", "praying", "prayed"],
+        "prayed": ["pray", "prayer", "praying"],
         "praying": ["prayer", "pray"],
         "prayers": ["prayer", "pray"],
+        "leader": ["leaders", "leadership"],
         "leaders": ["leader", "leadership"],
         "leadership": ["leader", "leaders"],
         "evangelism": ["evangelize", "evangelistic"],
+        "evangelize": ["evangelism", "evangelistic"],
+        "evangelistic": ["evangelism", "evangelize"],
+        "mission": ["missions"],
         "missions": ["mission"],
         "sermons": ["sermon"],
         "illustrations": ["illustration"],
@@ -1536,6 +1554,12 @@ def _use_resource_priority(question, mode):
         r"\bstudy[\s-]+bibles?\b", question, re.I)
 
 
+def _stable_chunk_key(row):
+    return (float(row['rank'] or 0), _normalize_words(row['title']),
+            _normalize_words(row['author']), str(row['format'] or '').upper(),
+            str(row['source_drive_id'] or ''), int(row['chunk_number'] or 0))
+
+
 def _search_chunks(db, terms, limit=120, book_id=None, strict=True, book_ids=None):
     terms = [t for t in terms if t]
     if not terms:
@@ -1560,11 +1584,11 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True, book_ids=Non
         if expr:
             params = [expr, *book_params, int(limit)]
             try:
-                return db.execute(
+                rows = db.execute(
                     f"""
                     SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
                            c.chunk_number,c.page_start,c.page_end,c.content,
-                           f.rank AS rank
+                           f.rank AS rank,d.drive_file_id AS source_drive_id
                     FROM pij_library_chunks_fts f
                     CROSS JOIN pij_library_documents d ON d.id=CAST(f.document_id AS INTEGER)
                     CROSS JOIN ai_allowed_library_files pf ON pf.drive_file_id=d.drive_file_id
@@ -1584,6 +1608,9 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True, book_ids=Non
                     """,
                     params,
                 ).fetchall()
+                # Sort only this bounded window. Extra SQL ORDER BY columns
+                # would prevent FTS's fast native rank cursor on a large index.
+                return sorted(rows, key=_stable_chunk_key)
             except sqlite3.OperationalError as exc:
                 # A cancelled/busy query must not turn into a slower full-text
                 # LIKE scan. Preserve the original error and its time budget.
@@ -1608,10 +1635,11 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True, book_ids=Non
     joiner = " AND " if strict and len(term_groups) > 1 else " OR "
     clauses = joiner.join(term_groups)
     params = book_params + like_params + [int(limit)]
-    return db.execute(
+    rows = db.execute(
         f"""
         SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
-               c.chunk_number,c.page_start,c.page_end,c.content,0 AS rank
+               c.chunk_number,c.page_start,c.page_end,c.content,0 AS rank,
+               d.drive_file_id AS source_drive_id
         FROM ai_allowed_library_books b
         CROSS JOIN ai_allowed_library_files pf ON pf.book_id=b.id
           AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
@@ -1627,6 +1655,26 @@ def _search_chunks(db, terms, limit=120, book_id=None, strict=True, book_ids=Non
         """,
         params,
     ).fetchall()
+    return sorted(rows, key=_stable_chunk_key)
+
+
+def _same_recommendation_title(first, second):
+    titles = sorted((_normalize_words(first['title']), _normalize_words(second['title'])), key=len)
+    short, long = titles
+    if short == long:
+        return True
+    # Some EPUB imports cut off the title in the middle of a word. Require a
+    # long prefix and two meaningful shared author names before merging copies.
+    # A complete title followed by "Volume 2" must remain a separate result.
+    if len(short) < 28 or len(short.split()) < 5 or not long.startswith(short):
+        return False
+    if not long[len(short):len(short) + 1].isalpha():
+        return False
+    ignored = {'unknown', 'author', 'ebook', 'ebooks', 'pdf', 'epub', 'files', 'converted'}
+    authors = [set(word for word in _word_tokens(book['author'])
+                   if len(word) > 1 and word.isalpha() and word not in ignored)
+               for book in (first, second)]
+    return len(authors[0] & authors[1]) >= 2
 
 
 def _rank_books(db, question, mode, desired_books):
@@ -1761,14 +1809,16 @@ def _rank_books(db, question, mode, desired_books):
         -topic_fit(x),
         _resource_priority(x) if prioritize else 0,
         -x["score"], str(x["title"] or "").lower()))
-    unique, seen = [], set()
+    unique = []
     for book in ranked:
         # Imported PDF/EPUB copies can have folder names in the author field.
         # Show a title once per recommendation list despite that metadata drift.
-        identity = _normalize_words(book['title'])
-        if identity not in seen:
-            seen.add(identity)
+        duplicate = next((index for index, existing in enumerate(unique)
+                          if _same_recommendation_title(book, existing)), None)
+        if duplicate is None:
             unique.append(book)
+        elif len(_normalize_words(book['title'])) > len(_normalize_words(unique[duplicate]['title'])):
+            unique[duplicate] = book
     return unique[:max(desired_books, 6)], mode
 
 
@@ -1900,13 +1950,27 @@ def _catalog_source_reason(title, kind):
     return dict(zip(('English', 'Tagalog', 'Cebuano'), (english, tagalog, cebuano)))
 
 
+def _passage_sentences(passage):
+    # PDF extraction wraps sentences at the page's visual line width. Preserve
+    # paragraph boundaries while keeping a quoted explanation grammatically whole.
+    prose = re.sub(r'(?<!\n)\n(?!\n)', ' ', passage)
+    return re.split(r'(?<=[.!?])\s+|\n{2,}', prose)
+
+
 def _evidence_source_reason(passage, terms):
     """Use an actual short excerpt, rather than inventing a fallback summary."""
-    pattern = r'\b(?:' + '|'.join(re.escape(term) for term in terms) + r')\b' if terms else ''
-    for sentence in re.split(r'(?<=[.!?])\s+|\n+', passage):
+    variants = _expanded_terms(terms)
+    pattern = r'\b(?:' + '|'.join(re.escape(term) for term in variants) + r')\b' if variants else ''
+    candidates = []
+    for index, sentence in enumerate(_passage_sentences(passage)):
         match = re.search(pattern, sentence, re.I) if pattern else None
         if not match or len(sentence.strip()) < 30 or re.search(r'<[^>]+>|font-size|div#|\{[^}]*:', sentence):
             continue
+        words = len(_word_tokens(sentence))
+        coverage = sum(any(_term_in_text(v, _normalize_words(sentence)) for v in _term_variants(term)) for term in terms)
+        candidates.append(((coverage, words >= 12, min(words, 50), -index), sentence, match))
+    if candidates:
+        _, sentence, match = max(candidates, key=lambda candidate: candidate[0])
         start = max(0, match.start() - 70)
         excerpt = sentence[start:start + 220].strip()
         excerpt = ('…' if start else '') + excerpt + ('…' if start + 220 < len(sentence) else '')
@@ -2000,11 +2064,11 @@ def validate_library_answer(answer, context, language='English', include_explana
         # of at least three words, rather than accepting a shared word like Bible.
         return len(label.split()) >= 3 and f' {label} ' in f' {title} '
 
-    if re.search(r'CURRENT PASTOR.S RESOURCES CONTEXT|PASTOR.S RESOURCES AI RETRIEVAL|'
-                 r'APPROVED (?:SOURCE|LINK):|RETRIEVAL MODE:|Retrieved \d+ distinct library records', answer, re.I):
-        return fallback()
-
-    invalid = False
+    report_pattern = (r'CURRENT PASTOR.S RESOURCES CONTEXT|PASTOR.S RESOURCES AI RETRIEVAL|'
+                      r'APPROVED (?:SOURCE|LINK):|RETRIEVAL MODE:|Retrieved \d+ distinct library records')
+    # A leaked report must disappear, but independently validated numbered
+    # recommendations can retain their useful explanations without another call.
+    invalid = bool(re.search(report_pattern, answer, re.I))
     linked_sources = 0
     # Accept an unescaped bracket pair inside a book title and normalize it.
     # This common model formatting error must not discard valid explanations.
@@ -2045,6 +2109,8 @@ def validate_library_answer(answer, context, language='English', include_explana
             for item in re.split(r'(?m)(?=^\d+[.)]\s+)', answer):
                 if not re.match(r'^\d+[.)]\s+', item):
                     continue
+                if re.search(report_pattern, item, re.I):
+                    continue
                 invalid, linked_sources = False, 0
                 checked = re.sub(pattern, check_link, item)
                 bare_urls = re.search(r'/pastor-resources/(?:sermon-ebooks/)?read/', re.sub(pattern, '', checked))
@@ -2060,14 +2126,69 @@ def validate_library_answer(answer, context, language='English', include_explana
     return result
 
 
+def _topic_excerpt(passage, available, terms):
+    """Choose a bounded passage with topic coverage, not an incidental first hit."""
+    if len(passage) <= available:
+        return passage
+    variants = {variant: index for index, term in enumerate(terms)
+                for variant in _term_variants(term)}
+    pattern = r"\b(?:" + "|".join(re.escape(v) for v in variants) + r")\b"
+    matches = list(re.finditer(pattern, passage, re.I))[:1000] if variants else []
+    width = max(1, available - 2)
+    starts = {0}
+    for match in matches:
+        starts.add(min(max(0, match.start() - width // 4), len(passage) - width))
+    # Sliding window keeps dense passages cheap even with many repeated words.
+    counts = {}
+    left = right = 0
+    best = (-1, -1, 0)
+    start = 0
+    for candidate in sorted(starts):
+        while right < len(matches) and matches[right].end() <= candidate + width:
+            group = variants[matches[right].group().lower()]
+            counts[group] = counts.get(group, 0) + 1
+            right += 1
+        while left < right and matches[left].start() < candidate:
+            group = variants[matches[left].group().lower()]
+            counts[group] -= 1
+            if not counts[group]:
+                del counts[group]
+            left += 1
+        score = (len(counts), min(right - left, 12), -candidate)
+        if score > best:
+            best, start = score, candidate
+    return ('…' if start else '') + passage[start:start + width] + '…'
+
+
+def _passage_topic_quality(row, terms):
+    """Prefer explanatory text to a contents heading among retrieved passages."""
+    groups = [tuple(_term_variants(term)) for term in terms]
+    def coverage(text):
+        normalized = _normalize_words(text)
+        return sum(any(_term_in_text(v, normalized) for v in group) for group in groups)
+    text = _clean(row['content'])
+    sentences = _passage_sentences(text)
+    explanatory = max((coverage(sentence) for sentence in sentences
+                       if len(_word_tokens(sentence)) >= 12
+                       and re.search(r'[.!?][\s\u201d\u2019"\x27)\]]*$', sentence)
+                       and not re.search(r'\.{3,}|<[^>]+>|font-size|\{[^}]*:', sentence)), default=0)
+    return (coverage(text), explanatory, -float(row['rank'] or 0))
+
+
 def _format_public_evidence(book, max_chunks, max_chars=None, terms=()):
     blocks = []
     seen_locations = set()
-    for row in book["chunks"]:
+    seen_passages = set()
+    rows = sorted(book['chunks'], key=lambda row: _passage_topic_quality(row, terms), reverse=True) if terms else book['chunks']
+    for row in rows:
+        normalized = _normalize_words(row['content'])
+        if normalized in seen_passages:
+            continue
         location_key = (str(row["format"] or "").upper(), int(row["page_start"] or 1))
         if location_key in seen_locations:
             continue
         seen_locations.add(location_key)
+        seen_passages.add(normalized)
 
         fmt = _clean(row["format"]).upper() or "EBOOK"
         try:
@@ -2094,14 +2215,7 @@ def _format_public_evidence(book, max_chunks, max_chars=None, terms=()):
             if available < 80:
                 continue
             if len(passage) > available:
-                # Keep the matching topic in a short excerpt, even when it occurs
-                # late in a long indexed chunk. Preserve the exact source URL.
-                match = re.search(r"\b(?:" + "|".join(re.escape(t) for t in terms) + r")\b",
-                                  passage, re.I) if terms else None
-                start = max(0, match.start() - available // 3) if match else 0
-                start = min(start, len(passage) - available)
-                passage = passage[start:start + available - 2]
-                passage = ("…" if start else "") + passage + "…"
+                passage = _topic_excerpt(passage, available, terms)
         blocks.append(LibraryContext(prefix + passage + "\n", [
             {'title': _clean(book['title']), 'url': link,
              'reason': _evidence_source_reason(passage, terms)}] if link else []))
@@ -2135,18 +2249,10 @@ def _catalog_specific_book_for_question(question):
     try:
         rows = db.execute(
             """
-            SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path,
-                   MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END) AS indexed,
-                   MAX(COALESCE(d.page_count,0)) AS page_count,
-                   MAX(COALESCE(d.chunk_count,0)) AS chunk_count,
-                   MAX(COALESCE(d.extract_error,'')) AS extract_error
+            SELECT b.id AS book_id,b.title,b.author,b.category,b.folder_path
             FROM ai_allowed_library_books b
-            LEFT JOIN ai_allowed_library_files f
-              ON f.book_id=b.id AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
-            LEFT JOIN pij_library_documents d
-              ON d.drive_file_id=f.drive_file_id AND d.source_type='public_ebook'
             WHERE b.is_active=1 AND COALESCE(b.is_hidden,0)=0
-            GROUP BY b.id
+            ORDER BY LOWER(b.title),LOWER(b.author),b.book_key
             """
         ).fetchall()
     finally:
@@ -2184,7 +2290,25 @@ def _catalog_specific_book_for_question(question):
             best_score = score
 
     threshold = 24.0 if hint else 34.0
-    return best if best is not None and best_score >= threshold else None
+    if best is None or best_score < threshold:
+        return None
+    # Resolve the title before inspecting index status. Aggregating documents
+    # for the entire catalog made even one named-book lookup take seconds.
+    db = _db(read_only=True)
+    try:
+        status = db.execute("""
+            SELECT COALESCE(MAX(CASE WHEN d.searchable=1 AND d.chunk_count>0 THEN 1 ELSE 0 END),0) AS indexed,
+                   COALESCE(MAX(d.page_count),0) AS page_count,
+                   COALESCE(MAX(d.chunk_count),0) AS chunk_count,
+                   COALESCE(MAX(d.extract_error),'') AS extract_error
+            FROM ai_allowed_library_files f
+            LEFT JOIN pij_library_documents d
+              ON d.source_type='public_ebook' AND d.drive_file_id=f.drive_file_id
+            WHERE f.book_id=? AND f.is_active=1 AND COALESCE(f.is_duplicate,0)=0
+        """, (int(best['book_id']),)).fetchone()
+        return dict(best, **dict(status))
+    finally:
+        db.close()
 
 
 _BOOK_FOLLOWUP_PHRASES = (
@@ -2195,7 +2319,8 @@ _BOOK_FOLLOWUP_PHRASES = (
 _GENERIC_BOOK_INFO_TERMS = {
     "information", "info", "overview", "summary", "summarize", "details",
     "detail", "quick", "contents", "content", "availability", "available",
-    "database", "index", "indexed",
+    "database", "index", "indexed", "more", "it", "its", "brief", "briefly",
+    "describe", "description",
 }
 
 
@@ -2239,26 +2364,64 @@ def _opening_chunks_for_book(db, book_id, limit=6):
     where there is no topic term worth searching for. This never substitutes
     another book.
     """
-    return db.execute(
+    limit = max(1, min(12, int(limit or 6)))
+    # Start from the exact catalog identity, then read each document's existing
+    # chunk index. Sorting the global chunks table costs seconds on large indexes.
+    documents = db.execute(
         """
-        SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,d.format,
-               c.chunk_number,c.page_start,c.page_end,c.content,
-               0.0 AS rank
-        FROM pij_library_chunks c
-        JOIN pij_library_documents d ON d.id=c.document_id
-        JOIN ai_allowed_library_files pf ON pf.drive_file_id=d.drive_file_id
+        SELECT d.id AS document_id,b.id AS book_id,b.title,b.author,b.category,b.folder_path,
+               d.format,d.drive_file_id
+        FROM ai_allowed_library_books b
+        CROSS JOIN ai_allowed_library_files pf ON pf.book_id=b.id
           AND pf.is_active=1 AND COALESCE(pf.is_duplicate,0)=0
-        JOIN ai_allowed_library_books b ON b.id=pf.book_id
+        CROSS JOIN pij_library_documents d ON d.drive_file_id=pf.drive_file_id
         WHERE d.source_type='public_ebook'
           AND d.searchable=1 AND d.chunk_count>0
           AND b.id=?
           AND b.is_active=1
           AND COALESCE(b.is_hidden,0)=0
-        ORDER BY COALESCE(c.page_start, c.chunk_number), c.chunk_number
-        LIMIT ?
+        ORDER BY UPPER(d.format),d.drive_file_id
+        LIMIT 6
         """,
-        (int(book_id), max(1, min(12, int(limit or 6)))),
+        (int(book_id),),
     ).fetchall()
+    queues = []
+    for document in documents:
+        rows = db.execute("""
+            SELECT chunk_number,page_start,page_end,content,0.0 AS rank
+            FROM pij_library_chunks WHERE document_id=?
+            ORDER BY chunk_number LIMIT 18
+        """, (document['document_id'],)).fetchall()
+        candidates = [dict(document, **dict(row)) for row in rows]
+        # Prefer the author's introduction/contents to copyright and ISBN pages.
+        # Search only the opening range; this is not a whole-book summary.
+        def opening_key(row):
+            text = _clean(row['content'])
+            heading = text[:240].lower()
+            introduction = bool(re.search(r'\b(introduction|preface|foreword|contents)\b', heading))
+            front_matter = bool(re.search(r'\b(copyright|all rights reserved|isbn)\b', heading))
+            return (front_matter and not introduction, not introduction,
+                    len(text) < 120, int(row['chunk_number']))
+        queues.append(sorted(candidates, key=opening_key))
+
+    chosen, seen_text = [], []
+    # Round-robin formats so a PDF's many front pages cannot crowd out the EPUB.
+    while any(queues) and len(chosen) < limit:
+        for queue in queues:
+            while queue:
+                row = queue.pop(0)
+                normalized = _normalize_words(row['content'])
+                if not normalized or any(normalized == previous or (
+                        min(len(normalized), len(previous)) >= 160
+                        and (normalized in previous or previous in normalized))
+                        for previous in seen_text):
+                    continue
+                chosen.append(row)
+                seen_text.append(normalized)
+                break
+            if len(chosen) >= limit:
+                break
+    return chosen
 
 def library_context_for_gemini(question, history=None):
     """Retrieve book-aware evidence locally, with recent-turn follow-up support."""

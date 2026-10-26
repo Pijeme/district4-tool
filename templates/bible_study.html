@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='translations-20') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='illustrations-28') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -33,7 +33,7 @@
     <div class="bs-dialog-head"><strong id="bsSyncTitle">Sync details</strong><button type="button" id="bsCloseSync" aria-label="Close sync details">×</button></div>
     <div class="bs-sync-tools">
     <p id="bsStatus" role="status">Checking Bible Study availability…</p>
-    <p id="bsSyncStatus" role="status">Sync NIV, Mounce and Vine, plus Cebuano and Tagalog ZIPs from their separate Bible translation folder.</p>
+    <p id="bsSyncStatus" role="status">Sync NIV, HarperCollins, Mounce, Vine, BE commentaries and language dictionaries from the study folder, plus Bible translations from their separate folder.</p>
     <details id="bsSyncReport" hidden><summary>Sync report</summary><div id="bsSyncReportBody"></div></details>
     </div>
   </dialog>
@@ -94,7 +94,8 @@
         <button type="button" id="bsWordTab" role="tab" aria-selected="true" aria-controls="bsWordPanel" data-study-tab="word">Word Study</button>
         <button type="button" id="bsConcordanceTab" role="tab" aria-selected="false" aria-controls="bsConcordancePanel" tabindex="-1" data-study-tab="concordance">Concordance</button>
         <button type="button" id="bsCommentaryTab" role="tab" aria-selected="false" aria-controls="bsCommentaryPanel" tabindex="-1" data-study-tab="commentary">Commentary</button>
-        <button type="button" id="bsSermonTab" role="tab" aria-selected="false" aria-controls="bsSermonPanel" tabindex="-1" data-study-tab="sermon">Sermon Outlines</button>
+        <button type="button" id="bsSermonTab" role="tab" aria-selected="false" aria-controls="bsSermonPanel" tabindex="-1" data-study-tab="sermon">Sermon <span class="bs-mobile-tab-line">Outlines</span></button>
+        <button type="button" id="bsIllustrationsTab" role="tab" aria-selected="false" aria-controls="bsIllustrationsPanel" tabindex="-1" data-study-tab="illustrations">Sermon <span class="bs-mobile-tab-line">Illustrations</span></button>
       </div>
       <section id="bsWordPanel" data-study-kind="word" role="tabpanel" aria-labelledby="bsWordTab" class="bs-tool-word">
       <header class="bs-study-header bs-banner"><h2 class="bs-handwritten">Word Study</h2></header>
@@ -139,6 +140,43 @@
           <section id="bsSermonReader" hidden><button type="button" id="bsSermonBack">&larr; Back to titles</button><h3 id="bsSermonTitle"></h3><p id="bsSermonMetadata" class="bs-attribution"></p><div id="bsSermonContent" class="bs-source-content"></div></section>
         </div>
       </section>
+      <section id="bsIllustrationsPanel" data-study-kind="illustrations" role="tabpanel" aria-labelledby="bsIllustrationsTab" class="bs-tool-illustrations" hidden>
+        <header class="bs-study-header bs-banner"><h2 class="bs-handwritten">Sermon Illustrations</h2></header>
+        <div class="bs-study-content">
+          <div class="bs-illustration-modes" role="tablist" aria-label="Find illustrations">
+            <button type="button" id="bsIllustrationsSuggestedTab" role="tab" aria-selected="true" aria-controls="bsIllustrationsSuggested" data-illustration-mode="suggested">Suggested Illustrations</button>
+            <button type="button" id="bsIllustrationsBrowseTab" role="tab" aria-selected="false" aria-controls="bsIllustrationsBrowse" tabindex="-1" data-illustration-mode="browse">Browse by Topic</button>
+          </div>
+          <div id="bsIllustrationsDiscovery">
+            <section id="bsIllustrationsSuggested" role="tabpanel" aria-labelledby="bsIllustrationsSuggestedTab">
+              <h3 id="bsIllustrationsReference"></h3>
+              <p class="bs-attribution">1001 Illustrations That Connect appears first. Topic connections from all collections are available for pastors to assess for this passage.</p>
+              <div id="bsIllustrationsSuggestions" aria-live="polite"></div>
+            </section>
+            <section id="bsIllustrationsBrowse" role="tabpanel" aria-labelledby="bsIllustrationsBrowseTab" hidden>
+              <form id="bsIllustrationsSearchForm" class="bs-search-form">
+                <label for="bsIllustrationsSearch">Search topics, titles, and illustrations</label>
+                <div><input id="bsIllustrationsSearch" type="search" maxlength="100" placeholder="Faith, forgiveness, family…"><button type="submit">Search</button></div>
+              </form>
+              <label class="bs-illustration-source">Collection <select id="bsIllustrationsSource"><option value="">All collections</option><option value="sermonillustrations_web">SermonIllustrations.com</option><option value="connect_1001">1001 Illustrations That Connect</option><option value="best_2000">The Best Sermon Illustrations</option></select></label>
+              <nav id="bsIllustrationsAlphabet" class="bs-illustration-alphabet" aria-label="Browse topics by letter"></nav>
+              <button type="button" id="bsIllustrationsTopicsBack" hidden>← Back to topics</button>
+              <h3 id="bsIllustrationsTopicHeading"></h3>
+              <div id="bsIllustrationsTopics" class="bs-illustration-topics" aria-live="polite"></div>
+              <div id="bsIllustrationsBrowseResults" aria-live="polite"></div>
+            </section>
+          </div>
+          <section id="bsIllustrationsReader" hidden>
+            <button type="button" id="bsIllustrationsBack">← Back to Illustrations</button>
+            <h3 id="bsIllustrationsTitle" tabindex="-1"></h3>
+            <p id="bsIllustrationsMetadata" class="bs-attribution"></p>
+            <div id="bsIllustrationsContent" class="bs-source-content"></div>
+            <p id="bsIllustrationsCredit" class="bs-attribution"></p>
+            <div id="bsIllustrationsReferences"></div>
+            <button type="button" id="bsIllustrationsCopy">Copy Illustration</button>
+          </section>
+        </div>
+      </section>
     </section>
   </div>
   <p class="bs-save-status bs-visually-hidden" id="bsSaveStatus" role="status">Preferences are saved to your account when Bible Study storage is initialized.</p>
@@ -174,7 +212,8 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSavedStudyDialog" aria-labelledby="bsSavedStudyTitle"><div class="bs-dialog-head"><strong id="bsSavedStudyTitle">Saved study</strong><button type="button" id="bsCloseSavedStudy" aria-label="Close saved study">&times;</button></div><p id="bsSavedStudyNotice" role="status"></p><div id="bsSavedStudyContent" class="bs-source-content"></div></dialog>
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsGreekDialog" aria-labelledby="bsGreekTitle"><div class="bs-dialog-head"><strong id="bsGreekTitle">Greek term</strong><button type="button" id="bsCloseGreek" aria-label="Close Greek explanation">×</button></div><p id="bsGreekAttribution" class="bs-attribution"></p><div id="bsGreekActions"></div><div id="bsGreekContent" class="bs-source-content"></div></dialog>
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSourceDialog" aria-labelledby="bsSourceTitle"><div class="bs-dialog-head"><strong id="bsSourceTitle">Thompson study page</strong><button type="button" id="bsCloseSource" aria-label="Close study page">×</button></div><div class="bs-image-actions"><button type="button" data-study-image-action="bookmark">Bookmark page</button><button type="button" data-study-image-action="note">Note on page</button></div><img id="bsSourceImage" alt="Thompson study source page"></dialog>
+  <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='translations-20') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='illustrations-28') }}" defer></script>
 {% endblock %}

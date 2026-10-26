@@ -445,6 +445,12 @@ class PijTests(unittest.TestCase):
         malicious = 'Anger is discussed with [Fake Book](/pastor-resources/read/999) in this passage.'
         self.assertNotIn('/read/999', library._evidence_source_reason(malicious, ['anger'])['English'])
 
+    def test_pdf_line_wrapping_does_not_break_a_fallback_explanation(self):
+        passage = 'Prayer helps believers depend on God\nwhile serving the church and caring for people.'
+        note = library._evidence_source_reason(passage, ['prayer'])['English']
+        self.assertIn('depend on God while serving the church', note)
+        self.assertIn('caring for people.', note)
+
     def test_one_bad_entry_does_not_remove_other_books_explanations(self):
         first = {'title': 'First Study Bible', 'url': '/pastor-resources/read/42?format=PDF&page=1',
                  'reason': {'English': 'A safe fallback note for the first book.'}}
@@ -460,6 +466,18 @@ class PijTests(unittest.TestCase):
         self.assertNotIn('Invented Book', cleaned)
         self.assertNotIn('Unsupported claim', cleaned)
         self.assertEqual(cleaned.count('First Study Bible'), 1)
+
+    def test_report_leak_does_not_discard_independently_verified_recommendations(self):
+        source = {'title': 'Prayer Guide', 'url': '/pastor-resources/read/42?format=PDF&page=7',
+                  'reason': {'English': 'A supported fallback excerpt.'}}
+        context = library.LibraryContext('RETRIEVAL MODE: RECOMMENDATION', [source])
+        answer = ("CURRENT PASTOR'S RESOURCES CONTEXT\nSearch query: prayer\nID: 999\n"
+                  '1. [Prayer Guide](' + source['url'] + ') — Explains dependence on God in daily prayer.')
+        cleaned = library.validate_library_answer(answer, context)
+        self.assertIn('Explains dependence on God in daily prayer.', cleaned)
+        self.assertNotIn('CONTEXT', cleaned)
+        self.assertNotIn('999', cleaned)
+        self.assertNotIn('supported fallback', cleaned)
 
     def test_study_bible_fallback_notes_distinguish_editions(self):
         titles = ('Amplified Study Bible', 'Beyond Suffering Bible NLT', 'New Believers Bible',

@@ -50,7 +50,8 @@ GOOGLE_DRIVE_SCOPES = [
 
 # Reader-only Bible sources: never traverse this folder in an ebook/AI scan.
 BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID = '1ew6gje-IGqNJ9J5wR2NGYV0_dUVJ5vIM'
-AI_EXCLUDED_DRIVE_IDS = frozenset((BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID,
+BIBLE_STUDY_DRIVE_FOLDER_ID = os.getenv('BIBLE_STUDY_DRIVE_FOLDER_ID') or '1gojj-YgDaJDxhjEQ8vOgJxSdkeWuW3ky'
+AI_EXCLUDED_DRIVE_IDS = frozenset((BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID, BIBLE_STUDY_DRIVE_FOLDER_ID,
     '1sYXbwGS2nT4MW9SUl1FcE7OvIebqtmzK', '1iEsTQgU7VWodGbnIarYSPWwV1Gv1ZPlg'))
 
 
@@ -59,7 +60,10 @@ def ai_restricted_source(row):
     if str(row.get('drive_file_id') or row.get('id') or '') in AI_EXCLUDED_DRIVE_IDS:
         return True
     text = ' '.join(str(row.get(key) or '') for key in ('name', 'title', 'folder_path')).casefold()
-    return bool(re.search(r'cebocb|(?:open.*(?:cebuano|tagalog).*contemporary.*bible)|'
+    epub = str(row.get('format') or '').casefold() == 'epub' or str(row.get('name') or '').lower().endswith('.epub')
+    if epub and str(row.get('title') or row.get('name') or '').casefold().startswith('be ') and 'wiersbe' in (text+' '+str(row.get('author') or '').casefold()):
+        return True
+    return bool('for scripture study app' in text or re.search(r'cebocb|(?:open.*(?:cebuano|tagalog).*contemporary.*bible)|'
                           r'open.*ang.*(?:pulong sa dios|salita ng diyos)', text))
 
 GOOGLE_DRIVE_FOLDER_MIME = (
@@ -1801,6 +1805,7 @@ def _prune_missing_library_sources(db, scanned_drive_ids):
         if 'pij_library_documents' in tables:
             db.execute('''CREATE TEMP TABLE removed_library_documents AS SELECT id FROM cleanup_ai.pij_library_documents
                 WHERE source_type='public_ebook' AND COALESCE(drive_file_id,'')<>''
+                AND LOWER(COALESCE(folder_path,'')) NOT LIKE '%for scripture study app%'
                 AND drive_file_id NOT IN (SELECT id FROM scanned_library_ids)''')
             removed_documents=db.execute('SELECT COUNT(*) FROM removed_library_documents').fetchone()[0]
             for table in ('pij_library_chunks_fts','pij_library_source_formats','pij_library_chunks'):

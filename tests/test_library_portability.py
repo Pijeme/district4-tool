@@ -1,8 +1,10 @@
 """Portability and incremental sync checks use temporary databases and fake Drive."""
 
 import copy
+import hashlib
 import io
 import json
+import re
 import zipfile
 from contextlib import closing
 from pathlib import Path
@@ -48,6 +50,40 @@ class LibraryPortabilityTests(unittest.TestCase):
               patch.object(resources,'get_title_and_author',return_value=('Prayer Guide','Author'))):
             resources.scan_drive_library()
         self.assertEqual(scanned.call_count,1)
+
+    def test_study_folder_descendants_are_blocked_from_scan_store_and_cached_search(self):
+        keep=self.catalog()
+        blocked=self.catalog('study-file',843,43,'Synthetic study reference',fmt='EPUB')
+        self.document(keep,text='Synthetic lighthouse evidence.')
+        self.document(blocked,source_id=126,book_id=43,text='Synthetic lighthouse restricted evidence.')
+        with closing(resources.get_resource_db()) as db,db:
+            db.execute("UPDATE pastor_library_files SET folder_path='For Scripture Study App/BE Series' WHERE id=843")
+            db.execute("UPDATE pastor_library_books SET folder_path='For Scripture Study App/BE Series' WHERE id=43")
+        self.assertEqual([r['book_id'] for r in knowledge._public_files_to_index()],[42])
+        with closing(knowledge._db(read_only=True)) as db:
+            self.assertEqual({r['book_id'] for r in knowledge._search_chunks(db,['lighthouse'])},{42})
+        blocked=dict(blocked,folder_path='For Scripture Study App/BE Series')
+        with self.assertRaises(ValueError):knowledge._store_public_document(blocked,[(1,1,1,'text')],1)
+        def listing(drive,folder):
+            self.assertEqual(folder,resources.PASTOR_RESOURCES_DRIVE_FOLDER_ID)
+            return [dict(id=resources.BIBLE_STUDY_DRIVE_FOLDER_ID,name='For Scripture Study App',mimeType=resources.GOOGLE_DRIVE_FOLDER_MIME)]
+        with patch.object(resources,'get_drive_session',return_value=object()),patch.object(resources,'list_drive_folder',side_effect=listing) as scan:
+            resources.scan_drive_library()
+        self.assertEqual(scan.call_count,1)
+
+    def test_study_epub_does_not_hide_a_pdf_of_the_same_book(self):
+        pdf=self.catalog()
+        epub=self.catalog('study-copy',843,42,'Prayer Guide',fmt='EPUB')
+        self.document(pdf,text='Synthetic lighthouse evidence from PDF.')
+        self.document(epub,source_id=126,book_id=42,text='Synthetic lighthouse excluded EPUB.')
+        with closing(resources.get_resource_db()) as db,db:
+            db.execute("UPDATE pastor_library_files SET folder_path='For Scripture Study App' WHERE id=843")
+            db.execute("UPDATE pastor_library_books SET folder_path='For Scripture Study App' WHERE id=42")
+        self.assertEqual([r['drive_file_id'] for r in knowledge._public_files_to_index()],['drive-A'])
+        with closing(knowledge._db(read_only=True)) as db:
+            matches=knowledge._search_chunks(db,['lighthouse'])
+        self.assertEqual(len(matches),1)
+        self.assertIn('from PDF',matches[0]['content'])
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix='district4_library_test_')
@@ -550,6 +586,67 @@ class LibraryPortabilityTests(unittest.TestCase):
         self.assertEqual(knowledge._requested_book_count('Suggest books', default=0), 0)
         self.assertEqual(knowledge._query_terms('List up to ten books about giving'), ['giving'])
 
+    def test_reading_request_wording_does_not_become_a_recommendation_topic(self):
+        self.document(self.catalog(title='Discipleship Guide'),
+                      text='Discipleship means helping people become faithful followers of Jesus.')
+        self.document(self.catalog('drive-reading', 843, 43, 'How to Read Books'), source_id=126,
+                      text='Read a chapter slowly and take notes about its structure.')
+        question = 'What books should I read about discipleship?'
+        self.assertEqual(knowledge._query_terms(question), ['discipleship'])
+        context = knowledge.library_context_for_gemini(question)
+        self.assertIn('Discipleship Guide', context)
+        self.assertNotIn('How to Read Books', context)
+        self.assertIn('read', knowledge._query_terms('Tell me about "How to Read Books"'))
+        self.assertIn('reading', knowledge._query_terms('Recommend books about reading Scripture'))
+
+    def test_prayer_and_leadership_term_families_find_relevant_passages(self):
+        self.document(self.catalog(title='Ministry Handbook'),
+                      text='Praying helps us depend on God. A leader serves people with humility.')
+        with closing(knowledge._db(read_only=True)) as db:
+            self.assertEqual(len(knowledge._search_chunks(db, ['prayer'])), 1)
+            self.assertEqual(len(knowledge._search_chunks(db, ['leadership'])), 1)
+        self.assertIn('prayer', knowledge._term_variants('pray'))
+        self.assertIn('leadership', knowledge._term_variants('leader'))
+
+    def test_exact_book_openings_balance_formats_and_skip_duplicate_front_matter(self):
+        pdf = self.catalog(title='Ministry Handbook')
+        epub = self.catalog('drive-epub', 843, 42, 'Ministry Handbook', fmt='EPUB')
+        duplicate = 'Introduction. This handbook helps ministry leaders serve their churches faithfully. ' * 4
+        pdf_doc = self.document(pdf, text='Copyright 2020. All rights reserved. ISBN 1234.')
+        epub_doc = self.document(epub, source_id=126, text=duplicate)
+        with closing(knowledge._db()) as db, db:
+            db.executemany('''INSERT INTO pij_library_chunks
+                (document_id,chunk_number,page_start,page_end,content) VALUES (?,?,?,?,?)''', [
+                (pdf_doc, 2, 2, 2, duplicate),
+                (pdf_doc, 3, 3, 3, 'Preface. Practical guidance for leading small groups and supporting church volunteers.'),
+                (epub_doc, 2, 2, 2, 'Contents. Serving the church. Developing leaders. Encouraging volunteers.'),
+            ])
+        with closing(knowledge._db(read_only=True)) as db:
+            rows = knowledge._opening_chunks_for_book(db, 42, limit=3)
+        self.assertEqual({row['format'].upper() for row in rows}, {'PDF', 'EPUB'})
+        self.assertEqual(sum(row['content'] == duplicate for row in rows), 1)
+        self.assertNotIn('Copyright', '\n'.join(row['content'] for row in rows))
+        self.assertTrue(all(row['book_id'] == 42 for row in rows))
+
+    def test_generic_book_followup_reads_intro_and_stays_on_the_named_book(self):
+        self.document(self.catalog(title='Ministry Handbook'),
+                      text='Introduction. This handbook offers guidance for caring for church volunteers.')
+        self.document(self.catalog('drive-other', 843, 43, 'More Ministry Ideas'), source_id=126,
+                      text='More ideas for unrelated activities.')
+        context = knowledge.library_context_for_gemini('Tell me more about it', history=[
+            {'role': 'user', 'content': 'Tell me about "Ministry Handbook"'}])
+        self.assertIn('RETRIEVAL MODE: SPECIFIC_BOOK', context)
+        self.assertIn('caring for church volunteers', context)
+        self.assertNotIn('More Ministry Ideas', context)
+
+    def test_excerpt_prefers_joint_topic_explanation_to_first_incidental_mention(self):
+        passage = ('Prayer. ' + 'Unrelated background. ' * 90
+                   + 'Prayer and spiritual warfare require dependence on God rather than personal strength. ' * 4)
+        excerpt = knowledge._topic_excerpt(passage, 280, ['prayer', 'spiritual', 'warfare'])
+        self.assertLessEqual(len(excerpt), 280)
+        self.assertIn('dependence on God', excerpt)
+        self.assertIn('spiritual warfare', excerpt)
+
     def test_ten_recommendations_keep_every_source_and_topic_within_context_budget(self):
         for number in range(12):
             row = self.catalog(f'drive-{number}', 100 + number, 100 + number,
@@ -753,6 +850,23 @@ class LibraryPortabilityTests(unittest.TestCase):
         titles = [source['title'] for source in context.approved_sources]
         self.assertEqual(titles.count('Love One Another'), 1)
         self.assertEqual(len(titles), 2)
+
+    def test_truncated_import_titles_do_not_take_two_recommendation_slots(self):
+        short_title = 'A Leaders Handbook for Local Church Volunt'
+        full_title = 'A Leaders Handbook for Local Church Volunteers'
+        for number, title in enumerate((short_title, full_title)):
+            row = self.catalog(f'drive-{number}', 842 + number, 42 + number, title)
+            self.document(row, source_id=125 + number,
+                          text='Leadership means caring for people and supporting church volunteers.')
+        with closing(resources.get_resource_db()) as db, db:
+            db.execute("UPDATE pastor_library_books SET author='John Maxwell' WHERE id=42")
+            db.execute("UPDATE pastor_library_books SET author='John C Maxwell PDF Converted' WHERE id=43")
+        context = knowledge.library_context_for_gemini('Recommend books about leadership')
+        self.assertEqual([source['title'] for source in context.approved_sources], [full_title])
+        self.assertIn('/read/43?', context.approved_sources[0]['url'])
+        first = dict(title=full_title, author='John Maxwell')
+        self.assertFalse(knowledge._same_recommendation_title(first, dict(first, title=full_title + ' Volume 2')))
+        self.assertFalse(knowledge._same_recommendation_title(first, dict(title=short_title, author='Another Writer')))
 
     def test_metadata_terms_match_words_instead_of_unrelated_substrings(self):
         self.assertFalse(knowledge._term_in_text('anger', 'danger zone'))
@@ -1246,7 +1360,8 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.path = Path(self.directory.name) / 'bible_study.db'
         self.app = Flask(__name__, static_folder=str(Path(resources.__file__).parent / 'static'))
         self.app.secret_key = 'isolated-test-session-key-not-production'
-        self.app.config.update(TESTING=True, BIBLE_STUDY_DATABASE=str(self.path), BIBLE_STUDY_TRANSLATION_FOLDER_ID='')
+        self.app.config.update(TESTING=True, BIBLE_STUDY_DATABASE=str(self.path), BIBLE_STUDY_TRANSLATION_FOLDER_ID='',
+                               AI_DATABASE=str(Path(self.directory.name)/'ai.db'))
         self.app.jinja_loader = ChoiceLoader([
             DictLoader({'base.html': '<html><head></head><body>{% block content %}{% endblock %}</body></html>'}),
             FileSystemLoader(str(Path(resources.__file__).parent / 'templates')),
@@ -1341,7 +1456,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual([v['headword'] for v in exact['entries']],['Genesis 1:4'])
         other=self.client.get(self.base+'/api/concordance?q=Ginoo&translation=TCB').json
         self.assertEqual(other['entries'],[])
-        self.assertEqual(self.client.get(self.base+'/api/word/'+str(verse['id'])+'/0').status_code,404)
+        native=self.client.get(self.base+'/api/word/'+str(verse['id'])+'/0').json
+        self.assertEqual(native['result_type'],'native_dictionary');self.assertFalse(native['verified'])
+        self.assertNotIn('original_tokens',native)
         self.assertEqual(self.client.get(self.base+'/api/chapter?book=Genesis&chapter=1&translation=bad').status_code,400)
         saved=self.client.post(self.base+'/api/state',json=self.settings(translation='CEBOCB',verse=3),headers=headers)
         self.assertEqual(saved.status_code,200)
@@ -1389,7 +1506,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         with closing(sqlite3.connect(result['backup'])) as backup:
             self.assertEqual(backup.execute('PRAGMA user_version').fetchone()[0],6)
         with closing(sqlite3.connect(self.path)) as conn:
-            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0],7)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0],self.bible.SCHEMA_VERSION)
             self.assertIsNone(conn.execute('PRAGMA foreign_key_check').fetchone())
             for table in tables:
                 rows=conn.execute('SELECT '+','.join(columns[table])+' FROM '+table+' ORDER BY rowid').fetchall()
@@ -1620,7 +1737,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + '/api/status').status_code, 503)
         self.assertFalse(self.path.exists())
 
-    def fixture_epub(self, documents, assets=None):
+    def fixture_epub(self, documents, assets=None, metadata=''):
         import io
         import zipfile
         output = io.BytesIO()
@@ -1631,7 +1748,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 manifest.append(f'<item id="p{index}" href="{name}"/>')
                 spine.append(f'<itemref idref="p{index}"/>')
                 archive.writestr('OEBPS/' + name, '<html xmlns="http://www.w3.org/1999/xhtml"><body>' + body + '</body></html>')
-            archive.writestr('OEBPS/content.opf', '<package><manifest>' + ''.join(manifest) + '</manifest><spine>' + ''.join(spine) + '</spine></package>')
+            archive.writestr('OEBPS/content.opf', '<package><metadata>'+metadata+'</metadata><manifest>' + ''.join(manifest) + '</manifest><spine>' + ''.join(spine) + '</spine></package>')
             for name, data in (assets or {}).items():
                 archive.writestr('OEBPS/' + name, data)
         return output.getvalue()
@@ -1675,6 +1792,182 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                         links=[((1, 1, 1), 'dictionary.html#one', 'Alpha', 'kjv.html#verse1')]),
         }
         return sources, parsed, self.bible._publish_sources(self.path, sources, parsed)
+
+    def illustration_fixture(self):
+        archive=Path(self.directory.name)/'illustrations.zip'
+        raw=Path(self.directory.name)/'illustrations-input.db'
+        with closing(sqlite3.connect(raw)) as conn,conn:
+            for table,definition in self.bible.ILLUSTRATION_TABLES.items():conn.execute('CREATE TABLE '+table+' ('+definition+')')
+            for number in range(45):
+                identifier=f'i-{number:03d}';source=list(self.bible.ILLUSTRATION_SOURCES)[number%3]
+                body='' if number==5 else ('Shared story.' if number in (0,2) else f'Faith story number {number}.')
+                html='<p><strong>'+body+'</strong> <u>Underlined</u><br>Second line.</p><script>window.injected=true</script>' if body else ''
+                conn.execute('INSERT INTO illustrations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (identifier,source,number,'Illustration '+str(number),'Faith','["Faith"]','[]',html,body,'Contributor','https://example.test/story','[]'))
+                conn.execute('INSERT INTO illustration_topics VALUES(?,?)',(identifier,'Faith'))
+                conn.execute('INSERT INTO browse_topic_illustrations VALUES(?,?,?)',('faith',identifier,'Illustration '+str(number)))
+                original=number==0;kind='original' if original else 'suggested';confidence='source' if original else 'low' if number==3 else 'medium' if number>30 else 'high'
+                refs=[] if number in (4,5) else [(identifier,'Ephesians',5,6 if number==1 else 5,21 if number==1 else 1,4 if number==1 else 1,
+                    'Ephesians 5:21–6:4' if number==1 else 'Ephesians 5:1',kind,1,'Faith',confidence,'fixture','needs_review')]
+                if number==4:refs=[(identifier,'Isaiah',0,0,12,14,'Isaiah 0:12–14','original',1,None,'source','fixture','original_not_reviewed')]
+                conn.executemany('INSERT INTO scripture_verse_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',refs)
+                conn.execute('INSERT INTO annotation_summary VALUES(?,?,?,?,?,?)',(identifier,int(original or number==4),int(bool(refs) and not original and number!=4),confidence,'Faith',1))
+            conn.execute('INSERT INTO browse_topics VALUES(?,?,?,?,?)',('faith','Faith','F',45,3))
+            # Imported SQL/triggers must never become executable app schema.
+            conn.execute("CREATE TRIGGER untrusted_trigger AFTER DELETE ON illustrations BEGIN DELETE FROM browse_topics; END")
+        with zipfile.ZipFile(archive,'w') as zipped:
+            zipped.write(raw,'sermon_illustrations_scripture_enriched.sqlite3')
+            zipped.writestr('SAMPLE_QUERIES.sql','DROP TABLE illustrations;')
+        return archive
+
+    def test_illustration_import_preserves_text_browsing_and_rolls_back_bad_packages(self):
+        import hashlib
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        report=self.bible.import_illustration_archive(path,archive,expected_count=45)
+        self.assertEqual(report['illustration_entries'],45);self.assertEqual(report['invalid_references'],1)
+        with self.bible.illustration_connection(path) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM illustrations').fetchone()[0],45)
+            self.assertEqual(conn.execute('SELECT COUNT(DISTINCT illustration_id) FROM browse_topic_illustrations').fetchone()[0],45)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0],0)
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+            article=self.bible.illustration_article(conn,'i-000')
+            self.assertIn('Shared story.',article['body_text']);self.assertNotIn('window.injected',str(article['blocks']))
+            self.assertTrue(any('u' in r['marks'] for b in article['blocks'] for r in b['runs']))
+            self.assertTrue(self.bible.illustration_article(conn,'i-005')['needs_source_review'])
+            bad=self.bible.illustration_article(conn,'i-004')
+            self.assertFalse(bad['references']);self.assertEqual(bad['reference_issues'][0]['display_reference'],'Isaiah 0:12–14')
+            page=self.bible.illustration_browse(conn,letter='F',topic='faith')
+            self.assertEqual(len(page['entries']),30);self.assertEqual(page['next_offset'],30)
+            ids={e['id'] for e in page['entries']}
+            ids.update(e['id'] for e in self.bible.illustration_browse(conn,topic='faith',offset=30)['entries'])
+            self.assertEqual(len(ids),45);self.assertIn('i-005',ids)
+            self.assertTrue(self.bible.illustration_browse(conn,query='Faith')['entries'])
+            self.assertFalse(self.bible.illustration_browse(conn,query='" OR *')['entries'])
+        self.assertEqual(self.bible.import_illustration_archive(path,archive,expected_count=45)['status'],'unchanged')
+        before=hashlib.sha256(path.read_bytes()).hexdigest()
+        with zipfile.ZipFile(archive,'a') as zipped:zipped.writestr('note.txt','changed archive')
+        with self.assertRaises(self.bible.SyncError):self.bible.import_illustration_archive(path,archive,expected_count=46)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),before)
+        with self.assertRaises(ValueError):self.bible.illustration_database_path(self.path,self.path)
+
+    def test_illustration_suggestions_rank_deduplicate_and_bound_cross_chapter_ranges(self):
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        with self.bible.illustration_connection(path) as conn:
+            start=self.bible.illustration_suggestions(conn,49,5,1)
+            self.assertEqual(len(start),30);self.assertEqual(start[0]['id'],'i-000')
+            self.assertEqual(start[0]['match']['link_type'],'original')
+            self.assertFalse({'i-001','i-002','i-003','i-004','i-005'} & {e['id'] for e in start})
+            for chapter,verse,expected in [(5,20,False),(5,21,True),(5,33,True),(6,1,True),(6,4,True),(6,5,False)]:
+                self.assertEqual(any(e['id']=='i-001' for e in self.bible.illustration_suggestions(conn,49,chapter,verse)),expected)
+            self.assertTrue(any(e['id']=='i-001' for e in self.bible.illustration_suggestions(conn,49,5,20,22)))
+            self.assertTrue(any(e['id']=='i-001' for e in self.bible.illustration_suggestions(conn,49,6)))
+            self.assertFalse(self.bible.illustration_suggestions(conn,23,54,11))
+
+    def test_illustration_routes_are_private_read_only_and_validate_inputs(self):
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.app.config['BIBLE_ILLUSTRATIONS_DATABASE']=str(path)
+        self.assertEqual(self.client.get(self.base+'/api/illustrations/browse').status_code,401)
+        self.login()
+        self.assertFalse(self.client.get(self.base+'/api/illustrations/browse').json['available'])
+        self.assertFalse(path.exists());self.assertFalse(self.path.exists())
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        response=self.client.get(self.base+'/api/illustrations/suggested?book=Ephesians&chapter=5&verse=1')
+        self.assertTrue(response.json['available']);self.assertEqual(len(response.json['entries']),30)
+        self.assertIn('no-store',response.headers['Cache-Control'])
+        self.assertEqual(self.client.get(self.base+'/api/illustrations/browse?topic=faith').json['next_offset'],30)
+        self.assertEqual(self.client.get(self.base+'/api/illustrations/entry/i-000').json['illustration']['source_credit'],'Contributor')
+        self.assertEqual(self.client.get(self.base+'/api/illustrations/entry/missing').status_code,404)
+        for suffix in ['/suggested?book=Isaiah&chapter=0','/suggested?book=John&chapter=3&verse=abc',
+                '/suggested?book=John&chapter=3&verse=16&end_verse=1','/browse?offset=-1','/browse?source=bad']:
+            self.assertEqual(self.client.get(self.base+'/api/illustrations'+suffix).status_code,400)
+        self.assertFalse(self.path.exists())
+
+    def test_illustration_owner_approval_persists_and_suggestions_include_all_matching_collections(self):
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute("DELETE FROM illustration_metadata WHERE key='review_policy'")
+            conn.execute("UPDATE scripture_verse_links SET review_status='needs_review'")
+            conn.execute("UPDATE illustration_valid_links SET review_status='needs_review'")
+            conn.execute('UPDATE annotation_summary SET needs_human_review=1')
+            # Isolate one low-confidence connection to verify owner approval
+            # makes it available without changing its original confidence.
+            conn.execute("UPDATE illustration_valid_links SET chapter_start=7,chapter_end=7,verse_start=1,verse_end=1 WHERE illustration_id='i-003'")
+            text=conn.execute('SELECT id,body_html,body_text FROM illustrations ORDER BY id').fetchall()
+            confidence=conn.execute('SELECT illustration_id,confidence FROM scripture_verse_links ORDER BY illustration_id').fetchall()
+        with self.bible.illustration_connection(path) as conn:
+            self.assertFalse(self.bible.illustration_suggestions(conn,49,7,1))
+        report=self.bible.approve_illustration_reviews(path,'Owner test request')
+        self.assertEqual(report['approved_articles'],45);self.assertTrue(Path(report['backup']).is_file())
+        with self.bible.illustration_connection(path) as conn:
+            self.assertEqual([tuple(r) for r in conn.execute('SELECT id,body_html,body_text FROM illustrations ORDER BY id')],text)
+            self.assertEqual([tuple(r) for r in conn.execute('SELECT illustration_id,confidence FROM scripture_verse_links ORDER BY illustration_id')],confidence)
+            self.assertEqual(conn.execute('SELECT SUM(needs_human_review) FROM annotation_summary').fetchone()[0],0)
+            self.assertEqual(self.bible.illustration_suggestions(conn,49,7,1)[0]['id'],'i-003')
+            suggestions=self.bible.illustration_suggestions(conn,49,5,1)
+            self.assertEqual(len(suggestions),30)
+            self.assertEqual([s['source'] for s in suggestions[:5]],['connect_1001']*5)
+            self.assertTrue(all(s['source']!='connect_1001' for s in suggestions[5:10]))
+            self.assertTrue(conn.execute('SELECT 1 FROM illustration_reference_issues').fetchone())
+        self.assertEqual(self.bible.approve_illustration_reviews(path)['status'],'unchanged')
+        with zipfile.ZipFile(archive,'a') as zipped:zipped.writestr('policy-repeat.txt','New package fingerprint')
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        with self.bible.illustration_connection(path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM illustration_valid_links WHERE review_status!='approved_for_use'").fetchone()[0],0)
+            self.assertEqual(conn.execute('SELECT SUM(needs_human_review) FROM annotation_summary').fetchone()[0],0)
+
+    def test_illustration_drive_sync_is_repeatable_and_never_changes_the_ai_index(self):
+        archive=self.illustration_fixture();content=archive.read_bytes()
+        ai=Path(self.directory.name)/'ai.db';ai.write_bytes(b'AI index sentinel')
+        source=dict(name='sermon_illustrations_codex_v2.zip',drive_file_id='fixture_illustration_id',
+            fingerprint=dict(modifiedTime='now',sha256Checksum=hashlib.sha256(content).hexdigest()))
+        importer=self.bible.import_illustration_archive
+        with patch.object(self.bible,'_official_drive_sources',return_value=('fixture_folder_id',{'illustrations':source},[])), \
+             patch.object(self.bible,'import_illustration_archive',side_effect=lambda path,data,**options:importer(path,data,expected_count=45,**options)), \
+             patch.object(self.bible,'purge_migrated_ai_sources',side_effect=AssertionError('Must not modify AI index')):
+            report=self.bible.sync_sources(self.path,'fixture_folder_id',lambda _:None,fetch=lambda _:content,drive=Mock(),ai_database=ai)
+        self.assertEqual(report['counts']['illustration_entries'],45)
+        self.assertEqual(ai.read_bytes(),b'AI index sentinel');self.assertFalse(self.path.exists())
+        with patch.object(self.bible,'_official_drive_sources',return_value=('fixture_folder_id',{'illustrations':source},[])):
+            self.bible.sync_sources(self.path,'fixture_folder_id',lambda _:None,
+                fetch=lambda _:self.fail('Unchanged illustration ZIP was downloaded again'),drive=Mock())
+        with patch.object(resources,'list_drive_folder',return_value=[
+                dict(id='fixture_v2_file',name='sermon_illustrations_codex_v2.zip'),
+                dict(id='fixture_old_file',name='sermon_illustrations_full_import.zip')]):
+            _,selected,ignored=self.bible._official_drive_sources(Mock(),'fixture_folder_id')
+        self.assertEqual(set(selected),{'illustrations'});self.assertIn('sermon_illustrations_full_import.zip',ignored)
+
+    def test_illustration_first_page_is_five_plus_five_then_global_ranking_without_source_quotas(self):
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute("UPDATE illustration_valid_links SET link_type='suggested',confidence='high',priority=10")
+            conn.execute("UPDATE illustration_valid_links SET priority=1 WHERE illustration_id IN (SELECT id FROM illustrations WHERE source='sermonillustrations_web')")
+        with self.bible.illustration_connection(path) as conn:
+            rows=conn.execute('''SELECT i.id,i.title,i.source,l.priority FROM illustration_valid_links l
+                JOIN illustrations i ON i.id=l.illustration_id JOIN illustration_reading r ON r.id=i.id
+                WHERE chapter_start=5 AND chapter_end=5 AND verse_start=1 AND has_content=1
+                ORDER BY priority,i.title COLLATE NOCASE,i.id''').fetchall()
+            # Cross-source duplicate body uses the stronger matching record.
+            self.assertIn('i-002',[r['id'] for r in rows])
+            expected=[r for r in rows if r['id']!='i-000']
+            first1001=[r['id'] for r in expected if r['source']=='connect_1001'][:5]
+            first_other=[r['id'] for r in expected if r['source']!='connect_1001'][:5]
+            selected=set(first1001+first_other)
+            remainder=[r['id'] for r in expected if r['id'] not in selected][:20]
+            result=self.bible.illustration_suggestions(conn,49,5,1)
+            self.assertEqual([r['id'] for r in result],first1001+first_other+remainder)
+            self.assertEqual({r['source'] for r in result[5:10]},{'sermonillustrations_web'})
+            self.assertTrue(any(r['source']=='connect_1001' for r in result[10:]))
+            self.assertEqual(len({r['id'] for r in result}),30)
+            # With fewer than five matches in one side, use available matches;
+            # no filler articles or duplicated cards are created.
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute("DELETE FROM illustration_valid_links WHERE illustration_id NOT IN ('i-003','i-007','i-008')")
+        with self.bible.illustration_connection(path) as conn:
+            result=self.bible.illustration_suggestions(conn,49,5,1)
+            self.assertEqual(len(result),3);self.assertEqual(result[0]['id'],'i-003')
 
     def test_epub_parsers_preserve_references_and_supported_word_link_evidence(self):
         niv = self.fixture_epub([('niv.html', '<p class="ah">Fixture heading</p><p id="xhtmlv01001001"><sup>1</sup>Alpha 😀 <a href="notes.html#xhtmlfn01001" id="xhtmlrfn01001">ignore</a>beta.<a id="xhtmlv01001002"/><sup>2</sup>Gamma.</p>')])
@@ -1744,7 +2037,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             self.assertEqual(verse['tokens'][1]['start_offset'], 8)
             match = self.client.get(f"{self.base}/api/word/{verse['id']}/0").json
             self.assertFalse(match['verified'])
-            self.assertEqual(match['sources'], [])
+            self.assertTrue(all(not group['available'] for group in match['sources']))
             self.assertEqual(match['message'], self.bible.NO_VERIFIED_ALIGNMENT)
             self.assertNotIn('KJV', str(match))
             self.assertEqual(self.client.get(f'{self.base}/api/concordance/1').status_code, 404)
@@ -1973,7 +2266,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         headers = self.preview(initialize=True)
         self.publish_fixture()
         started, release, done = Event(), Event(), Event()
-        def blocked_sync(path, library_path, progress):
+        def blocked_sync(path, library_path, progress, **options):
             progress('Testing an in-progress job.')
             started.set()
             try:
@@ -2004,6 +2297,334 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + '/api/sync').json['sync']['status'], 'failed')
         self.assertEqual(self.client.get(self.base + '/api/status').json['indexed_verses'], 1)
 
+    def test_harper_images_tables_emphasis_and_reverse_glosses_are_served_from_study_only(self):
+        self.preview(initialize=True)
+        from PIL import Image
+        image=io.BytesIO();Image.new('RGB',(3,3),'black').save(image,format='PNG')
+        epub=self.fixture_epub([('ch-a.xhtml','<p><a id="a1" href="toc-a.xhtml#a_1"><span class="bold">Alpha</span></a> explanation.</p>'
+            '<p>Source <span class="italic">emphasis</span>.</p><p><img src="map.png"/></p>'
+            '<table><tr><th>Heading</th><td>Value</td></tr></table>'
+            '<p><a id="a2" href="toc-a.xhtml#a_2">Another</a> entry.</p>')],
+            {'map.png':image.getvalue(),'style.css':b'.bold{font-weight:bold}.italic{font-style:italic}'})
+        harper=self.bible.parse_harper_epub(epub)
+        self.assertEqual(len(harper['entries']),2)
+        self.assertEqual(harper['entries'][0]['blocks'][-1]['type'],'table')
+        self.assertIn('strong',harper['entries'][0]['blocks'][0]['runs'][0]['marks'])
+        self.assertIn('em',next(r for r in harper['entries'][0]['blocks'][1]['runs'] if r['text']=='emphasis')['marks'])
+        parsed={'harper':harper}
+        for family,code,word in [('tagalog','tl','pag-ibig'),('cebuano','ceb','gugma')]:
+            data=json.dumps(dict(word=word,lang_code=code,pos='noun',senses=[dict(glosses=['love; affection'])])).encode()
+            parsed[family]=self.bible.parse_language_dictionary(data,family)
+        selected={family:dict(title=family+' fixture',drive_file_id='fixture_'+family+'_id',sha256=str(i)*64,fingerprint={}) for i,family in enumerate(parsed,1)}
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        results=self.client.get(self.base+'/api/dictionaries/search?q=love').json
+        self.assertEqual([g['label'] for g in results['translations']],['Tagalog','Cebuano'])
+        self.assertEqual([g['entries'][0]['headword'] for g in results['translations']],['pag-ibig','gugma'])
+        self.assertEqual([g['label'] for g in results['sources']],['HarperCollins','Vine','Mounce'])
+        entry=self.client.get(self.base+'/api/dictionaries/search?q=alpha').json['sources'][0]['entries'][0]
+        full=self.client.get(self.base+'/api/dictionaries/entry/'+str(entry['id'])).json['entry']
+        digest=next(r['asset'] for block in full['blocks'] for r in block['runs'] if r['type']=='image')
+        self.assertEqual(self.client.get(self.base+'/api/dictionaries/asset/'+digest).data,image.getvalue())
+        with self.assertRaises(self.bible.SyncError):self.bible.parse_language_dictionary(b'{broken','tagalog')
+
+    def test_native_word_study_uses_own_dictionary_forms_and_explicit_english_meanings(self):
+        self.preview(initialize=True);self.publish_fixture()
+        records={
+            'tagalog':[
+                dict(word='pag-ibig',pos='noun',senses=[dict(glosses=['love; affection'],examples=[dict(text='Example',english='sparkling')])]),
+                dict(word='mahalin',pos='verb',forms=[dict(form='minahal')],senses=[dict(glosses=['to love'])]),
+                dict(word='maganda',pos='verb',senses=[dict(glosses=['to be beautiful'])]),
+                dict(word='tubo',pos='noun',senses=[dict(glosses=['profit'])])],
+            'cebuano':[
+                dict(word='gugma',pos='noun',senses=[dict(glosses=['love'])]),
+                dict(word='tubo',pos='verb',senses=[dict(glosses=['to grow'])])]}
+        parsed={}
+        for family,items in records.items():
+            code='tl' if family=='tagalog' else 'ceb'
+            parsed[family]=self.bible.parse_language_dictionary(b'\n'.join(json.dumps(dict(r,lang_code=code)).encode() for r in items),family)
+        mounce=self.fixture_epub([('main.html','<p class="h2" id="ch5">BEAUTIFUL</p><p class="h1">New Testament</p>'
+            '<p><b>Adjective:</b> kalos (<i>kalos</i>), GK 2819 (S 2566), 101x. Beautiful.</p>')])
+        parsed['mounce']=self.bible.parse_dictionary_epub(mounce,'mounce')
+        selected={f:dict(title=f,drive_file_id='fixture_'+f,sha256=str(i)*64,fingerprint={}) for i,f in enumerate(parsed,1)}
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        self.bible.import_usfm_translations(self.path,{'TCB':self.translation_zip('pag-ibig'),'CEBOCB':self.translation_zip('gugma')})
+        with closing(sqlite3.connect(self.path)) as conn:
+            before=conn.execute('SELECT id,text,content_hash FROM bible_verses ORDER BY id').fetchall()
+        for translation,word in [('TCB','pag-ibig'),('CEBOCB','gugma')]:
+            verse=self.client.get(self.base+'/api/chapter',query_string=dict(book='Genesis',chapter=1,translation=translation)).json['verses'][0]
+            with (patch.object(self.bible,'verified_word_study',side_effect=AssertionError('No native-to-NIV alignment')),
+                  patch.object(self.bible,'search_dictionaries',side_effect=AssertionError('English lookup requires the reader choice'))):
+                data=self.client.get(f"{self.base}/api/word/{verse['id']}/0").json
+            self.assertEqual(data['result_type'],'native_dictionary');self.assertEqual(data['query'],word)
+            self.assertFalse(data['verified']);self.assertEqual(data['sources'],[]);self.assertNotIn('original_tokens',data)
+            self.assertIn('may not match',data['accuracy_notice']);self.assertEqual(data['dictionary']['source'],self.bible.NATIVE_DICTIONARY_FAMILIES[translation])
+            entry=data['dictionary']['entries'][0];self.assertEqual(entry['headword'],word)
+            meanings=[choice['word'] for choice in entry['english_equivalents']]
+            self.assertIn('love',meanings);self.assertNotIn('sparkling',meanings)
+        def native(word,translation):return self.client.get(self.base+'/api/dictionaries/search',query_string=dict(q=word,translation=translation)).json
+        recorded=native('minahal','TCB')['dictionary']['entries'][0]
+        self.assertEqual(recorded['headword'],'mahalin');self.assertTrue(recorded['is_recorded_form'])
+        stative=native('maganda','TCB')['dictionary']['entries'][0]
+        self.assertEqual(stative['part'],'verb');self.assertEqual(stative['english_equivalents'][0]['part'],'adjective')
+        self.assertEqual(stative['english_equivalents'][0]['word'],'beautiful')
+        self.assertEqual(native('tubo','TCB')['dictionary']['entries'][0]['english_equivalents'][0]['word'],'profit')
+        self.assertEqual(native('tubo','CEBOCB')['dictionary']['entries'][0]['english_equivalents'][0]['word'],'grow')
+        missing=native('gihigugma','CEBOCB')
+        self.assertEqual(missing['dictionary']['entries'],[]);self.assertIn('gugma',[s['word'] for s in missing['suggestions']])
+        self.assertEqual(missing['suggestions'][0]['preview'],'love')
+        self.assertFalse(native('loved','TCB')['dictionary']['entries'])
+        english=self.client.get(self.base+'/api/dictionaries/search?q=beautiful&part=adjective').json
+        self.assertEqual(english['sources'][2]['entries'][0]['headword'],'BEAUTIFUL')
+        self.assertEqual(self.client.get(self.base+'/api/dictionaries/search?q=love&translation=bad').status_code,400)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT id,text,content_hash FROM bible_verses ORDER BY id').fetchall(),before)
+
+    def test_dictionary_cross_references_and_shortened_citations_keep_source_typography(self):
+        self.preview(initialize=True)
+        epub=self.fixture_epub([('ch-s.xhtml',
+            '<p><a id="s1" href="toc-s.xhtml#s_1"><b>sapphire</b></a>, source text. Exod. 24:10; Ezek. 1:26; 10:1 may refer to this stone. '
+            '<b><i>See also</i></b> breastpiece; jewels, jewelry; unavailable suggestion.</p>'
+            '<p>Gen. 24 records an event (24:58). A statistic (365) and a different chapter (9:10) stay plain.</p>'
+            '<p>A limited suggestion (see unavailable) mentions jewels later in prose.</p>'
+            '<p><a id="s2" href="toc-s.xhtml#s_2">breastpiece</a>, an article. See sapphire.</p>'
+            '<p><a id="s3" href="toc-s.xhtml#s_3">jewels, jewelry</a>, an article.</p>')])
+        parsed=self.bible.parse_harper_epub(epub)
+        source=dict(title='Harper fixture',drive_file_id='harper_fixture',sha256='c'*64,fingerprint={})
+        self.bible._publish_dictionary_sync(self.path,{'harper':source},{'harper':parsed},'fixture_folder_id',[])
+        with closing(sqlite3.connect(self.path)) as conn:
+            entry,stored=conn.execute("SELECT id,content_json FROM bible_dictionary_entries WHERE headword='sapphire'").fetchone()
+        data=self.client.get(f'{self.base}/api/dictionaries/entry/{entry}').json['entry'];blocks=data['blocks']
+        self.assertEqual(blocks[0]['text'],parsed['entries'][0]['blocks'][0]['text'])
+        self.assertEqual(blocks[0]['runs'],parsed['entries'][0]['blocks'][0]['runs'])
+        links=blocks[0]['dictionary_links']
+        self.assertEqual([blocks[0]['text'][l['start']:l['end']] for l in links],['breastpiece','jewels, jewelry'])
+        for link in links:
+            target=self.client.get(f"{self.base}/api/dictionaries/entry/{link['entry_ids'][0]}").json['entry']
+            self.assertEqual(target['headword'],link['headword'])
+        self.assertEqual([(r['book'],r['chapter'],r['verse']) for r in blocks[0]['references']],
+                         [('Exodus',24,10),('Ezekiel',1,26),('Ezekiel',10,1)])
+        chapter,bare=blocks[1]['references']
+        self.assertTrue(chapter['chapter_only']);self.assertEqual((bare['book'],bare['verse']),('Genesis',58))
+        self.assertFalse(blocks[2].get('dictionary_links'))
+        preview=self.client.get(self.base+'/api/dictionaries/search?q=sapphire').json['sources'][0]['entries'][0]['preview_block']
+        self.assertTrue(preview['dictionary_links']);self.assertIn('strong',preview['runs'][0]['marks'])
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT content_json FROM bible_dictionary_entries WHERE id=?',(entry,)).fetchone()[0],stored)
+
+    def test_compound_word_clicks_and_article_mentions_find_embedded_material(self):
+        self.preview(initialize=True);self.publish_fixture()
+        parsed={family:self.bible.parse_dictionary_epub(data,family) for family,data in self.dictionary_fixtures().items()}
+        for family in ('mounce','vine'):
+            entry=parsed[family]['entries'][0]
+            block=dict(type='paragraph',text='An embedded explanation of lapis lazuli and turquoise.',references=[],
+                       runs=[dict(type='text',text='An embedded explanation of lapis lazuli and turquoise.',marks=[])])
+            entry['blocks'].append(block);entry['plain_text']+='\n\n'+block['text']
+        harper=self.fixture_epub([('ch-s.xhtml','<p><a id="s1" href="toc-s.xhtml#s_1">sapphire</a>, an original source article.</p>'
+            '<p>'+('Introductory background. '*30)+'The references may refer to lapis lazuli. Original closing context.</p>'
+            '<p><a id="s2" href="toc-s.xhtml#s_2">stone</a>, including turquoise.</p>'
+            '<p><a id="s3" href="toc-s.xhtml#s_3">unrelated</a>, a turquoiselike color is not a whole-word match.</p>')])
+        parsed['harper']=self.bible.parse_harper_epub(harper)
+        selected={family:dict(title=family+' fixture',drive_file_id='fixture_'+family,sha256=str(i)*64,fingerprint={}) for i,family in enumerate(parsed,1)}
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        text='Stones of turquoise, your foundations with lapis lazuli.'
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            edition=conn.execute("SELECT id FROM bible_editions WHERE translation='NIV' AND is_active=1").fetchone()[0]
+            verse=conn.execute('''INSERT INTO bible_verses(edition_id,book_id,chapter,verse,text,content_hash)
+                VALUES(?,23,54,11,?,?)''',(edition,text,hashlib.sha256(text.encode()).hexdigest())).lastrowid
+            for index,match in enumerate(re.finditer(r'\w+',text)):
+                conn.execute('INSERT INTO bible_tokens(verse_id,token_index,start_offset,end_offset,text) VALUES(?,?,?,?,?)',
+                    (verse,index,match.start(),match.end(),match[0]))
+            conn.execute("INSERT INTO bible_edition_details(edition_id,label,source_kind) VALUES(?,'Fixture','thompson_pdf')",(edition,))
+            for key,title,blocks in [
+                ('2858','PRECIOUS STONES',[dict(type='heading',text='o. Lapis Lazuli/Sapphire,'),dict(type='paragraph',text='Isa 54:11',references=self.bible.scripture_references('Isa 54:11'))]),
+                ('2850','PRECIOUS STONES',[dict(type='heading',text='g. Turquoise,'),dict(type='paragraph',text='Rev 21:20',references=self.bible.scripture_references('Rev 21:20'))]),
+                ('777','COMFORT',[dict(type='paragraph',text='A quoted verse with lapis lazuli and turquoise.')])]:
+                conn.execute('INSERT INTO bible_chain_topics(edition_id,topic_key,title,content_json,source_page) VALUES(?,?,?,?,99)',
+                    (edition,key,title,json.dumps(blocks)))
+            indices=dict(conn.execute('SELECT lower(text),token_index FROM bible_tokens WHERE verse_id=?',(verse,)))
+        for word in ('lapis','lazuli'):
+            data=self.client.get(f'{self.base}/api/word/{verse}/{indices[word]}').json
+            self.assertEqual(data['query'],'lapis lazuli');self.assertFalse(data['verified'])
+            self.assertEqual(data['lookup_token_indices'],[indices['lapis'],indices['lazuli']])
+            for source in data['sources']:
+                self.assertFalse(source['entries'])
+                self.assertTrue(source['related_entries'])
+                self.assertEqual(source['related_entries'][0]['match_type'],'article_text')
+                self.assertIn('lapis lazuli',source['related_entries'][0]['preview'])
+            self.assertEqual(data['sources'][0]['related_entries'][0]['headword'],'sapphire')
+        result=self.client.get(self.base+'/api/dictionaries/search?q=turquoise').json
+        self.assertEqual([e['headword'] for e in result['sources'][0]['related_entries']],['stone'])
+        for query,heading,key in [('lapis lazuli','Lapis Lazuli/Sapphire','2858'),('lazuli','Lapis Lazuli/Sapphire','2858'),('turquoise','Turquoise','2850')]:
+            result=self.client.get(self.base+'/api/concordance',query_string={'q':query}).json
+            self.assertTrue(result['available']);self.assertEqual(len(result['entries']),1)
+            self.assertEqual(result['entries'][0]['headword'],heading)
+            self.assertEqual(result['entries'][0]['topic_key'],key)
+            self.assertTrue(result['entries'][0]['blocks'][-1]['references'])
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT text FROM bible_verses WHERE id=?',(verse,)).fetchone()[0],text)
+
+    def test_word_types_guide_equivalents_while_dictionary_articles_stay_complete(self):
+        self.preview(initialize=True);self.publish_fixture()
+        mounce=self.fixture_epub([('main.html',
+            '<p class="h2" id="ch5">COMFORT</p><p class="h1">Old Testament</p>'
+            '<p><b>Verb:</b> naham (<i>naham</i>), GK 5714 (S 5162), 108x. To comfort.</p>'
+            '<p class="h1">New Testament</p><p><b>Verb:</b> parakaleo (<i>parakaleo</i>), GK 4151 (S 3870), 109x. To comfort.</p>'
+            '<p><b>Noun:</b> paraklesis (<i>paraklesis</i>), GK 4155 (S 3874), 29x. Consolation.</p>'
+            '<p class="h2" id="ch5b">CHANGE</p><p class="h1">New Testament</p><p><b>Verb:</b> strepho (<i>strepho</i>), GK 5138 (S 4762), 21x. See <i>comfort</i>.</p>'
+            '<p class="h2" id="ch5c">LOVE</p><p class="h1">New Testament</p><p><b>Verb:</b> agapao (<i>agapao</i>), GK 26 (S 25), 143x. To love.</p>'
+            '<p><b>Noun:</b> agape (<i>agape</i>), GK 27 (S 26), 116x. Love.</p>'
+            '<p class="h2" id="ch5d">KING</p><p class="h1">New Testament</p>'
+            '<p><b>Noun:</b> basileus (<i>basileus</i>), GK 995 (S 935), 115x. King.</p>'
+            '<p><b>Verb:</b> basileuo (<i>basileuo</i>), GK 996 (S 936), 21x. Reign.</p>'
+            '<p><b>Adjective:</b> basilikos (<i>basilikos</i>), GK 997 (S 937), 5x. Royal.</p>')])
+        vine=self.fixture_epub([('vine-ntA.html','<div class="chap" id="G.COMFORT"><p class="bh">COMFORT</p>'
+            '<p class="pc">A. Nouns.</p><p><i>paraklesis</i> (3874), consolation.</p>'
+            '<p class="pc">B. Verbs.</p><p><i>parakaleo</i> (3870), to comfort.</p></div>')])
+        harper=self.fixture_epub([('ch-j.xhtml',
+            '<p><a id="j1" href="toc-j.xhtml#j_1">jewels, jewelry</a>, precious objects.</p>'
+            '<p><a id="j2" href="toc-j.xhtml#j_2">theater</a>, cushions made the audience comfortable; people were comforted.</p>'
+            '<p><a id="j3" href="toc-j.xhtml#j_3">twelve, the</a>, the apostles.</p>')])
+        parsed={f:self.bible.parse_dictionary_epub(data,f) for f,data in [('mounce',mounce),('vine',vine)]}
+        parsed['harper']=self.bible.parse_harper_epub(harper)
+        for family,code in [('tagalog','tl'),('cebuano','ceb')]:
+            records=[dict(word=word,pos=pos,lang_code=code,senses=[dict(glosses=[gloss])]) for word,pos,gloss in
+                     [('noun-choice','noun','comfort'),('verb-choice','verb','to comfort'),('love-noun','noun','love'),('love-verb','verb','to love')]]
+            parsed[family]=self.bible.parse_language_dictionary(b'\n'.join(json.dumps(r).encode() for r in records),family)
+        selected={f:dict(title=f,drive_file_id='fixture_'+f,sha256=str(i)*64,fingerprint={}) for i,f in enumerate(parsed,1)}
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        verses={}
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            edition=conn.execute("SELECT id FROM bible_editions WHERE translation='NIV' AND is_active=1").fetchone()[0]
+            for number,text in enumerate(['Afflicted city, not comforted, I will rebuild you.',
+                    'Your gates of sparkling jewels.', 'God is love.', 'Love one another.', 'He has comforted them.',
+                    'God so loved the world.', 'The king of the city.'],11):
+                verse=conn.execute('INSERT INTO bible_verses(edition_id,book_id,chapter,verse,text,content_hash) VALUES(?,23,54,?,?,?)',
+                    (edition,number,text,hashlib.sha256(text.encode()).hexdigest())).lastrowid
+                tokens=list(re.finditer(r'\w+',text));verses[number]=(verse,tokens)
+                for i,m in enumerate(tokens):conn.execute('INSERT INTO bible_tokens(verse_id,token_index,start_offset,end_offset,text) VALUES(?,?,?,?,?)',(verse,i,m.start(),m.end(),m[0]))
+        def lookup(number,word,part=None):
+            verse,tokens=verses[number];index=next(i for i,m in enumerate(tokens) if m[0].lower()==word)
+            return self.client.get(f'{self.base}/api/word/{verse}/{index}',query_string={'part':part} if part else {}).json
+        for number in (11,15):
+            data=lookup(number,'comforted');self.assertEqual(data['word_type']['part'],'verb')
+            self.assertFalse(data['sources'][0]['entries']);self.assertEqual(data['sources'][0]['related_entries'][0]['headword'],'theater')
+            for source in data['sources'][1:]:
+                self.assertTrue(source['entries']);self.assertFalse(source['other_entries'])
+                for entry in source['entries']:
+                    self.assertEqual(entry['headword'],'COMFORT')
+                    self.assertTrue(entry['full_article']);self.assertNotIn('definitions',entry)
+                    full=self.client.get(f"{self.base}/api/dictionaries/entry/{entry['id']}").json['entry']
+                    self.assertTrue(any('Noun' in b['text'] for b in full['blocks']))
+                    self.assertTrue(any('Verb' in b['text'] for b in full['blocks']))
+            for translation in data['translations']:self.assertEqual([e['headword'] for e in translation['entries']],['verb-choice'])
+            self.assertFalse(data['verified'])
+        self.assertEqual(lookup(12,'sparkling')['word_type']['part'],'adjective')
+        self.assertEqual(lookup(13,'love')['word_type']['part'],'noun')
+        self.assertEqual(lookup(14,'love')['word_type']['part'],'verb')
+        self.assertEqual(lookup(16,'loved')['word_type']['part'],'verb')
+        self.assertEqual(lookup(17,'king')['word_type']['part'],'noun')
+        data=lookup(11,'comforted','noun')
+        self.assertEqual(data['word_type'],dict(part='noun',basis='chosen'))
+        def articles(groups):
+            return [(g['source'],[(e['id'],e['headword'],e['preview']) for e in g['entries']]) for g in groups]
+        self.assertEqual(articles(data['sources'][1:]),articles(lookup(11,'comforted','verb')['sources'][1:]))
+        self.assertEqual([e['headword'] for e in data['translations'][0]['entries']],['noun-choice'])
+        self.assertEqual(self.client.get(self.base+'/api/dictionaries/search?q=jewels').json['sources'][0]['entries'][0]['headword'],'jewels, jewelry')
+        grammar=self.client.get(self.base+'/api/dictionaries/search?q=the').json
+        self.assertEqual(grammar['word_type']['part'],'grammar')
+        self.assertTrue(all(not s['related_entries'] for s in grammar['sources']))
+        self.assertTrue(all(not s['entries'] and not s['other_entries'] for s in grammar['sources']))
+        self.assertEqual(self.client.get(self.base+'/api/dictionaries/search?q=love&part=invalid').status_code,400)
+        verse,_=verses[11]
+        self.assertEqual(self.client.get(f'{self.base}/api/word/{verse}/0?part=invalid').status_code,400)
+
+    def test_reverse_love_prioritizes_bible_vocabulary_and_rejects_incidental_examples(self):
+        self.preview(initialize=True)
+        records={
+            'tagalog':[
+                ('ibig','noun',['want; desire','love; affection']),('amor','noun',['love; affair']),
+                ('pag-ibig','noun',['love; attraction; fondness']),('pagmamahal','noun',['love; act of loving']),
+                ('kuyom','noun',["withholding (of one's anger, love, etc.)"]),
+                ('talang','noun',['blush (from embarrassment, love, etc.)'])],
+            'cebuano':[
+                ('gugma','noun',['love']),('pangga','verb',['to love']),
+                ('pinangga','adj',['loved; beloved']),('pinangga','noun',['a person who is dear or loved']),
+                ('gihalaran','noun',["the object of one's offering, sacrifice, love or affections"]),
+                ('Venus','name',['the goddess of love'])]}
+        parsed={};selected={}
+        for index,(family,items) in enumerate(records.items(),1):
+            code='tl' if family=='tagalog' else 'ceb'
+            data=b'\n'.join(json.dumps(dict(word=word,pos=pos,lang_code=code,senses=[dict(glosses=glosses)])).encode() for word,pos,glosses in items)
+            parsed[family]=self.bible.parse_language_dictionary(data,family)
+            selected[family]=dict(title=family,drive_file_id='fixture_'+family,sha256=str(index)*64,fingerprint={})
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            # Old indexes incorrectly gave parenthetical/comma fragments a high
+            # weight. Search must reject these without requiring another import.
+            conn.execute('''INSERT OR REPLACE INTO bible_dictionary_gloss_terms
+                SELECT id,'love',4 FROM bible_dictionary_entries WHERE headword IN ('kuyom','talang','gihalaran','Venus')''')
+            source,run=conn.execute('SELECT source_id,import_run_id FROM bible_dictionary_versions LIMIT 1').fetchone()
+            edition=conn.execute('''INSERT INTO bible_editions(source_id,import_run_id,edition_key,translation,title,status,is_active)
+                VALUES(?,?,'fixture_TCB','TCB','Fixture','ready',1)''',(source,run)).lastrowid
+            verse=conn.execute('''INSERT INTO bible_verses(edition_id,book_id,chapter,verse,text,content_hash)
+                VALUES(?,1,1,1,'pag-ibig pag-ibig pagmamahal ibig',?)''',(edition,'f'*64)).lastrowid
+            offset=0
+            for index,word in enumerate(['pag-ibig','pag-ibig','pagmamahal','ibig']):
+                conn.execute('''INSERT INTO bible_tokens(verse_id,token_index,start_offset,end_offset,text,normalized_text)
+                    VALUES(?,?,?,?,?,?)''',(verse,index,offset,offset+len(word),word,word));offset+=len(word)+1
+        for query in ('love','loved'):
+            data=self.client.get(self.base+'/api/dictionaries/search',query_string={'q':query}).json
+            tagalog,cebuano=data['translations']
+            words=[e['headword'] for e in tagalog['entries']]
+            self.assertEqual(words[:2],['pag-ibig','pagmamahal'])
+            self.assertIn('ibig',words);self.assertNotIn('kuyom',words);self.assertNotIn('talang',words)
+            words=[e['headword'] for e in cebuano['entries']]
+            self.assertIn('gugma',words);self.assertIn('pangga',words)
+            self.assertNotIn('gihalaran',words);self.assertNotIn('Venus',words)
+            if query=='loved':
+                entry=next(e for e in cebuano['entries'] if e['headword']=='pinangga')
+                self.assertEqual(len(entry['entry_ids']),2)
+                for entry_id in entry['entry_ids']:
+                    self.assertEqual(self.client.get(self.base+'/api/dictionaries/entry/'+str(entry_id)).status_code,200)
+
+    def test_be_import_and_cleanup_keep_pdf_and_unimported_editions(self):
+        self.preview(initialize=True)
+        epub=self.fixture_epub([('chapter.xhtml','<p>Chapter One</p><p>Source heading</p><p>(2 Peter 1:1–11)</p>'
+            '<p>A complete synthetic source paragraph with <span class="italic">original emphasis</span> and enough text for validation.</p>'
+            '<blockquote><p>A preserved quotation from the source.</p></blockquote>')],
+            {'style.css':b'.italic{font-style:italic}'},'<title>Be Alert: An Expository Study of 2 Peter</title><creator>Warren W. Wiersbe</creator>')
+        content=self.bible.parse_be_epub(epub,'Be Alert (2 Peter)')
+        selected={'be:fixture_be_id':dict(title=content['title'],drive_file_id='fixture_be_id',sha256='e'*64,fingerprint={})}
+        ai=Path(self.directory.name)/'ai.db'
+        with closing(sqlite3.connect(ai)) as conn,conn:
+            conn.execute('CREATE TABLE pij_library_documents(id INTEGER,drive_file_id TEXT,title TEXT,author TEXT,format TEXT,source_type TEXT)')
+            conn.execute('CREATE TABLE pij_library_chunks(document_id INTEGER,content TEXT)')
+            conn.executemany('INSERT INTO pij_library_documents VALUES(?,?,?,?,?,?)',[
+                (1,'old_be_id','Be Alert (2 Peter)','Warren W. Wiersbe','epub','public_ebook'),
+                (2,'pdf_be_id','Be Alert (2 Peter)','Warren W. Wiersbe','pdf','public_ebook'),
+                (3,'not_imported','Other study source','Author','epub','public_ebook')])
+            conn.executemany('INSERT INTO pij_library_chunks VALUES(?,?)',[(1,'old'),(2,'PDF'),(3,'keep')])
+        self.assertEqual(self.bible.purge_migrated_ai_sources(self.path,ai),0)
+        self.bible._publish_dictionary_sync(self.path,selected,{'be:fixture_be_id':content},'fixture_folder_id',[])
+        self.app.config['AI_DATABASE']=str(ai)
+        data=self.client.get(self.base+'/api/commentary?book=2%20Peter&chapter=1&verse=2').json
+        self.assertTrue(data['available']);self.assertEqual(len(data['entries']),1)
+        self.assertTrue(any(b.get('source_quote') for b in data['entries'][0]['blocks']))
+        self.assertEqual(self.client.get(self.base+'/api/commentary?book=John&chapter=1&verse=2').json['entries'],[])
+        self.assertEqual(self.bible.purge_migrated_ai_sources(self.path,ai),1)
+        self.assertEqual(self.bible.purge_migrated_ai_sources(self.path,ai),0)
+        with closing(sqlite3.connect(ai)) as conn:
+            self.assertEqual(conn.execute('SELECT id FROM pij_library_documents ORDER BY id').fetchall(),[(2,),(3,)])
+            self.assertEqual(conn.execute('SELECT document_id FROM pij_library_chunks ORDER BY document_id').fetchall(),[(2,),(3,)])
+        # Simulate a v7 source constraint upgrade without changing existing IDs.
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('PRAGMA user_version=7')
+            before=conn.execute('SELECT * FROM bible_commentary_sections').fetchall()
+        self.bible.initialize_database(self.path)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT * FROM bible_commentary_sections').fetchall(),before)
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(),[])
+
     def test_dictionary_import_preserves_sections_images_identifiers_and_split_entries(self):
         self.preview(initialize=True)
         self.publish_fixture()
@@ -2027,14 +2648,80 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             with self.assertRaises(self.bible.SyncError):
                 self.bible._validate_dictionary(parsed[family], family)
 
+    def test_expository_epub_formatting_refresh_preserves_entries_senses_and_saved_reading(self):
+        headers=self.preview(initialize=True);self.publish_fixture()
+        from PIL import Image
+        image=io.BytesIO();Image.new('RGB',(30,12),'black').save(image,format='PNG')
+        mounce=self.fixture_epub([('main.html','<p class="h2" id="ch5">LOVE</p><p class="h1">Old Testament</p>'
+            '<p class="tx"><b>Verb:</b> <img src="glyph.png"/> (<i>ahab</i>), GK 170 (S 157), 217x. To love.</p>'
+            '<p class="tx1">(1) A source explanation. Gen. 1:1.</p>'
+            '<p class="h1">New Testament</p><p class="tx"><b>Noun:</b> agape (<i>agape</i>), GK 27 (S 26), 116x. Love.</p>')],
+            {'glyph.png':image.getvalue(),'style.css':b'.tx{text-indent:5%}.tx1{text-indent:10%}.h1{font-style:italic}'})
+        vine=self.fixture_epub([('vine-ntL.html','<div id="G.LOVE"><p class="bh">LOVE (Noun and Verb)</p>'
+            '<p class="pc"><b>A. Verbs.</b></p><p>1. <i>agapao</i> (25), source definition. See <a href="vine-ntL.html#G.EDIFICATION">Edify</a>.</p>'
+            '<p class="pc"><b>B. Nouns.</b></p><p>1. <i>agape</i> (26), source noun definition.</p></div>'
+            '<div id="G.EDIFICATION"><p class="bh">EDIFICATION</p><p>Complete referenced source article.</p></div>')],
+            {'style.css':b'.pc{text-align:center}.bh{text-align:center;font-style:italic}'})
+        parsed={f:self.bible.parse_dictionary_epub(data,f) for f,data in [('mounce',mounce),('vine',vine)]}
+        mb=parsed['mounce']['entries'][0]['blocks']
+        self.assertEqual(mb[1]['presentation']['indent_percent'],5);self.assertEqual(mb[2]['presentation']['indent_percent'],10)
+        self.assertEqual(next(r for r in mb[1]['runs'] if r['type']=='image')['height_em'],.75)
+        self.assertFalse(mb[1].get('illustration'));self.assertEqual(mb[0]['dictionary_style'],'testament')
+        self.assertEqual(parsed['vine']['entries'][0]['blocks'][0]['presentation']['align'],'center')
+        selected={f:dict(title=f,drive_file_id='fixture_'+f,sha256=str(i)*64,fingerprint={}) for i,f in enumerate(parsed,1)}
+        self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])
+        verse=self.client.get(self.base+'/api/chapter').json['verses'][0]
+        saved=self.client.post(self.base+'/api/bookmarks',json=dict(verse_id=verse['id']),headers=headers).json['bookmark']
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            for row in conn.execute('SELECT id,content_json FROM bible_dictionary_entries').fetchall():
+                blocks=json.loads(row[1])
+                for block in blocks:
+                    block.pop('presentation',None);block.pop('dictionary_style',None)
+                    for run in block['runs']:run.pop('height_em',None);run.pop('epub_target',None)
+                conn.execute('UPDATE bible_dictionary_entries SET content_json=? WHERE id=?',(json.dumps(blocks,ensure_ascii=False),row[0]))
+            conn.execute("DELETE FROM bible_metadata WHERE key LIKE 'dictionary_presentation:%'")
+            entries=conn.execute('SELECT id,version_id,locator,headword,plain_text,preview FROM bible_dictionary_entries ORDER BY id').fetchall()
+            senses=conn.execute('SELECT * FROM bible_dictionary_senses ORDER BY id').fetchall()
+            tokens=conn.execute('SELECT * FROM bible_tokens ORDER BY id').fetchall()
+        report=self.bible._safe_publish_sources(self.path,selected,parsed,'fixture_folder_id',[],lambda message:None)
+        self.assertEqual(report['formatting_entries'],3);self.assertTrue(Path(report['backup']).is_file())
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT id,version_id,locator,headword,plain_text,preview FROM bible_dictionary_entries ORDER BY id').fetchall(),entries)
+            self.assertEqual(conn.execute('SELECT * FROM bible_dictionary_senses ORDER BY id').fetchall(),senses)
+            self.assertEqual(conn.execute('SELECT * FROM bible_tokens ORDER BY id').fetchall(),tokens)
+            before=conn.execute('SELECT id,content_json FROM bible_dictionary_entries ORDER BY id').fetchall()
+        self.assertEqual(self.client.get(saved['delete_url']).json['item']['verse_id'],verse['id'])
+        result=self.client.get(self.base+'/api/dictionaries/search?q=love&part=verb').json
+        for group in result['sources'][1:]:
+            entry=group['entries'][0]
+            self.assertNotIn('definitions',entry)
+            complete=self.client.get(f"{self.base}/api/dictionaries/entry/{entry['id']}").json['entry']
+            self.assertEqual([b['text'] for b in complete['blocks']],[b['text'] for b in parsed[group['source']]['entries'][0]['blocks']])
+            # Existing saved definition links remain readable, although search
+            # now presents only complete articles.
+            with closing(sqlite3.connect(self.path)) as conn:
+                sense=conn.execute('SELECT id FROM bible_dictionary_senses WHERE entry_id=? ORDER BY block_start LIMIT 1',(entry['id'],)).fetchone()[0]
+            data=self.client.get(f"{self.base}/api/dictionaries/entry/{entry['id']}?sense={sense}").json['entry']
+            self.assertTrue(data['context_blocks'])
+            self.assertEqual(data['context_blocks'][0]['text'],'Old Testament' if group['source']=='mounce' else 'A. Verbs.')
+            if group['source']=='vine':
+                link=data['blocks'][0]['dictionary_links'][0]
+                self.assertEqual(link['headword'],'Edify')
+                self.assertEqual(self.client.get(f"{self.base}/api/dictionaries/entry/{link['entry_ids'][0]}").json['entry']['headword'],'EDIFICATION')
+        corrupt=copy.deepcopy(parsed);corrupt['mounce']['entries'][0]['blocks'][1]['presentation']['indent_percent']=7
+        corrupt['vine']['entries'][0]['blocks'][-1]['text']+=' Changed source words.'
+        with self.assertRaises(self.bible.SyncError):self.bible._publish_dictionary_sync(self.path,selected,corrupt,'fixture_folder_id',[],check_preservation=True)
+        with closing(sqlite3.connect(self.path)) as conn:self.assertEqual(conn.execute('SELECT id,content_json FROM bible_dictionary_entries ORDER BY id').fetchall(),before)
+        self.assertEqual(self.bible._publish_dictionary_sync(self.path,selected,parsed,'fixture_folder_id',[])['formatting_entries'],0)
+
     def test_dictionary_search_is_source_specific_and_assets_require_login(self):
         self.preview(initialize=True)
         self.publish_fixture()
         self.publish_dictionaries()
-        results = self.client.get(self.base + '/api/dictionaries/search?q=alpha').json
-        self.assertEqual([source['label'] for source in results['sources']], ['Mounce','Vine'])
-        self.assertEqual([len(source['entries']) for source in results['sources']], [3,2])
-        headword = results['sources'][0]['entries'][0]
+        results = self.client.get(self.base + '/api/dictionaries/search?q=alpha&part=all').json
+        self.assertEqual([source['label'] for source in results['sources']], ['HarperCollins','Vine','Mounce'])
+        self.assertEqual([len(source['entries']) for source in results['sources']], [0,2,3])
+        headword = results['sources'][2]['entries'][0]
         full = self.client.get(f"{self.base}/api/dictionaries/entry/{headword['id']}").json['entry']
         self.assertEqual(full['source'], 'mounce')
         self.assertTrue(full['blocks'][1]['references'])
@@ -2045,7 +2732,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         for query in ['H20','G20','GK 10','GK Hebrew 10','GK Greek 10']:
             response = self.client.get(self.base+'/api/dictionaries/search', query_string={'q':query})
             self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.json['sources'][0]['entries'])
+            self.assertTrue(response.json['sources'][2]['entries'])
             if query.startswith('GK'):
                 self.assertEqual(response.json['sources'][1]['entries'], [])
         self.assertEqual(self.client.get(self.base+'/api/dictionaries/search?q=alpha&source=unknown').status_code, 400)
@@ -2173,8 +2860,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             original=conn.execute('SELECT id FROM bible_original_tokens WHERE book_id=1 AND chapter=1 AND verse=1').fetchone()[0]
             source=conn.execute('SELECT source_id FROM bible_original_versions').fetchone()[0]
         url=f"{self.base}/api/word/{niv['id']}/0"
-        with patch.object(self.bible,'search_dictionaries',side_effect=AssertionError('No English fallback')):
+        with patch.object(self.bible,'search_dictionaries',wraps=self.bible.search_dictionaries) as lookup:
             result=self.client.get(url).json
+            lookup.assert_called_once()
         self.assertFalse(result['verified'])
         self.assertEqual(result['result_type'],'dictionary')
         self.assertNotIn('original_tokens',result)
@@ -2189,7 +2877,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         result=self.client.get(url).json
         self.assertTrue(result['verified'])
         self.assertEqual(result['original_tokens'][0]['id'],original)
-        self.assertEqual([g['label'] for g in result['sources']],['Mounce','Vine'])
+        self.assertEqual([g['label'] for g in result['sources']],['HarperCollins','Vine','Mounce'])
         self.assertTrue(self.client.get(url.rsplit('/',1)[0]+'/1').json['verified'])
         for sql in ("UPDATE bible_niv_alignments SET verse_content_hash='"+'f'*64+"'",
                     "UPDATE bible_niv_alignments SET status='pending'",
@@ -2370,7 +3058,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             judah=self.bible.person_study(conn,'Judah')
             self.assertEqual(len(judah['people']),1);self.assertIsNone(judah['selected'])
             self.assertIn('Jacob',self.bible.person_study(conn,'Judah',(1,29,35))['selected']['label'])
-        noah=self.client.get(self.base+'/api/dictionaries/search?q=Noah').json['people']['selected']
+        noah_data=self.client.get(self.base+'/api/dictionaries/search?q=Noah').json
+        self.assertEqual(noah_data['word_type']['part'],'name')
+        noah=noah_data['people']['selected']
         self.assertTrue(any('Character Studies' in section['title'] for section in noah['sections']))
         self.assertTrue(any('Classified' in section['title'] for section in noah['sections']))
         self.assertTrue(any(section.get('pages')==[1893] for section in noah['sections']))
@@ -2661,7 +3351,8 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             for ordinal,page,text in chunks:conn.execute('INSERT INTO pij_library_chunks VALUES(1,?,?,?)',(ordinal,page,text))
         self.app.config['AI_DATABASE']=str(path)
         before=path.read_bytes()
-        data=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=10').json
+        data=self.bible.wiersbe_commentary(str(path),51,2,10)
+        self.assertFalse(self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=10').json['available'])
         self.assertTrue(data['available']);self.assertEqual(len(data['entries']),1)
         entry=data['entries'][0]
         self.assertEqual((entry['title'],entry['passage']),('A Source Heading','Colossians 2:4–15'))
@@ -2944,7 +3635,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         content='Alpha 😀 beta.'
         provider=dict(available=True,entries=[dict(title='A source article',source_title='Wiersbe fixture',author='Fixture',passage='Colossians 2:1-23',
             blocks=[dict(type='paragraph',text=content),dict(type='paragraph',text='Second original source paragraph.')])])
-        with patch.object(self.bible,'wiersbe_commentary',return_value=provider):
+        with patch.object(self.bible,'bible_study_be_commentary',return_value=provider):
             data=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=1').json
             other=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=23').json
         anchor=next(anchor for anchor in data['study_anchors'] if anchor['text']==content)

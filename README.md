@@ -196,7 +196,13 @@ passage navigation preserves the passage and saves the edition per account.
 Verse popups and copying follow that selection. Original English study resources
 continue to follow book/chapter; combined verses share the corresponding Thompson
 chain topics. Native-language concordance uses case-insensitive exact word
-occurrences; automatic English Word Study stays with NIV. Saves retain their
+occurrences. Native Word Study opens the selected translation's own dictionary
+using recorded headwords/forms, without applying English stemming or English
+part-of-speech rules. Readers choose an English equivalent from a definition to
+search the Bible dictionaries; no English meaning is automatically assigned to
+the verse. Missing forms offer explicitly unconfirmed spelling suggestions.
+A persistent notice explains that the English meaning may not fit the verse
+and may be less precise than an English Bible lookup. Saves retain their
 original edition. USFM footnotes, headings, line breaks and verse ranges survive
 import, and publisher attribution appears below each chapter.
 
@@ -215,6 +221,109 @@ editions and personal records. Identical archives reuse the current edition and
 do not create another backup. Startup and reader requests do not migrate schemas.
 Deploy the updated application and run a sync on the server; local imports do not
 modify the server's copy.
+
+Keep HarperCollins, Mounce, Vine, the BE series EPUBs, and
+`kaikki.org-dictionary-Tagalog.jsonl` / `kaikki.org-dictionary-Cebuano.jsonl`
+directly inside **For Scripture Study App**. Bible Study imports only these
+supported resources, preserves article images/tables and BE typography, and
+serves BE commentary from its own database. NIV Word Study shows Tagalog and
+Cebuano possible equivalents from reverse English-definition searches, followed
+by HarperCollins, Vine, and Mounce. Each original article has a compact preview;
+**Read more** expands the complete article inline in source order. Articles are
+not divided into separate definitions. The Kaikki entries retain Wiktionary/Kaikki attribution.
+Word Study identifies HarperCollins with sky blue, Vine with mint green, and
+Mounce with pink backgrounds; dark mode uses darker versions of those colors.
+HarperCollins keeps paragraphs, source emphasis, images and tables in a responsive
+layout rather than reproducing fixed EPUB pages. Printed **See / See also**
+headwords link to articles from the same dictionary edition in a popup with Back;
+the underlying Word Study stays in place. Bible citations open verse previews;
+chapter-only citations open the chapter. Shortened chapter/verse citations inherit
+their book only when supported by a preceding explicit citation. Navigation is
+added at read time, so existing imports need no resync.
+Mounce and Vine additionally preserve EPUB paragraph indentation, testament and
+lettered grammatical headings, source emphasis, and the relative sizes of inline
+Hebrew/Greek image glyphs. Expanded articles include all their original sections
+and word types, without regrouping them. Distinct articles in the original EPUB
+remain separate. Internal EPUB cross-references resolve within the same dictionary edition.
+Sync Bible Study refreshes formatting for already indexed editions after checking
+that every article boundary, source text and asset is unchanged. It retains entry
+and sense IDs, validates a private SQLite copy, and makes a recovery backup before
+updating the live Bible Study database.
+
+Tapping a component of a source-named phrase (such as "lapis lazuli") searches
+the full phrase and highlights its component words without changing verse text.
+Word Study separates nouns, names, verbs, adjectives, adverbs and grammar words.
+Auto uses printed dictionary labels and conservative English verse-context rules;
+ambiguous words keep all word types. A Word type selector lets the reader override
+the suggestion for translation equivalents and background relevance. Mounce and
+Vine always show complete articles, regardless of the selected word type.
+Native-language equivalents follow the selected type. Person profiles appear for names.
+Cross-references are not direct English headword matches. When no dictionary
+heading matches, article-text results appear in a collapsed **Related articles
+mentioning this word** section with the actual article titles. Grammatical words
+show their English function and omit article-text searches. These suggestions do
+not establish an NIV-to-original-language alignment.
+Thompson concordance also finds printed headings inside
+numerical chain topics, with links to open the original topic. These lookup
+improvements work with already imported sources and do not require another sync.
+
+The study folder and its descendants are excluded from the AI scan and cached
+AI retrieval. BE EPUBs are also excluded independently of their old catalog
+location; BE PDFs outside the study folder remain eligible for AI indexing.
+Website Bible Study sync leaves the AI database unchanged. The explicit maintenance
+CLI can still remove successfully migrated editions' AI document, chunk, search,
+and formatting records after validation. To request that cleanup, include its path:
+
+```sh
+python bible_study.py sync-drive --database /data/bible_study_data/bible_study.db --ai-database /data/ai_index.db
+```
+
+**Sermon Illustrations** appears after Sermon Outlines. Keep
+`sermon_illustrations_codex_v2.zip` intact, directly inside **For Scripture Study
+App**. Sync Bible Study recognizes this v2 package and skips older illustration
+archives. It validates a staged copy, recreates approved tables and the FTS index,
+retains all 8,961 original IDs/articles and their topic mappings, and publishes a
+separate private `sermon_illustrations.db` alongside `bible_study.db`. Existing
+illustration libraries receive recovery backups before replacement. Repeating an
+unchanged import does not duplicate records. Reading requests never create storage.
+An optional absolute `BIBLE_ILLUSTRATIONS_DATABASE` overrides the default location;
+it must differ from the Bible Study, AI, application, and library database paths.
+
+The full Sermon Outlines and Sermon Illustrations tab names wrap onto two lines
+on mobile. The illustration tab has two choices: **Suggested Illustrations** follows the selected chapter,
+verse, or verse range, showing ten results and **See More** up to thirty total;
+**Browse by Topic** offers A–Z, topic/title/body search, collection filtering, and
+paged article lists. All records remain reachable through topic browsing, including
+the empty source record, which is labeled for review. Passage matching respects
+cross-chapter endpoints. Identical normalized bodies are grouped in suggestions;
+their individual source records remain discoverable through browsing.
+
+The mobile study tabs share five equal columns, with both Sermon labels on two
+lines so every tab fits without horizontal scrolling. The initial ten suggestions
+show up to five from 1001 Illustrations That Connect first, then the five strongest
+matches pooled from the other two collections. The next twenty use the strongest
+remaining matches across all three collections, without source quotas. Missing
+matches are filled from available relevant entries, without adding unrelated cards.
+Source-provided references stay separate from topical connections. The owner approved
+all pending links for pastors to use and assess; this approval is retained on future
+imports and does not change source provenance or confidence into a verified claim.
+Approved low-confidence links are also eligible, with stronger matches ranked first.
+Approval is recorded in illustration metadata and the live update receives a recovery
+backup. Invalid links, including
+the source's `Isaiah 0:12–14`, are retained for review and excluded from navigation
+and passage matching. Original article wording and reference metadata are unchanged.
+Full articles use the safe block renderer to preserve paragraphs/emphasis without
+executing imported HTML. Copy includes the original text and source credit. Search
+uses local SQLite and does not require an AI call or change the AI index.
+
+For an illustration-only local import (the target is its own database):
+
+```sh
+python bible_study.py import-illustrations --database /data/bible_study_data/sermon_illustrations.db --archive /path/sermon_illustrations_codex_v2.zip
+```
+
+Add `--dry-run` to validate without publishing. Local imports do not update a
+deployed server; deploy the code and use Sync Bible Study there for the Drive ZIP.
 
 The translation folder and supplied file IDs are excluded before recursive
 library scanning. AI indexing and retrieval also exclude restricted IDs and
