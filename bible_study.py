@@ -6279,9 +6279,13 @@ def register_bible_study_routes(app):
     def sync_notice():
         try:
             active = _sync_running(configured_path())
-            return jsonify(ok=True, active=active, message=(
+            result = dict(ok=True, active=active, message=(
                 'Bible Study is being updated. Some study resources may be temporarily unavailable. '
                 'Please try again when the update finishes.' if active else ''))
+            if active and sync_admin():
+                result.update(progress_url=url_for('bible_study.sync_status'),
+                              details_url=url_for('bible_study.page',sync=1))
+            return jsonify(result)
         except (ValueError, OSError):
             return jsonify(ok=False, error='Bible Study update status is unavailable.'), 503
 

@@ -1679,6 +1679,11 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                         completed=17, total=23, unit='sections')
         lock = self.bible._sync_lock(self.path, create=True)
         try:
+            self.login()
+            developer = self.client.get(self.base + '/api/sync-notice').json
+            self.assertEqual(developer['progress_url'], self.base + '/api/sync')
+            self.assertEqual(developer['details_url'], self.base + '?sync=1')
+            self.assertEqual(self.client.get(developer['progress_url']).status_code, 200)
             for account in (
                 dict(ao_logged_in=True,ao_username='OtherAO',ao_role='Area Overseer'),
                 dict(pastor_logged_in=True,pastor_username='Pastor'),

@@ -232,8 +232,12 @@ sync. Progress snapshots live beside the private database as
 reads. Keep this file in the persistent data volume and outside Git/images.
 A stopped worker is reported as interrupted; reopening does not restart it.
 All signed-in users see a shared Bible Study update notice while the sync lock is
-held. The notice endpoint exposes only the active flag and a public message;
-detailed progress remains developer-only. It clears when the job ends.
+held. The developer account also sees a live progress bar and a link to Sync
+details directly in that notice. Starting a sync opens the progress dialog
+automatically. The notice endpoint supplies progress links only to the authorized
+developer; other accounts receive the active flag and public message. Detailed
+progress remains protected by the developer-only endpoint. The notice clears
+when the job ends.
 
 Keep HarperCollins, Mounce, Vine, the BE series EPUBs, and
 `kaikki.org-dictionary-Tagalog.jsonl` / `kaikki.org-dictionary-Cebuano.jsonl`

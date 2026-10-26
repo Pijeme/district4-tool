@@ -1790,11 +1790,9 @@
         element("CloseSync").addEventListener("click", () => element("SyncDialog").close());
         element("Sync").addEventListener("click", async () => {
             if (syncBusy) return;
-            syncBusy = true; element("Sync").disabled = true;
-            element("Sync").textContent = "Syncing Bible Study…";
-            element("SyncDetails").textContent = "Sync details · Running";
-            element("SyncStatus").textContent = "Starting Bible Study sync…";
-            window.dispatchEvent(new CustomEvent("bible-study-sync-status",{detail:{active:true}}));
+            if(element("SettingsDialog").open)element("SettingsDialog").close();
+            if(!element("SyncDialog").open)element("SyncDialog").showModal();
+            showSyncReport({status:"running",message:"Starting Bible Study sync…",progress:{stage:"starting"}});
             try {
                 await api(config.syncUrl, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: "{}"});
                 pollSync();
@@ -1802,9 +1800,7 @@
                 // Another tab or worker owns the sync. Follow that job instead
                 // of presenting its duplicate-start protection as a sync failure.
                 if(error.status===409){await pollSync();return;}
-                syncBusy = false; element("Sync").disabled = false;
-                element("Sync").textContent = "Sync Bible Study";
-                element("SyncStatus").textContent = error.message;
+                showSyncReport({status:"failed",message:error.message,progress:{stage:"starting"}});
                 element("SyncDetails").textContent = "Sync details · Error";
             }
         });
@@ -2166,6 +2162,9 @@
     new ResizeObserver(()=>setRatio(state.split_ratio)).observe(element("Layout"));
 
     (async function initialize() {
+        if(element("Sync") && config.syncUrl && new URLSearchParams(location.search).get("sync")==="1"){
+            element("SyncDialog").showModal();pollSync();
+        }
         try {
             const [status, preferences] = await Promise.all([api(config.statusUrl), api(config.stateUrl)]);
             storageAvailable = status.schema_ready && preferences.storage_available;

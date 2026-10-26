@@ -703,12 +703,42 @@ class BibleStudyBrowserTests(unittest.TestCase):
         self.run_browser(html, '''
             const notice=document.getElementById('bibleStudyUpdateNotice'),wait=()=>new Promise(r=>setTimeout(r,30));
             check(!notice.hidden&&notice.textContent.includes('Bible Study is being updated'),'Active update has no notice');
+            check(!notice.querySelector('progress'),'Non-developer received a progress bar');
             active=false;window.dispatchEvent(new Event('focus'));await wait();
             check(notice.hidden,'Completed update notice did not clear');
             active=true;window.dispatchEvent(new Event('focus'));await wait();
             check(!notice.hidden,'New update notice did not return');
             authorized=false;window.dispatchEvent(new Event('focus'));await wait();
             check(notice.hidden,'Notice remained after sign-out');
+        ''',setup)
+
+    def test_developer_sees_sync_bar_in_shared_notice_without_opening_details(self):
+        html='<html><head></head><body><aside id="bibleStudyUpdateNotice" hidden data-status-url="/sync-notice"></aside><script src="bible_sync_notice.js"></script></body></html>'
+        setup='''window.developer=true;window.done=12;window.measured=true;window.detailReads=0;window.detailsAvailable=false;
+        window.fetch=async(url,options)=>{
+            let data={ok:true,active:true};
+            if(String(url)==='/progress'){
+                if(!detailsAvailable)return new Response(JSON.stringify({ok:false}),{status:503,headers:{'Content-Type':'application/json'}});
+                detailReads++;data.sync={status:'running',message:'Indexing study source.',progress:{source:'Dictionary.epub',completed:measured?done:null,total:measured?24:null,unit:'sections',sources_done:3,sources_total:55}};
+            }else if(developer){data.progress_url='/progress';data.details_url='/study?sync=1';}
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(html, '''
+            const notice=document.getElementById('bibleStudyUpdateNotice'),wait=()=>new Promise(r=>setTimeout(r,35));
+            let bar=notice.querySelector('progress');
+            check(bar&&!bar.hasAttribute('value'),'Developer sees no loading bar while awaiting server progress');
+            detailsAvailable=true;window.dispatchEvent(new Event('focus'));await wait();bar=notice.querySelector('progress');
+            check(bar&&bar.value===50&&bar.getBoundingClientRect().height>0,'Developer progress bar is not visible');
+            check(notice.textContent.includes('Dictionary.epub')&&notice.textContent.includes('3 / 55'),'Developer details missing');
+            check(notice.querySelector('a').getAttribute('href')==='/study?sync=1','Progress details link missing');
+            done=18;window.dispatchEvent(new Event('focus'));await wait();
+            check(notice.querySelector('progress').value===75,'Developer progress did not restore latest server count');
+            measured=false;window.dispatchEvent(new Event('focus'));await wait();
+            check(!notice.querySelector('progress').hasAttribute('value'),'Unmeasured stage invented a percentage');
+            developer=false;const reads=detailReads;window.dispatchEvent(new Event('focus'));await wait();
+            check(!notice.querySelector('progress'),'Progress bar remained for a non-developer');
+            check(detailReads===reads,'Non-developer requested detailed progress');
+            check(!notice.hidden,'Shared warning disappeared for ordinary users');
         ''',setup)
 
     def test_sync_already_running_resumes_polling_instead_of_showing_an_error(self):
@@ -771,6 +801,8 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(document.getElementById('bsSyncDialog').open,'Sync details popup did not open');
             document.getElementById('bsCloseSync').click();
             sync.click();sync.click();
+            check(document.getElementById('bsSyncDialog').open,'Starting sync did not open progress details');
+            check(!document.getElementById('bsSyncProgressPanel').hidden,'Starting sync hid the loading bar');
             await new Promise(resolve=>setTimeout(resolve,20));
             check(syncPosts===1&&sync.disabled,'Duplicate sync not prevented');
             await new Promise(resolve=>setTimeout(resolve,2700));
