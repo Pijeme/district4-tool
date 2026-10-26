@@ -668,6 +668,33 @@ class BibleStudyBrowserTests(unittest.TestCase):
             document.getElementById('bsNext').click();await wait();check(sermonQueries.length===2&&sermonQueries[1].includes('chapter=2'),'Chapter navigation did not refresh sermons');
         ''',setup,window_size=(390,844))
 
+    def test_sync_already_running_resumes_polling_instead_of_showing_an_error(self):
+        setup=self.personal_setup()+'''
+        const ordinaryFetch=window.fetch;window.syncPosts=0;window.syncFinished=false;
+        window.fetch=async(url,options={})=>{
+            if(!String(url).endsWith('/sync'))return ordinaryFetch(url,options);
+            if(options.method==='POST'){
+                syncPosts++;
+                return new Response(JSON.stringify({ok:false,error:'A Bible Study sync is already running.'}),
+                    {status:409,headers:{'Content-Type':'application/json'}});
+            }
+            const sync=syncFinished?{status:'completed',message:'Sync completed safely.'}:
+                syncPosts?{status:'running',message:'Indexing study dictionaries.'}:{status:'idle',message:'Ready'};
+            return new Response(JSON.stringify({ok:true,sync}),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(self.render_preview(admin=True), '''
+            const el=name=>document.getElementById('bs'+name),wait=ms=>new Promise(r=>setTimeout(r,ms));
+            el('Sync').click();await wait(50);
+            check(syncPosts===1,'Unexpected second sync job');
+            check(el('Sync').disabled,'Existing sync did not disable duplicate starts');
+            check(el('SyncDetails').textContent.includes('Running'),'Existing job was presented as an error');
+            check(el('SyncStatus').textContent==='Indexing study dictionaries.','Existing progress was not displayed');
+            syncFinished=true;await wait(2700);
+            check(!el('Sync').disabled,'Sync completion did not restore the button');
+            check(el('SyncStatus').textContent==='Sync completed safely.','Existing sync was not followed to completion');
+            check(el('Empty').hidden,'Existing Bible disappeared during sync');
+        ''', setup)
+
     def test_developer_sync_dictionary_expansion_reference_preview_and_copy(self):
         setup = '''
         window.synced=false;window.syncPosts=0;window.syncPolls=0;window.copied='';

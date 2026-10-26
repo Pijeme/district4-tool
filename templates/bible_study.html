@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='illustrations-28') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='sync-compat-29') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -215,5 +215,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='illustrations-28') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='sync-compat-29') }}" defer></script>
 {% endblock %}

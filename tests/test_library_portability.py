@@ -1587,6 +1587,63 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(self.path), status.get_data(as_text=True))
         self.assertFalse(self.path.exists())
 
+    def version_seven_fixture(self):
+        # Model the deployed pre-resource database, without any v8-only tables.
+        dictionary_schema = self.bible.DICTIONARY_SCHEMA_SQL.replace(
+            "('mounce','vine','harper','tagalog','cebuano')", "('mounce','vine')")
+        with (patch.object(self.bible, 'SCHEMA_VERSION', 7),
+              patch.object(self.bible, 'STUDY_RESOURCE_SCHEMA_SQL', ''),
+              patch.object(self.bible, 'DICTIONARY_SCHEMA_SQL', dictionary_schema)):
+            self.bible.initialize_database(self.path)
+        self.publish_fixture()
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute("INSERT INTO bible_reader_state(user_key,updated_at,progress_percent) VALUES('pastor:fixture','now',45)")
+        return self.preview()
+
+    def test_version_seven_reader_and_running_sync_stay_visible_without_migration(self):
+        headers = self.version_seven_fixture()
+        with closing(sqlite3.connect(self.path)) as conn:
+            before = conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall()
+        self.bible._write_sync_status(self.path, dict(status='running', message='Indexing study dictionaries.'))
+        lock = self.bible._sync_lock(self.path, create=True)
+        self.assertIsNotNone(lock)
+        try:
+            status = self.client.get(self.base + '/api/status').json
+            self.assertTrue(status['schema_ready'])
+            self.assertGreater(status['indexed_verses'], 0)
+            translations = self.client.get(self.base + '/api/translations').json['translations']
+            self.assertTrue(next(item for item in translations if item['code'] == 'NIV')['available'])
+            chapter = self.client.get(self.base + '/api/chapter').json
+            self.assertTrue(chapter['ok'])
+            self.assertTrue(chapter['verses'])
+            sync = self.client.get(self.base + '/api/sync').json['sync']
+            self.assertEqual(sync, dict(status='running', message='Indexing study dictionaries.'))
+            self.assertEqual(self.client.post(self.base + '/api/sync', json={}, headers=headers).status_code, 409)
+            self.assertIsNotNone(self.bible.get_indexed_niv_passage('Genesis 1:1', self.path))
+        finally:
+            self.bible._release_sync_lock(lock)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 7)
+            self.assertEqual(conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall(), before)
+            self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name='bible_commentary_versions'").fetchone())
+
+    def test_version_seven_explicit_upgrade_retains_verses_preferences_and_backup(self):
+        self.version_seven_fixture()
+        with closing(sqlite3.connect(self.path)) as conn:
+            verses = conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall()
+            state = conn.execute('SELECT * FROM bible_reader_state').fetchall()
+        report = self.bible._safe_publish_sources(self.path, {}, {}, 'fixture_folder_id', [], lambda _: None)
+        self.assertEqual(report['temporary_validation'], 'passed')
+        self.assertTrue(Path(report['backup']).is_file())
+        with closing(sqlite3.connect(report['backup'])) as backup:
+            self.assertEqual(backup.execute('PRAGMA user_version').fetchone()[0], 7)
+            self.assertEqual(backup.execute('SELECT * FROM bible_verses ORDER BY id').fetchall(), verses)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], self.bible.SCHEMA_VERSION)
+            self.assertEqual(conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall(), verses)
+            self.assertEqual(conn.execute('SELECT * FROM bible_reader_state').fetchall(), state)
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
+
     def test_explicit_schema_contains_only_metadata_and_preserves_it_on_repeat(self):
         self.preview(initialize=True)
         conn = sqlite3.connect(self.path)

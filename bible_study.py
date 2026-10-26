@@ -3909,7 +3909,7 @@ def get_indexed_niv_passage(reference, database_path, **path_options):
             return None
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
             if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID
-                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION)):
+                    or conn.execute('PRAGMA user_version').fetchone()[0] not in range(1, SCHEMA_VERSION + 1)):
                 return None
             rows = conn.execute('''SELECT v.verse,v.text FROM bible_verses v
                 JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
@@ -5382,7 +5382,7 @@ def daily_maxwell_insight(database_path, ai_database, reference, verse_text, day
         key = hashlib.sha256(json.dumps([str(day), reference, verse_text, document['fingerprint'], 'maxwell-devotional-original-v3']).encode()).hexdigest()
         conn = sqlite3.connect(path.as_uri()+'?mode=rw', uri=True, timeout=2)
         if (conn.execute('PRAGMA application_id').fetchone()[0]!=APPLICATION_ID
-                or conn.execute('PRAGMA user_version').fetchone()[0] not in (2, 3, 4, 5, 6, SCHEMA_VERSION)):
+                or conn.execute('PRAGMA user_version').fetchone()[0] not in range(2, SCHEMA_VERSION + 1)):
             return None, False
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute('SELECT status,lease_until,result_json FROM bible_daily_insights WHERE cache_key=?', (key,)).fetchone()
@@ -5980,7 +5980,7 @@ def register_bible_study_routes(app):
             conn.execute('PRAGMA foreign_keys=ON')
             conn.execute('PRAGMA busy_timeout=5000')
             if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID
-                    or conn.execute('PRAGMA user_version').fetchone()[0] not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION)):
+                    or conn.execute('PRAGMA user_version').fetchone()[0] not in range(1, SCHEMA_VERSION + 1)):
                 raise StorageUnavailable('not_initialized')
             yield conn
         except ValueError:

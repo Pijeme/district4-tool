@@ -128,7 +128,10 @@
                     const response = await fetch(url, {credentials: "same-origin", cache: "no-store", ...options});
                     if (!(response.headers.get("Content-Type") || "").includes("application/json")) throw Error("Please sign in again and reopen Bible Study.");
                     const result=await response.json();
-                    if(!response.ok || !result.ok)throw Error(result.error || "Bible Study is temporarily unavailable.");
+                    if(!response.ok || !result.ok){
+                        const error=Error(result.error || "Bible Study is temporarily unavailable.");
+                        error.status=response.status;throw error;
+                    }
                     const validSource=key.includes('/commentary?')?Array.isArray(result.entries):key.includes('/sermons?')?Array.isArray(result.sermons):true;
                     if(cacheable && validSource){sourceResponses.delete(key);sourceResponses.set(key,{at:Date.now(),data:result});while(sourceResponses.size>24)sourceResponses.delete(sourceResponses.keys().next().value);}
                     return result;
@@ -1767,6 +1770,9 @@
                 await api(config.syncUrl, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: "{}"});
                 pollSync();
             } catch (error) {
+                // Another tab or worker owns the sync. Follow that job instead
+                // of presenting its duplicate-start protection as a sync failure.
+                if(error.status===409){await pollSync();return;}
                 syncBusy = false; element("Sync").disabled = false;
                 element("Sync").textContent = "Sync Bible Study";
                 element("SyncStatus").textContent = error.message;
