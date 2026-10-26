@@ -24,6 +24,8 @@ env*
 *.sqlite3-*
 
 generated_reports/
+*.sync-progress.json
+*.sync-progress.json.*.tmp
 book_thumbnail_cache/
 
 *.tar

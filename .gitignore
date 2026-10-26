@@ -17,6 +17,8 @@ env ([0-9]*)
 *.db-*
 *.db.*
 generated_reports/
+*.sync-progress.json
+*.sync-progress.json.*.tmp
 data/
 backups/
 

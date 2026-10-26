@@ -66,7 +66,7 @@ class LibraryBrowserTests(unittest.TestCase):
         # Load only repository scripts; the tests never fetch CDN assets.
         def local_script(match):
             filename = match.group(1).split('?', 1)[0].rsplit('/', 1)[-1]
-            if filename not in ('epub_page_view.js', 'resource_file_actions.js', 'bible_study.js', 'bulletin_insight.js'):
+            if filename not in ('epub_page_view.js', 'resource_file_actions.js', 'bible_study.js', 'bulletin_insight.js', 'bible_sync_notice.js'):
                 return ''
             source = (ROOT / 'static' / filename).read_text(encoding='utf-8')
             return '<script>' + source.replace('</script', r'<\/script') + '</script>'
@@ -667,6 +667,49 @@ class BibleStudyBrowserTests(unittest.TestCase):
             document.getElementById('bsCloseSavedStudy').click();document.getElementById('bsSermonBack').click();
             document.getElementById('bsNext').click();await wait();check(sermonQueries.length===2&&sermonQueries[1].includes('chapter=2'),'Chapter navigation did not refresh sermons');
         ''',setup,window_size=(390,844))
+
+    def test_sync_progress_restores_from_server_and_refreshes_after_dialog_reopens(self):
+        setup=self.personal_setup()+'''
+        const ordinaryFetch=window.fetch;window.syncPosts=0;window.amount=128;window.publishing=false;
+        window.fetch=async(url,options={})=>{
+            if(!String(url).endsWith('/sync'))return ordinaryFetch(url,options);
+            if(options.method==='POST')syncPosts++;
+            const progress={stage:publishing?'publishing':'downloading',source:'Dictionary.epub',
+                completed:publishing?null:amount,total:publishing?null:256,unit:'bytes',sources_done:3,sources_total:55};
+            return new Response(JSON.stringify({ok:true,sync:{status:'running',message:'Existing job.',progress}}),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(self.render_preview(admin=True), '''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,50));
+            check(!el('SyncProgressPanel').hidden,'Existing progress was not restored');
+            check(el('SyncProgress').value===50,'Incorrect measured percentage');
+            check(el('SyncMeasure').textContent.includes('50.0%'),'Percentage is missing');
+            check(el('SyncSources').textContent.includes('3 / 55'),'Source count was lost');
+            el('SyncDetails').click();await wait();el('CloseSync').click();
+            amount=192;el('SyncDetails').click();await wait();
+            check(el('SyncProgress').value===75,'Reopening did not fetch current server progress');
+            check(el('SyncSource').textContent==='Dictionary.epub','Current filename is missing');
+            check(syncPosts===0,'Reopening started another sync');
+            el('CloseSync').click();publishing=true;el('SyncDetails').click();await wait();
+            check(!el('SyncProgress').hasAttribute('value'),'Unmeasured publication used an invented percentage');
+            check(el('SyncStage').textContent==='Publishing','Publication stage is missing');
+        ''',setup)
+
+    def test_global_sync_notice_appears_and_clears_with_server_state(self):
+        html='<html><head></head><body><aside id="bibleStudyUpdateNotice" hidden data-status-url="/sync-notice"></aside><script src="bible_sync_notice.js"></script></body></html>'
+        setup='''window.active=true;window.authorized=true;window.fetch=async(url,options)=>{
+            check(options.credentials==='same-origin'&&options.cache==='no-store','Notice request is not private');
+            return new Response(JSON.stringify({ok:authorized,active}),{status:authorized?200:401,headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(html, '''
+            const notice=document.getElementById('bibleStudyUpdateNotice'),wait=()=>new Promise(r=>setTimeout(r,30));
+            check(!notice.hidden&&notice.textContent.includes('Bible Study is being updated'),'Active update has no notice');
+            active=false;window.dispatchEvent(new Event('focus'));await wait();
+            check(notice.hidden,'Completed update notice did not clear');
+            active=true;window.dispatchEvent(new Event('focus'));await wait();
+            check(!notice.hidden,'New update notice did not return');
+            authorized=false;window.dispatchEvent(new Event('focus'));await wait();
+            check(notice.hidden,'Notice remained after sign-out');
+        ''',setup)
 
     def test_sync_already_running_resumes_polling_instead_of_showing_an_error(self):
         setup=self.personal_setup()+'''

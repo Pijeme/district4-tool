@@ -1644,6 +1644,86 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT * FROM bible_reader_state').fetchall(), state)
             self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
 
+    def test_sync_progress_survives_reopening_and_does_not_need_database_reads(self):
+        self.preview(initialize=True)
+        lock = self.bible._sync_lock(self.path, create=True)
+        try:
+            progress = self.bible._SyncProgress(self.path)
+            progress.update('Downloading study source.', stage='downloading', source='Dictionary.epub',
+                            completed=128, total=256, unit='bytes', sources_done=3, sources_total=55)
+            # A new browser session receives the same server job and counters.
+            self.client = self.app.test_client()
+            self.login()
+            with patch.object(self.bible.sqlite3, 'connect', side_effect=AssertionError('Progress must not wait on SQLite')):
+                result = self.client.get(self.base + '/api/sync').json['sync']
+            self.assertEqual(result['status'], 'running')
+            self.assertEqual(result['job_id'], progress.report['job_id'])
+            self.assertEqual(result['progress']['completed'], 128)
+            self.assertEqual(result['progress']['total'], 256)
+            self.assertEqual(result['progress']['sources_done'], 3)
+            progress.update('Publishing validated data.', stage='publishing')
+            result = self.client.get(self.base + '/api/sync').json['sync']
+            self.assertIsNone(result['progress']['total'])
+            self.assertIsNone(result['progress']['completed'])
+            self.assertEqual(result['progress']['sources_done'], 3)
+        finally:
+            self.bible._release_sync_lock(lock)
+        result = self.client.get(self.base + '/api/sync').json['sync']
+        self.assertEqual(result['status'], 'interrupted')
+        self.assertEqual(result['progress']['sources_done'], 3)
+
+    def test_sync_notice_reaches_all_signed_in_roles_without_exposing_private_progress(self):
+        self.preview(initialize=True)
+        progress = self.bible._SyncProgress(self.path)
+        progress.update('Private operator detail.', stage='indexing', source='private filename.epub',
+                        completed=17, total=23, unit='sections')
+        lock = self.bible._sync_lock(self.path, create=True)
+        try:
+            for account in (
+                dict(ao_logged_in=True,ao_username='OtherAO',ao_role='Area Overseer'),
+                dict(pastor_logged_in=True,pastor_username='Pastor'),
+                dict(member_logged_in=True,username='Member'),
+            ):
+                with self.client.session_transaction() as saved:
+                    saved.clear(); saved.update(account)
+                response = self.client.get(self.base + '/api/sync-notice')
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json['active'])
+                self.assertEqual(set(response.json), {'ok','active','message'})
+                self.assertNotIn('private filename',response.get_data(as_text=True))
+                self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+                self.assertIn(self.client.get(self.base + '/api/sync').status_code, (401,403))
+            with self.client.session_transaction() as saved:saved.clear()
+            self.assertEqual(self.client.get(self.base+'/api/sync-notice').status_code,401)
+        finally:
+            self.bible._release_sync_lock(lock)
+        self.login()
+        self.assertFalse(self.client.get(self.base+'/api/sync-notice').json['active'])
+
+    def test_download_progress_counts_actual_received_bytes_and_missing_totals(self):
+        self.preview(initialize=True)
+        response=Mock()
+        response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
+        response.iter_content.return_value=[b'ab',b'cde']
+        drive=Mock();drive.get.return_value=response
+        updates=[]
+        progress=Mock();progress.update.side_effect=lambda message,**details:updates.append(details)
+        data=self.bible._download_source(drive,dict(drive_file_id='fixture_source_file',name='Study.epub'),progress)
+        self.assertEqual(data,b'abcde')
+        self.assertEqual([item['completed'] for item in updates],[0,2,5,5])
+        self.assertTrue(all(item['total'] is None for item in updates[:-1]))
+        self.assertEqual(updates[-1]['total'],5)
+
+    def test_failed_sync_retains_last_measured_progress(self):
+        self.preview(initialize=True)
+        progress=self.bible._SyncProgress(self.path)
+        progress.update('Indexing.',stage='indexing',completed=12,total=30,unit='sections')
+        progress.finish(dict(status='failed',message='Source validation failed. Existing data was kept.'))
+        report=self.client.get(self.base+'/api/sync').json['sync']
+        self.assertEqual(report['status'],'failed')
+        self.assertEqual(report['progress']['completed'],12)
+        self.assertEqual(report['progress']['total'],30)
+
     def test_explicit_schema_contains_only_metadata_and_preserves_it_on_repeat(self):
         self.preview(initialize=True)
         conn = sqlite3.connect(self.path)

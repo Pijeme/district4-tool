@@ -222,6 +222,19 @@ do not create another backup. Startup and reader requests do not migrate schemas
 Deploy the updated application and run a sync on the server; local imports do not
 modify the server's copy.
 
+Developer **Sync details** shows the server job's current file/stage, prepared
+source counts, and measured download bytes, EPUB sections, dictionary records or
+database pages. Percentages describe the current stage, not estimated time or
+whole-job completion; stages without a total use an indeterminate bar. Closing
+and reopening the dialog or page follows the same job without starting another
+sync. Progress snapshots live beside the private database as
+`bible_study.sync-progress.json`, so publication transactions do not block progress
+reads. Keep this file in the persistent data volume and outside Git/images.
+A stopped worker is reported as interrupted; reopening does not restart it.
+All signed-in users see a shared Bible Study update notice while the sync lock is
+held. The notice endpoint exposes only the active flag and a public message;
+detailed progress remains developer-only. It clears when the job ends.
+
 Keep HarperCollins, Mounce, Vine, the BE series EPUBs, and
 `kaikki.org-dictionary-Tagalog.jsonl` / `kaikki.org-dictionary-Cebuano.jsonl`
 directly inside **For Scripture Study App**. Bible Study imports only these

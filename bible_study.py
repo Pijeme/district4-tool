@@ -544,8 +544,9 @@ def _parse_thompson_index(pdf, progress=None):
                           source_page=source_page, references=scripture_references(plain))
 
     for page_index in range(1537, 1887):
-        if progress and (page_index-1537) % 25 == 0:
-            progress('Arranging Thompson chain index: PDF page ' + str(page_index+1) + '.')
+        if (page_index-1537) % 5 == 0:
+            _progress_update(progress, 'Arranging Thompson chain index: PDF page ' + str(page_index+1) + '.',
+                             stage='chain index', completed=page_index-1537, total=350, unit='pages')
         page, lines, line, baseline = pdf[page_index], [], [], None
         try:
             for glyph in _thompson_glyphs(page):
@@ -681,8 +682,9 @@ def _thompson_concordance_entries(lines):
 def _parse_thompson_concordance(pdf, progress=None):
     lines = []
     for page_index in range(1967, 2025):
-        if progress and (page_index-1967) % 15 == 0:
-            progress('Indexing Thompson concordance: PDF page '+str(page_index+1)+'.')
+        if (page_index-1967) % 5 == 0:
+            _progress_update(progress, 'Indexing Thompson concordance: PDF page '+str(page_index+1)+'.',
+                             stage='concordance', completed=page_index-1967, total=58, unit='pages')
         page, glyph_lines, line, baseline = pdf[page_index], [], [], None
         try:
             for glyph in _thompson_glyphs(page):
@@ -861,7 +863,8 @@ def _parse_thompson_studies(pdf, starts=None, progress=None):
         raise SyncError('Thompson book-introduction boundaries could not be verified.')
     studies=[];classifications=[];images={}
     for ordinal,(book,start) in enumerate(starts):
-        if progress and book%10==1:progress('Indexing Thompson book studies: '+BOOKS[book-1][0]+'.')
+        _progress_update(progress, 'Indexing Thompson book studies: '+BOOKS[book-1][0]+'.',
+                         stage='book studies', completed=book-1, total=66, unit='books')
         lines=[]
         end=starts[ordinal+1][1] if ordinal+1<len(starts) else start+3
         for page_index in range(start,min(start+3,end)):
@@ -943,7 +946,7 @@ def _parse_thompson_studies(pdf, starts=None, progress=None):
         ('Solomon','Journeys of Solomon',1925,1926),('Jesus','Overview of Jesus’ Life',1927,1944),
         ('Paul','Overview and Journeys of Paul',1945,1954)]
     for name,title,start,end in chart_groups:
-        if progress:progress('Preparing Thompson source charts: '+name+'.')
+        _progress_update(progress, 'Preparing Thompson source charts: '+name+'.', stage='source charts')
         for number in range(start,end+1):
             page=pdf[number-1]
             try:
@@ -1198,6 +1201,9 @@ def parse_thompson_pdf(data, progress=None):
                 if progress:
                     progress('Indexing Thompson: '+BOOKS[book-1][0]+'.')
                 for page_index in range(start_page,end_page):
+                    if (page_index-start_page) % 5 == 0:
+                        _progress_update(progress, 'Indexing Thompson: '+BOOKS[book-1][0]+'.', stage='Bible pages',
+                            completed=page_index-start_page, total=end_page-start_page, unit='pages in this book')
                     page=pdf[page_index]
                     runs=[]
                     kind=None
@@ -1316,7 +1322,7 @@ def _xml(data):
         raise SyncError('An EPUB contains invalid XML. No active Bible data was replaced.') from None
 
 
-def _epub_documents(data):
+def _epub_documents(data, progress=None):
     """Read the declared spine in memory; never extract paths or execute source markup."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
@@ -1346,8 +1352,12 @@ def _epub_documents(data):
                 names.append(name)
             if not names:
                 raise SyncError('The EPUB has no supported reading order.')
-            for name in names:
+            for ordinal, name in enumerate(names):
+                _progress_update(progress, 'Reading EPUB sections.', stage='indexing',
+                                 completed=ordinal, total=len(names), unit='sections')
                 yield name, archive.read(name)
+            _progress_update(progress, 'EPUB sections read.', stage='indexing',
+                             completed=len(names), total=len(names), unit='sections')
         except (KeyError, StopIteration, RuntimeError, zipfile.BadZipFile):
             raise SyncError('The EPUB package or a reading-order document could not be read.') from None
 
@@ -1674,11 +1684,11 @@ def _block_assets(blocks):
     return {run['asset'] for block in blocks for run in block.get('runs', []) if run['type']=='image'}
 
 
-def parse_harper_epub(data):
+def parse_harper_epub(data, progress=None):
     entries, assets = [], {}
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         css = _resource_css(archive)
-        for filename, content in _epub_documents(data):
+        for filename, content in _epub_documents(data, progress):
             root = _xml(content)
             # Entry boundaries are the explicit links back to the alphabetical
             # contents, including entries that contain several paragraphs/tables.
@@ -1719,11 +1729,15 @@ def _gloss_equivalents(gloss):
     return [normalize_term(part) for part in parts]
 
 
-def parse_language_dictionary(data, family):
+def parse_language_dictionary(data, family, progress=None):
     code = {'tagalog':'tl','cebuano':'ceb'}[family]
     entries = []
     stop = {'the','and','with','for','from','that','this','one','who','which','have','used','someone','something'}
+    total = data.count(b'\n') + int(bool(data) and not data.endswith(b'\n'))
     for ordinal, line in enumerate(io.BytesIO(data),1):
+        if ordinal % 200 == 1:
+            _progress_update(progress, 'Indexing ' + family.title() + ' dictionary.', stage='indexing',
+                             completed=ordinal-1, total=total, unit='records')
         if not line.strip(): continue
         try: record=json.loads(line)
         except (ValueError,UnicodeError): raise SyncError(f'Invalid {family} JSONL at line {ordinal}.') from None
@@ -1751,11 +1765,13 @@ def parse_language_dictionary(data, family):
         entries.append(dict(family=family,locator='line:'+str(ordinal),headword=word,section=record.get('pos',''),
             language=DICTIONARY_LABELS[family],blocks=blocks,plain_text='\n\n'.join(b['text'] for b in blocks),
             terms=sorted(terms),identifiers=[],gloss_terms=gloss_terms))
+    _progress_update(progress, 'Indexed ' + family.title() + ' dictionary.', stage='indexing',
+                     completed=total, total=total, unit='records')
     if not entries: raise SyncError('The '+family+' dictionary has no definitions.')
     return dict(entries=entries,assets={})
 
 
-def parse_be_epub(data, title):
+def parse_be_epub(data, title, progress=None):
     assets={};pages={};supplied_title=title;warnings=[]
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         container=_xml(archive.read('META-INF/container.xml'))
@@ -1766,7 +1782,7 @@ def parse_be_epub(data, title):
         if 'wiersbe' not in creator.casefold():
             raise SyncError('The selected BE source has unexpected title or author metadata.')
         css=_resource_css(archive)
-        for ordinal,(filename,content) in enumerate(_epub_documents(data),1):
+        for ordinal,(filename,content) in enumerate(_epub_documents(data, progress),1):
             root=_xml(content);body=next((n for n in root.iter() if _tag(n)=='body'),root)
             blocks=_resource_blocks(body,filename,archive,assets,css)
             for block in blocks: block['locator']=filename
@@ -2104,7 +2120,7 @@ def _expository_block(element,filename,archive,assets,css,family):
     return block
 
 
-def parse_dictionary_epub(data, family):
+def parse_dictionary_epub(data, family, progress=None):
     if family not in {'mounce', 'vine'}:
         raise SyncError('Unsupported dictionary source.')
     entries, assets, current = [], {}, None
@@ -2119,7 +2135,7 @@ def parse_dictionary_epub(data, family):
         current = None
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         css=_resource_css(archive)
-        for filename, content in _epub_documents(data):
+        for filename, content in _epub_documents(data, progress):
             root = _xml(content)
             if family == 'vine':
                 if not re.search(r'-[on]t[A-Z]', filename):
@@ -2903,7 +2919,7 @@ KJV_BOOKS.update({'ps': 19, 'psalm': 19, 'song': 22, '1jn': 62, '2jn': 63, '3jn'
                   '1tim': 54, '2tim': 55, '1jhn': 62, '2jhn': 63, '3jhn': 64})
 
 
-def parse_niv_epub(data):
+def parse_niv_epub(data, progress=None):
     verses, current, heading = {}, None, ''
     parts = []
 
@@ -2943,7 +2959,7 @@ def parse_niv_epub(data):
             parts.append(' ')
 
     current_anchor = ''
-    for filename, content in _epub_documents(data):
+    for filename, content in _epub_documents(data, progress):
         # Footnotes/back matter do not form part of the last Scripture verse.
         if b'htmlv' not in content:
             finish()
@@ -3086,7 +3102,7 @@ def _usfm_plain(text):
     return re.sub(r'\n\s*\n+', '\n', text).strip()
 
 
-def parse_usfm_archive(data, translation, *, require_complete=True):
+def parse_usfm_archive(data, translation, *, require_complete=True, progress=None):
     """Parse the supplied publisher archives locally; never OCR or call an AI."""
     if translation not in ('CEBOCB', 'TCB'):
         raise SyncError('Unsupported USFM translation.')
@@ -3096,7 +3112,9 @@ def parse_usfm_archive(data, translation, *, require_complete=True):
             members = [item for item in archive.infolist() if item.filename.lower().endswith('.usfm')]
             if len(members) > 66 or sum(item.file_size for item in members) > 64 * 1024 * 1024:
                 raise SyncError('The USFM archive exceeds the supported size.')
-            for member in members:
+            for number, member in enumerate(members):
+                _progress_update(progress, 'Validating '+READER_TRANSLATIONS[translation]['label']+' Bible books.',
+                                 stage='translation validation', completed=number, total=len(members), unit='books')
                 text = archive.read(member).decode('utf-8-sig')
                 identity = re.search(r'\\id\s+(\w+)', text)
                 if not identity or identity[1] not in USFM_BOOK_IDS or identity[1] in seen_books:
@@ -3183,8 +3201,9 @@ def import_usfm_translations(database_path, archives, *, sources=None, progress=
     parsed, records = {}, {}
     for translation, value in archives.items():
         data = value if isinstance(value, bytes) else Path(value).read_bytes()
-        progress('Validating ' + READER_TRANSLATIONS[translation]['label'] + ' USFM.')
-        parsed[translation] = parse_usfm_archive(data, translation)
+        _progress_update(progress, 'Validating ' + READER_TRANSLATIONS[translation]['label'] + ' USFM.',
+                         stage='translation validation', source=(sources or {}).get(translation,{}).get('name',translation))
+        parsed[translation] = parse_usfm_archive(data, translation, progress=progress)
         records[translation] = dict((sources or {}).get(translation, {}), sha256=hashlib.sha256(data).hexdigest())
     if not parsed:
         raise SyncError('No translation ZIPs were supplied.')
@@ -3198,6 +3217,7 @@ def import_usfm_translations(database_path, archives, *, sources=None, progress=
             return dict(status='completed', counts={kind:len(value['verses']) for kind,value in parsed.items()},
                         backup=None, message='Cebuano/Tagalog ZIPs are unchanged; keeping their indexed editions.')
     with tempfile.TemporaryDirectory(prefix='district4_usfm_validation_') as directory:
+        _progress_update(progress, 'Validating translations in a temporary database.', stage='translation database checks')
         staged = Path(directory)/'validation.db'
         if path.exists():
             with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(staged)) as target:
@@ -3210,9 +3230,11 @@ def import_usfm_translations(database_path, archives, *, sources=None, progress=
     backup = None
     if path.exists():
         directory = path.parent/'backups'; directory.mkdir(parents=True,exist_ok=True)
+        _progress_update(progress, 'Backing up before publishing Bible translations.', stage='translation backup')
         backup = directory/('before_translations_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_')+secrets.token_hex(3)+'.db')
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(backup)) as target:
             source.backup(target)
+    _progress_update(progress, 'Publishing validated Bible translations.', stage='translation publishing')
     initialize_database(path)
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute('PRAGMA foreign_keys=ON')
@@ -3237,18 +3259,27 @@ def sync_translation_sources(path, folder_id, progress, *, drive=None, fetch=Non
             selected[kind] = dict(drive_file_id=item['id'],size=item.get('size',0),name=name,
                                   source_path='drive:'+item['id'])
         if not selected: raise SyncError('No Cebuano or Tagalog USFM ZIPs were found in the translation folder.')
-        archives = {kind: fetch(source) if fetch else _download_source(drive,source) for kind,source in selected.items()}
+        archives = {}
+        for number, (kind, source) in enumerate(selected.items()):
+            _progress_update(progress, 'Downloading Bible translations.', stage='translations', source=source['name'],
+                             source_group='Bible translations', sources_done=number, sources_total=len(selected))
+            archives[kind] = fetch(source) if fetch else _download_source(drive,source,progress)
+            _progress_update(progress, 'Bible translation archive downloaded.', stage='translations',
+                             source_group='Translation archives downloaded', sources_done=number+1)
         return import_usfm_translations(path,archives,sources=selected,progress=progress)
     finally:
         if owned: drive.close()
 
 
-def _download_source(drive, source):
+def _download_source(drive, source, progress=None):
     limit = (256 if source.get('name','').lower().endswith('.jsonl') else 96) * 1024 * 1024
     file_id = str(source['drive_file_id'])
     if not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', file_id) or int(source.get('size') or 0) > limit:
         raise SyncError('A source file is invalid or exceeds the supported download size.')
     data = bytearray()
+    total = int(source.get('size') or 0) or None
+    _progress_update(progress, 'Downloading ' + source.get('name','study source') + '.',
+                     stage='downloading', completed=0, total=total, unit='bytes')
     with drive.get('https://www.googleapis.com/drive/v3/files/' + file_id,
                    params={'alt': 'media', 'supportsAllDrives': 'true'}, timeout=(15, 120), stream=True) as response:
         response.raise_for_status()
@@ -3256,6 +3287,10 @@ def _download_source(drive, source):
             data.extend(chunk)
             if len(data) > limit:
                 raise SyncError('A study source download exceeds the supported size.')
+            _progress_update(progress, 'Downloading ' + source.get('name','study source') + '.',
+                             stage='downloading', completed=len(data), total=total, unit='bytes')
+    _progress_update(progress, 'Download complete.', stage='downloading',
+                     completed=len(data), total=len(data), unit='bytes')
     return bytes(data)
 
 
@@ -3305,6 +3340,90 @@ def _write_sync_status(path, report):
     with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=15)) as conn, conn:
         conn.execute("INSERT INTO bible_metadata(key,value) VALUES('sync_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                      (json.dumps(report, ensure_ascii=False),))
+
+
+def _sync_running(path):
+    if not path.with_suffix('.sync.lock').is_file():
+        return False
+    handle = _sync_lock(path)
+    if handle is None:
+        return True
+    _release_sync_lock(handle)
+    return False
+
+
+def _save_sync_progress(path, report):
+    """Atomic private progress snapshot, independent of long SQLite writes."""
+    target = path.with_suffix('.sync-progress.json')
+    temporary = target.with_name(target.name + '.' + secrets.token_hex(6) + '.tmp')
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+            json.dump(report, output, ensure_ascii=False)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_sync_report(path):
+    target = path.with_suffix('.sync-progress.json')
+    report = None
+    if target.is_file():
+        try:
+            value = json.loads(target.read_text(encoding='utf-8'))
+            if isinstance(value, dict) and value.get('status') in {'running','completed','failed','interrupted'}:
+                report = value
+        except (ValueError, OSError):
+            pass
+    if report is None and path.is_file():
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=1)) as conn:
+            if conn.execute('PRAGMA application_id').fetchone()[0] == APPLICATION_ID:
+                row = conn.execute("SELECT value FROM bible_metadata WHERE key='sync_status'").fetchone()
+                if row: report = json.loads(row[0])
+    report = report or dict(status='idle', message='Ready to sync Bible Study resources directly from For Scripture Study App.')
+    if report['status'] == 'running' and not _sync_running(path):
+        report = dict(report, status='interrupted', message='The previous sync stopped before completion. Retry to start a new sync safely.')
+    return report
+
+
+class _SyncProgress:
+    """Persist measured stage counters; elapsed time never advances a percentage."""
+    def __init__(self, path, initial=None):
+        self.path = path
+        self.report = initial or dict(status='running', started_at=datetime.now(timezone.utc).isoformat(),
+                                     job_id=secrets.token_hex(12), progress={})
+        self.last_saved = 0.0
+
+    def __call__(self, message):
+        self.update(message)
+
+    def update(self, message, **details):
+        previous = self.report.get('progress', {})
+        changed = any(previous.get(key) != details.get(key) for key in ('stage','source','unit') if key in details)
+        state = dict(previous)
+        if changed:
+            state.update(completed=None, total=None, unit=None)
+        state.update(details)
+        now = time.monotonic()
+        self.report.update(status='running', message=message, progress=state,
+                           updated_at=datetime.now(timezone.utc).isoformat())
+        if changed or now - self.last_saved >= .5 or (state.get('total') and state.get('completed') == state['total']):
+            _save_sync_progress(self.path, self.report)
+            self.last_saved = now
+
+    def finish(self, report):
+        self.report.update(report, updated_at=datetime.now(timezone.utc).isoformat())
+        _save_sync_progress(self.path, self.report)
+
+
+def _progress_update(progress, message, **details):
+    if progress is None:
+        return
+    update = getattr(progress, 'update', None)
+    if callable(update):
+        update(message, **details)
+    else:
+        progress(message)
 
 
 def _publish_sources(path, sources, parsed):
@@ -3516,7 +3635,7 @@ def _sync_preserved_state(conn,baseline=None):
     return result
 
 
-def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, check_preservation=False):
+def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, check_preservation=False, progress=None, stage='publishing'):
     now = datetime.now(timezone.utc).isoformat()
     conn = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=30)
     try:
@@ -3613,7 +3732,10 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
                 version_id = conn.execute('INSERT INTO bible_dictionary_versions(source_id,import_run_id,family,is_active) VALUES(?,?,?,1)', (source_id, run_id, family)).lastrowid
                 for asset in content['assets'].values():
                     conn.execute('INSERT OR IGNORE INTO bible_dictionary_assets(sha256,mime_type,data) VALUES(?,?,?)', (asset['sha256'], asset['mime_type'], asset['data']))
-                for entry in content['entries']:
+                for entry_number, entry in enumerate(content['entries']):
+                    if entry_number % 200 == 0:
+                        _progress_update(progress, 'Writing dictionary entries.', stage=stage,
+                            source=source['title'], completed=entry_number, total=len(content['entries']), unit='entries')
                     preview = _text(entry['plain_text'].replace('\ufffc', ''))
                     if len(preview)>360:
                         preview = preview[:360].rsplit(' ', 1)[0]+'…'
@@ -3679,12 +3801,16 @@ def _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress):
                 return _publish_dictionary_sync(path,selected,parsed,folder_id,warnings)
     with tempfile.TemporaryDirectory(prefix='district4_bible_sync_') as directory:
         staged=Path(directory)/'validation.db'
+        _progress_update(progress, 'Preparing a private validation copy.', stage='validation copy', source='')
         if path.exists():
             with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(staged)) as target:
-                source.backup(target)
-        progress('Validating the update in a temporary Bible Study database.')
+                source.backup(target, pages=256, progress=lambda status, remaining, total:
+                    _progress_update(progress, 'Preparing a private validation copy.', stage='validation copy',
+                                     completed=total-remaining, total=total, unit='database pages'))
+        _progress_update(progress, 'Validating the update in a temporary Bible Study database.', stage='validating', source='')
         initialize_database(staged)
-        preview=_publish_dictionary_sync(staged,selected,parsed,folder_id,list(warnings),check_preservation=True)
+        preview=_publish_dictionary_sync(staged,selected,parsed,folder_id,list(warnings),check_preservation=True,
+                                         progress=progress, stage='validating')
         with closing(sqlite3.connect(staged)) as check:
             if check.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or check.execute('PRAGMA foreign_key_check').fetchone():
                 raise SyncError('Temporary database validation failed. Existing data was kept.')
@@ -3694,13 +3820,16 @@ def _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress):
         directory=path.parent/'backups'
         directory.mkdir(parents=True,exist_ok=True)
         backup=directory/('bible_study_before_thompson_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_')+secrets.token_hex(3)+'.db')
-        progress('Backing up the existing Bible Study database.')
+        _progress_update(progress, 'Backing up the existing Bible Study database.', stage='backup')
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source,closing(sqlite3.connect(backup)) as target:
-            source.backup(target)
+            source.backup(target, pages=256, progress=lambda status, remaining, total:
+                _progress_update(progress, 'Backing up the existing Bible Study database.', stage='backup',
+                                 completed=total-remaining, total=total, unit='database pages'))
             if target.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
                 raise SyncError('Backup validation failed. Existing data was kept.')
+    _progress_update(progress, 'Publishing the validated Bible Study update.', stage='publishing')
     initialize_database(path)
-    report=_publish_dictionary_sync(path,selected,parsed,folder_id,warnings,check_preservation=True)
+    report=_publish_dictionary_sync(path,selected,parsed,folder_id,warnings,check_preservation=True,progress=progress)
     if report['counts']!=preview['counts']:
         raise SyncError('Published counts differ from temporary validation. A recovery backup is available.')
     return dict(**report,temporary_validation='passed',backup=str(backup) if backup else None)
@@ -3735,17 +3864,20 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
     owned = drive is None
     drive = drive or resources.get_drive_session()
     try:
-        progress('Finding Bible Study sources in For Scripture Study App.')
+        _progress_update(progress, 'Finding Bible Study sources in For Scripture Study App.', stage='discovery', source='')
         stored=None
         if path.exists():
             with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
                 stored = conn.execute("SELECT value FROM bible_metadata WHERE key='official_drive_folder'").fetchone()
         folder_id, selected, ignored = _official_drive_sources(drive, folder_id or (stored[0] if stored else ''))
+        source_total, source_done = len(selected), 0
+        _progress_update(progress, 'Found Bible Study sources.', stage='preparing',
+                         source_group='Study sources prepared', sources_done=0, sources_total=source_total)
         illustration_source=selected.pop('illustrations',None)
         illustration_report=None
         if illustration_source:
             illustration_path=illustration_database_path(path,illustration_database,protected_paths=(ai_database,))
-            progress('Validating the separate Sermon Illustrations library.')
+            _progress_update(progress, 'Checking the Sermon Illustrations library.', stage='checking', source=illustration_source['name'])
             same=False
             if illustration_path.is_file():
                 with illustration_connection(illustration_path) as library:
@@ -3755,8 +3887,11 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
                         and metadata.get('import_version')==str(ILLUSTRATION_IMPORT_VERSION))
                     if same:illustration_report=dict(status='unchanged',**json.loads(metadata['report']))
             if not same:
-                data=fetch(illustration_source) if fetch else _download_source(drive,illustration_source)
+                data=fetch(illustration_source) if fetch else _download_source(drive,illustration_source,progress)
+                _progress_update(progress, 'Validating the Sermon Illustrations library.', stage='illustrations')
                 illustration_report=import_illustration_archive(illustration_path,data,source=illustration_source)
+            source_done += 1
+            _progress_update(progress, 'Sermon Illustrations library is ready.', stage='prepared', sources_done=source_done)
         if not selected:
             result=dict(status='completed',message='Sermon Illustrations library is ready.',
                 counts={k:v for k,v in (illustration_report or {}).items() if isinstance(v,int)},warnings=[])
@@ -3773,6 +3908,8 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
                 warnings.append(f'{family.title()} EPUB not found; any previous version was kept.')
                 continue
             source = selected[family]
+            _progress_update(progress, 'Checking ' + source.get('name',family.title()) + '.',
+                             stage='checking', source=source.get('name',family.title()))
             old={};unchanged=False
             if path.exists():
               with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
@@ -3796,28 +3933,33 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
                             unchanged = bool(studies) and all((json.loads(row[0]).get('outline') or {}).get('blocks') for row in studies)
             if unchanged:
                 source['sha256'] = old['sha256']
-                progress(f'{family.title()} is unchanged; keeping its indexed version.')
+                source_done += 1
+                _progress_update(progress, f'{family.title()} is unchanged; keeping its indexed version.',
+                                 stage='prepared', sources_done=source_done)
                 continue
-            progress('Downloading and indexing ' + source.get('name',family.title()) + '.')
-            data = fetch(source) if fetch else _download_source(drive, source)
+            data = fetch(source) if fetch else _download_source(drive, source, progress)
+            _progress_update(progress, 'Indexing ' + source.get('name',family.title()) + '.', stage='indexing')
             source['sha256'] = hashlib.sha256(data).hexdigest()
             if family == 'NIV':
-                content = parse_thompson_pdf(data,progress) if source.get('thompson') else parse_niv_epub(data)
+                content = parse_thompson_pdf(data,progress) if source.get('thompson') else parse_niv_epub(data,progress)
                 _validate_niv_source(content)
             elif family.startswith('be:'):
-                content=parse_be_epub(data,source['title'])
+                content=parse_be_epub(data,source['title'],progress)
                 source['title']=content['title']
                 warnings.extend(content.get('warnings',[]))
             elif family in ('tagalog','cebuano','harper'):
-                content=parse_harper_epub(data) if family=='harper' else parse_language_dictionary(data,family)
+                content=parse_harper_epub(data,progress) if family=='harper' else parse_language_dictionary(data,family,progress)
                 _validate_dictionary(content,family)
                 if family in ('tagalog','cebuano'):
                     source['attribution']='Wiktionary contributors · extracted by Kaikki.org / Wiktextract'
                     source['rights_note']='CC BY-SA 4.0 / GFDL · https://kaikki.org/dictionary/ · https://en.wiktionary.org/wiki/Wiktionary:Copyrights'
             else:
-                content = parse_dictionary_epub(data, family)
+                content = parse_dictionary_epub(data, family, progress)
                 _validate_dictionary(content, family)
             parsed[family] = content
+            source_done += 1
+            _progress_update(progress, 'Prepared ' + source.get('name',family.title()) + '.',
+                             stage='prepared', sources_done=source_done)
         progress('Publishing validated sources. Existing verses and personal records are preserved.')
         result = _safe_publish_sources(path,selected,parsed,folder_id,warnings,progress)
         if illustration_report:
@@ -3826,7 +3968,7 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
             result['warnings'].append('Illustration topic connections are suggestions; invalid source references remain flagged for review.')
             _write_sync_status(path,result)
         if translation_folder_id:
-            progress('Importing Cebuano and Tagalog into Bible Study only.')
+            _progress_update(progress, 'Finding Cebuano and Tagalog Bible sources.', stage='translations', source='')
             translations = sync_translation_sources(path,translation_folder_id,progress,drive=drive,fetch=fetch)
             result['counts'].update(translations['counts'])
             result['message'] += ' ' + translations['message']
@@ -3841,9 +3983,8 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
             drive.close()
 
 
-def _run_sync(app, path, lock):
-    def progress(message):
-        _write_sync_status(path, {'status': 'running', 'message': message, 'updated_at': datetime.now(timezone.utc).isoformat()})
+def _run_sync(app, path, lock, initial=None):
+    progress = _SyncProgress(path, initial)
     try:
         with app.app_context():
             options = ({'translation_folder_id':app.config['BIBLE_STUDY_TRANSLATION_FOLDER_ID']}
@@ -3852,13 +3993,15 @@ def _run_sync(app, path, lock):
             # index while importing the illustration library. Legacy cleanup is
             # still an explicit maintenance CLI option.
             if app.config.get('BIBLE_ILLUSTRATIONS_DATABASE'):options['illustration_database']=app.config['BIBLE_ILLUSTRATIONS_DATABASE']
-            sync_sources(path, app.config.get('BIBLE_STUDY_DRIVE_FOLDER_ID', ''), progress, **options)
+            result = sync_sources(path, app.config.get('BIBLE_STUDY_DRIVE_FOLDER_ID', ''), progress, **options)
+            progress.finish(result or dict(status='completed',message='Bible Study sync completed.'))
     except Exception as error:
         logging.getLogger(__name__).exception('Bible Study sync failed')
         message = str(error) if isinstance(error, SyncError) else 'Sync failed while reading the sources or saving data. Check server logs and retry.'
         try:
-            _write_sync_status(path, {'status': 'failed', 'message': message,
-                                     'updated_at': datetime.now(timezone.utc).isoformat()})
+            report = dict(status='failed', message=message, updated_at=datetime.now(timezone.utc).isoformat())
+            progress.finish(report)
+            _write_sync_status(path, report)
         except Exception:
             logging.getLogger(__name__).exception('Could not persist Bible Study sync status')
     finally:
@@ -6017,7 +6160,8 @@ def register_bible_study_routes(app):
 
     @blueprint.before_request
     def protect_routes():
-        if not _account_key():
+        notice_member = request.endpoint == 'bible_study.sync_notice' and session.get('member_logged_in') is True
+        if not _account_key() and not notice_member:
             if request.endpoint == 'bible_study.page':
                 return redirect(url_for('splash'))
             return jsonify(ok=False, error='Login required.'), 401
@@ -6101,19 +6245,22 @@ def register_bible_study_routes(app):
         if not sync_admin():
             return jsonify(ok=False, error='Developer access required.'), 403
         try:
-            with database() as conn:
-                row = conn.execute("SELECT value FROM bible_metadata WHERE key='sync_status'").fetchone()
-                report = json.loads(row['value']) if row else {'status': 'idle', 'message': 'Ready to sync Bible Study resources directly from For Scripture Study App.'}
-            if report['status'] == 'running':
-                lock = _sync_lock(configured_path())
-                if lock is not None:
-                    _release_sync_lock(lock)
-                    report = {'status': 'interrupted', 'message': 'The previous sync was interrupted. Retry to sync safely.'}
+            report = _read_sync_report(configured_path())
             return jsonify(ok=True, sync=report)
         except StorageUnavailable:
             return jsonify(ok=True, sync={'status': 'idle', 'message': 'Sync will initialize the separate Bible Study database.'})
-        except (ValueError, OSError):
+        except (ValueError, OSError, sqlite3.DatabaseError):
             return jsonify(ok=False, error='Bible Study sync status is unavailable.'), 503
+
+    @blueprint.get('/api/sync-notice')
+    def sync_notice():
+        try:
+            active = _sync_running(configured_path())
+            return jsonify(ok=True, active=active, message=(
+                'Bible Study is being updated. Some study resources may be temporarily unavailable. '
+                'Please try again when the update finishes.' if active else ''))
+        except (ValueError, OSError):
+            return jsonify(ok=False, error='Bible Study update status is unavailable.'), 503
 
     @blueprint.post('/api/sync')
     def sync_start():
@@ -6129,9 +6276,12 @@ def register_bible_study_routes(app):
                 return jsonify(ok=False, error='A Bible Study sync is already running.'), 409
             if not path.exists():
                 initialize_database(path, static_folder=app.static_folder)
-            _write_sync_status(path, {'status': 'running', 'message': 'Starting Bible Study sync.',
-                                     'updated_at': datetime.now(timezone.utc).isoformat()})
-            threading.Thread(target=_run_sync, args=(app, path, lock), name='bible-study-sync', daemon=True).start()
+            initial = dict(status='running', message='Starting Bible Study sync.', job_id=secrets.token_hex(12),
+                           started_at=datetime.now(timezone.utc).isoformat(),
+                           updated_at=datetime.now(timezone.utc).isoformat(), progress=dict(stage='starting'))
+            _write_sync_status(path, initial)
+            _save_sync_progress(path, initial)
+            threading.Thread(target=_run_sync, args=(app, path, lock, initial), name='bible-study-sync', daemon=True).start()
             lock = None  # The background worker now owns the cross-process lock.
             return jsonify(ok=True, message='Bible Study sync started.'), 202
         except (ValueError, OSError, sqlite3.DatabaseError, RuntimeError):

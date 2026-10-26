@@ -1725,13 +1725,35 @@
         element("Sync").textContent = syncBusy ? "Syncing Bible Study…" : "Sync Bible Study";
         element("SyncDetails").textContent = syncBusy ? "Sync details · Running" : report.status === "failed" ? "Sync details · Failed" : "Sync details";
         element("SyncStatus").textContent = report.message;
+        const state=report.progress || {}, panel=element("SyncProgressPanel"),bar=element("SyncProgress");
+        panel.hidden=!report.progress && !syncBusy;
+        const labels={starting:"Starting",discovery:"Finding sources",preparing:"Preparing sources",checking:"Checking source",downloading:"Downloading",indexing:"Indexing",prepared:"Source prepared",validating:"Validating database",backup:"Backing up",publishing:"Publishing",illustrations:"Checking illustrations",translations:"Bible translations"};
+        element("SyncStage").textContent=report.status==="completed"?"Sync complete":report.status==="failed"?"Sync stopped":report.status==="interrupted"?"Sync interrupted":labels[state.stage] || state.stage || "Working";
+        element("SyncSource").textContent=state.source || "";
+        const done=Number(state.completed),total=Number(state.total),measured=state.completed!=null&&state.total!=null&&Number.isFinite(done)&&Number.isFinite(total)&&total>0;
+        if(report.status==="completed"){bar.value=100;element("SyncMeasure").textContent="All sync stages completed.";}
+        else if(measured){
+            const percent=Math.min(100,Math.max(0,done/total*100));bar.value=percent;
+            const amount=value=>state.unit==="bytes"?value.toLocaleString()+" bytes ("+(value/1048576).toLocaleString(undefined,{maximumFractionDigits:2})+" MB)":value.toLocaleString();
+            element("SyncMeasure").textContent=amount(done)+" / "+amount(total)+(state.unit!=="bytes"?" "+(state.unit || "items"):"")+" · "+percent.toFixed(1)+"% of this stage";
+        }else if(report.status!=="running"){
+            bar.value=0;element("SyncMeasure").textContent="This job is no longer running.";
+        }else{
+            bar.removeAttribute("value");
+            element("SyncMeasure").textContent=state.completed!=null&&state.unit==="bytes"?(done/1048576).toFixed(2)+" MB downloaded; total size unavailable.":"This stage has no measured total yet.";
+        }
+        element("SyncSources").textContent=state.sources_total!=null?(state.source_group || "Study sources prepared")+": "+Number(state.sources_done || 0).toLocaleString()+" / "+Number(state.sources_total).toLocaleString():"";
+        window.dispatchEvent(new CustomEvent("bible-study-sync-status",{detail:{active:syncBusy}}));
         const body = element("SyncReportBody"); body.replaceChildren();
         for (const [key, value] of Object.entries(report.counts || {})) body.append(node("p", key.replaceAll("_", " ") + ": " + Number(value).toLocaleString()));
         for (const warning of report.warnings || []) body.append(node("p", warning));
         element("SyncReport").hidden = !body.childNodes.length;
     }
 
+    let syncPollActive=false,syncPollAgain=false;
     async function pollSync() {
+        if(syncPollActive){syncPollAgain=true;return;}
+        syncPollActive=true;
         clearTimeout(syncTimer);
         try {
             const data = await api(config.syncUrl);
@@ -1747,10 +1769,15 @@
                 await refreshTranslations(); updateChapter();
             }
         } catch (error) {
-            syncBusy = false; element("Sync").disabled = false;
-            element("Sync").textContent = "Sync Bible Study";
-            element("SyncStatus").textContent = error.message;
-            element("SyncDetails").textContent = "Sync details · Error";
+            if(error.status===401 || error.status===403){
+                syncBusy=false;element("Sync").disabled=false;element("SyncStatus").textContent=error.message;
+            }else{
+                element("SyncStatus").textContent="Progress connection interrupted. Reconnecting…";
+                syncTimer=setTimeout(pollSync,5000);
+            }
+        } finally {
+            syncPollActive=false;
+            if(syncPollAgain){syncPollAgain=false;clearTimeout(syncTimer);syncTimer=setTimeout(pollSync,0);}
         }
     }
 
@@ -1758,6 +1785,7 @@
         element("SyncDetails").addEventListener("click", () => {
             if (element("SettingsDialog").open) element("SettingsDialog").close();
             element("SyncDialog").showModal();
+            pollSync();
         });
         element("CloseSync").addEventListener("click", () => element("SyncDialog").close());
         element("Sync").addEventListener("click", async () => {
@@ -1766,6 +1794,7 @@
             element("Sync").textContent = "Syncing Bible Study…";
             element("SyncDetails").textContent = "Sync details · Running";
             element("SyncStatus").textContent = "Starting Bible Study sync…";
+            window.dispatchEvent(new CustomEvent("bible-study-sync-status",{detail:{active:true}}));
             try {
                 await api(config.syncUrl, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": config.csrfToken}, body: "{}"});
                 pollSync();

@@ -13,6 +13,8 @@
   {% endif %}
 
   <style>
+    .site-study-notice{position:fixed;left:14px;bottom:14px;z-index:14900;box-sizing:border-box;width:min(740px,calc(100% - 112px));padding:12px 15px;border:1px solid #c49a42;border-radius:12px;background:#fff4cf;color:#573c08;box-shadow:0 4px 16px #0002;font:14px/1.5 Arial,sans-serif;overflow-wrap:anywhere}
+    .site-study-notice[hidden]{display:none}
     /* =====================================================
        PIJ — FLOATING DISTRICT 4 AI ASSISTANT
        ===================================================== */
@@ -345,6 +347,10 @@
   <main class="app-main">
     {% block content %}{% endblock %}
   </main>
+  {% if is_logged_in %}
+  <aside id="bibleStudyUpdateNotice" class="site-study-notice" role="status" hidden data-status-url="{{ url_for('bible_study.sync_notice') }}"></aside>
+  <script src="{{ url_for('static',filename='bible_sync_notice.js',v='sync-progress-30') }}" defer></script>
+  {% endif %}
 
 
   {% if is_logged_in %}
