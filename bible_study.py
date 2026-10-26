@@ -1771,6 +1771,28 @@ def parse_language_dictionary(data, family, progress=None):
     return dict(entries=entries,assets={})
 
 
+def _be_article_blocks(blocks, body, *, strict=False):
+    """Match complete source blocks in article order, never incidental substrings."""
+    haystack = '\n' + body.strip() + '\n'
+    chosen, cursor = [], 0
+    for block in blocks:
+        text = block.get('text', '').strip()
+        if not text:
+            continue
+        needle = '\n' + text + '\n'
+        start = haystack.find(needle, cursor)
+        if start < 0:
+            continue
+        chosen.append(block)
+        cursor = start + len(needle) - 1
+    if _text('\n'.join(block['text'] for block in chosen)) != _text(body):
+        if strict:
+            raise SyncError('A BE article could not retain all its source paragraphs. Existing content was kept.')
+        # An unfamiliar legacy layout must not silently lose source text.
+        return copy.deepcopy(blocks)
+    return copy.deepcopy(chosen)
+
+
 def parse_be_epub(data, title, progress=None):
     assets={};pages={};supplied_title=title;warnings=[]
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -1798,7 +1820,8 @@ def parse_be_epub(data, title, progress=None):
     for section in sections:
         body=section['text'];blocks=[]
         for page in range(section['source_section'],section['source_end_section']+1):
-            blocks.extend(copy.deepcopy(b) for b in pages.get(page,[]) if b['text'].strip() and b['text'].strip() in body)
+            blocks.extend(pages.get(page,[]))
+        blocks = _be_article_blocks(blocks, body, strict=True)
         if not blocks: raise SyncError('A BE chapter could not retain its source paragraphs.')
         section['blocks']=_wiersbe_reader_blocks(blocks,section['title'])
         section['locator']=blocks[0]['locator']+'#section-'+str(section['source_section'])
@@ -1821,7 +1844,7 @@ def bible_study_be_commentary(conn,book_id,chapter,verse):
         if not any(s['book_id']==book_id and (s['chapter'],s['verse'])<=(chapter,verse)<=(s['end_chapter'],s['end_verse']) for s in spans): continue
         catalogue.append(dict(document_id=row['version_id'],source_title=row['source_title'],author='Warren W. Wiersbe',
             title=row['title'],passage=row['passage'],source_section=row['ordinal'],ranges=spans,
-            text=row['plain_text'],blocks=json.loads(row['content_json'])))
+            text=row['plain_text'],blocks=_be_article_blocks(json.loads(row['content_json']),row['plain_text'])))
     result=_commentary_entries(catalogue,book_id,chapter,verse)
     result['available']=bool(conn.execute('SELECT 1 FROM bible_commentary_versions WHERE is_active=1').fetchone())
     return result

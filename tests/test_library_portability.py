@@ -2724,6 +2724,44 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 for entry_id in entry['entry_ids']:
                     self.assertEqual(self.client.get(self.base+'/api/dictionaries/entry/'+str(entry_id)).status_code,200)
 
+    def test_be_psalm_articles_do_not_pull_headings_from_incidental_mentions(self):
+        self.preview(initialize=True)
+        text23='The shepherd cares for his sheep. Psalm 2 and Psalm 22 are discussed elsewhere in the source.'
+        text22='This is the complete neighboring Psalm 22 article, which must not appear in the Psalm 23 reader.'
+        text2='This is the complete neighboring Psalm 2 article, which must remain separate from the other psalms.'
+        heading='Care for the flock'
+        epub=self.fixture_epub([('chapter.xhtml',
+            '<p>Chapter One</p><p>Source chapter title</p><p>(Psalms 1–41)</p>'
+            '<h2>Psalm 2</h2><p>'+text2+'</p>'
+            '<h2>Psalm 22</h2><p>'+text22+'</p>'
+            '<h2>Psalm 23</h2><p>'+text23+'</p><p><strong>'+heading+'</strong></p>'
+            '<p>The final source paragraph must keep its <em>original emphasis</em> and complete wording.</p>')],
+            metadata='<title>Be Worshipful: Psalms 1–89</title><creator>Warren W. Wiersbe</creator>')
+        content=self.bible.parse_be_epub(epub,'Be Worshipful (Psalms 1-89)')
+        section=next(section for section in content['sections'] if section['passage']=='Psalms 23')
+        self.assertEqual([block['text'] for block in section['blocks']][:2],[text23,heading])
+        self.assertFalse(any(block['text'] in ('Psalm 2','Psalm 22','Psalm 23') for block in section['blocks']))
+        self.assertEqual(section['blocks'][1]['type'],'heading')
+        self.assertTrue(any('em' in run.get('marks',[]) or 'italic' in run.get('marks',[])
+                            for run in section['blocks'][-1]['runs']))
+        selected={'be:psalms_fixture':dict(title=content['title'],drive_file_id='psalms_fixture',
+            sha256='f'*64,fingerprint={})}
+        self.bible._publish_dictionary_sync(self.path,selected,{'be:psalms_fixture':content},'fixture_folder_id',[])
+        # Recreate the old import bug: short titles were selected because they
+        # occurred somewhere inside the article's prose, twice in this EPUB.
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            row=conn.execute("SELECT id,content_json FROM bible_commentary_sections WHERE passage='Psalms 23'").fetchone()
+            old_blocks=[dict(type='heading',text=word,runs=[]) for word in ('Psalm 2','Psalm 22','Psalm 23')]
+            conn.execute('UPDATE bible_commentary_sections SET content_json=? WHERE id=?',
+                (json.dumps(old_blocks+json.loads(row[1])+old_blocks),row[0]))
+        before=self.path.read_bytes()
+        result=self.client.get(self.base+'/api/commentary?book=Psalms&chapter=23&verse=1').json
+        self.assertTrue(result['available'])
+        self.assertEqual(len(result['entries']),1)
+        self.assertEqual([block['text'] for block in result['entries'][0]['blocks']],
+                         [block['text'] for block in section['blocks']])
+        self.assertEqual(self.path.read_bytes(),before)
+
     def test_be_import_and_cleanup_keep_pdf_and_unimported_editions(self):
         self.preview(initialize=True)
         epub=self.fixture_epub([('chapter.xhtml','<p>Chapter One</p><p>Source heading</p><p>(2 Peter 1:1–11)</p>'

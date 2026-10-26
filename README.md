@@ -239,7 +239,14 @@ Keep HarperCollins, Mounce, Vine, the BE series EPUBs, and
 `kaikki.org-dictionary-Tagalog.jsonl` / `kaikki.org-dictionary-Cebuano.jsonl`
 directly inside **For Scripture Study App**. Bible Study imports only these
 supported resources, preserves article images/tables and BE typography, and
-serves BE commentary from its own database. NIV Word Study shows Tagalog and
+serves BE commentary from its own database.
+
+BE article typography is selected using complete source paragraphs in article
+order. Short headings mentioned inside prose cannot pull neighboring headings
+into the reader. This correction also applies read-only to existing imports;
+no resync is needed to remove those stray headings.
+
+NIV Word Study shows Tagalog and
 Cebuano possible equivalents from reverse English-definition searches, followed
 by HarperCollins, Vine, and Mounce. Each original article has a compact preview;
 **Read more** expands the complete article inline in source order. Articles are
