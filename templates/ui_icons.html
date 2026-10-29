@@ -40,12 +40,8 @@
   if (window.districtLoadingInstalled) return;
   window.districtLoadingInstalled = true;
   const root = document.documentElement;
-  let startedAt = Date.now();
-  const minimumDisplayMs = 650;
   let mode = 'initial';
-  let revealTimer = null;
-  let fallbackTimer = null;
-  let navigationTimer = null;
+  let navigating = false;
   root.classList.add('district-page-loading');
 
   // More specific subpages precede their parent pages.
@@ -114,8 +110,6 @@
   }
 
   function display(title, description, loadingMode) {
-    clearTimeout(revealTimer);
-    clearTimeout(fallbackTimer);
     mode = loadingMode;
     const overlay = document.getElementById('globalLoadingOverlay');
     if (!overlay) return;
@@ -136,14 +130,12 @@
     display(text || 'Please wait…', 'Your request is being processed.', 'operation');
   };
   window.showPageLoading = function (href, label, initial) {
-    if (initial) startedAt = Date.now();
     const info = pageInfo(new URL(href, window.location.href), label);
     display('Opening ' + info.title, info.description, initial ? 'initial' : 'navigation');
   };
   window.hideGlobalLoading = function (options) {
     if (options && options.operationsOnly && mode !== 'operation') return;
-    clearTimeout(revealTimer);
-    clearTimeout(fallbackTimer);
+    navigating = false;
     const overlay = document.getElementById('globalLoadingOverlay');
     if (overlay) {
       overlay.classList.remove('show', 'hidden');
@@ -157,23 +149,24 @@
 
   function pageReady() {
     if (mode !== 'initial') return;
-    clearTimeout(revealTimer);
-    revealTimer = setTimeout(function () {
-      if (mode === 'initial') window.hideGlobalLoading();
-    }, Math.max(0, minimumDisplayMs - (Date.now() - startedAt)));
+    window.hideGlobalLoading();
   }
   window.addEventListener('load', pageReady);
-  document.addEventListener('DOMContentLoaded', function () {
-    // A failed or slow third-party asset must not indefinitely cover the page.
-    if (mode === 'initial') fallbackTimer = setTimeout(pageReady, 10000);
-    if (document.readyState === 'complete') pageReady();
-  });
+  // The page is usable before images, fonts and third-party assets finish.
+  document.addEventListener('DOMContentLoaded', pageReady);
+  if (document.readyState !== 'loading') pageReady();
   window.addEventListener('pageshow', function (event) {
     if (event.persisted) {
-      clearTimeout(navigationTimer);
-      navigationTimer = null;
+      navigating = false;
       window.hideGlobalLoading();
-    }
+    } else pageReady();
+  });
+  // A canceled navigation or download can leave this document on screen.
+  window.addEventListener('focus', function () {
+    if (mode === 'navigation' && document.visibilityState === 'visible') { navigating = false; window.hideGlobalLoading(); }
+  });
+  window.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && mode === 'navigation') { navigating = false; window.hideGlobalLoading(); }
   });
 
   function isPageUrl(url) {
@@ -184,15 +177,16 @@
   window.navigateWithLoading = function (href, label) {
     const url = new URL(href, window.location.href);
     if (!isPageUrl(url)) { window.location.assign(url.href); return; }
-    if (navigationTimer !== null) return;
+    if (navigating) return;
+    navigating = true;
     window.showPageLoading(url.href, label);
-    // Let the browser paint the destination information before requesting it.
-    navigationTimer = setTimeout(function () { window.location.assign(url.href); }, 120);
+    window.location.assign(url.href);
   };
   window.reloadWithLoading = function () {
-    if (navigationTimer !== null) return;
+    if (navigating) return;
+    navigating = true;
     window.showPageLoading(window.location.href);
-    navigationTimer = setTimeout(function () { window.location.reload(); }, 120);
+    window.location.reload();
   };
 
   // Delegation includes links/forms rendered later by library and other page scripts.

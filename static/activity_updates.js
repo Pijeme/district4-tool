@@ -48,7 +48,21 @@
         card.append(node("p", `${item.actor_name || "Guest"}${item.actor_username ? " · " + item.actor_username : ""} · ${item.actor_role}`, "au-meta"));
         if (item.page_path) card.append(node("p", item.page_path, "au-meta"));
         if (item.details && Object.keys(item.details).length) {
-            const details = node("details"); details.append(node("summary", "Change details"), node("pre", JSON.stringify(item.details, null, 2))); card.append(details);
+            if (item.details.schedule) {
+                const context = node("div", undefined, "au-schedule-details");
+                for (const [label, value] of Object.entries(item.details.schedule)) {
+                    if (item.details.changes && !["Church", "Activity", "Start date"].includes(label)) continue;
+                    context.append(node("p", label + ": " + value));
+                }
+                for (const change of item.details.changes || []) context.append(node("p", change.field + ": " + (change.before || "(empty)") + " → " + (change.after || "(empty)")));
+                if(item.details.participant)context.append(node("p", "Joined by: " + item.details.participant));
+                if(item.details.editor)context.append(node("p", "Editor: " + item.details.editor));
+                card.append(context);
+            } else {
+                const details = node("details"); details.append(node("summary", "Change details"));
+                for(const [label,value] of Object.entries(item.details))details.append(node("p", label + ": " + (typeof value === "object" ? JSON.stringify(value) : value)));
+                card.append(details);
+            }
         }
         return card;
     }

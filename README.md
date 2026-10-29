@@ -154,6 +154,59 @@ counts unread change notifications only and links directly to the notification t
 Cancelled native sharing is not recorded as a completed share; download records
 do not establish that a browser saved a file or a recipient opened it.
 
+The developer account's own actions and personal reading marks (highlights,
+underlines, notes, bookmarks and saved Bible studies) are excluded from this
+overview and its unread count, including matching older entries. Schedule
+notifications identify the church, activity and dates; edits show the changed
+fields with their previous and new values.
+
+## Devotionals, reporting and developer area selection
+
+The Bulletin Board's Daily Devotional has district-wide likes, a participant
+list for sharing actions, and comments. Signed-in district users can see names,
+churches and comments across areas. Authors can delete their comments, and the
+developer can moderate them. Other users' new likes, sharing actions and comments
+notify the developer. Each day's devotional is saved with its verse so old
+notification links continue to open the original message.
+
+Share opens the device's native share menu with the complete devotional, verse,
+reference and source attribution. This requires HTTPS and a compatible browser;
+the local HTTP development address cannot open native sharing. There is no
+clipboard fallback. Canceled or unsupported shares do not increase the count.
+
+Pastor's Tool automatically reloads the selected month/year and offers 2024
+through 2034. Actual pastor accounts receive at most one reminder per UTC+8 day
+across browsers and devices for missing monthly submissions in the current
+calendar year. Months become eligible on their last Sunday. The reminder links
+to Pastor's Tool and can be closed; reports pending approval count as submitted.
+
+Only the signed-in developer account `pijeme` can select a working area on the
+Bulletin Board. This selection applies to existing area viewing and editing
+checks until changed or signed out. The account's assigned area remains intact,
+and a visible banner provides a return to the original area.
+
+### Dedicated Psalm 119 commentary
+
+Exalting Jesus can show the dedicated Psalm 119 volume alongside its existing
+chapter commentary, with the matching eight-verse section first. The dedicated
+volume is private database content and is not embedded in Git or Docker images.
+For an existing server, copy your EPUB to a private server directory and import
+it once into that server's existing Bible database. For example:
+
+```sh
+docker compose run --rm --no-deps \
+  -v /absolute/private/commentaries:/sources:ro \
+  district4 python bible_study.py import-exalting \
+  --database /data/bible_study_data/bible_study.db \
+  --epub "/sources/Exalting Jesus in Psalms 119 -- Daniel L. Akin.epub"
+```
+
+The import validates all 22 eight-verse sections and creates a recovery backup
+before saving them. Add `--dry-run` to validate without writing. Existing Bible
+text, chapter commentaries, personal study records and the AI index are retained.
+
+## Pij assistance
+
 Pij uses read-only library retrieval, two concurrent AI requests, and one active
 request per account. Model attempts have 20-second network timeouts with a shared
 45-second budget and a single fallback model. Chat close clears its conversation;

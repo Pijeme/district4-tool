@@ -41,7 +41,7 @@ class ActivityTests(unittest.TestCase):
     def login(self, username='pijeme', kind='ao'):
         with self.client.session_transaction() as session:
             session.clear()
-            session.update(username=username, name=username.title(), website_activity_csrf='test-csrf')
+            session.update(username=username, name=username.title(), website_activity_csrf='test-csrf', district_interaction_csrf='district-csrf')
             if kind == 'ao':
                 session.update(ao_logged_in=True, ao_username=username, ao_name=username.title(), ao_role='Area Overseer')
             else:
@@ -88,17 +88,20 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len(self.rows()), 2)
 
     def test_visits_are_grouped_and_keep_actual_ao_identity(self):
+        self.login('other-ao')
         with self.client.session_transaction() as session:
             session['pastor_logged_in'] = True
             session['pastor_username'] = 'selected-pastor'
         with patch.dict(appmod.app.view_functions, {'bulletin': lambda: '<h1>Bulletin</h1>'}):
             self.assertEqual(self.client.get('/bulletin').status_code, 200)
-        self.assertEqual(self.rows()[0]['actor_username'], 'pijeme')
+        self.assertEqual(self.rows()[0]['actor_username'], 'other-ao')
+        self.login()
         result = self.client.get('/ao-tool/activity/api?view=accounts').get_json()
         self.assertEqual(result['items'][0]['activity_count'], 1)
         self.assertEqual(len(self.rows()), 1)  # API polling never becomes a visit.
 
     def test_successful_changes_only_and_no_credentials(self):
+        self.login('other-ao')
         def success():
             flash('Updated', 'success')
             return Response(status=302, headers={'Location': '/ao-tool'})
@@ -116,6 +119,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(self.rows()[0]['is_notification'], 1)
 
     def test_confirmed_pledge_retry_is_deduplicated(self):
+        self.login('other-ao')
         with patch.dict(appmod.app.view_functions, {'pledge_submit': lambda: jsonify(ok=True, reference='stable-id')}):
             self.client.post('/thanksgiving-pledges/submit')
             self.client.post('/thanksgiving-pledges/submit')
@@ -142,6 +146,7 @@ class ActivityTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM sheet_accounts_cache').fetchone()[0], 1)
 
     def test_download_and_share_resolve_book_title_on_server(self):
+        self.login('reader', kind='member')
         book = {'id': 42, 'title': 'Actual title'}
         with patch.object(resources, 'get_effective_book', return_value=book), \
              patch.object(resources, 'is_resource_admin', return_value=False):
@@ -153,6 +158,152 @@ class ActivityTests(unittest.TestCase):
         with patch.object(resources, 'get_effective_book', return_value=None):
             self.assertEqual(self.client.post('/activity/ebook', json={'action': 'share', 'url': '/pastor-resources/download/999'}).status_code, 404)
         self.assertEqual(len(self.rows()), 1)
+
+    def test_developer_actions_and_existing_personal_marks_are_excluded(self):
+        self.seed(True, actor='pijeme')
+        self.seed(True, actor='reader')
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute("UPDATE website_events SET action='Bible annotation added' WHERE actor_key='reader'")
+        with patch.dict(appmod.app.view_functions, {'bulletin': lambda: '<h1>Bulletin</h1>'}):
+            self.client.get('/bulletin')
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(self.client.get('/ao-tool/activity/api?view=summary').json['unread'], 0)
+        self.assertEqual(self.client.get('/ao-tool/activity/api?view=notifications').json['total'], 0)
+        self.assertEqual(self.client.get('/ao-tool/activity/api?view=accounts').json['total'], 0)
+
+    def seed_devotion(self):
+        with appmod.app.app_context():
+            appmod._save_daily_devotion('2026-10-29', 'Psalm 119:105', 'Synthetic verse.',
+                dict(title='Synthetic devotion', content='Original synthetic message.', source_title='Synthetic source'))
+        return '/bulletin/devotion/2026-10-29/interactions'
+
+    def test_devotional_is_district_wide_and_reactions_are_idempotent(self):
+        path = self.seed_devotion()
+        headers = {'X-CSRF-Token': 'district-csrf'}
+        self.login('area-one', kind='member')
+        self.assertEqual(self.client.post(path, json={'action':'like','liked':True}).status_code, 400)
+        for _ in range(2):
+            result = self.client.post(path, json={'action':'like','liked':True}, headers=headers)
+            self.assertEqual(result.json['likes'], 1)
+        self.assertEqual(self.client.post(path, json={'action':'share','method':'copy_message'}, headers=headers).status_code,400)
+        self.client.post(path, json={'action':'share','method':'share_menu'}, headers=headers)
+        self.assertEqual(len(self.rows()), 2)
+        self.login('area-two', kind='member')
+        result = self.client.get(path+'?kind=likes').json
+        self.assertEqual(result['people'][0]['actor_name'], 'Area-One')
+        self.assertFalse(result['liked'])
+        self.assertEqual(result['shares'], 1)
+        self.login()
+        self.client.post(path, json={'action':'like','liked':True}, headers=headers)
+        self.assertEqual(len(self.rows()), 2, 'Developer engagement must not notify the developer')
+
+    def test_bulletin_integrates_controls_and_reminder_once_for_each_role(self):
+        insight = dict(title='Synthetic devotion',content='Full original message.',source_title='Synthetic source')
+        with patch.object(appmod,'get_verse_of_the_day',return_value=('Psalm 119:105','Synthetic verse.')), \
+             patch.object(appmod,'daily_maxwell_insight',return_value=(insight,False)), \
+             patch.object(appmod,'build_bulletin_board_posts',return_value=([],'')):
+            for role in ('developer','member','pastor'):
+                self.login('pijeme' if role=='developer' else 'reader',kind='ao' if role=='developer' else 'member')
+                if role=='pastor':
+                    with self.client.session_transaction() as session:
+                        session.pop('member_logged_in')
+                        session.update(pastor_logged_in=True,pastor_username='reader')
+                response=self.client.get('/bulletin')
+                self.assertEqual(response.status_code,200)
+                html=response.get_data(as_text=True)
+                self.assertIn('id="devotionLike"',html)
+                self.assertNotIn('id="devotionCopy"',html)
+                self.assertIn('icons/devotion-like.svg',html)
+                self.assertIn('icons/devotion-share.svg',html)
+                self.assertIn('id="devotionCommentForm"',html)
+                self.assertEqual(html.count('src="/static/bulletin_insight.js'),1)
+                self.assertEqual('id="developerWorkingArea"' in html,role=='developer')
+                self.assertEqual('id="pastorReportReminder"' in html,role=='pastor')
+
+    def test_comments_require_auth_and_only_author_or_developer_can_delete(self):
+        path = self.seed_devotion()
+        headers = {'X-CSRF-Token': 'district-csrf'}
+        self.login('writer', kind='member')
+        self.assertEqual(self.client.post(path, json={'action':'comment','content':'<script>Public comment</script>'}, headers=headers).status_code, 200)
+        entry = self.client.get(path+'?kind=comments').json['entries'][0]
+        self.assertTrue(entry['can_delete'])
+        self.login('other-reader', kind='member')
+        self.assertFalse(self.client.get(path+'?kind=comments').json['entries'][0]['can_delete'])
+        self.assertEqual(self.client.post(path, json={'action':'delete_comment','id':entry['id']}, headers=headers).status_code, 403)
+        self.login()
+        self.assertEqual(self.client.post(path, json={'action':'delete_comment','id':entry['id']}, headers=headers).json['comments'], 0)
+        with self.client.session_transaction() as session:
+            session.clear()
+        self.assertEqual(self.client.get(path).status_code, 401)
+
+    def test_area_switch_is_owner_only_and_preserves_identity_and_accounts(self):
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.executemany('INSERT INTO sheet_accounts_cache(username,name,age) VALUES(?,?,?)',
+                           [('pijeme','Developer','7'), ('church-three','Pastor','3')])
+        with self.client.session_transaction() as session:
+            session.update(ao_area_number='7',pastor_username='old-selection',pastor_logged_in=True)
+        headers = {'X-CSRF-Token': 'test-csrf'}
+        result = self.client.post('/bulletin/working-area', data={'area':'3'}, headers=headers)
+        self.assertEqual(result.status_code, 302)
+        with self.client.session_transaction() as session:
+            self.assertEqual(session['ao_area_number'], '3')
+            self.assertEqual(session['developer_home_area'], '7')
+            self.assertEqual(session['ao_username'], 'pijeme')
+            self.assertNotIn('pastor_username', session)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT age FROM sheet_accounts_cache WHERE username='pijeme'").fetchone()[0], '7')
+        with appmod.app.test_request_context():
+            from flask import session
+            session.update(ao_logged_in=True,ao_username='pijeme',ao_area_number='3',ao_role='Area Overseer')
+            self.assertTrue(appmod._announcement_in_current_scope(dict(area='3',sub_area='A')))
+            self.assertFalse(appmod._announcement_in_current_scope(dict(area='7',sub_area='')))
+        self.assertEqual(self.client.post('/bulletin/working-area', data={'area':'999'}, headers=headers).status_code, 400)
+        self.login('other-ao')
+        self.assertEqual(self.client.post('/bulletin/working-area', data={'area':'3'}, headers=headers).status_code, 403)
+
+    def test_report_reminder_is_once_per_account_per_local_day_across_sessions(self):
+        from datetime import date
+        self.login('pastor', kind='member')
+        with self.client.session_transaction() as session:
+            session.pop('member_logged_in')
+            session.update(pastor_logged_in=True,pastor_username='pastor')
+        reports = [dict(label='September 2026',overdue=True,url='/pastor-tool?year=2026&month=9')]
+        headers = {'X-CSRF-Token': 'district-csrf'}
+        with patch.object(appmod, '_district_today', return_value=date(2026,10,29)), patch.object(appmod, '_missing_pastor_reports', return_value=reports):
+            self.assertTrue(self.client.post('/pastor-tool/report-reminder', json={}, headers=headers).json['show'])
+            second = appmod.app.test_client()
+            with second.session_transaction() as session:
+                session.update(pastor_logged_in=True,pastor_username='pastor',district_interaction_csrf='district-csrf')
+            self.assertFalse(second.post('/pastor-tool/report-reminder', json={}, headers=headers).json['show'])
+        with patch.object(appmod, '_district_today', return_value=date(2026,10,30)), patch.object(appmod, '_missing_pastor_reports', return_value=reports):
+            self.assertTrue(self.client.post('/pastor-tool/report-reminder', json={}, headers=headers).json['show'])
+
+    def test_missing_report_check_ignores_future_cycles_and_submitted_reports(self):
+        from datetime import date
+        with appmod.app.app_context():
+            db = appmod.get_db()
+            db.execute("INSERT INTO sheet_accounts_cache(username,name,sex) VALUES('pastor','Pastor','Church')")
+            db.execute("INSERT INTO monthly_reports(year,month,pastor_username,submitted) VALUES(2026,1,'pastor',1)")
+            db.execute("INSERT INTO sheet_report_cache(year,month,church,pastor,address) VALUES(2026,2,'Church','Pastor','Address')")
+            db.commit()
+            with appmod.app.test_request_context():
+                result = appmod._missing_pastor_reports('pastor', date(2026,3,15))
+                self.assertEqual(result, [])
+                result = appmod._missing_pastor_reports('pastor', date(2026,3,29))
+                self.assertEqual([r['label'] for r in result], ['March 2026'])
+
+    def test_schedule_changes_record_exact_fields_and_skip_unchanged_edits(self):
+        import schedule
+        before = dict(church_name='Old Church',activity_type='Thanksgiving',activity_date_start='2026-11-15',note='Original')
+        after = dict(before,church_name='New Church',activity_date_start='2026-11-22')
+        with appmod.app.test_request_context('/schedules', method='POST'), patch.object(schedule, '_appmod', return_value=appmod), patch.object(appmod, 'record_website_event') as recorded:
+            schedule._record_schedule_change('updated',before,after)
+            changes = recorded.call_args.kwargs['details']['changes']
+            self.assertEqual({r['field'] for r in changes}, {'Church','Start date'})
+            self.assertEqual(changes[0]['before'], 'Old Church')
+            recorded.reset_mock()
+            schedule._record_schedule_change('updated',before,before)
+            recorded.assert_not_called()
 
 
 class PijTests(unittest.TestCase):

@@ -9,6 +9,16 @@
   <div class="bb-sidebar">
     <section class="bb-intro">
       <h2 class="ui-page-title">Bulletin Board</h2>
+      {% if website_activity_owner %}
+      <form method="post" action="{{ url_for('developer_working_area') }}" class="dev-area-switch">
+        <input type="hidden" name="csrf_token" value="{{ website_activity_csrf }}">
+        <label for="developerWorkingArea">Working area</label>
+        <select id="developerWorkingArea" name="area" onchange="this.form.requestSubmit()">
+          {% for area in developer_areas %}<option value="{{ area }}" {% if area == area_number %}selected{% endif %}>Area {{ area }}</option>{% endfor %}
+        </select>
+        <noscript><button type="submit">Switch area</button></noscript>
+      </form>
+      {% endif %}
 
       <div class="bb-area">
         Area {{ area_number }}{% if current_church %} • {{ current_church }}{% endif %}
@@ -37,8 +47,32 @@
         <details><summary>Read more</summary><div class="maxwell-source-content">{{ leadership_insight.content }}</div></details>
         {% endif %}
       </section>
-      <script id="maxwellInsightConfig" type="application/json">{{ {'url': url_for('bulletin_leadership_insight'), 'pending': insight_pending, 'reference': verse_reference, 'day': verse_day}|tojson }}</script>
-      <script src="{{ url_for('static', filename='bulletin_insight.js', v='3') }}" defer></script>
+      <div id="devotionActions" class="devotion-actions" {% if not leadership_insight %}hidden{% endif %}>
+        <p class="muted small">District-wide conversation · Names, churches and comments are visible to everyone signed in.</p>
+        <div class="devotion-counts">
+          <button type="button" id="devotionLikes">0 likes</button>
+          <button type="button" id="devotionComments">0 comments</button>
+          <button type="button" id="devotionShares">0 shares</button>
+        </div>
+        <div class="devotion-buttons">
+          <button type="button" id="devotionLike" aria-pressed="false"><img src="{{ url_for('static', filename='icons/devotion-like.svg') }}" width="20" height="20" alt="" aria-hidden="true"><span id="devotionLikeLabel">Like</span></button>
+          <button type="button" id="devotionComment">Comment</button>
+          <button type="button" id="devotionShare"><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="20" height="20" alt="" aria-hidden="true"><span>Share</span></button>
+        </div>
+        <p id="devotionStatus" class="muted small" role="status" aria-live="polite"></p>
+      </div>
+      <dialog id="devotionDialog" class="district-dialog" aria-labelledby="devotionDialogTitle">
+        <div class="devotion-dialog-heading"><h3 id="devotionDialogTitle">Daily Devotional</h3><button type="button" id="devotionClose" aria-label="Close conversation">×</button></div>
+        <p id="devotionDialogStatus" role="status"></p>
+        <div id="devotionPeople"></div>
+        <button type="button" id="devotionMore" hidden>Load more</button>
+        <form id="devotionCommentForm" data-skip-global-loading="true" hidden>
+          <label for="devotionCommentText">Your comment · Visible district-wide</label>
+          <textarea id="devotionCommentText" maxlength="2000" rows="3" required></textarea>
+          <button type="submit">Post comment</button>
+        </form>
+      </dialog>
+      <script id="maxwellInsightConfig" type="application/json">{{ {'url': url_for('bulletin_leadership_insight'), 'pending': insight_pending, 'reference': verse_reference, 'verse': verse_text, 'day': verse_day, 'insight': leadership_insight, 'interactions': url_for('devotion_interactions', day=verse_day), 'csrf': district_interaction_csrf|default('')}|tojson }}</script>
       {% endif %}
     </section>
   </div>

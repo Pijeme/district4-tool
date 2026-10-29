@@ -445,6 +445,17 @@ textarea:focus {
 
 
 /* Shared page loading screen */
+.developer-area-banner{margin:0 0 16px;padding:10px 16px;border:1px solid #c6d8f0;border-radius:12px;background:#eef5ff;color:#24456b;font-size:14px}
+.dev-area-switch{display:grid;gap:6px;margin:12px 0}.dev-area-switch select{padding:9px;border:1px solid #b8cce3;border-radius:8px;background:#fff;color:#16395c}
+.devotion-actions{margin:12px 0;padding-top:12px;border-top:1px solid #d9e2ee}.devotion-actions[hidden]{display:none}
+.devotion-buttons,.devotion-counts{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.devotion-buttons button{display:inline-flex;align-items:center;justify-content:center;gap:6px}.devotion-buttons button img{display:block;flex-shrink:0}
+.devotion-buttons button,.devotion-counts button,.district-dialog button{padding:8px 12px;border:1px solid #c7d6e8;border-radius:9px;background:#f3f7fe;color:#214774;cursor:pointer}
+.devotion-counts button{background:transparent;border:0;padding:5px}.devotion-buttons button[aria-pressed=true]{background:#dceaff;color:#174da5;font-weight:700}
+.district-dialog{box-sizing:border-box;width:min(560px,calc(100% - 24px));max-height:85vh;overflow:auto;padding:22px;border:1px solid #c7d6e8;border-radius:18px;background:#fff;color:#162f50;box-shadow:0 24px 70px #0f172a44}
+.district-dialog::backdrop{background:#0f172a66}.devotion-dialog-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.devotion-dialog-heading h3{margin:0}
+.devotion-person{padding:14px 0;border-bottom:1px solid #dce5ef;overflow-wrap:anywhere}.devotion-person p{margin:5px 0}.devotion-comment-text{white-space:pre-wrap;overflow-wrap:anywhere}
+#devotionCommentForm{display:grid;gap:10px;margin-top:16px}#devotionCommentForm[hidden]{display:none}#devotionCommentText{box-sizing:border-box;width:100%;padding:10px;border:1px solid #b8cce3;border-radius:9px;font:inherit}
 .global-loading-overlay {
   position: fixed;
   inset: 0;

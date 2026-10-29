@@ -4629,6 +4629,12 @@ def _commentary_entries(catalogue, book_id, chapter, verse, *, format_outline=Fa
                 width = (span['end_chapter']-span['chapter'])*200+span['end_verse']-span['verse']
                 matches.append((width, section))
                 break
+    if format_outline:
+        # Prefer the chapter article over the same volume's broad introduction.
+        chapter_documents = {section['document_id'] for _, section in matches if any(
+            span['book_id']==book_id and span['chapter']==chapter==span['end_chapter'] for span in section['ranges'])}
+        matches = [(width, section) for width, section in matches if section['document_id'] not in chapter_documents or any(
+            span['book_id']==book_id and span['chapter']==chapter==span['end_chapter'] for span in section['ranges'])]
     entries = []
     for _, section in sorted(matches, key=lambda item: item[0])[:4]:
         blocks = section.get('blocks') or _study_source_blocks(section['text'])
@@ -4710,6 +4716,11 @@ def _exalting_sections(document, rows):
                 break
         for offset in range(scan_start,index):
             candidate = lines[offset]
+            # A chapter banner can precede the actual article title and range.
+            # Prefer that printed range, while leaving prose epigraphs alone.
+            if (candidate['in_page']==0 and ':' not in candidate['text']
+                    and re.fullmatch(r'(?:'+_BOOK_PATTERN+r')\s+\d+:\d+\s*[-–—]\s*\d+', lines[index-1]['text'], re.I)):
+                continue
             if (candidate['page']==line['page'] and candidate['in_page']<=7
                     and not re.fullmatch(_BOOK_PATTERN,candidate['text'],re.I)
                     and _exalting_ranges(candidate['text'])):
@@ -4771,10 +4782,10 @@ def _exalting_catalogue(path, documents):
     return sections
 
 
-def exalting_commentary(ai_database, book_id, chapter, verse):
+def exalting_commentary(ai_database, book_id, chapter, verse, local_catalogue=()):
     path = Path(ai_database).resolve()
     if not path.is_file():
-        return dict(available=False, entries=[])
+        return _commentary_entries(local_catalogue,book_id,chapter,verse,format_outline=True)
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=3)) as conn:
         conn.row_factory = sqlite3.Row
         documents = conn.execute('''SELECT id,title,author,format,checksum,modified_time,indexed_at,chunk_count
@@ -4785,7 +4796,78 @@ def exalting_commentary(ai_database, book_id, chapter, verse):
     unique = {}
     for row in documents:
         unique.setdefault(row['title'].split(' (',1)[0].casefold(), json.dumps(dict(row),sort_keys=True))
-    return _commentary_entries(_exalting_catalogue(str(path),tuple(unique.values())),book_id,chapter,verse,format_outline=True)
+    indexed = _exalting_catalogue(str(path),tuple(unique.values()))
+    titles = {section['source_title'].casefold() for section in indexed}
+    combined = list(indexed) + [section for section in local_catalogue if section['source_title'].casefold() not in titles]
+    return _commentary_entries(combined,book_id,chapter,verse,format_outline=True)
+
+
+def local_exalting_catalogue(conn):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='bible_local_commentaries'").fetchone():
+        return []
+    return [section for row in conn.execute('SELECT sections_json FROM bible_local_commentaries')
+            for section in json.loads(row[0])]
+
+
+def import_exalting_epub(database_path, epub_path, *, backup_directory=None, dry_run=False):
+    """Explicitly import a local commentary into private Bible storage, never the AI index."""
+    path = _database_path(database_path)
+    raw = Path(epub_path).read_bytes()
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    # Validate archive bounds and spine before reading metadata or article text.
+    documents = list(_epub_documents(raw))
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        container = _xml(archive.read('META-INF/container.xml'))
+        opf = next(node.attrib['full-path'] for node in container.iter() if _tag(node)=='rootfile')
+        metadata = _xml(archive.read(opf))
+        title = next((''.join(node.itertext()).strip() for node in metadata.iter() if _tag(node)=='title'), '')
+        author = next((''.join(node.itertext()).strip().rstrip(';') for node in metadata.iter() if _tag(node)=='creator'), '')
+    if not title.casefold().startswith('exalting jesus'):
+        raise ValueError('Choose an Exalting Jesus EPUB with its original title metadata.')
+    rows = []
+    for ordinal, (_, content) in enumerate(documents, 1):
+        root = _xml(content)
+        body = next((node for node in root.iter() if _tag(node)=='body'), root)
+        blocks = []
+        for node in body.iter():
+            if _tag(node) not in {'p','li','h1','h2','h3','h4','h5','h6'}:
+                continue
+            if any(child is not node and _tag(child) in {'p','li'} for child in node.iter()):
+                continue
+            text = ' '.join(''.join(node.itertext()).split())
+            if text:
+                blocks.append(text)
+        rows.append((ordinal, '\n'.join(blocks)))
+    document = dict(id='local-exalting:' + fingerprint, title=title, author=author, format='epub')
+    sections = _exalting_sections(document, rows)
+    if not sections:
+        raise ValueError('No reliable commentary passage headings were found. Nothing was imported.')
+    if re.search(r'\bPsalms?\s+119\b', title, re.I):
+        coverage = {(span['book_id'],span['chapter'],span['verse'],span['end_chapter'],span['end_verse'])
+                    for section in sections for span in section['ranges']}
+        expected = {(19,119,start,119,start+7) for start in range(1,177,8)}
+        if len(sections)!=22 or coverage!=expected:
+            raise ValueError('Psalm 119 must contain exactly 22 complete eight-verse sections. Nothing was imported.')
+    report = dict(title=title, sections=len(sections), dry_run=dry_run)
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as source:
+        if source.execute('PRAGMA application_id').fetchone()[0]!=APPLICATION_ID:
+            raise ValueError('Refusing to modify an unrecognized database.')
+        if dry_run:
+            return report
+        directory = Path(backup_directory).resolve() if backup_directory else path.parent/'backups'
+        if directory.is_relative_to(BASE_DIR/'static'):
+            raise ValueError('Recovery backups must remain outside public static files.')
+        directory.mkdir(parents=True,exist_ok=True)
+        backup = directory/('before_exalting_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')+'_'+secrets.token_hex(3)+'.db')
+        with closing(sqlite3.connect(backup)) as target:
+            source.backup(target)
+    with closing(sqlite3.connect(path.as_uri()+'?mode=rw',uri=True)) as conn, conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS bible_local_commentaries (
+            source_key TEXT PRIMARY KEY, sha256 TEXT NOT NULL, title TEXT NOT NULL,
+            author TEXT NOT NULL, sections_json TEXT NOT NULL)''')
+        conn.execute('INSERT OR REPLACE INTO bible_local_commentaries VALUES(?,?,?,?,?)',
+                     (title.casefold(),fingerprint,title,author,json.dumps(sections,ensure_ascii=False)))
+    return dict(report, backup=str(backup))
 
 
 def _moody_sections(document, rows, styles=None, *, with_blocks=True):
@@ -6578,7 +6660,15 @@ def register_bible_study_routes(app):
                     data=bible_study_be_commentary(conn,book[0],chapter,verse)
                 return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
             arguments=(app.config.get('AI_DATABASE') or BASE_DIR / 'ai_index.db',book[0],chapter,verse)
-            data = providers[series](*arguments,section_kind) if series=='pulpit' else providers[series](*arguments)
+            if series=='exalting-jesus':
+                try:
+                    with database() as conn:
+                        local = local_exalting_catalogue(conn)
+                except StorageUnavailable:
+                    local = []
+                data = exalting_commentary(*arguments,local_catalogue=local)
+            else:
+                data = providers[series](*arguments,section_kind) if series=='pulpit' else providers[series](*arguments)
             return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
         except (OSError, sqlite3.DatabaseError, StorageUnavailable):
             logging.getLogger(__name__).warning('Commentary index unavailable (%s)',series,exc_info=True)
@@ -7147,11 +7237,12 @@ def register_bible_study_routes(app):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Bible Study maintenance; does not import or start app.py.')
-    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'import-illustrations', 'sync-drive', 'sync-translations', 'format-thompson', 'import-concordance', 'import-studies'])
+    parser.add_argument('command', choices=['init-db', 'init-study-saves', 'prepare-readers', 'import-step', 'import-illustrations', 'sync-drive', 'sync-translations', 'format-thompson', 'import-concordance', 'import-studies', 'import-exalting'])
     parser.add_argument('--database', required=True, help='Absolute path to a separate Bible Study .db file.')
     parser.add_argument('--archive', help='Local ZIP, required for import-step or import-illustrations.')
     parser.add_argument('--ai-database', help='Existing private AI index; sync-drive removes successfully migrated study editions from it.')
     parser.add_argument('--pdf', help='Matching local Thompson PDF, required for format-thompson, import-concordance or import-studies.')
+    parser.add_argument('--epub', help='Local Exalting Jesus EPUB, required for import-exalting.')
     parser.add_argument('--folder-id', default='', help='Official Bible Study Drive folder ID; otherwise use saved/discovered folder.')
     parser.add_argument('--translation-folder-id', default=resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID,
                         help='Separate reader-only Cebuano/Tagalog USFM ZIP folder; never used by the AI index.')
@@ -7159,7 +7250,11 @@ if __name__ == '__main__':
     parser.add_argument('--dry-run', action='store_true', help='Validate without applying changes to the live database.')
     arguments = parser.parse_args()
     try:
-        if arguments.command=='import-illustrations':
+        if arguments.command=='import-exalting':
+            if not arguments.epub:parser.error('--epub is required for import-exalting.')
+            print(json.dumps(import_exalting_epub(arguments.database,arguments.epub,
+                backup_directory=arguments.backup_directory,dry_run=arguments.dry_run),indent=2))
+        elif arguments.command=='import-illustrations':
             if not arguments.archive:parser.error('--archive is required for import-illustrations.')
             print(json.dumps(import_illustration_archive(arguments.database,arguments.archive,dry_run=arguments.dry_run),indent=2))
         elif arguments.command=='prepare-readers':

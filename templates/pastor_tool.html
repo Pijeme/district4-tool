@@ -225,14 +225,14 @@
     {% endif %}
   </div>
 
-  <form method="get" class="month-picker">
+  <form method="get" class="month-picker" id="pastorMonthPicker">
     {% if ao_mode %}
       <input type="hidden" name="church" value="{{ selected_church }}">
     {% endif %}
 
     <div class="field-group">
       <label for="month">Month</label>
-      <select id="month" name="month">
+      <select id="month" name="month" onchange="this.form.requestSubmit()">
         {% for name, value in month_names %}
           <option value="{{ value }}" {% if value == month %}selected{% endif %}>
             {{ name }}{% if submitted_map is defined and submitted_map.get((year, value)) %} ✓{% endif %}
@@ -243,7 +243,7 @@
 
     <div class="field-group">
       <label for="year">Year</label>
-      <select id="year" name="year">
+      <select id="year" name="year" onchange="this.form.requestSubmit()">
         {% for y in year_options %}
           <option value="{{ y }}" {% if y == year %}selected{% endif %}>
             {{ y }}
@@ -252,7 +252,7 @@
       </select>
     </div>
 
-    <button type="submit" class="btn-secondary">Go</button>
+    <noscript><button type="submit" class="btn-secondary">Update</button></noscript>
   </form>
 
   <div class="sunday-list">

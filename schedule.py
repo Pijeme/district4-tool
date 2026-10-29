@@ -459,6 +459,30 @@ def _append_note_audit(note: str, editor_name: str):
         return f"{note}\n\n{audit}"
     return audit
 
+
+def _record_schedule_change(action, before=None, after=None, **extra):
+    before, after = dict(before or {}), dict(after or {})
+    fields = {'church_name': 'Church', 'church_address': 'Address', 'pastor_name': 'Pastor',
+              'contact_number': 'Contact', 'activity_date_start': 'Start date', 'activity_date_end': 'End date',
+              'activity_type': 'Activity', 'theme': 'Theme', 'text': 'Scripture', 'note': 'Schedule notes', 'joining': 'Joining'}
+    subject = after or before
+    details = dict(schedule={label: str(subject.get(key) or '') for key, label in fields.items() if subject.get(key)}, **extra)
+    if before and after:
+        changes = []
+        for key, label in fields.items():
+            old, new = str(before.get(key) or '').strip(), str(after.get(key) or '').strip()
+            # The automatic editor stamp is attribution, not a user change.
+            if key == 'note':
+                old = re.sub(r'\s*\[Edited by:.*?\]', '', old).strip()
+                new = re.sub(r'\s*\[Edited by:.*?\]', '', new).strip()
+            if old != new:
+                changes.append(dict(field=label, before=old, after=new))
+        if not changes:
+            return
+        details['changes'] = changes
+    description = f"Schedule {action}: {subject.get('church_name') or 'District'} · {subject.get('activity_type') or 'Activity'} · {subject.get('activity_date_start') or ''}"
+    _appmod().record_website_event('schedule_' + action, description, page_path='/schedules', details=details)
+
 def register_schedule_routes(app):
     @app.route('/schedules', methods=['GET', 'POST'])
     def schedules():
@@ -545,6 +569,7 @@ def register_schedule_routes(app):
                         _append_district_schedule_row(payload)
                         _update_account_google_pin('', church_name, google_pin_location)
                     _appmod().refresh_after_sheet_write("DistrictSchedule", "Accounts")
+                    _record_schedule_change('created', after=payload)
                     flash('Schedule created successfully.', 'success')
                 except Exception as e:
                     print('❌ Create schedule failed:', e)
@@ -584,6 +609,7 @@ def register_schedule_routes(app):
                     _update_district_schedule_row(sheet_row, payload)
                     _update_account_google_pin('', payload['church_name'], google_pin_location)
                     _appmod().refresh_after_sheet_write("DistrictSchedule", "Accounts")
+                    _record_schedule_change('updated', before=row, after=payload)
                     flash('Schedule updated successfully.', 'success')
                 except Exception as e:
                     print('❌ Edit schedule failed:', e)
@@ -614,6 +640,7 @@ def register_schedule_routes(app):
                 try:
                     _update_district_schedule_row(sheet_row, payload)
                     _appmod().refresh_after_sheet_write("DistrictSchedule")
+                    _record_schedule_change('updated', before=row, after=payload, editor=editor_name)
                     flash('Schedule details updated successfully.', 'success')
                 except Exception as e:
                     print('❌ Public schedule edit failed:', e)
@@ -629,8 +656,11 @@ def register_schedule_routes(app):
                 month = (request.form.get('month') or '').strip()
                 view = (request.form.get('view') or 'district').strip()
                 try:
+                    row = _get_schedule_row_from_cache(sheet_row)
                     _delete_district_schedule_row(sheet_row)
                     _appmod().refresh_after_sheet_write("DistrictSchedule")
+                    if row:
+                        _record_schedule_change('deleted', before=row)
                     flash('Schedule deleted successfully.', 'success')
                 except Exception as e:
                     print('❌ Delete schedule failed:', e)
@@ -649,10 +679,13 @@ def register_schedule_routes(app):
                     flash('Name is required to join this activity.', 'error')
                     return redirect(url_for('schedules', year=year, month=month, view=view))
                 try:
+                    original = _get_schedule_row_from_cache(sheet_row)
                     if not _join_schedule(sheet_row, effective_name):
                         raise ValueError("Schedule not found.")
                     session['schedule_join_name'] = effective_name
                     _appmod().refresh_after_sheet_write("DistrictSchedule")
+                    if original and effective_name.casefold() not in {name.casefold() for name in _parse_joining_names(original['joining'])}:
+                        _record_schedule_change('joined', before=original, participant=effective_name)
                     flash('You have been added as joining.', 'success')
                 except Exception as e:
                     print('❌ Join schedule failed:', e)

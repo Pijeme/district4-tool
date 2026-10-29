@@ -1,7 +1,7 @@
 import os
 import re
 import sqlite3
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 import calendar
 import urllib.parse
 import uuid
@@ -3137,6 +3137,25 @@ def init_website_activity_tables(db):
     db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_actor ON website_events(actor_key,id DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_unread ON website_events(is_notification,read_at,id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_website_events_created ON website_events(created_at)")
+    db.execute('''CREATE TABLE IF NOT EXISTS daily_devotion_posts (
+        day TEXT PRIMARY KEY, title TEXT NOT NULL, message TEXT NOT NULL,
+        verse_reference TEXT NOT NULL, verse_text TEXT NOT NULL, source_title TEXT NOT NULL,
+        source_passage TEXT NOT NULL DEFAULT '')''')
+    if 'source_passage' not in {row[1] for row in db.execute('PRAGMA table_info(daily_devotion_posts)')}:
+        db.execute("ALTER TABLE daily_devotion_posts ADD COLUMN source_passage TEXT NOT NULL DEFAULT ''")
+    db.execute('''CREATE TABLE IF NOT EXISTS daily_devotion_reactions (
+        day TEXT NOT NULL REFERENCES daily_devotion_posts(day), actor_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('like','share')), actor_name TEXT NOT NULL,
+        church_name TEXT NOT NULL, created_at TEXT NOT NULL, method TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(day,actor_key,kind))''')
+    db.execute('''CREATE TABLE IF NOT EXISTS daily_devotion_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL REFERENCES daily_devotion_posts(day),
+        actor_key TEXT NOT NULL, actor_name TEXT NOT NULL, church_name TEXT NOT NULL,
+        content TEXT NOT NULL, created_at TEXT NOT NULL)''')
+    db.execute('CREATE INDEX IF NOT EXISTS idx_devotion_comments_day ON daily_devotion_comments(day,id)')
+    db.execute('''CREATE TABLE IF NOT EXISTS pastor_daily_reminders (
+        actor_key TEXT NOT NULL, day TEXT NOT NULL, shown_at TEXT NOT NULL,
+        PRIMARY KEY(actor_key,day))''')
 
 
 def website_owner():
@@ -3166,6 +3185,9 @@ def record_website_event(action, description, *, notification=True, page_path=""
     Never capture entire forms, credentials, photos, private notes or AI prompts.
     """
     if not has_request_context():
+        return
+    actor = website_actor()
+    if actor['key'] == 'pijeme':
         return
     events = getattr(g, "website_events", None)
     if events is None:
@@ -3208,13 +3230,26 @@ WEBSITE_CHANGE_ACTIONS = {
     "sermon_ebooks_sync": "Sermon synchronization requested", "bible_study.sync_start": "Bible synchronization requested",
 }
 
+# Personal reading marks stay in the readers; they do not notify the developer.
+WEBSITE_QUIET_ACTIONS = {label for endpoint, label in WEBSITE_CHANGE_ACTIONS.items()
+                       if any(word in endpoint for word in ('annotation', 'bookmark', 'study_save', 'study_saved', 'personal_item'))}
+WEBSITE_CHANGE_ACTIONS = {endpoint: label for endpoint, label in WEBSITE_CHANGE_ACTIONS.items()
+                          if label not in WEBSITE_QUIET_ACTIONS}
+
 
 @app.context_processor
 def website_activity_context():
     owner = website_owner()
     if owner and "website_activity_csrf" not in session:
         session["website_activity_csrf"] = secrets.token_urlsafe(32)
-    return {"website_activity_owner": owner, "website_activity_csrf": session.get("website_activity_csrf", "") if owner else ""}
+    district_user = any_user_logged_in() or session.get('member_logged_in') is True
+    if district_user and 'district_interaction_csrf' not in session:
+        session['district_interaction_csrf'] = secrets.token_urlsafe(32)
+    return {"website_activity_owner": owner, "website_activity_csrf": session.get("website_activity_csrf", "") if owner else "",
+            'district_interaction_csrf': session.get('district_interaction_csrf', '') if district_user else '',
+            'pastor_reminder_enabled': pastor_logged_in() and not ao_logged_in(),
+            'developer_working_area': session.get('ao_area_number', '') if owner else '',
+            'developer_home_area': session.get('developer_home_area', session.get('ao_area_number', '')) if owner else ''}
 
 
 @app.after_request
@@ -3225,6 +3260,8 @@ def collect_website_activity(response):
     old_actor = getattr(g, "website_actor", actor)
     if not actor["username"] and old_actor["username"]:
         actor = old_actor
+    if actor['key'] == 'pijeme':
+        return response
     if 200 <= response.status_code < 400:
         endpoint = request.endpoint or ""
         mutating = request.method in {"POST", "PATCH", "DELETE", "PUT"}
@@ -3237,8 +3274,6 @@ def collect_website_activity(response):
                 new_flashes.remove(item)
         success = (isinstance(payload, dict) and payload.get("ok") is True) or any(c == "success" for c, _ in new_flashes)
         action = WEBSITE_CHANGE_ACTIONS.get(endpoint)
-        if endpoint == "schedules" and request.form.get("action") in {"create_schedule", "edit_schedule", "public_edit_schedule_details", "delete_schedule", "join_schedule"}:
-            action = request.form["action"].replace("_", " ").capitalize()
         if mutating and action and success and not getattr(g, "website_events", None):
             data = request.get_json(silent=True) if request.is_json else request.form
             data = data if isinstance(data, dict) or hasattr(data, "get") else {}
@@ -3334,10 +3369,14 @@ def website_activity_api():
     db = get_db()
     view = request.args.get("view", "accounts")
     clauses, values = _website_date_filter()
+    excluded = sorted(WEBSITE_QUIET_ACTIONS)
+    clauses.extend(["actor_key<>?", "action NOT IN (" + ','.join('?' for _ in excluded) + ")"])
+    values.extend(['pijeme', *excluded])
     page = max(1, min(request.args.get("page", 1, type=int) or 1, 100000))
     limit = 30
     if view == "summary":
-        row = db.execute("SELECT COUNT(*),COALESCE(MAX(id),0) FROM website_events WHERE is_notification=1 AND read_at IS NULL").fetchone()
+        row = db.execute("SELECT COUNT(*),COALESCE(MAX(id),0) FROM website_events WHERE "
+                         + " AND ".join(clauses) + " AND is_notification=1 AND read_at IS NULL", values).fetchone()
         return jsonify(ok=True, unread=row[0], latest_id=row[1])
     if view == "notifications":
         clauses.append("is_notification=1")
@@ -3561,7 +3600,7 @@ def before_request():
         row = get_db().execute("SELECT username,name,church_address,contact,birthday FROM sheet_accounts_cache WHERE username=?",
                                (request.form.get("original_username", ""),)).fetchone()
         g.website_before = dict(row) if row else None
-    if request.endpoint != "static":
+    if request.endpoint not in {'static', 'devotion_interactions', 'website_activity_api', 'website_activity_read'}:
         sync_from_sheets_if_needed()
     _log_visit_if_needed()
 
@@ -3869,6 +3908,9 @@ def _current_user_area_number():
             (username,),
         ).fetchone()
         return str(row["age"] or "").strip() if row else ""
+
+    if session.get('member_logged_in'):
+        return str(session.get('area') or '').strip()
 
     return ""
 
@@ -4244,7 +4286,7 @@ def build_bulletin_board_posts():
 
 @app.route("/bulletin")
 def bulletin():
-    if not any_user_logged_in():
+    if not (any_user_logged_in() or session.get('member_logged_in')):
         return redirect(url_for("pastor_login", next=request.path))
 
     sync_from_sheets_if_needed(force=False)
@@ -4253,6 +4295,14 @@ def bulletin():
     reference, text = get_verse_of_the_day(today=today)
     leadership_insight, insight_pending = daily_maxwell_insight(
         app.config['BIBLE_STUDY_DATABASE'], AI_DATABASE, reference, text, today.isoformat())
+    leadership_insight = _save_daily_devotion(today.isoformat(), reference, text, leadership_insight)
+    selected_day = request.args.get('devotion_day', today.isoformat())
+    archived = get_db().execute('SELECT * FROM daily_devotion_posts WHERE day=?', (selected_day,)).fetchone()
+    if archived and selected_day != today.isoformat():
+        today = date.fromisoformat(selected_day)
+        reference, text = archived['verse_reference'], archived['verse_text']
+        leadership_insight = _devotion_insight(archived)
+        insight_pending = False
     today_str = today.strftime("%B %d, %Y")
     area_number = _current_user_area_number()
     posts, current_church = build_bulletin_board_posts()
@@ -4268,19 +4318,215 @@ def bulletin():
         area_number=area_number,
         posts=posts,
         current_church=current_church,
+        developer_areas=_developer_area_choices() if website_owner() else [],
     )
 
 @app.route("/bulletin/leadership-insight")
 def bulletin_leadership_insight():
-    if not any_user_logged_in():
+    if not (any_user_logged_in() or session.get('member_logged_in')):
         return jsonify(ok=False, error="Login required."), 401
     today = datetime.now(PH_TZ).date()
     reference, text = get_verse_of_the_day(today=today)
     insight, pending = daily_maxwell_insight(
         app.config['BIBLE_STUDY_DATABASE'], AI_DATABASE, reference, text, today.isoformat())
+    insight = _save_daily_devotion(today.isoformat(), reference, text, insight)
     response = jsonify(ok=True, insight=insight, pending=pending, reference=reference, day=today.isoformat())
     response.headers['Cache-Control'] = 'private, no-store'
     return response
+
+
+def _district_today():
+    return datetime.now(PH_TZ or timezone(timedelta(hours=8))).date()
+
+
+def _require_district_user(write=False):
+    if not (any_user_logged_in() or session.get('member_logged_in') is True):
+        abort(401)
+    if write:
+        expected = session.get('district_interaction_csrf', '')
+        supplied = request.headers.get('X-CSRF-Token', '') or request.form.get('csrf_token', '')
+        if not expected or not hmac.compare_digest(str(expected), str(supplied)):
+            abort(400)
+
+
+def _developer_area_choices():
+    rows = get_db().execute("SELECT DISTINCT TRIM(age) FROM sheet_accounts_cache WHERE TRIM(COALESCE(age,''))<>''").fetchall()
+    return sorted((row[0] for row in rows), key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
+
+
+@app.post('/bulletin/working-area')
+def developer_working_area():
+    _require_website_owner(write=True)
+    selected = str(request.form.get('area') or '').strip()
+    if selected not in _developer_area_choices():
+        abort(400)
+    session.setdefault('developer_home_area', session.get('ao_area_number', ''))
+    session['ao_area_number'] = selected
+    # Every existing area guard uses this working scope; the Accounts row stays intact.
+    for key in tuple(session):
+        if key.startswith(('pastor_', 'dirty_')):
+            session.pop(key, None)
+    return redirect(url_for('bulletin'))
+
+
+def _devotion_insight(post):
+    body = post['message']
+    return dict(title=post['title'], content=body, excerpt=body.split('\n', 1)[0][:600],
+                passage=post['source_passage'] or post['verse_reference'], source_title=post['source_title'])
+
+
+def _save_daily_devotion(day, reference, verse_text, insight):
+    db = get_db()
+    post = db.execute('SELECT * FROM daily_devotion_posts WHERE day=?', (day,)).fetchone()
+    if post:
+        return _devotion_insight(post)
+    if insight:
+        db.execute('''INSERT OR IGNORE INTO daily_devotion_posts
+                   (day,title,message,verse_reference,verse_text,source_title,source_passage) VALUES(?,?,?,?,?,?,?)''',
+                   (day, insight['title'], insight['content'], reference, verse_text,
+                    insight.get('source_title') or 'Maxwell Leadership Bible', insight.get('passage') or reference))
+        db.commit()
+    post = db.execute('SELECT * FROM daily_devotion_posts WHERE day=?', (day,)).fetchone()
+    return _devotion_insight(post) if post else None
+
+
+def _devotion_identity():
+    actor = website_actor()
+    row = get_db().execute('SELECT name,sex FROM sheet_accounts_cache WHERE lower(trim(username))=?', (actor['key'],)).fetchone()
+    return actor['key'], (row['name'] if row else actor['name']) or actor['username'], (row['sex'] if row else session.get('church_id')) or ''
+
+
+def _devotion_counts(day):
+    db = get_db()
+    counts = {row['kind']: row['total'] for row in db.execute(
+        'SELECT kind,COUNT(*) AS total FROM daily_devotion_reactions WHERE day=? GROUP BY kind', (day,))}
+    liked = db.execute("SELECT 1 FROM daily_devotion_reactions WHERE day=? AND actor_key=? AND kind='like'",
+                       (day, website_actor()['key'])).fetchone()
+    return dict(likes=counts.get('like', 0), shares=counts.get('share', 0),
+                comments=db.execute('SELECT COUNT(*) FROM daily_devotion_comments WHERE day=?', (day,)).fetchone()[0],
+                liked=bool(liked))
+
+
+@app.route('/bulletin/devotion/<day>/interactions', methods=['GET', 'POST'])
+def devotion_interactions(day):
+    _require_district_user(write=request.method == 'POST')
+    db = get_db()
+    post = db.execute('SELECT * FROM daily_devotion_posts WHERE day=?', (day,)).fetchone()
+    if not post:
+        return jsonify(ok=False, error='This devotional is not available.'), 404
+    kind = request.args.get('kind', 'counts')
+    if kind not in {'counts', 'likes', 'shares', 'comments'}:
+        abort(400)
+    if request.method == 'POST':
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400)
+        action = data.get('action')
+        actor_key, actor_name, church = _devotion_identity()
+        now, changed = utc_now_iso(), False
+        db.execute('BEGIN IMMEDIATE')
+        if action == 'like' and type(data.get('liked')) is bool:
+            if data['liked']:
+                changed = db.execute('''INSERT OR IGNORE INTO daily_devotion_reactions
+                    (day,actor_key,kind,actor_name,church_name,created_at) VALUES(?,?,'like',?,?,?)''',
+                    (day, actor_key, actor_name, church, now)).rowcount > 0
+            else:
+                db.execute("DELETE FROM daily_devotion_reactions WHERE day=? AND actor_key=? AND kind='like'", (day, actor_key))
+        elif action == 'share' and data.get('method') == 'share_menu':
+            changed = db.execute('''INSERT OR IGNORE INTO daily_devotion_reactions
+                VALUES(?,?,'share',?,?,?,?)''', (day, actor_key, actor_name, church, now, data['method'])).rowcount > 0
+        elif action == 'comment':
+            content = data.get('content')
+            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 2000:
+                db.rollback()
+                return jsonify(ok=False, error='Write a comment of 1–2,000 characters.'), 400
+            recent = db.execute('SELECT created_at FROM daily_devotion_comments WHERE actor_key=? ORDER BY id DESC LIMIT 1', (actor_key,)).fetchone()
+            if recent and (utc_now() - datetime.fromisoformat(recent['created_at'])).total_seconds() < 5:
+                db.rollback()
+                return jsonify(ok=False, error='Please wait a few seconds before commenting again.'), 429
+            db.execute('''INSERT INTO daily_devotion_comments(day,actor_key,actor_name,church_name,content,created_at)
+                VALUES(?,?,?,?,?,?)''', (day, actor_key, actor_name, church, content.strip(), now))
+            changed = True
+        elif action == 'delete_comment' and type(data.get('id')) is int:
+            row = db.execute('SELECT actor_key FROM daily_devotion_comments WHERE day=? AND id=?', (day, data['id'])).fetchone()
+            if not row or (row['actor_key'] != actor_key and not website_owner()):
+                db.rollback()
+                abort(403)
+            db.execute('DELETE FROM daily_devotion_comments WHERE day=? AND id=?', (day, data['id']))
+        else:
+            db.rollback()
+            abort(400)
+        db.commit()
+        if changed:
+            labels = {'like': 'Liked daily devotional', 'share': 'Used devotional share menu',
+                      'comment': 'Commented on daily devotional'}
+            record_website_event('devotion_' + action, labels[action] + ': ' + post['title'] + ' (' + day + ')',
+                                 page_path=url_for('bulletin', devotion_day=day),
+                                 event_key=('devotion:'+action+':'+day+':'+actor_key) if action in {'like','share'} else None,
+                                 details=dict(devotional=post['title'], day=day, verse=post['verse_reference'], church=church))
+    result = dict(ok=True, **_devotion_counts(day))
+    if kind in {'likes', 'shares'}:
+        offset = max(0, request.args.get('offset', 0, type=int))
+        rows = db.execute('''SELECT actor_name,church_name,created_at,method FROM daily_devotion_reactions
+            WHERE day=? AND kind=? ORDER BY created_at DESC,actor_key LIMIT 50 OFFSET ?''',
+            (day, 'like' if kind == 'likes' else 'share', offset)).fetchall()
+        result.update(people=[dict(row) for row in rows], next_offset=offset+50 if offset+50 < result[kind] else None)
+    elif kind == 'comments':
+        before = request.args.get('before', 0, type=int)
+        rows = db.execute('''SELECT * FROM daily_devotion_comments WHERE day=? AND (?=0 OR id<?)
+            ORDER BY id DESC LIMIT 31''', (day, before, before)).fetchall()
+        comments = []
+        for row in rows[:30]:
+            item = {key: row[key] for key in ('id', 'actor_name', 'church_name', 'content', 'created_at')}
+            item['can_delete'] = row['actor_key'] == website_actor()['key'] or website_owner()
+            comments.append(item)
+        result.update(entries=comments, next_before=rows[29]['id'] if len(rows)>30 else None)
+    elif kind != 'counts':
+        abort(400)
+    response = jsonify(result)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+def _missing_pastor_reports(username, today):
+    # Only opened reporting cycles in this calendar year are eligible.
+    db = get_db()
+    account = _get_cached_pastor_account(username)
+    if not account:
+        return []
+    submissions = {(int(row['year']), int(row['month'])) for row in db.execute(
+        'SELECT year,month FROM monthly_reports WHERE pastor_username=? AND submitted=1', (username,))}
+    missing = []
+    for month in range(1, today.month + 1):
+        last_day = date(today.year, month, calendar.monthrange(today.year, month)[1])
+        last_sunday = last_day - timedelta(days=(last_day.weekday() + 1) % 7)
+        if today < last_sunday:
+            continue
+        reported = (today.year, month) in submissions or _report_exists_for_pastor_month_from_cache(username, today.year, month)
+        if not reported:
+            missing.append(dict(label=last_day.strftime('%B %Y'), overdue=today > last_sunday + timedelta(days=7),
+                                url=url_for('pastor_tool', year=today.year, month=month)))
+    return missing
+
+
+@app.post('/pastor-tool/report-reminder')
+def pastor_report_reminder():
+    _require_district_user(write=True)
+    if not pastor_logged_in() or ao_logged_in():
+        abort(403)
+    username = str(session.get('pastor_username') or '').strip()
+    today, db = _district_today(), get_db()
+    key = username.casefold()
+    if db.execute('SELECT 1 FROM pastor_daily_reminders WHERE actor_key=? AND day=?', (key, today.isoformat())).fetchone():
+        return jsonify(ok=True, show=False)
+    missing = _missing_pastor_reports(username, today)
+    if not missing:
+        return jsonify(ok=True, show=False)
+    claimed = db.execute('INSERT OR IGNORE INTO pastor_daily_reminders VALUES(?,?,?)',
+                         (key, today.isoformat(), utc_now_iso())).rowcount > 0
+    db.commit()
+    return jsonify(ok=True, show=claimed, reports=missing if claimed else [],
+                   church=str(session.get('pastor_church_id') or ''), day=today.isoformat())
 
 
 @app.route("/bulletin/pray/<request_id>", methods=["POST"])
@@ -4503,12 +4749,12 @@ def _report_exists_for_pastor_month_from_cache(pastor_username: str, year: int, 
         FROM sheet_report_cache
         WHERE year = ? AND month = ?
           AND (
-                TRIM(church) = TRIM(?)
-             OR TRIM(address) = TRIM(?)
-             OR TRIM(pastor) = TRIM(?)
+                (?<>'' AND TRIM(church) = TRIM(?))
+             OR (?<>'' AND TRIM(address) = TRIM(?))
+             OR (?<>'' AND TRIM(pastor) = TRIM(?))
           )
         """,
-        (int(year), int(month), church_key, church_key, pastor_name),
+        (int(year), int(month), church_key, church_key, church_key, church_key, pastor_name, pastor_name),
     ).fetchone()
     return bool(row and int(row["cnt"] or 0) > 0)
 
@@ -4874,9 +5120,11 @@ def pastor_tool():
 
     pastor_username = (session.get("pastor_username") or "").strip()
 
-    today = date.today()
-    year = request.args.get("year", type=int) or today.year
+    today = _district_today()
+    year = request.args.get("year", type=int) or min(2034, max(2024, today.year))
     month = request.args.get("month", type=int) or today.month
+    if not 2024 <= year <= 2034 or not 1 <= month <= 12:
+        abort(400)
 
     # ✅ AO fallback: if AO opens Pastor's Tool without choosing a church yet,
     # automatically select the first church in AO scope to avoid blank pastor_username.
@@ -4936,7 +5184,7 @@ def pastor_tool():
     row = cursor.fetchone()
     monthly_total = row["total_amount"] or 0.0
 
-    year_options = list(range(today.year - 10, today.year + 4))
+    year_options = list(range(2024, 2035))
 
     month_names = [
         ("January", 1), ("February", 2), ("March", 3), ("April", 4),
@@ -6542,6 +6790,8 @@ def _announcement_in_current_scope(row):
     my_area = _current_user_area_number()
     if area and my_area and area != my_area:
         return False
+    if website_owner():
+        return not area or area == my_area
     current_sub = ""
     if pastor_logged_in():
         u = (session.get("pastor_username") or "").strip()

@@ -230,6 +230,106 @@ class LibraryBrowserTests(unittest.TestCase):
 class BibleStudyBrowserTests(unittest.TestCase):
     run_browser = LibraryBrowserTests.run_browser
 
+    def test_loading_overlay_hides_at_document_ready_and_preserves_active_operations(self):
+        app = Flask(__name__, template_folder=str(ROOT/'templates'), static_folder=str(ROOT/'static'))
+        with app.test_request_context():
+            html = app.jinja_env.from_string('''<html><head>{% from 'ui_icons.html' import loading_head,loading_overlay %}{{ loading_head() }}</head><body>{{ loading_overlay() }}</body></html>''').render()
+        self.run_browser(html, '''
+            const overlay=document.getElementById('globalLoadingOverlay');
+            window.showPageLoading(location.href,null,true);
+            check(overlay.classList.contains('show'),'Initial loading did not show');
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            check(!overlay.classList.contains('show'),'Ready document remained covered until load or a minimum timer');
+            check(!document.documentElement.classList.contains('district-page-loading'),'Initial CSS loading class remains');
+            window.showGlobalLoading('Saving report');
+            document.dispatchEvent(new Event('DOMContentLoaded'));window.dispatchEvent(new Event('load'));
+            check(overlay.classList.contains('show'),'Page-ready event hid an active save');
+            window.hideGlobalLoading();
+            window.showPageLoading(location.href);
+            window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+            check(!overlay.classList.contains('show')&&overlay.getAttribute('aria-busy')==='false','Back navigation restored a stuck overlay');
+        ''')
+
+    def test_pastor_month_and_year_submit_automatically_and_preserve_selected_church(self):
+        source = (ROOT/'templates/pastor_tool.html').read_text(encoding='utf-8')
+        form = re.search(r'<form method="get" class="month-picker".*?</form>',source,re.S).group()
+        app = Flask(__name__)
+        with app.test_request_context():
+            html = '<html><head></head><body>' + app.jinja_env.from_string(form).render(
+                ao_mode=True,selected_church='selected-pastor',year=2026,month=1,
+                month_names=[('January',1),('February',2)],year_options=list(range(2024,2035))) + '</body></html>'
+        self.run_browser(html, '''
+            const form=document.getElementById('pastorMonthPicker'),month=document.getElementById('month'),year=document.getElementById('year');
+            check(![...form.querySelectorAll('button')].some(e=>e.textContent==='Go'),'Go button remains');
+            month.value='2';month.dispatchEvent(new Event('change',{bubbles:true}));
+            year.value='2027';year.dispatchEvent(new Event('change',{bubbles:true}));
+            check(pickerRequests.length===2,'Month/year changes do not submit automatically');
+            check(pickerRequests[1].month==='2'&&pickerRequests[1].year==='2027','Selected month/year lost');
+            check(pickerRequests.every(q=>q.church==='selected-pastor'),'AO-selected church lost');
+            check(year.options[0].value==='2024'&&year.options[year.options.length-1].value==='2034','Wrong year bounds');
+        ''','''window.pickerRequests=[];window.addEventListener('submit',e=>{e.preventDefault();pickerRequests.push(Object.fromEntries(new FormData(e.target)))});''')
+
+    def test_bulletin_reactions_comments_and_sharing_preserve_message_and_verse(self):
+        app = Flask(__name__, template_folder=str(ROOT/'templates'), static_folder=str(ROOT/'static'))
+        app.jinja_loader = DictLoader({'base.html':'<html><head></head><body>{% block content %}{% endblock %}</body></html>',
+            'bulletin.html':(ROOT/'templates/bulletin.html').read_text(encoding='utf-8'),
+            'ui_icons.html':(ROOT/'templates/ui_icons.html').read_text(encoding='utf-8')})
+        app.add_url_rule('/bulletin/leadership-insight',endpoint='bulletin_leadership_insight',view_func=lambda:'')
+        app.add_url_rule('/bulletin/devotion/<day>/interactions',endpoint='devotion_interactions',view_func=lambda day:'')
+        with app.test_request_context():
+            from flask import render_template
+            html=render_template('bulletin.html',verse_reference='Psalm 119:105',verse_text='Synthetic verse.',verse_day='2026-10-29',
+                today_str='Today',area_number='1',posts=[],current_church='',district_interaction_csrf='test-csrf',
+                insight_pending=False,leadership_insight=dict(title='Synthetic devotion',passage='Psalm 119:105',excerpt='Original message.',
+                    content='Original message.\\nFull devotional paragraph.',source_title='Synthetic source'))
+        html=html.replace('</body>','<script src="/static/bulletin_insight.js"></script></body>')
+        self.run_browser(html, '''
+            const wait=()=>new Promise(r=>setTimeout(r,30)),el=name=>document.getElementById('devotion'+name);
+            check(!el('Copy'),'Copy message button remains');
+            check(el('Like').querySelector('img')&&el('Share').querySelector('img'),'Static action icons missing');
+            el('Like').click();await wait();check(el('Like').getAttribute('aria-pressed')==='true','Like state did not persist');
+            check(el('Like').querySelector('img')&&el('LikeLabel').textContent==='Liked','Like state replaced its icon');
+            el('Likes').click();await wait();check(el('Dialog').open&&el('People').textContent.includes('Pastor One'),'Liker popup missing');el('Close').click();
+            el('Comment').click();await wait();
+            el('CommentText').value='<img src=x onerror=alert(1)> Public comment';el('CommentForm').requestSubmit();await wait();
+            check(el('People').textContent.includes('<img src=x onerror=alert(1)> Public comment'),'Comment text lost');
+            check(!el('People').querySelector('img'),'Comment executed markup');el('Close').click();
+            el('Share').click();await wait();
+            check(sharedMessage.text.includes('Original message.')&&sharedMessage.text.includes('Full devotional paragraph.'),'Share omitted devotional message');
+            check(sharedMessage.text.includes('Synthetic verse.')&&sharedMessage.text.includes('Psalm 119:105 (NIV)'),'Share omitted verse text/reference');
+            el('Shares').click();await wait();check(el('People').textContent.includes('Used share menu'),'Share participants missing');el('Close').click();
+            check(devotionWrites.every(o=>o.headers['X-CSRF-Token']==='test-csrf'),'Interaction requests lack CSRF protection');
+            check(shareEvents.join(',')==='native,record','Share activity was recorded before the native share call');
+            const recorded=devotionWrites.length;
+            shareAllowed=false;el('Share').click();await wait();
+            check(el('Status').textContent.includes('cannot open a share menu'),'Unsupported text sharing has no useful message');
+            check(devotionWrites.length===recorded,'Unsupported sharing created a share record');
+            shareAllowed=true;shareCancelled=true;el('Share').click();await wait();
+            check(el('Status').textContent==='Sharing cancelled.'&&!el('Share').disabled,'Cancelled share cannot be retried');
+            check(devotionWrites.length===recorded,'Cancelled sharing created a share record');
+            Object.defineProperty(navigator,'share',{configurable:true,value:undefined});el('Share').click();await wait();
+            check(devotionWrites.length===recorded&&!el('Share').disabled,'Unavailable sharing created an activity or left the button disabled');
+            check(clipboardWrites===0,'Sharing still falls back to clipboard copying');
+            Object.defineProperty(window,'isSecureContext',{configurable:true,value:false});el('Share').click();await wait();
+            check(el('Status').textContent.includes('HTTPS'),'Local HTTP sharing did not explain the secure connection requirement');
+        ''','''
+            window.devotionWrites=[];window.sharedMessage=null;window.devotionState={likes:0,shares:0,comments:0,liked:false};window.commentEntries=[];
+            window.shareEvents=[];window.shareAllowed=true;window.shareCancelled=false;window.clipboardWrites=0;
+            Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{clipboardWrites++}}});
+            Object.defineProperty(navigator,'canShare',{configurable:true,value:data=>shareAllowed});
+            Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{if(shareCancelled)throw new DOMException('Cancelled','AbortError');shareEvents.push('native');sharedMessage=data}});
+            window.fetch=async(url,options={})=>{
+                const q=new URL(String(url),'https://example.test').searchParams;
+                if(options.method==='POST'){
+                    devotionWrites.push(options);const data=JSON.parse(options.body);
+                    if(data.action==='like'){devotionState.liked=data.liked;devotionState.likes=Number(data.liked)}
+                    if(data.action==='share'){shareEvents.push('record');devotionState.shares=1;}
+                    if(data.action==='comment'){devotionState.comments=1;commentEntries=[{id:1,actor_name:'Pastor One',church_name:'Church One',content:data.content,created_at:'2026-10-29T00:00:00Z',can_delete:true}]}
+                }
+                return new Response(JSON.stringify({ok:true,...devotionState,people:[{actor_name:'Pastor One',church_name:'Church One',created_at:'2026-10-29T00:00:00Z',method:'share_menu'}],entries:commentEntries,next_before:null,next_offset:null}),{headers:{'Content-Type':'application/json'}});
+            };
+        ''')
+
     def test_translation_switch_word_matches_verse_popups_and_copy_on_desktop_and_mobile(self):
         setup=self.personal_setup()+'''
         const originalFetch=window.fetch;window.translationRequests=[];

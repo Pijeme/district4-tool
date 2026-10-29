@@ -3941,6 +3941,48 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         with self.client.session_transaction() as account:account.clear()
         self.assertEqual(self.client.get(self.base+'/api/commentary?series=exalting-jesus&book=John').status_code,401)
 
+    def test_local_psalm_119_import_preserves_both_volumes_and_matches_all_stanzas(self):
+        import json
+        self.preview(initialize=True)
+        documents = []
+        for index,start in enumerate(range(1,177,8)):
+            body = ('<h1>Psalm 119</h1>' if index==0 else '')
+            body += f'<h2>Synthetic stanza {index+1}</h2><p>Psalm 119:{start}-{start+7}</p><p>Main Idea: Synthetic source main idea.</p><p>Original synthetic commentary for stanza {index+1}, preserved as a full paragraph.</p>'
+            documents.append((f'article{index}.xhtml',body))
+        epub=Path(self.directory.name)/'psalm119.epub'
+        epub.write_bytes(self.fixture_epub(documents,metadata='<title>Exalting Jesus in Psalms 119</title><creator>Synthetic Author</creator>'))
+        before=self.path.read_bytes()
+        report=self.bible.import_exalting_epub(self.path,epub,dry_run=True)
+        self.assertEqual(report['sections'],22)
+        self.assertEqual(before,self.path.read_bytes())
+        report=self.bible.import_exalting_epub(self.path,epub)
+        self.assertTrue(Path(report['backup']).is_file())
+        with closing(sqlite3.connect(self.path)) as conn:
+            local=self.bible.local_exalting_catalogue(conn)
+        self.assertEqual(len(local),22)
+        general=dict(document_id=1,source_title='Exalting Jesus in Psalms 101-150',author='Synthetic Author',
+                     title='Whole chapter',passage='Psalm 119',source_section=1,text='Original overview.',
+                     ranges=[dict(book_id=19,chapter=119,verse=1,end_chapter=119,end_verse=176)])
+        overview=dict(general,title='Whole volume introduction',passage='Psalms 101-150',
+                      ranges=[dict(book_id=19,chapter=101,verse=1,end_chapter=150,end_verse=176)])
+        combined=self.bible._commentary_entries(local+[general,overview],19,119,105,format_outline=True)['entries']
+        self.assertEqual([entry['title'] for entry in combined],['Synthetic stanza 14','Whole chapter'])
+        for verse in range(1,177):
+            result=self.bible._commentary_entries(local+[general],19,119,verse)
+            self.assertEqual(len(result['entries']),2)
+            self.assertEqual(result['entries'][0]['title'],f'Synthetic stanza {(verse-1)//8+1}')
+            self.assertEqual(result['entries'][1]['title'],'Whole chapter')
+        self.assertEqual(self.bible._commentary_entries(local,19,118,1)['entries'],[])
+        self.assertEqual(self.bible._commentary_entries(local,19,120,1)['entries'],[])
+        response=self.client.get(self.base+'/api/commentary?series=exalting-jesus&book=Psalms&chapter=119&verse=105')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json['entries'][0]['passage'],'Psalm 119:105-112')
+        broken=Path(self.directory.name)/'incomplete.epub'
+        broken.write_bytes(self.fixture_epub(documents[:21],metadata='<title>Exalting Jesus in Psalms 119</title>'))
+        with self.assertRaises(ValueError):self.bible.import_exalting_epub(self.path,broken)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(len(self.bible.local_exalting_catalogue(conn)),22)
+
     def test_major_chain_rows_link_only_printed_dotted_leaders(self):
         import json
         material,edition=self.thompson_study_fixture()
@@ -4070,7 +4112,8 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         tree=ast.parse((Path(resources.__file__).parent/'app.py').read_text(encoding='utf-8-sig'))
         function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='bulletin_leadership_insight')
         daily=Mock(return_value=(None,False))
-        namespace=dict(app=self.app,jsonify=jsonify,datetime=datetime,PH_TZ=ZoneInfo('Asia/Manila'),
+        namespace=dict(app=self.app,jsonify=jsonify,session=session,datetime=datetime,PH_TZ=ZoneInfo('Asia/Manila'),
+                       _save_daily_devotion=lambda day,ref,verse,insight:insight,
                        AI_DATABASE=str(Path(self.directory.name)/'ai_index.db'),get_verse_of_the_day=Mock(return_value=('Genesis 1:1','Synthetic verse.')),
                        daily_maxwell_insight=daily,any_user_logged_in=lambda:session.get('pastor_logged_in') is True or session.get('ao_logged_in') is True)
         exec(compile(ast.Module(body=[function],type_ignores=[]),'app.py','exec'),namespace)
@@ -4086,6 +4129,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
     def test_bulletin_renders_cached_summary_with_source_and_escapes_ai_text(self):
         from flask import render_template
         self.app.add_url_rule('/bulletin/leadership-insight',endpoint='bulletin_leadership_insight',view_func=lambda:'')
+        self.app.add_url_rule('/bulletin/devotion/<day>/interactions',endpoint='devotion_interactions',view_func=lambda day:'')
         with self.app.test_request_context():
             html=render_template('bulletin.html',verse_reference='Genesis 1:1',verse_text='Synthetic verse.',
                 leadership_insight=dict(title='<script>untrusted</script>',passage='Genesis 1:1-2',summary='Fixture summary.',content='Exact indexed article.\nSecond paragraph <source>.'),

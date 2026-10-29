@@ -348,6 +348,16 @@
   {% endif %}
 
   <main class="app-main">
+    {% if website_activity_owner %}
+    <div class="developer-area-banner">Working in Area {{ developer_working_area }} · Developer
+      {% if developer_home_area and developer_home_area != developer_working_area %}
+      <form method="post" action="{{ url_for('developer_working_area') }}" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ website_activity_csrf }}"><input type="hidden" name="area" value="{{ developer_home_area }}">
+        <button type="submit" class="btn-secondary">Return to my area</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
   {% if is_logged_in %}
@@ -929,6 +939,20 @@
 </dialog>
 <script id="websiteActivityConfig" type="application/json">{{ {'api': url_for('website_activity_api'), 'read': url_for('website_activity_read'), 'clear': url_for('website_activity_clear'), 'csrf': website_activity_csrf}|tojson }}</script>
 <script src="{{ url_for('static',filename='activity_updates.js') }}" defer></script>
+{% endif %}
+{% if pastor_reminder_enabled %}
+<dialog id="pastorReportReminder" class="district-dialog" aria-labelledby="pastorReportReminderTitle">
+  <h2 id="pastorReportReminderTitle">You have unsubmitted reports</h2>
+  <p id="pastorReportReminderChurch"></p>
+  <ul id="pastorReportReminderList"></ul>
+  <p class="muted small">This reminder appears at most once a day.</p>
+  <div class="devotion-buttons"><a id="pastorReportReminderOpen" class="btn-primary">Open Pastor’s Tool</a>
+    <button type="button" id="pastorReportReminderClose">Close</button></div>
+</dialog>
+<script id="pastorReminderConfig" type="application/json">{{ {'url': url_for('pastor_report_reminder'), 'csrf': district_interaction_csrf}|tojson }}</script>
+{% endif %}
+{% if pastor_reminder_enabled or request.endpoint == 'bulletin' %}
+<script src="{{ url_for('static',filename='bulletin_insight.js',v='5') }}" defer></script>
 {% endif %}
 </body>
 </html>
