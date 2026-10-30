@@ -12,8 +12,11 @@ import hmac
 import shutil
 import json
 import time
+import io
+import base64
 from pathlib import Path
 from contextlib import closing
+from functools import lru_cache
 
 from sheet_cache import DATASETS, CacheSyncError, init_cache_tables, sync_cache
 from login_events import ensure_login_event_schema, insert_login_event
@@ -3600,7 +3603,7 @@ def before_request():
         row = get_db().execute("SELECT username,name,church_address,contact,birthday FROM sheet_accounts_cache WHERE username=?",
                                (request.form.get("original_username", ""),)).fetchone()
         g.website_before = dict(row) if row else None
-    if request.endpoint not in {'static', 'devotion_interactions', 'website_activity_api', 'website_activity_read'}:
+    if request.endpoint not in {'static', 'devotion_interactions', 'website_activity_api', 'website_activity_read'} and not (request.endpoint or '').startswith('ccm_'):
         sync_from_sheets_if_needed()
     _log_visit_if_needed()
 
@@ -6810,6 +6813,754 @@ def get_announcements_for_current_user():
     ).fetchall()
     return [r for r in rows if _announcement_in_current_scope(r)]
 
+
+
+# ========================
+# Campus Christian Movement
+# New accounts live locally until an explicit, verified Google backup.
+# ========================
+
+CCM_FOLDER_ID = "1IYlGZPuHL7CUW7HqwWEHnxuaG63gscEY"
+CCM_BASE_URL = "https://iowod4tool.coresite.pro/ccm"
+CCM_HEADERS = ["Record Key", "ID Number", "Name", "Area Number", "Church ID", "Church Address",
+               "Pastor", "Campus", "Phone", "Email", "Status", "Created At", "Updated At",
+               "Photo File ID", "Front File ID", "Back File ID", "Verification URL"]
+
+
+class CCMStorageError(RuntimeError):
+    pass
+
+
+def ccm_sheet():
+    try:
+        book = get_gs_client().open("District4 Data")
+        try:
+            sheet = book.worksheet("CCM Workers")
+        except gspread.WorksheetNotFound:
+            try:
+                sheet = book.add_worksheet(title="CCM Workers", rows=1000, cols=len(CCM_HEADERS))
+            except gspread.exceptions.APIError:
+                sheet = book.worksheet("CCM Workers")
+        headers = sheet.row_values(1)
+        if not headers:
+            sheet.update(range_name="A1:Q1", values=[CCM_HEADERS], value_input_option="RAW")
+            sheet.freeze(rows=1)
+        elif headers != CCM_HEADERS:
+            raise CCMStorageError("The CCM Workers sheet headers have changed. Restore the original columns before saving.")
+        return sheet
+    except CCMStorageError:
+        raise
+    except Exception as exc:
+        app.logger.warning("CCM spreadsheet unavailable: %s", type(exc).__name__)
+        raise CCMStorageError("Google Sheets is unavailable. Please try again; your form has not been cleared.") from None
+
+
+def ccm_tables():
+    db = get_db()
+    db.execute("CREATE TABLE IF NOT EXISTS ccm_directory_cache (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated REAL NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS ccm_pending_workers (key TEXT PRIMARY KEY, payload TEXT NOT NULL, error TEXT NOT NULL DEFAULT '')")
+    db.execute("CREATE TABLE IF NOT EXISTS ccm_backup_leases (key TEXT PRIMARY KEY, token TEXT NOT NULL, expires REAL NOT NULL)")
+    db.commit()
+
+
+def ccm_pending():
+    ccm_tables()
+    return {r['key']: json.loads(r['payload']) for r in get_db().execute('SELECT key,payload FROM ccm_pending_workers ORDER BY rowid')}
+
+
+def ccm_cache_write(records, read_started=None):
+    ccm_tables()
+    db = get_db()
+    current = db.execute('SELECT payload,updated FROM ccm_directory_cache WHERE id=1').fetchone()
+    if read_started is not None and current and current['updated'] > read_started:
+        return json.loads(current['payload'])
+    db.execute("INSERT OR REPLACE INTO ccm_directory_cache VALUES (1,?,?)", (json.dumps(records), time.time()))
+    db.commit()
+    return records
+
+
+def ccm_sheet_records(values):
+    return [dict(zip(CCM_HEADERS, row + [''] * max(0, len(CCM_HEADERS) - len(row))))
+            for row in values[1:] if row and row[0]]
+
+
+def ccm_records(force=False):
+    ccm_tables()
+    db = get_db()
+    cached = db.execute("SELECT payload,updated FROM ccm_directory_cache WHERE id=1").fetchone()
+    local = ccm_pending()
+    records, stale = json.loads(cached['payload']) if cached else [], False
+    # Normal navigation uses local records and the last confirmed Google index.
+    # Only the first import, Refresh Google, backup or QR verification needs Google.
+    if force or (not cached and not local):
+        started = time.time()
+        try:
+            records = ccm_cache_write(ccm_sheet_records(ccm_sheet().get_all_values()), read_started=started)
+        except Exception as exc:
+            if not cached and not local:
+                raise CCMStorageError('Google accounts could not be loaded. New accounts can still be saved locally.') from None
+            app.logger.warning('CCM directory refresh failed: %s', type(exc).__name__)
+            stale = True
+    merged = {r['Record Key']: r for r in records}
+    merged.update(local)
+    return list(merged.values()), stale
+
+
+def ccm_admin():
+    return bool(session.get('ccm_admin_until', 0) > time.time())
+
+
+@app.template_filter('ccm_date')
+def ccm_date(value):
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt.astimezone(PH_TZ or timezone(timedelta(hours=8))).strftime('%b %d, %Y, %I:%M %p') + ' (UTC+08:00)'
+    except (TypeError, ValueError):
+        return value or '—'
+
+
+def ccm_csrf():
+    if 'ccm_csrf' not in session:
+        session['ccm_csrf'] = secrets.token_urlsafe(32)
+    return session['ccm_csrf']
+
+
+def ccm_guard(admin=True):
+    if admin and not ccm_admin():
+        abort(403)
+    supplied = request.form.get('csrf_token', '') or request.headers.get('X-CSRF-Token', '')
+    if not supplied or not hmac.compare_digest(supplied.encode('utf-8'), session.get('ccm_csrf', '').encode('utf-8')):
+        abort(400, 'Reload the CCM page before trying again.')
+
+
+def ccm_churches():
+    # Select explicit public ministry fields, never credentials or birthdays.
+    rows = get_db().execute("""SELECT name,age,sex,church_address FROM sheet_accounts_cache
+        WHERE LOWER(TRIM(position))='pastor' AND TRIM(COALESCE(church_address,''))<>''
+        ORDER BY age,church_address,name""").fetchall()
+    return [{'key': uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(list(r))).hex, 'pastor': r['name'] or '', 'area': r['age'] or '',
+             'church_id': r['sex'] or '', 'address': r['church_address'] or ''} for r in rows]
+
+
+def ccm_worker(key, fresh=False):
+    if not re.fullmatch(r'[a-f0-9]{32}', key):
+        abort(404)
+    records, stale = ccm_records(force=fresh)
+    row = next((r for r in records if r['Record Key'] == key and r['Status'] != 'Deleted'), None)
+    if not row:
+        abort(404)
+    return row, stale
+
+
+def ccm_drive(method, path, **kwargs):
+    try:
+        creds = google_credentials(GOOGLE_SHEETS_CREDENTIALS_FILE, scopes=GOOGLE_SHEETS_SCOPES)
+        creds.refresh(GoogleAuthRequest())
+        response = requests.request(method, 'https://www.googleapis.com/' + path,
+            headers={'Authorization': 'Bearer ' + creds.token, **kwargs.pop('headers', {})},
+            timeout=(10, 45), **kwargs)
+        if not response.ok:
+            app.logger.warning('CCM Drive request failed: %s %s', method, response.status_code)
+            try:
+                quota = any(e.get('reason') == 'storageQuotaExceeded' for e in response.json().get('error', {}).get('errors', []))
+            except ValueError:
+                quota = False
+            if quota:
+                raise CCMStorageError("Google Drive uploads need to be connected to the folder owner's account before saving. The photo and form are still available for retry.")
+            raise CCMStorageError('Google Drive could not save or retrieve this ID. Check folder access and try again.')
+        return response
+    except Exception as exc:
+        if isinstance(exc, CCMStorageError):
+            raise
+        app.logger.warning('CCM Drive unavailable: %s', type(exc).__name__)
+        raise CCMStorageError('Google Drive is unavailable. Please try again; your form has not been cleared.') from None
+
+
+def ccm_asset_path(key, side):
+    if not re.fullmatch(r'[a-f0-9]{32}', key) or side not in ('photo', 'front', 'back'):
+        abort(404)
+    directory = Path(data_path('ccm_assets'))
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / (key + '-' + side + '.png')
+
+
+def ccm_local_asset_path(filename):
+    if not re.fullmatch(r'[a-f0-9]{32}-(photo|front|back)-[a-f0-9]{16}\.png', filename):
+        raise CCMStorageError('Invalid local image reference.')
+    root = ccm_asset_path(filename[:32], 'photo').parent.resolve()
+    path = (root / filename).resolve()
+    if path.parent != root:
+        raise CCMStorageError('Invalid local image location.')
+    return path
+
+
+def ccm_local_lock(key):
+    from sheet_cache import _locked_sync
+    return _locked_sync(str(ccm_asset_path(key, 'photo').parent / (key + '.local')))
+
+
+def ccm_write_local_assets(row, images):
+    import hashlib
+    references = {}
+    for side, body in images.items():
+        name = row['Record Key'] + '-' + side + '-' + hashlib.sha256(body).hexdigest()[:16] + '.png'
+        path = ccm_local_asset_path(name)
+        if not path.exists():
+            temporary = path.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+            try:
+                with temporary.open('wb') as handle:
+                    handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        references[side] = name
+    row['_local_assets'] = references
+
+
+def ccm_upload(key, side, data):
+    # Content-addressed filenames make retries idempotent and keep old records
+    # intact if a later Sheets update fails during an edit.
+    import hashlib
+    name = 'CCM-' + key + '-' + side + '-' + hashlib.sha256(data).hexdigest()[:16] + '.png'
+    script_url = os.getenv('CCM_DRIVE_SCRIPT_URL', '').strip()
+    if script_url:
+        token = os.getenv('CCM_DRIVE_API_TOKEN', '').strip()
+        if not re.fullmatch(r'https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec', script_url) or len(token) < 32:
+            raise CCMStorageError('The CCM Google Drive upload connection needs administrator setup.')
+        try:
+            response = requests.post(script_url, json={'token': token, 'record_key': key, 'side': side,
+                'image': base64.b64encode(data).decode('ascii')}, timeout=(10, 60))
+            response.raise_for_status()
+            result = response.json()
+            if not result.get('ok') or not re.fullmatch(r'[A-Za-z0-9_-]+', str(result.get('file_id', ''))):
+                raise ValueError('Upload not acknowledged')
+            return result['file_id']
+        except (requests.RequestException, ValueError, AttributeError):
+            raise CCMStorageError('The CCM Google Drive upload was not confirmed. Retry this same form; existing uploads will be reused.') from None
+    found = ccm_drive('GET', 'drive/v3/files', params={'q': "'" + CCM_FOLDER_ID + "' in parents and trashed=false and name='" + name + "'",
+        'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}).json()['files']
+    if found:
+        return found[0]['id']
+    else:
+        boundary = 'ccm_' + secrets.token_hex(16)
+        metadata = json.dumps({'name': name, 'parents': [CCM_FOLDER_ID]})
+        body = ('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + metadata +
+                '\r\n--' + boundary + '\r\nContent-Type: image/png\r\n\r\n').encode() + data + ('\r\n--' + boundary + '--\r\n').encode()
+        file_id = ccm_drive('POST', 'upload/drive/v3/files', params={'uploadType': 'multipart', 'fields': 'id', 'supportsAllDrives': 'true'},
+            headers={'Content-Type': 'multipart/related; boundary=' + boundary}, data=body).json()['id']
+    return file_id
+
+
+@lru_cache(maxsize=24)
+def ccm_cloud_asset(file_id):
+    # Bounded memory cache only: viewing a backed-up image does not recreate disk files.
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
+        raise CCMStorageError('This image is not available in Google Drive.')
+    return ccm_drive('GET', 'drive/v3/files/' + file_id, params={'alt': 'media', 'supportsAllDrives': 'true'}).content
+
+
+def ccm_asset(record, side):
+    local_name = record.get('_local_assets', {}).get(side)
+    if local_name:
+        path = ccm_local_asset_path(local_name)
+        if not path.is_file():
+            if record.get('_backup_confirmed_revision') == record['Updated At']:
+                return ccm_cloud_asset(record[side.title() + ' File ID'])
+            raise CCMStorageError('A local image is missing. Keep the remaining files and restore the missing image before backup.')
+        return path.read_bytes()
+    path = ccm_asset_path(record['Record Key'], side)
+    if path.exists():
+        return path.read_bytes()
+    return ccm_cloud_asset(record[side.title() + ' File ID'])
+
+
+def ccm_photo(upload):
+    from PIL import Image, ImageOps, UnidentifiedImageError
+    if not upload or not upload.filename:
+        raise ValueError('Take or upload a worker photo.')
+    raw = upload.read(12 * 1024 * 1024 + 1)
+    if len(raw) > 12 * 1024 * 1024:
+        raise ValueError('This photo is too large to upload. Choose it again so the browser can resize it, or take a new photo.')
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw)) as photo:
+                if photo.format not in ('JPEG', 'MPO', 'PNG', 'WEBP'):
+                    raise ValueError('Choose a JPEG, PNG or WebP photo, or use Take photo.')
+                if photo.width * photo.height > 80000000:
+                    raise ValueError('Choose this photo again so the browser can resize it, or take a new photo.')
+                photo.draft('RGB', (1400, 1400))
+                photo = ImageOps.exif_transpose(photo)
+                photo.thumbnail((1400, 1400))
+                photo = photo.convert('RGB')
+                out = io.BytesIO()
+                photo.save(out, 'PNG', compress_level=3)
+                return out.getvalue()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombWarning, Image.DecompressionBombError):
+        raise ValueError('The photo could not be read. Retake it or choose another image.') from None
+
+
+def ccm_render_id(record, photo):
+    """Overlay variable fields on unaltered copies of the user's JPG artwork."""
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
+    root = Path(app.static_folder) / 'ccm'
+    font_path = str(root / 'Tinos-Bold.ttf')
+
+    def text(draw, value, box, size, color='#071e48', center=False):
+        value = str(value)
+        while True:
+            font = ImageFont.truetype(font_path, size)
+            bounds = draw.textbbox((0, 0), value, font=font)
+            if size <= 5 or (bounds[2] - bounds[0] <= box[2] - box[0] and bounds[3] - bounds[1] <= box[3] - box[1]):
+                break
+            size -= 1
+        x = (box[0] + box[2] - (bounds[2] - bounds[0])) / 2 if center else box[0]
+        draw.text((x, box[1] - bounds[1]), value, font=font, fill=color)
+
+    with Image.open(root / 'id-front-template.jpg') as original:
+        front = original.convert('RGB')
+    with Image.open(io.BytesIO(photo)) as portrait:
+        portrait = ImageOps.fit(portrait.convert('RGB'), (386, 388), centering=(0.5, 0.4))
+        mask = Image.new('L', portrait.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, 385, 387), radius=14, fill=255)
+        front.paste(portrait, (332, 566), mask)
+    draw = ImageDraw.Draw(front)
+    draw.rectangle((120, 975, 935, 1068), fill='white')
+    text(draw, record['Name'], (120, 986, 935, 1059), 80, color='black', center=True)
+    # Retain the banner border and sample its own navy background for the role.
+    strip = front.crop((170, 1094, 920, 1095)).resize((750, 48))
+    front.paste(strip, (170, 1095))
+    text(draw, 'C A M P U S  W O R K E R', (170, 1100, 920, 1140), 40, color='white', center=True)
+    draw.rectangle((378, 1174, 925, 1306), fill='white')
+    issued = datetime.fromisoformat(record['Created At']).astimezone(PH_TZ or timezone.utc)
+    text(draw, record['ID Number'], (383, 1181, 920, 1215), 36)
+    text(draw, issued.strftime('%b. %d, %Y'), (383, 1227, 920, 1260), 36)
+    text(draw, 'No expiration date', (383, 1270, 920, 1304), 36)
+    with Image.open(root / 'id-back-template.jpg') as original:
+        back = original.convert('RGB')
+    draw = ImageDraw.Draw(back)
+    draw.rectangle((108, 1153, 294, 1338), fill='white')
+    qr = QRCode(None, QRErrorCorrectLevel.M)
+    qr.addData(record['Verification URL'])
+    qr.make()
+    scale = 4
+    qr_image = Image.new('RGB', ((qr.moduleCount + 8) * scale,) * 2, 'white')
+    qdraw = ImageDraw.Draw(qr_image)
+    for y, row in enumerate(qr.modules):
+        for x, dark in enumerate(row):
+            if dark:
+                qdraw.rectangle(((x + 4) * scale, (y + 4) * scale, (x + 5) * scale - 1, (y + 5) * scale - 1), fill='black')
+    back.paste(qr_image, (int(201 - qr_image.width / 2), 1155))
+    # Cover only variable text inside the original contact panel, preserving icons.
+    background = back.crop((375, 1200, 930, 1201)).resize((555, 120))
+    back.paste(background, (375, 1202))
+    text(draw, '(062) 945 0217', (381, 1206, 927, 1233), 28, color='black')
+    text(draw, CCM_BASE_URL, (381, 1241, 927, 1263), 23, color='black')
+    text(draw, 'International One Way Outreach District 4', (381, 1270, 927, 1292), 24, color='black')
+    text(draw, 'Convention Center Lala Pagadian City.', (381, 1296, 927, 1318), 24, color='black')
+    result = {}
+    for side, image in [('front', front), ('back', back)]:
+        buffer = io.BytesIO()
+        image.save(buffer, 'PNG', dpi=(300, 300), compress_level=3)
+        result[side] = buffer.getvalue()
+    return result
+
+
+def ccm_registration():
+    key = request.form.get('record_key', '')
+    editing = bool(key)
+    old = ccm_worker(key)[0] if editing else None
+    if old and request.form.get('revision', '') != old['Updated At']:
+        raise ValueError('This worker changed since you opened the form. Reload before editing.')
+    draft = session.get('ccm_draft') or {}
+    if not editing:
+        key = request.form.get('form_key', '')
+        if not re.fullmatch(r'[a-f0-9]{32}', key) or not hmac.compare_digest(key, draft.get('key', '')):
+            raise ValueError('This registration form expired. Reload the page.')
+    name = request.form.get('name', '').strip()
+    if not name or len(name) > 150:
+        raise ValueError('Enter a name of up to 150 characters.')
+    church = next((c for c in ccm_churches() if c['key'] == request.form.get('church_key') and c['area'] == request.form.get('area')), None)
+    if not church:
+        raise ValueError('Choose an area and church from the district records.')
+    now = utc_now_iso()
+    row = dict(old) if old else dict.fromkeys(CCM_HEADERS, '')
+    row.update({'Record Key': key, 'Name': name, 'Area Number': church['area'], 'Church ID': church['church_id'],
+        'Church Address': church['address'], 'Pastor': church['pastor'], 'Updated At': now})
+    for field, limit in [('Campus', 200), ('Phone', 60), ('Email', 150)]:
+        value = request.form.get(field.lower(), '').strip()
+        if len(value) > limit:
+            raise ValueError(field + ' is too long.')
+        row[field] = value
+    row['Status'] = request.form.get('status', 'Active')
+    if row['Status'] not in ('Active', 'Inactive'):
+        raise ValueError('Choose Active or Inactive.')
+    if not old:
+        row['Created At'] = now
+        row['ID Number'] = 'CCM-' + datetime.fromisoformat(now).strftime('%Y') + '-' + key[:12].upper()
+        row['Verification URL'] = CCM_BASE_URL + '/verify/' + key
+    if old:
+        row['_revision'] = old['Updated At']
+        row['_cloud_revision'] = old.get('_cloud_revision', old['Updated At'])
+    else:
+        row['_cloud_revision'] = ''
+    upload = request.files.get('photo')
+    photo = ccm_photo(upload) if upload and upload.filename else ccm_asset(old, 'photo') if old else ccm_photo(None)
+    return row, photo, editing
+
+
+@app.get('/ccm')
+def ccm_page():
+    tab = request.args.get('tab', 'about')
+    if tab not in ('about', 'workers', 'admin'):
+        tab = 'about'
+    records, error, stale, selected = [], None, False, None
+    if tab != 'about':
+        try:
+            records, stale = ccm_records()
+        except CCMStorageError as exc:
+            error = str(exc)
+    visible = [r for r in records if r['Status'] != 'Deleted']
+    churches, names = [], []
+    if tab == 'admin' and ccm_admin():
+        churches = ccm_churches()
+        names = [r['name'] for r in get_db().execute("SELECT DISTINCT name FROM sheet_members_account_cache WHERE TRIM(COALESCE(name,''))<>'' ORDER BY name")]
+        key = request.args.get('edit', '')
+        selected = next((r for r in visible if r['Record Key'] == key), None)
+        if key and not selected:
+            abort(404)
+        if 'ccm_draft' not in session:
+            session['ccm_draft'] = {'key': uuid.uuid4().hex, 'created': utc_now_iso()}
+    manual = None
+    if tab == 'about':
+        manual = json.loads((Path(app.static_folder) / 'ccm' / 'manual.json').read_text(encoding='utf-8'))
+    response = make_response(render_template('ccm.html', tab=tab, workers=visible, stale=stale, error=error,
+        admin=ccm_admin(), csrf=ccm_csrf(), churches=churches, member_names=names, selected=selected,
+        draft=session.get('ccm_draft', {}), manual=manual, pending=ccm_pending() if tab == 'admin' and ccm_admin() else {}))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/ccm/admin/login')
+def ccm_login():
+    ccm_guard(admin=False)
+    # Rate limiting is persistent across browser sessions and server workers.
+    db = get_db()
+    db.execute('CREATE TABLE IF NOT EXISTS ccm_login_attempts (key TEXT PRIMARY KEY, started REAL NOT NULL, count INTEGER NOT NULL)')
+    address = request.remote_addr or 'unknown'
+    now = time.time()
+    db.execute('INSERT INTO ccm_login_attempts VALUES (?,?,1) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN started<? THEN 1 ELSE count+1 END, started=CASE WHEN started<? THEN excluded.started ELSE started END',
+               (address, now, now - 600, now - 600))
+    db.commit()
+    count = db.execute('SELECT count FROM ccm_login_attempts WHERE key=?', (address,)).fetchone()[0]
+    if count > 10:
+        flash('Too many attempts. Try again in ten minutes.', 'error')
+    elif hmac.compare_digest(request.form.get('password', '').encode('utf-8'), b'CCMDistric4'):
+        session['ccm_admin_until'] = now + 4 * 3600
+        session['ccm_csrf'] = secrets.token_urlsafe(32)
+        db.execute('DELETE FROM ccm_login_attempts WHERE key=?', (address,))
+        db.commit()
+    else:
+        flash('Incorrect CCM admin password.', 'error')
+    return redirect(url_for('ccm_page', tab='admin'))
+
+
+@app.post('/ccm/admin/logout')
+def ccm_logout():
+    ccm_guard()
+    session.pop('ccm_admin_until', None)
+    session.pop('ccm_draft', None)
+    session.pop('ccm_last_created', None)
+    session.pop('ccm_csrf', None)
+    return redirect(url_for('ccm_page', tab='workers' if request.form.get('exit') == '1' else 'admin'))
+
+
+@app.post('/ccm/admin/preview')
+def ccm_preview():
+    ccm_guard()
+    if request.content_length is None or request.content_length > 13 * 1024 * 1024:
+        return jsonify(ok=False, error='Choose the photo again so it can be resized before upload.'), 413
+    try:
+        row, photo, _ = ccm_registration()
+        images = ccm_render_id(row, photo)
+        return jsonify(ok=True, images={side: 'data:image/png;base64,' + base64.b64encode(data).decode() for side, data in images.items()})
+    except (ValueError, CCMStorageError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+def ccm_store_local(row, images=None, expected_revision=None):
+    ccm_tables()
+    db, key = get_db(), row['Record Key']
+    with ccm_local_lock(key):
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            pending = db.execute('SELECT payload FROM ccm_pending_workers WHERE key=?', (key,)).fetchone()
+            cached = db.execute('SELECT payload FROM ccm_directory_cache WHERE id=1').fetchone()
+            current = json.loads(pending['payload']) if pending else next(
+                (r for r in json.loads(cached['payload']) if r['Record Key'] == key), None) if cached else None
+            if expected_revision is None and current:
+                db.rollback()
+                return current
+            if expected_revision is not None and (not current or current['Status'] == 'Deleted' or current['Updated At'] != expected_revision):
+                raise ValueError('This account changed or was deleted. Reload before editing.')
+            if images is None:
+                row = {**current, 'Status': row['Status'], 'Updated At': row['Updated At']}
+            row['_cloud_revision'] = current.get('_cloud_revision', current['Updated At']) if current else ''
+            row.pop('_revision', None)
+            if images is not None:
+                ccm_write_local_assets(row, images)
+            db.execute("INSERT OR REPLACE INTO ccm_pending_workers (key,payload,error) VALUES (?,?,'')", (key, json.dumps(row)))
+            db.commit()
+            return row
+        except Exception:
+            db.rollback()
+            raise
+
+
+@app.post('/ccm/admin/save')
+def ccm_save():
+    ccm_guard()
+    if request.content_length is None or request.content_length > 13 * 1024 * 1024:
+        return jsonify(ok=False, error='Choose the photo again so it can be resized before upload.'), 413
+    try:
+        if not request.form.get('record_key') and request.form.get('form_key') == session.get('ccm_last_created'):
+            return jsonify(ok=True, redirect=url_for('ccm_saved', key=session['ccm_last_created']))
+        row, photo, editing = ccm_registration()
+        revision = row.pop('_revision', None)
+        images = {'photo': photo, **ccm_render_id(row, photo)}
+        ccm_store_local(row, images, expected_revision=revision)
+        if not editing:
+            session['ccm_last_created'] = row['Record Key']
+            session.pop('ccm_draft', None)
+        return jsonify(ok=True, redirect=url_for('ccm_saved', key=row['Record Key']))
+    except (ValueError, CCMStorageError, CacheSyncError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    except Exception as exc:
+        app.logger.warning('CCM local save failed: %s', type(exc).__name__)
+        return jsonify(ok=False, error='The local save could not be confirmed. Keep this form open and retry.'), 503
+
+
+@app.get('/ccm/saved/<key>')
+def ccm_saved(key):
+    if not ccm_admin():
+        return redirect(url_for('ccm_page', tab='admin'))
+    worker, _ = ccm_worker(key)
+    response = make_response(render_template('ccm_saved.html', worker=worker, pending=key in ccm_pending(), csrf=ccm_csrf()))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+def ccm_verify_upload(file_id, body):
+    import hashlib
+    info = ccm_drive('GET', 'drive/v3/files/' + file_id,
+        params={'fields': 'id,size,md5Checksum,trashed', 'supportsAllDrives': 'true'}).json()
+    if info.get('trashed') or str(info.get('size')) != str(len(body)) or info.get('md5Checksum') != hashlib.md5(body).hexdigest():
+        raise CCMStorageError('Google Drive has not confirmed a complete image backup. Local files were kept.')
+
+
+def ccm_backup_worker(key):
+    from concurrent.futures import ThreadPoolExecutor
+    from sheet_cache import _locked_sync
+    if not re.fullmatch(r'[a-f0-9]{32}', key):
+        abort(404)
+    ccm_tables()
+    db, token = get_db(), uuid.uuid4().hex
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        found = db.execute('SELECT payload FROM ccm_pending_workers WHERE key=?', (key,)).fetchone()
+        if not found:
+            db.rollback()
+            return {'cleaned': True, 'remaining': len(ccm_pending())}
+        lease = db.execute('SELECT expires FROM ccm_backup_leases WHERE key=?', (key,)).fetchone()
+        if lease and lease['expires'] > time.time():
+            raise CCMStorageError('This account is already being backed up. Wait for that backup to finish.')
+        db.execute('INSERT OR REPLACE INTO ccm_backup_leases VALUES (?,?,?)', (key, token, time.time() + 240))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    snapshot = json.loads(found['payload'])
+    revision = snapshot['Updated At']
+    try:
+        # Immutable files let admins create/edit accounts while this snapshot uploads.
+        bodies = {} if snapshot.get('_backup_confirmed_revision') == revision else {
+            side: ccm_asset(snapshot, side) for side in snapshot.get('_local_assets', {})}
+        cloud = {h: snapshot.get(h, '') for h in CCM_HEADERS}
+
+        def upload(side):
+            body = bodies[side]
+            file_id = ccm_upload(key, side, body)
+            ccm_verify_upload(file_id, body)
+            return side, file_id
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for side, file_id in pool.map(upload, bodies):
+                cloud[side.title() + ' File ID'] = file_id
+        with _locked_sync(DATABASE):
+            sheet = ccm_sheet()
+            values = sheet.get_all_values()
+            matching = [(i, dict(zip(CCM_HEADERS, r + [''] * max(0, len(CCM_HEADERS) - len(r)))))
+                        for i, r in enumerate(values[1:], 2) if r and r[0] == key]
+            if len(matching) > 1:
+                raise CCMStorageError('Google Sheets contains duplicate copies of this account. Local files were kept.')
+            if matching:
+                number, previous = matching[0]
+                if previous['Updated At'] not in (snapshot.get('_cloud_revision', ''), revision):
+                    raise CCMStorageError('This account changed in Google since the local edit. Local files were kept for review.')
+                sheet.update(range_name=f'A{number}:Q{number}', values=[[cloud[h] for h in CCM_HEADERS]], value_input_option='RAW')
+            else:
+                if snapshot.get('_cloud_revision'):
+                    raise CCMStorageError('The original Google account is missing. Local files were kept for review.')
+                if any(r['ID Number'] == cloud['ID Number'] for r in ccm_sheet_records(values)):
+                    raise CCMStorageError('This ID number already exists in Google. Local files were kept for review.')
+                sheet.append_row([cloud[h] for h in CCM_HEADERS], value_input_option='RAW')
+            confirmed = ccm_sheet_records(sheet.get_all_values())
+            saved = [r for r in confirmed if r['Record Key'] == key]
+            if len(saved) != 1 or any(saved[0][h] != cloud[h] for h in CCM_HEADERS):
+                raise CCMStorageError('Google Sheets has not confirmed the complete account. Local files were kept.')
+            ccm_cache_write(confirmed)
+        cleaned = False
+        with ccm_local_lock(key):
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT payload FROM ccm_pending_workers WHERE key=?', (key,)).fetchone()
+            latest = json.loads(current['payload']) if current else None
+            if latest and latest['Updated At'] == revision:
+                # Persist verified Drive references before cleanup. If a file is
+                # locked, retry can finish cleanup without losing an image source.
+                latest.update(cloud)
+                latest['_cloud_revision'] = revision
+                latest['_backup_confirmed_revision'] = revision
+                db.execute('UPDATE ccm_pending_workers SET payload=? WHERE key=?', (json.dumps(latest), key))
+                db.commit()
+                root = ccm_asset_path(key, 'photo').parent.resolve()
+                for path in root.glob(key + '-*.png'):
+                    if path.resolve().parent != root:
+                        raise CCMStorageError('Local cleanup stopped because an image path was outside the image folder.')
+                    path.unlink(missing_ok=True)
+                db.execute('DELETE FROM ccm_pending_workers WHERE key=?', (key,))
+                db.commit()
+                cleaned = True
+            elif latest:
+                # A newer local edit remains pending; it starts from this confirmed cloud revision.
+                latest['_cloud_revision'] = revision
+                db.execute('UPDATE ccm_pending_workers SET payload=? WHERE key=?', (json.dumps(latest), key))
+                db.commit()
+            else:
+                db.commit()
+                cleaned = True
+        return {'cleaned': cleaned, 'remaining': len(ccm_pending())}
+    except Exception as exc:
+        db.rollback()
+        current = db.execute('SELECT payload FROM ccm_pending_workers WHERE key=?', (key,)).fetchone()
+        if current and json.loads(current['payload'])['Updated At'] == revision:
+            db.execute('UPDATE ccm_pending_workers SET error=? WHERE key=?', (str(exc)[:300], key))
+            db.commit()
+        if isinstance(exc, (CCMStorageError, CacheSyncError)):
+            raise
+        app.logger.warning('CCM backup could not be confirmed: %s', type(exc).__name__)
+        raise CCMStorageError('The backup could not be confirmed. Local files were kept; retry Backup to Google.') from None
+    finally:
+        db.execute('DELETE FROM ccm_backup_leases WHERE key=? AND token=?', (key, token))
+        db.commit()
+
+
+@app.post('/ccm/admin/backup')
+def ccm_backup_queue():
+    ccm_guard()
+    return jsonify(ok=True, keys=list(ccm_pending()))
+
+
+@app.post('/ccm/admin/backup/<key>')
+def ccm_backup_one(key):
+    ccm_guard()
+    try:
+        return jsonify(ok=True, **ccm_backup_worker(key))
+    except (CCMStorageError, CacheSyncError) as exc:
+        return jsonify(ok=False, error=str(exc)), 503
+
+
+@app.post('/ccm/admin/refresh')
+def ccm_refresh():
+    ccm_guard()
+    try:
+        _, stale = ccm_records(force=True)
+        flash('Google is unavailable; local accounts are still available.' if stale else 'Backed-up accounts refreshed from Google.', 'error' if stale else 'success')
+    except CCMStorageError as exc:
+        flash(str(exc), 'error')
+    return redirect(url_for('ccm_page', tab='admin', mode='manage'))
+
+
+@app.post('/ccm/admin/delete/<key>')
+def ccm_delete(key):
+    ccm_guard()
+    try:
+        record, _ = ccm_worker(key)
+        revision = record['Updated At']
+        record.update({'Status': 'Deleted', 'Updated At': utc_now_iso()})
+        ccm_store_local(record, expected_revision=revision)
+        flash('Account removed and QR invalidated. Back Up to Google will save the deletion to its history.', 'success')
+    except (CCMStorageError, CacheSyncError) as exc:
+        flash(str(exc), 'error')
+    except Exception as exc:
+        app.logger.warning('CCM deletion could not be confirmed: %s', type(exc).__name__)
+        flash('The Google update could not be confirmed. Refresh the accounts list before trying again.', 'error')
+    return redirect(url_for('ccm_page', tab='admin', mode='manage'))
+
+
+@app.get('/ccm/image/<key>/<side>.png')
+def ccm_image(key, side):
+    if side not in ('photo', 'front', 'back'):
+        abort(404)
+    if side != 'photo' and not ccm_admin():
+        abort(403)
+    try:
+        record, _ = ccm_worker(key)
+        body = ccm_asset(record, side)
+    except CCMStorageError:
+        abort(503, 'Google Drive image unavailable. Try again shortly.')
+    response = make_response(body)
+    response.headers.update({'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+    if request.args.get('download') == '1' and side != 'photo':
+        response.headers['Content-Disposition'] = 'attachment; filename="' + record['ID Number'] + '-' + side + '.png"'
+    return response
+
+
+@app.get('/ccm/print/<key>')
+def ccm_print(key):
+    if not ccm_admin():
+        return redirect(url_for('ccm_page', tab='admin'))
+    try:
+        record, _ = ccm_worker(key)
+    except CCMStorageError as exc:
+        abort(503, str(exc))
+    response = make_response(render_template('ccm_print.html', worker=record))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.get('/ccm/verify/<key>')
+def ccm_verify(key):
+    if not re.fullmatch(r'[a-f0-9]{32}', key):
+        abort(404)
+    try:
+        # Pending local changes are authoritative, including immediate revocation.
+        # Once backed up, verification checks Google rather than attesting from cache.
+        local = ccm_pending().get(key)
+        if local:
+            record, stale = (local if local['Status'] != 'Deleted' else None), False
+        else:
+            records, stale = ccm_records(force=True)
+            record = next((r for r in records if r['Record Key'] == key and r['Status'] != 'Deleted'), None)
+        response = make_response(render_template('ccm_verify.html', worker=record,
+            verified=bool(record and not stale and record['Status'] == 'Active'), stale=stale), 200 if record or stale else 404)
+    except CCMStorageError:
+        response = make_response(render_template('ccm_verify.html', worker=None, verified=False, stale=True), 503)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 # ========================

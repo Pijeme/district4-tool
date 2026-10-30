@@ -17,6 +17,7 @@ env ([0-9]*)
 *.db-*
 *.db.*
 generated_reports/
+ccm_assets/
 *.sync-progress.json
 *.sync-progress.json.*.tmp
 data/

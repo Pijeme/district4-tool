@@ -24,6 +24,7 @@ env*
 *.sqlite3-*
 
 generated_reports/
+ccm_assets/
 *.sync-progress.json
 *.sync-progress.json.*.tmp
 book_thumbnail_cache/

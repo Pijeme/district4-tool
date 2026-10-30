@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}CCM worker ID verification{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static',filename='ccm/ccm.css') }}">
+<div class="ccm-shell"><a class="ccm-text-link" href="{{ url_for('ccm_page') }}">← Campus Christian Movement</a><section class="ccm-verification ccm-panel"><img class="ccm-verification-logo" src="{{ url_for('static',filename='ccm/logo.png') }}" alt="CCM"><span class="ccm-status {{ 'inactive' if not verified }}">{{ 'Active worker ID' if verified else ('Verification unavailable' if stale else 'Inactive worker ID') }}</span><h1>Worker verification</h1>
+{% if stale %}<p>Google is unavailable. Current ID validity cannot be confirmed. Please try again or call (062) 945 0217.</p>{% elif not verified %}<p>This ID is not currently active. Please contact CCM at (062) 945 0217.</p>{% endif %}
+{% if worker %}<img class="ccm-verification-photo" src="{{ url_for('ccm_image',key=worker['Record Key'],side='photo') }}" alt="{{ worker['Name'] }}"><h2>{{ worker['Name'] }}</h2><dl>{% for key in ['ID Number','Status','Area Number','Church Address','Pastor','Campus','Phone','Email','Created At','Updated At'] %}<div><dt>{{ key }}</dt><dd>{{ worker[key]|ccm_date if key in ['Created At','Updated At'] else worker[key] or '—' }}</dd></div>{% endfor %}</dl>{% endif %}
+<a class="ccm-btn secondary" href="{{ url_for('ccm_page',tab='workers') }}">View workers</a></section></div>
+{% endblock %}

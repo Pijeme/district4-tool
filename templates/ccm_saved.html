@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Account saved · CCM{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static',filename='ccm/ccm.css',v='local-backup-3') }}">
+<div class="ccm-shell"><section class="ccm-panel ccm-saved-panel">
+  <span class="ccm-eyebrow">CAMPUS CHRISTIAN MOVEMENT</span><span class="ccm-status">{{ 'Saved locally' if pending else 'Backed up to Google' }}</span>
+  <h1>Account saved</h1><img class="ccm-saved-photo" src="{{ url_for('ccm_image',key=worker['Record Key'],side='photo') }}" alt="{{ worker['Name'] }}"><h2>{{ worker['Name'] }}</h2><p>{{ worker['ID Number'] }}</p>
+  <p>The ID is ready. You can print now, create another account, or print later from Edit / Delete Account.</p>
+  {% if pending %}<p class="ccm-notice">This account and its pictures are saved locally. Use <strong>Back Up to Google</strong> from Admin when your collection is ready.</p>{% endif %}
+  <div class="ccm-saved-actions"><a class="ccm-btn" href="{{ url_for('ccm_page',tab='admin') }}">Create New</a><a class="ccm-btn secondary" href="{{ url_for('ccm_print',key=worker['Record Key']) }}">Print Now</a><a class="ccm-btn secondary" href="{{ url_for('ccm_page',tab='admin',mode='manage') }}">Print Later</a><form action="{{ url_for('ccm_logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="exit" value="1"><button class="ccm-btn secondary" type="submit">Exit</button></form></div>
+</section></div>
+{% endblock %}

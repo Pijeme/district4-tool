@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+{% block title %}Campus Christian Movement · District 4{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='ccm/ccm.css', v='local-backup-3') }}">
+<div class="ccm-shell">
+  <div class="ccm-masthead">
+    <a class="ccm-brand" href="{{ url_for('ccm_page') }}"><img src="{{ url_for('static', filename='ccm/logo.png') }}" alt="Campus Christian Movement"><span>Campus Christian Movement<small>District 4</small></span></a>
+    <a class="ccm-home" href="{{ url_for('bulletin') if session.get('username') or session.get('ao_logged_in') or session.get('pastor_logged_in') else url_for('splash') }}">District 4 Tool ↗</a>
+  </div>
+  <nav class="ccm-tabs" aria-label="CCM pages">
+    {% for key,label in [('about','About CCM'),('workers','Workers'),('admin','Admin')] %}
+    <a href="{{ url_for('ccm_page', tab=key) }}" {% if tab==key %}class="active" aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  {% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<p class="ccm-notice {{ category }}" role="status">{{ message }}</p>{% endfor %}{% endwith %}
+  {% if error %}<p class="ccm-notice error" role="alert">{{ error }}</p>{% endif %}
+  {% if stale %}<p class="ccm-notice" role="status">Google is unavailable. This is the last saved directory; current ID validity cannot be confirmed.</p>{% endif %}
+
+  {% if tab=='about' %}
+  <section class="ccm-hero">
+    <div class="ccm-hero-copy"><span class="ccm-eyebrow">2 Corinthians 5:18</span><h1>Campus Christian Movement</h1><p>{{ manual.introduction }}</p></div>
+    <div class="ccm-hero-seal"><img src="{{ url_for('static', filename='ccm/logo.png') }}" alt="CCM Official Logo"><span>Campus to Community</span></div>
+  </section>
+  <div class="ccm-mission-grid">
+    <section class="ccm-panel"><span class="ccm-section-no">2.3</span><h2>Vision</h2><p>{{ manual.vision }}</p></section>
+    <section class="ccm-panel"><span class="ccm-section-no">2.4</span><h2>Mission</h2><p>{{ manual.mission }}</p></section>
+  </div>
+  <section class="ccm-pathway ccm-panel"><h2>The CCM 5R Ministry Cycle</h2><div class="ccm-stages">{% for stage in ['Reach','Receive','Root','Reproduce','Release'] %}<span><b>0{{ loop.index }}</b>{{ stage }}</span>{% endfor %}</div></section>
+  <section class="ccm-manual">
+    <div class="ccm-section-heading"><h2>CCM Manual of Operation</h2><a class="ccm-btn secondary" href="{{ url_for('static', filename='ccm/CCM Manual of Operation.pdf') }}" target="_blank" rel="noopener">CCM Manual of Operation ↗</a></div>
+    {% for start,end,heading in [(4,7,'INTRODUCTION'),(7,12,'ORGANIZATIONAL IDENTITY'),(12,17,'MINISTRY FRAMEWORK'),(17,24,'ORGANIZATIONAL STRUCTURE AND GOVERNANCE'),(24,30,'MEMBERSHIP'),(30,34,'MINISTRY PROGRAMS AND OPERATIONS'),(34,38,'MINISTRY OPERATIONS'),(38,43,'LEADERSHIP DEVELOPMENT AND OFFICER RESPONSIBILITIES'),(43,48,'ADMINISTRATIVE OPERATIONS'),(48,53,'AMENDMENTS AND FINAL PROVISIONS')] %}
+    <details class="ccm-manual-section"><summary><span class="ccm-section-no">{{ '%02d'|format(loop.index) }}</span>{{ heading }}<span class="ccm-expand" aria-hidden="true">+</span></summary>
+      <div class="ccm-manual-text">{% for page in manual.pages[start:end] %}<div class="ccm-manual-page">{{ page }}</div>{% endfor %}</div>
+    </details>
+    {% endfor %}
+  </section>
+
+  {% elif tab=='workers' %}
+  <section class="ccm-section-heading"><div><span class="ccm-eyebrow">CAMPUS CHRISTIAN MOVEMENT</span><h1>Our workers</h1><p>Find a CCM worker in your area.</p></div><span class="ccm-count">{{ workers|length }} workers</span></section>
+  <div class="ccm-filters"><label>Search workers<input id="ccmSearch" type="search" placeholder="Name, campus, church or pastor"></label><label>Area<select id="ccmFilterArea"><option value="">All areas</option>{% for area in workers|map(attribute='Area Number')|unique|sort %}<option>{{ area }}</option>{% endfor %}</select></label></div>
+  <div class="ccm-worker-grid" id="ccmWorkers">
+    {% for worker in workers %}
+    <article class="ccm-worker-card" data-search="{{ [worker['Name'],worker['Campus'],worker['Church Address'],worker['Pastor'],worker['ID Number']]|join(' ')|lower }}" data-area="{{ worker['Area Number'] }}">
+      <div class="ccm-worker-top"><img src="{{ url_for('ccm_image', key=worker['Record Key'],side='photo') }}" alt="{{ worker['Name'] }}" loading="lazy"><span class="ccm-status {{ 'inactive' if worker['Status']!='Active' }}">{{ worker['Status'] }}</span></div>
+      <div class="ccm-worker-details"><span class="ccm-eyebrow">AREA {{ worker['Area Number'] }}</span><h2>{{ worker['Name'] }}</h2>
+      <dl>{% for field,label in [('ID Number','ID number'),('Campus','Campus'),('Church ID','Church ID'),('Church Address','Church address'),('Pastor','Pastor'),('Phone','Phone'),('Email','Email'),('Created At','ID created'),('Updated At','Last updated')] %}<div><dt>{{ label }}</dt><dd>{{ worker[field]|ccm_date if field in ['Created At','Updated At'] else worker[field] or '—' }}</dd></div>{% endfor %}</dl>
+      <a class="ccm-text-link" href="{{ url_for('ccm_verify',key=worker['Record Key']) }}">Verify worker ID ↗</a></div>
+    </article>
+    {% endfor %}
+  </div>
+  <p class="ccm-empty" id="ccmNoWorkers" {% if workers %}hidden{% endif %}>No workers found.</p>
+
+  {% elif not admin %}
+  <section class="ccm-login ccm-panel"><span class="ccm-eyebrow">CCM ADMINISTRATION</span><h1>Admin access</h1><p>Enter the CCM password to manage worker accounts and IDs.</p><form method="post" action="{{ url_for('ccm_login') }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label>Password<input type="password" name="password" required autocomplete="current-password"></label><button class="ccm-btn" type="submit">Unlock admin</button></form></section>
+
+  {% else %}
+  <div class="ccm-admin-heading"><div><span class="ccm-eyebrow">CCM ADMINISTRATION</span><h1>Worker accounts</h1></div><form action="{{ url_for('ccm_logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ccm-btn secondary">Lock admin</button></form></div>
+  <nav class="ccm-admin-options" aria-label="Admin actions"><a href="{{ url_for('ccm_page',tab='admin') }}" class="{{ 'active' if request.args.get('mode')!='manage' and not selected }}"><span>01</span><div><b>Create Account</b><small>Register a worker and generate their ID</small></div></a><a href="{{ url_for('ccm_page',tab='admin',mode='manage') }}" class="{{ 'active' if request.args.get('mode')=='manage' or selected }}"><span>02</span><div><b>Edit / Delete Account</b><small>Manage existing workers and print IDs</small></div></a></nav>
+  <section class="ccm-panel ccm-backup-panel">
+    <div class="ccm-backup-heading"><div><h2>Back up your collection</h2><p><strong id="ccmPendingCount">{{ pending|length }}</strong> accounts or changes waiting for Google backup.</p></div><div class="ccm-backup-actions"><button class="ccm-btn" type="button" id="ccmBackupButton" data-url="{{ url_for('ccm_backup_queue') }}" data-csrf="{{ csrf }}" {% if not pending %}disabled{% endif %}>Back Up to Google</button><form method="post" action="{{ url_for('ccm_refresh') }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ccm-btn secondary" id="ccmRefreshGoogle">Refresh Google accounts</button></form></div></div>
+    <p class="ccm-help">Accounts save locally first. Backup verifies the pictures, both ID sides and account details in Google before removing their local files. Keep this page open while the backup runs.</p>
+    <div id="ccmBackupProgress" hidden><div class="ccm-progress-label"><span id="ccmBackupCount">0 accounts backed up</span><strong id="ccmBackupPercent">0%</strong></div><progress id="ccmBackupBar" max="100" value="0" aria-label="Google backup progress"></progress></div>
+    <p id="ccmBackupStatus" role="status" aria-live="polite"></p>
+  </section>
+  {% if request.args.get('mode')=='manage' and not selected %}
+  <section class="ccm-panel"><div class="ccm-section-heading"><h2>Edit / Delete Account</h2><span>{{ workers|length }} accounts</span></div><label>Search accounts<input id="ccmManageSearch" type="search" placeholder="Search by name, ID or church"></label><div class="ccm-account-list">
+    {% for worker in workers %}<article class="ccm-account-row" data-key="{{ worker['Record Key'] }}" data-search="{{ [worker['Name'],worker['ID Number'],worker['Church Address']]|join(' ')|lower }}"><img src="{{ url_for('ccm_image',key=worker['Record Key'],side='photo') }}" alt="" loading="lazy"><div><h3>{{ worker['Name'] }}</h3><p>{{ worker['ID Number'] }} · Area {{ worker['Area Number'] }} · {{ worker['Status'] }}</p><small>{{ worker['Church Address'] }}</small><span class="ccm-storage-status">{{ 'Saved locally · awaiting backup' if worker['Record Key'] in pending else 'Backed up to Google' }}</span></div><div class="ccm-row-actions"><a class="ccm-btn secondary" href="{{ url_for('ccm_print',key=worker['Record Key']) }}">Print / Download</a><a class="ccm-btn secondary" href="{{ url_for('ccm_page',tab='admin',edit=worker['Record Key']) }}">Edit</a><form method="post" action="{{ url_for('ccm_delete',key=worker['Record Key']) }}" class="ccm-delete-form"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="ccm-btn danger">Delete</button></form></div></article>{% else %}<p>No worker accounts yet.</p>{% endfor %}
+  </div></section>
+  {% else %}
+  <section class="ccm-panel"><div class="ccm-section-heading"><h2>{{ 'Edit Account' if selected else 'Create Account' }}</h2>{% if selected %}<span>{{ selected['ID Number'] }}</span>{% endif %}</div>
+    {% if not churches %}<p class="ccm-notice error">No district church records are available. Sync the district Accounts data before registering a worker.</p>{% endif %}
+    <form id="ccmWorkerForm" action="{{ url_for('ccm_save') }}" method="post" enctype="multipart/form-data" data-preview-url="{{ url_for('ccm_preview') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="form_key" value="{{ draft.get('key','') }}"><input type="hidden" name="record_key" value="{{ selected['Record Key'] if selected else '' }}"><input type="hidden" name="revision" value="{{ selected['Updated At'] if selected else '' }}">
+      <div class="ccm-form-grid"><div class="ccm-form-fields">
+        <label>Worker name<input name="name" maxlength="150" required list="ccmNames" autocomplete="name" value="{{ selected['Name'] if selected else '' }}"></label><datalist id="ccmNames">{% for name in member_names %}<option value="{{ name }}">{% endfor %}</datalist>
+        <div class="ccm-two-columns"><label>Area number<select id="ccmArea" name="area" required data-selected="{{ selected['Area Number'] if selected else '' }}"><option value="">Choose area</option></select></label><label>Status<select name="status"><option value="Active">Active</option><option value="Inactive" {% if selected and selected['Status']=='Inactive' %}selected{% endif %}>Inactive</option></select></label></div>
+        <label>Church address<select id="ccmChurch" name="church_key" required data-church-id="{{ selected['Church ID'] if selected else '' }}" data-address="{{ selected['Church Address'] if selected else '' }}" data-pastor="{{ selected['Pastor'] if selected else '' }}"><option value="">Choose an area first</option></select></label>
+        <label>Pastor<input id="ccmPastor" readonly placeholder="Provided by the selected church"></label>
+        <label>Campus / school<input name="campus" maxlength="200" value="{{ selected['Campus'] if selected else '' }}"></label>
+        <div class="ccm-two-columns"><label>Worker phone<input type="tel" name="phone" maxlength="60" autocomplete="tel" value="{{ selected['Phone'] if selected else '' }}"></label><label>Worker email<input type="email" name="email" maxlength="150" autocomplete="email" value="{{ selected['Email'] if selected else '' }}"></label></div>
+        <p class="ccm-help">Worker details and the portrait appear in the public Workers directory. ID numbers and creation dates are assigned automatically.</p>
+      </div><div class="ccm-photo-field"><label>Worker photo</label><label class="ccm-camera-choice" for="ccmCameraFacing">Camera<select id="ccmCameraFacing"><option value="user">Front camera</option><option value="environment">Back camera</option></select></label><div class="ccm-portrait-frame"><img id="ccmPhotoPreview" {% if selected %}src="{{ url_for('ccm_image',key=selected['Record Key'],side='photo') }}"{% else %}hidden{% endif %} alt="Worker photo preview"><video id="ccmCamera" autoplay playsinline muted hidden></video><span id="ccmPhotoPlaceholder" {% if selected %}hidden{% endif %}>Photo</span></div><div class="ccm-photo-buttons"><button class="ccm-btn secondary" type="button" id="ccmOpenCamera">Take photo</button><label class="ccm-btn secondary" for="ccmPhoto">Upload photo</label></div><input id="ccmPhoto" name="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden><div class="ccm-photo-buttons" id="ccmCameraButtons" hidden><button class="ccm-btn" type="button" id="ccmCapture">Capture</button><button class="ccm-btn secondary" type="button" id="ccmCloseCamera">Close camera</button></div><canvas id="ccmPhotoCanvas" hidden></canvas><p class="ccm-help">Center the face with room above the head. The portrait is cropped to the ID photo frame.</p></div></div>
+      <p id="ccmFormError" class="ccm-notice error" role="alert" hidden></p><p id="ccmFormStatus" role="status" aria-live="polite"></p>
+      <div class="ccm-form-actions"><button class="ccm-btn secondary" id="ccmPreviewButton" type="button">Preview ID</button><button class="ccm-btn" id="ccmSaveButton" type="submit" {% if not churches %}disabled{% endif %}>{{ 'Save changes locally' if selected else 'Create Account' }}</button></div>
+    </form>
+    <div id="ccmIDPreview" class="ccm-id-preview" hidden><figure><img id="ccmPreviewBack" alt="Back ID preview"><figcaption>Back</figcaption></figure><figure><img id="ccmPreviewFront" alt="Front ID preview"><figcaption>Front</figcaption></figure></div>
+  </section>
+  <script id="ccmChurchData" type="application/json">{{ churches|tojson }}</script>
+  {% endif %}
+  {% endif %}
+  <footer class="ccm-footer"><span>International One Way Outreach District 4</span><span>(062) 945 0217</span></footer>
+</div>
+<script src="{{ url_for('static', filename='ccm/ccm.js', v='local-backup-3') }}" defer></script>
+{% endblock %}

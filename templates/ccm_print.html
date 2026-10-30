@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}Print worker ID · {{ worker['Name'] }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static',filename='ccm/ccm.css',v='local-backup-3') }}">
+<div class="ccm-shell ccm-print-shell">
+  <div class="ccm-print-controls"><a class="ccm-text-link" href="{{ url_for('ccm_page',tab='admin',mode='manage') }}">← Worker accounts</a><div class="ccm-section-heading"><div><span class="ccm-eyebrow">{{ worker['ID Number'] }}</span><h1>{{ worker['Name'] }}</h1></div><span class="ccm-count" id="ccmPrintStep">Step 1 of 2 · Back</span></div>
+  <p>Print one side at a time. Start with the back, then turn or reinsert the card according to your printer before printing the front.</p>
+  <div class="ccm-print-settings"><label>Card width (mm)<input type="number" id="ccmPrintWidth" value="70" min="30" max="180" step="0.1"></label><span>Height: <b id="ccmPrintHeight">100</b> mm · Use actual size / 100% in your printer settings.</span></div>
+  <div class="ccm-print-actions"><button type="button" class="ccm-btn" id="ccmPrintNow">Print back</button><button type="button" class="ccm-btn secondary" id="ccmPrintNext">Next: front →</button><button type="button" class="ccm-btn secondary" id="ccmPrintPrevious" hidden>← Back side</button></div>
+  <p id="ccmPrintMessage" role="status">The back is ready. You can print it again before continuing.</p>
+  <div class="ccm-download-actions"><a class="ccm-btn secondary" href="{{ url_for('ccm_image',key=worker['Record Key'],side='back',download=1) }}">Download back PNG</a><a class="ccm-btn secondary" href="{{ url_for('ccm_image',key=worker['Record Key'],side='front',download=1) }}">Download front PNG</a><a class="ccm-btn secondary" href="{{ url_for('ccm_saved',key=worker['Record Key']) }}">Done</a></div></div>
+  <div class="ccm-print-card" id="ccmPrintable" style="--ccm-card-width:70mm"><img id="ccmPrintImage" src="{{ url_for('ccm_image',key=worker['Record Key'],side='back') }}" data-back="{{ url_for('ccm_image',key=worker['Record Key'],side='back') }}" data-front="{{ url_for('ccm_image',key=worker['Record Key'],side='front') }}" alt="Back of worker ID"></div>
+</div>
+<script src="{{ url_for('static',filename='ccm/ccm.js',v='local-backup-3') }}" defer></script>
+{% endblock %}

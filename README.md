@@ -61,6 +61,9 @@ reference. Fill in:
 - `FLASK_SECRET_KEY`: a long random secret; keep it stable across updates.
 - `GEMINI_API_KEY`: required by the application at startup.
 - `PLEDGE_SCRIPT_URL` and `PLEDGE_API_TOKEN`: if you use Thanksgiving Pledges.
+- `CCM_DRIVE_SCRIPT_URL` and `CCM_DRIVE_API_TOKEN`: if you use CCM Google backups.
+  Use the same deployed upload connection as your local `.env`; see
+  [CCM setup](deployment/CCM_SETUP.md) for the local-first account and backup workflow.
 - `TEMP_EDIT_USER_TOKEN` and `TEMP_EDIT_ADMIN_TOKEN`: set private values if you use
   temporary editing. Blank values disable access to the corresponding routes.
 
@@ -108,7 +111,10 @@ one-time migration below.
 
 Compose creates a named volume called `<project-name>_district4-data` at `/data`.
 It contains `app_v2.db`, `ai_index.db`, `pastor_resource_sync_state.db`, SQLite
-journal/lock files, `generated_reports/`, and `book_thumbnail_cache/`. New images
+journal/lock files, `generated_reports/`, `book_thumbnail_cache/`, and
+`ccm_assets/`. Pending CCM accounts live in `app_v2.db`; their portraits and ID
+images stay in `ccm_assets/` until verified Google backup. These local records
+and files are runtime data and are not included in a published image. New images
 reuse this volume. Docker documents this [volume lifecycle](https://docs.docker.com/engine/storage/volumes/).
 
 For each update, publish the new image, change `IMAGE_TAG` if necessary, then:

@@ -11,6 +11,7 @@
   <div class="splash-container">
     <img src="{{ url_for('static', filename='img/logo.png') }}" alt="District 4 Logo" class="splash-logo">
     <h1 class="splash-title">District 4 Tool</h1>
+    <p><a href="{{ url_for('ccm_page') }}" style="color:#f4d575;font-weight:600;">Campus Christian Movement / CCM ↗</a></p>
     {% if not logged_in %}
       <div style="max-width: 360px; margin: 1.25rem auto 0; text-align: left; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 12px; padding: 1rem;">
         <form method="POST" action="{{ url_for('splash') }}">
