@@ -1392,6 +1392,118 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         return {**dict(book='Genesis', chapter=1, verse=1, theme='paper', font_size=19,
                        layout_mode='split', split_ratio=60, version=0), **updates}
 
+    def sermon_notebook_fixture(self):
+        return dict(schema_version=2,complete=True,counts=dict(exported=2,failed=0),errors=[],
+            source=dict(website='https://source.invalid'),usage_note='Private export metadata',sermons=[
+                dict(id='dual',title='A shared hope',scripture='Genesis 9:1',
+                    listings=[dict(scripture='Revelation 22:1')],content_html='''<div>
+                    <p>John 3:16-18 and Romans 8:1-2</p><p>A SHARED HOPE</p>
+                    <p>Intro: An original introduction, citing Acts 2:1 as an illustration.</p>
+                    <p>I. <span style="font-weight:bold;text-decoration:underline">OUR HOPE</span></p>
+                    <p>A. <i>A supporting point</i></p><p>Complete closing paragraph.</p>
+                    <script>alert('unsafe')</script><style>body{display:none}</style>
+                    <p>[1] From a different article, another sermon by Alan Carr.</p></div>'''),
+                dict(id='separate',title='A second hope',scripture='Part 2',content_html='''
+                    <p>Series title</p><p>Series Introduction: Background mentions Luke 1:1.</p>
+                    <p>Matthew 5:1-3</p><p>(Read: James 1:2-4)</p><p>A SECOND HOPE</p>
+                    <p>Intro: The opening introduction.</p><p>I. A MAIN POINT</p>
+                    <p>A complete paragraph. Alan Carr - Pastor Gilead Baptist Church</p>''')])
+
+    def test_sermon_notebook_uses_all_top_passages_and_retains_safe_outline_formatting(self):
+        data=json.dumps(self.sermon_notebook_fixture()).encode()
+        first,second=self.bible.parse_sermon_notebook(data)
+        self.assertEqual([(r['book_id'],r['chapter']) for r in first['ranges']],[(43,3),(45,8)])
+        self.assertEqual([(r['book_id'],r['chapter']) for r in second['ranges']],[(40,5),(59,1)])
+        self.assertTrue(any(b['role']=='sermon_heading' for b in first['blocks']))
+        heading=next(b for b in first['blocks'] if b['role']=='sermon_heading')
+        self.assertIn('strong',heading['runs'][-1]['marks']);self.assertIn('u',heading['runs'][-1]['marks'])
+        self.assertTrue(any('em' in r['marks'] for b in first['blocks'] for r in b.get('runs',[])))
+        self.assertTrue(first['text'].endswith('Complete closing paragraph.'))
+        self.assertTrue(second['text'].endswith('A complete paragraph.'))
+        for forbidden in ('source.invalid','Private export metadata','Alan Carr','unsafe','display:none'):
+            self.assertNotIn(forbidden,json.dumps([first,second]))
+        invalid=self.sermon_notebook_fixture();invalid['sermons'][0]['content_html']='<p>John 3:16</p><p>Intro: Text.</p><p>Romans 8:1</p>'
+        parsed=self.bible.parse_sermon_notebook(json.dumps(invalid).encode())
+        self.assertEqual([r['book_id'] for r in parsed[0]['ranges']],[43])
+        invalid['sermons'][0]['content_html']='<p>Matthew 13:1-9; 18-23</p><p>Intro: Text.</p>'
+        spans=self.bible.parse_sermon_notebook(json.dumps(invalid).encode())[0]['ranges']
+        self.assertEqual([(r['chapter'],r['verse'],r['end_chapter'],r['end_verse']) for r in spans],
+                         [(13,1,13,9),(13,18,13,23)])
+        invalid['sermons'][0]['content_html']='<div>John 3:16<br>Romans 8:1<br>Intro: Text.<br>Acts 2:1</div>'
+        spans=self.bible.parse_sermon_notebook(json.dumps(invalid).encode())[0]['ranges']
+        self.assertEqual([r['book_id'] for r in spans],[43,45])
+        invalid['sermons'][0]['content_html']='<pre>John 3:16\nRomans 8:1\n\nIntro: Text.\nActs 2:1</pre>'
+        spans=self.bible.parse_sermon_notebook(json.dumps(invalid).encode())[0]['ranges']
+        self.assertEqual([r['book_id'] for r in spans],[43,45])
+        invalid['sermons'][0]['content_html']='<p>A heading without a passage</p><p>Intro: Acts 2:1 is an illustration.</p>'
+        self.assertFalse(self.bible.parse_sermon_notebook(json.dumps(invalid).encode())[0]['ranges'])
+        invalid['complete']=False
+        with self.assertRaises(self.bible.SyncError):self.bible.parse_sermon_notebook(json.dumps(invalid).encode())
+        invalid=self.sermon_notebook_fixture();invalid['sermons'][1]['id']='dual'
+        with self.assertRaises(self.bible.SyncError):self.bible.parse_sermon_notebook(json.dumps(invalid).encode())
+
+    def test_sermon_notebook_drive_sync_is_repeatable_and_works_without_an_ai_index(self):
+        data=json.dumps(self.sermon_notebook_fixture()).encode()
+        source=dict(id='fixture_sermon_file',name='sermonnotebook.json',size=str(len(data)),modifiedTime='now')
+        with patch.object(resources,'list_drive_folder',return_value=[source]):
+            _,selected,ignored=self.bible._official_drive_sources(Mock(),'fixture_folder_id')
+        self.assertEqual(set(selected),{'sermons'});self.assertFalse(ignored)
+        def sources():return patch.object(self.bible,'_official_drive_sources',return_value=('fixture_folder_id',copy.deepcopy(selected),[]))
+        with sources():
+            result=self.bible.sync_sources(self.path,'fixture_folder_id',lambda _:None,fetch=lambda _:data,drive=Mock())
+        self.assertEqual(result['counts']['sermon_outlines'],2)
+        self.assertEqual(result['temporary_validation'],'passed')
+        with sources():
+            repeated=self.bible.sync_sources(self.path,'fixture_folder_id',lambda _:None,
+                fetch=Mock(side_effect=AssertionError('Unchanged sermon export downloaded')),drive=Mock())
+        self.assertEqual(repeated['counts']['sermon_outlines'],2)
+        self.login()
+        for book,chapter,identifier in [('John',3,'outline-dual'),('Romans',8,'outline-dual'),
+                                       ('Matthew',5,'outline-separate'),('James',1,'outline-separate')]:
+            response=self.client.get(self.base+f'/api/sermons?book={book}&chapter={chapter}')
+            self.assertEqual([s['id'] for s in response.json['sermons']],[identifier])
+            self.assertEqual(set(response.json['sermons'][0]),{'id','title'})
+        for book,chapter in [('Genesis',9),('Revelation',22),('Acts',2),('Luke',1)]:
+            self.assertFalse(self.client.get(self.base+f'/api/sermons?book={book}&chapter={chapter}').json['sermons'])
+        article=self.client.get(self.base+'/api/sermons/outline-dual').json
+        self.assertTrue(article['study_anchors'])
+        self.assertEqual(article['sermon']['author'],'Pastor Alan Carr');self.assertFalse(article['sermon']['source_title'])
+        self.assertNotIn('source_section',article['sermon'])
+        legacy=[dict(id='legacy',title='A legacy outline',family='collection',source_title='A printed collection',
+                     ranges=[dict(book_id=43,chapter=3,verse=16,end_chapter=3,end_verse=16)]),
+                dict(id='nicoll',title='A commentary outline',family='nicoll',source_title='Commentary',
+                     ranges=[dict(book_id=43,chapter=3,verse=16,end_chapter=3,end_verse=16)])]
+        with patch.object(self.bible,'sermon_catalogue',return_value=legacy):
+            listed=self.client.get(self.base+'/api/sermons?book=John&chapter=3').json['sermons']
+        self.assertEqual([item['id'] for item in listed],['outline-dual','legacy','nicoll'])
+        self.assertEqual(self.client.get(self.base+'/api/sermons/outline-missing').status_code,404)
+        self.assertFalse(Path(self.app.config['AI_DATABASE']).exists())
+        with self.client.session_transaction() as session:session.clear()
+        self.assertEqual(self.client.get(self.base+'/api/sermons/outline-dual').status_code,401)
+
+    def test_sermon_notebook_upgrade_and_failed_update_preserve_existing_reader_data(self):
+        self.preview(initialize=True);self.publish_fixture()
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('DROP TABLE bible_sermon_outlines');conn.execute('PRAGMA user_version=8')
+            before=conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall()
+        data=json.dumps(self.sermon_notebook_fixture()).encode()
+        source=dict(title='Imported outlines',drive_file_id='fixture_sermon_file',fingerprint={},
+                    sha256=hashlib.sha256(data).hexdigest())
+        parsed=self.bible.parse_sermon_notebook(data)
+        result=self.bible._safe_publish_sources(self.path,{'sermons':source},{'sermons':parsed},
+                                               'fixture_folder_id',[],lambda _:None)
+        self.assertTrue(Path(result['backup']).is_file())
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall(),before)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0],9)
+        changed=dict(source,sha256='changed')
+        with self.assertRaises(self.bible.SyncError):
+            self.bible._safe_publish_sources(self.path,{'sermons':changed},{'sermons':parsed[:1]},
+                                            'fixture_folder_id',[],lambda _:None)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM bible_sermon_outlines').fetchone()[0],2)
+            self.assertEqual(conn.execute('SELECT * FROM bible_verses ORDER BY id').fetchall(),before)
+
     def translation_zip(self, word='Ginoo', malformed=False):
         # Synthetic USFM; no licensed Bible text enters tests or AI fixtures.
         output=io.BytesIO()
@@ -1572,7 +1684,13 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         for username, pastor in (('Pijeme', False), ('OtherAO', False), ('Pastor', True)):
             with self.subTest(username=username):
                 self.login(username, pastor=pastor)
-                self.assertEqual(self.client.get(self.base).status_code, 200)
+                page=self.client.get(self.base)
+                self.assertEqual(page.status_code, 200)
+                config=json.loads(re.search(r'<script id="bsConfig" type="application/json">(.*?)</script>',
+                                            page.get_data(as_text=True),re.S)[1])
+                self.assertEqual(config['referenceBooks']['gen'],'Genesis')
+                self.assertEqual(config['referenceBooks']['mt'],'Matthew')
+                self.assertEqual(config['referenceBooks']['1cor'],'1 Corinthians')
                 self.assertEqual(self.client.get(self.base + '/api/status').status_code, 200)
 
     def test_missing_database_is_an_empty_preview_and_is_not_created(self):
@@ -2024,6 +2142,35 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 '/suggested?book=John&chapter=3&verse=16&end_verse=1','/browse?offset=-1','/browse?source=bad']:
             self.assertEqual(self.client.get(self.base+'/api/illustrations'+suffix).status_code,400)
         self.assertFalse(self.path.exists())
+
+    def test_illustration_text_has_signed_account_scoped_selection_tools(self):
+        headers=self.preview(initialize=True)
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.app.config['BIBLE_ILLUSTRATIONS_DATABASE']=str(path)
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        before=hashlib.sha256(path.read_bytes()).hexdigest()
+        response=self.client.get(self.base+'/api/illustrations/entry/i-000').json
+        block=response['illustration']['blocks'][0];anchor=block['_study_texts']['text']
+        self.assertEqual(anchor['category'],'illustrations')
+        self.assertEqual(anchor['label'],'Sermon Illustrations')
+        self.assertTrue(anchor['token']);self.assertIn(anchor,response['study_anchors'])
+        self.assertTrue(all('runs' not in a['path'] for a in response['study_anchors']))
+        span=dict(token=anchor['token'],text=block['text'],start_offset=0,end_offset=len(block['text']),selected_text=block['text'])
+        for kind in ('highlight','underline','note','bookmark'):
+            payload=dict(kind=kind,color='#9ed3ff' if kind=='highlight' else None,note='My illustration note' if kind=='note' else '',ranges=[span])
+            saved=self.client.post(self.base+'/api/study-saves',json=payload,headers=headers)
+            self.assertEqual(saved.status_code,201,saved.json)
+            item=saved.json['item']
+            self.assertEqual(item['reference'],'Sermon Illustrations')
+            self.assertEqual(item['ranges'][0]['source']['category'],'illustrations')
+            self.assertEqual(self.client.get(item['delete_url']).status_code,200)
+        personal=self.client.get(self.base+'/api/personal').json
+        self.assertEqual(len(personal['study_annotations']),3);self.assertEqual(len(personal['study_bookmarks']),1)
+        again=self.client.get(anchor['origin']).json['study_anchors']
+        self.assertEqual(next(a['key'] for a in again if a['text']==block['text']),anchor['key'])
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),before,'Personal marks modified the illustration source')
+        self.login('Another reader',pastor=True)
+        self.assertEqual(self.client.get(item['delete_url']).status_code,404)
 
     def test_illustration_owner_approval_persists_and_suggestions_include_all_matching_collections(self):
         archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'

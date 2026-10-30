@@ -361,6 +361,21 @@ and formatting records after validation. To request that cleanup, include its pa
 python bible_study.py sync-drive --database /data/bible_study_data/bible_study.db --ai-database /data/ai_index.db
 ```
 
+Keep `sermonnotebook.json` directly inside **For Scripture Study App** and run
+**Sync Bible Study** to add its complete sermons to **Sermon Outlines**. The
+reader places these sermons first, attributes them to Pastor **Alan Carr**, and
+uses the existing outline typography, emphasis, Scripture previews and personal
+study saves. Matching uses all
+Scripture references printed at the top of the sermon, including separate header
+lines; a sermon with two passages appears under both. Index descriptions and
+citations within the sermon body do not add matches. An outline without a valid
+top reference is retained without guessing its passage and counted in the sync
+warning. Imports validate in a private database copy, back up existing data, and
+preserve outline IDs and personal records. Unchanged Drive files are skipped.
+Sermon titles display in title case in both the list and the opened reader.
+The Bible navigator accepts full book names, standard abbreviations with or
+without periods, and verse ranges such as `Gen. 1:2-5` or `1 Cor. 13:4-7`.
+
 **Sermon Illustrations** appears after Sermon Outlines. Keep
 `sermon_illustrations_codex_v2.zip` intact, directly inside **For Scripture Study
 App**. Sync Bible Study recognizes this v2 package and skips older illustration

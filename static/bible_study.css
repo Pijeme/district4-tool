@@ -203,6 +203,7 @@
 .bs-settings-dialog .bs-modes{flex-direction:column}.bs-settings-dialog .bs-modes button{text-align:left}
 .bs-selection-toolbar{position:fixed;left:50%;bottom:max(14px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40020;width:max-content;max-width:calc(100vw - 16px);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px;padding:8px;background:var(--bs-panel);color:var(--bs-ink);border:1px solid var(--bs-line);border-radius:12px;box-shadow:0 6px 25px #18243140}
 .bs-selection-toolbar>span{width:100%;font-size:12px;font-weight:700;text-align:center}.bs-selection-toolbar button{min-height:36px;padding:6px 8px}
+.bs-selection-toolbar button[data-selection-action=share]{display:inline-flex;align-items:center;gap:4px}
 .bs-selection-toolbar #bsDismissSelection{position:absolute;top:3px;right:4px;min-height:25px;width:25px;padding:1px}
 .bs-selection-toolbar #bsSelectionReference{padding:0 22px}
 .bs-root .bs-chain-margin button{width:100%;max-width:100%;min-width:0}
@@ -244,6 +245,11 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
 .bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
 .bs-root .bs-wide-tabs button{flex:0 0 104px;width:104px;min-width:104px;max-width:104px;white-space:normal;padding:5px 8px}
+@media(min-width:701px) and (max-width:1366px) and (hover:none) and (pointer:coarse){
+ .bs-wide-tabs{justify-content:flex-start;gap:8px}
+ .bs-wide-tabs>.bs-study-tabs{gap:2px;padding-left:4px;padding-right:4px}
+ .bs-root .bs-wide-tabs button{flex-basis:88px;width:88px;min-width:88px;max-width:88px;padding-left:4px;padding-right:4px}
+}
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
 .bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,1fr);gap:4px}

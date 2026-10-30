@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='developer-progress-31') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='study-sharing-34') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -186,7 +186,7 @@
     </section>
   </div>
   <p class="bs-save-status bs-visually-hidden" id="bsSaveStatus" role="status">Preferences are saved to your account when Bible Study storage is initialized.</p>
-  <div id="bsSelectionToolbar" class="bs-selection-toolbar" role="toolbar" aria-label="Selected Scripture actions" hidden>
+  <div id="bsSelectionToolbar" class="bs-selection-toolbar" role="toolbar" aria-label="Selected text actions" hidden>
     <span id="bsSelectionReference"></span>
     <button type="button" data-selection-action="copy">Copy</button>
     <button type="button" data-selection-action="highlight" data-color="#ffe66d" class="bs-color-yellow" aria-label="Yellow highlight">&#9679;</button>
@@ -195,6 +195,7 @@
     <button type="button" data-selection-action="underline">Underline</button>
     <button type="button" data-selection-action="note">Note</button>
     <button type="button" data-selection-action="bookmark">Bookmark</button>
+    <button type="button" data-selection-action="share"><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="20" height="20" alt="" aria-hidden="true"><span>Share</span></button>
     <button type="button" id="bsDismissSelection" aria-label="Dismiss selection actions">&times;</button>
   </div>
   <div id="bsToast" class="bs-toast" role="status" hidden></div>
@@ -206,7 +207,7 @@
     <div class="bs-navigation-tabs" role="tablist" aria-label="Choose a book or chapter"><button type="button" id="bsBookTab" role="tab" aria-selected="true" aria-controls="bsBookGrid">Book</button><button type="button" id="bsChapterTab" role="tab" aria-selected="false" aria-controls="bsChapterGrid">Chapter</button></div>
     <div id="bsTestaments" class="bs-testaments" role="group" aria-label="Choose testament"><button type="button" id="bsOldTestament" aria-pressed="true">Old Testament</button><button type="button" id="bsNewTestament" aria-pressed="false">New Testament</button></div>
     <div class="bs-navigation-body"><section id="bsBookGrid" role="tabpanel" aria-labelledby="bsBookTab"></section><section id="bsChapterGrid" role="tabpanel" aria-labelledby="bsChapterTab" hidden></section></div>
-    <form id="bsDirectReference" class="bs-direct-reference"><label class="bs-visually-hidden" for="bsReferenceInput">Bible reference</label><input id="bsReferenceInput" maxlength="70" placeholder="e.g. John 3:16" autocomplete="off" required><button type="submit">GO</button></form><p id="bsNavigationError" role="status"></p>
+    <form id="bsDirectReference" class="bs-direct-reference"><label class="bs-visually-hidden" for="bsReferenceInput">Bible reference</label><input id="bsReferenceInput" maxlength="70" placeholder="e.g. Gen. 1:2-5" autocomplete="off" required><button type="submit">GO</button></form><p id="bsNavigationError" role="status"></p>
   </dialog>
   <dialog class="bs-navigation-dialog" id="bsHistoryDialog" aria-labelledby="bsHistoryTitle"><div class="bs-dialog-head"><strong id="bsHistoryTitle">Reading history</strong><button type="button" id="bsCloseHistory" aria-label="Close reading history">×</button></div><div id="bsHistoryList" class="bs-history-list"></div></dialog>
   <dialog class="bs-verse-dialog bs-chain-dialog" id="bsChainDialog" data-study-kind="chain" aria-labelledby="bsChainTitle"><div class="bs-dialog-head"><button type="button" id="bsChainBack" aria-label="Back to previous chain topic" hidden>← Back</button><strong id="bsChainTitle">Chain topic</strong><button type="button" id="bsCloseChain" aria-label="Close chain topic">×</button></div><div id="bsChainContent" class="bs-source-content"></div><p id="bsChainSource" class="bs-attribution"></p></dialog>
@@ -220,6 +221,6 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSourceDialog" aria-labelledby="bsSourceTitle"><div class="bs-dialog-head"><strong id="bsSourceTitle">Thompson study page</strong><button type="button" id="bsCloseSource" aria-label="Close study page">×</button></div><div class="bs-image-actions"><button type="button" data-study-image-action="bookmark">Bookmark page</button><button type="button" data-study-image-action="note">Note on page</button></div><img id="bsSourceImage" alt="Thompson study source page"></dialog>
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
-<script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='developer-progress-31') }}" defer></script>
+<script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
+<script src="{{ url_for('static', filename='bible_study.js', v='study-sharing-34') }}" defer></script>
 {% endblock %}

@@ -404,6 +404,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         with app.test_request_context():
             html = app.jinja_env.get_template('bible_study.html').render(
                 csrf_token='test-csrf', bible_study_admin=admin,
+                bible_reference_books={alias:bible_study.BOOKS[index-1][0] for alias,index in bible_study._REF_NAMES.items()},
                 bible_books=[{'name': name, 'chapters': count} for name, count in bible_study.BOOKS])
         baseline = '<style>' + '\n'.join((ROOT/'static'/name).read_text(encoding='utf-8') for name in
                                        ('styles.css','visual_upgrade.css','glass_theme.css')) + '</style>'
@@ -716,6 +717,139 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(document.querySelector('#bsCommentaryResults article')===article,'Loaded text was needlessly rebuilt');
         ''',setup,window_size=(390,844))
 
+    def test_illustration_selection_copies_saves_shares_and_reopens_original_text(self):
+        setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
+        window.studyRecords=[];window.sharedIllustration=null;
+        window.illustrationAnchor={key:'illustration-source-key',category:'illustrations',title:'Fixture Collection · An original story',label:'Sermon Illustrations',origin:'/pastor-resources/bible-study/api/illustrations/entry/fixture',path:['illustration','blocks',0,'text'],text:'An original illustration with a complete ending.',token:'fixture-signed-token'};
+        Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>true});
+        Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{sharedIllustration=data}});
+        window.fetch=async(url,options={})=>{''')
+        setup=setup.replace("else if(path.includes('/personal?'))data={...data,annotations:savedAnnotations,bookmarks:savedBookmarks};", "else if(path.includes('/personal?'))data={...data,annotations:savedAnnotations,bookmarks:savedBookmarks,study_annotations:studyRecords.filter(i=>i.kind!=='bookmark'),study_bookmarks:studyRecords.filter(i=>i.kind==='bookmark')};")
+        setup=setup.replace("else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/illustrations/suggested?'))data={...data,available:true,reference:'Genesis 1',entries:[{id:'fixture',title:'An original story',topic:'Faith',source_title:'Fixture Collection',preview:'Original preview'}]};
+            else if(path.includes('/illustrations/entry/'))data={...data,study_anchors:[illustrationAnchor],illustration:{id:'fixture',title:'An original story',topics:['Faith'],source_title:'Fixture Collection',source_credit:'Original contributor',source_file:'',credit_in_body:false,needs_source_review:false,body_text:illustrationAnchor.text,references:[],reference_issues:[],blocks:[{type:'paragraph',text:illustrationAnchor.text,_study_texts:{text:illustrationAnchor}}]}};
+            else if(path.endsWith('/study-saves')){
+                const body=JSON.parse(options.body);savedPosts.push({body,options});
+                const item={...body,id:'study-'+studyRecords.length,format:'STUDY',reference:'Sermon Illustrations',book_author:illustrationAnchor.title,version:1,delete_url:'/saved-fixture',ranges:body.ranges.map(span=>({...span,source_key:illustrationAnchor.key,source:illustrationAnchor,block_text:span.text}))};studyRecords.push(item);data.item=item;
+            }else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            const el=name=>document.getElementById('bs'+name),wait=ms=>new Promise(r=>setTimeout(r,ms||35));
+            el('IllustrationsTab').click();await wait();el('IllustrationsSuggestions').querySelector('button').click();await wait();
+            async function select(){const source=el('IllustrationsContent').querySelector('[data-study-source]');check(source,'Illustration has no selectable text anchor');const range=document.createRange();range.selectNodeContents(source);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait(140);check(!el('SelectionToolbar').hidden,'Illustration selection tools missing');return source;}
+            await select();document.querySelector('[data-selection-action="copy"]').click();await wait();
+            check(copied.includes(illustrationAnchor.text)&&copied.includes('Sermon Illustrations'),'Copy omitted original illustration or reference');
+            const share=document.querySelector('[data-selection-action="share"]');
+            check(share.previousElementSibling.dataset.selectionAction==='bookmark','Share is not beside Bookmark');
+            check(share.querySelector('img').src.endsWith('/icons/devotion-share.svg'),'Share does not use the bulletin icon');
+            share.click();await wait();
+            check(sharedIllustration.text.includes(illustrationAnchor.text)&&sharedIllustration.text.includes('An original story'),'Device share menu received incomplete text');
+            for(const action of ['highlight','underline','note','bookmark']){
+                await select();document.querySelector('[data-selection-action="'+action+'"]').click();
+                if(action==='note'){el('NoteText').value='My illustration note';el('NoteForm').requestSubmit();}
+                await wait();
+            }
+            check(studyRecords.map(i=>i.kind).join(',')==='highlight,underline,note,bookmark','Illustration tools did not save all annotation types');
+            check(el('IllustrationsContent').querySelector('mark'),'Illustration highlight missing');
+            check(el('IllustrationsContent').querySelector('[data-study-source]').textContent===illustrationAnchor.text,'Personal marks changed source text');
+            check(savedPosts.every(p=>p.body.ranges[0].token===illustrationAnchor.token),'Illustration save lost signed source anchor');
+            el('IllustrationsContent').querySelector('.bs-study-mark').click();await wait();
+            [...el('SavedItems').querySelectorAll('button')].find(b=>b.textContent==='Open source').click();await wait();
+            check(el('SavedStudyDialog').open&&el('SavedStudyContent').textContent.includes(illustrationAnchor.text),'Saved illustration did not reopen');
+        ''',setup,window_size=(390,844))
+
+    def test_selection_share_uses_native_menu_and_handles_cancel_and_unsupported_browsers(self):
+        setup=self.personal_setup()+'''
+        window.sharedSelection=null;window.shareCancelled=false;window.shareAllowed=true;
+        Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>shareAllowed});
+        Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{if(shareCancelled)throw new DOMException('Cancelled','AbortError');sharedSelection=data}});
+        '''
+        self.run_browser(self.render_preview(),'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(r=>setTimeout(r,35));
+            document.querySelector('.bs-verse-number').click();
+            const share=document.querySelector('[data-selection-action="share"]');share.click();await wait();
+            check(sharedSelection.text.includes('Genesis 1:1 (NIV)')&&sharedSelection.text.includes('Alpha'),'Scripture share lost selected text or translation');
+            check(el('Toast').textContent.includes("share menu")&&!share.disabled,'Successful sharing left the action disabled');
+            check(!savedPosts.length&&!copied,'Sharing saved or copied instead of opening the device menu');
+            shareCancelled=true;share.click();await wait();
+            check(el('Toast').textContent==='Sharing cancelled.'&&!share.disabled,'Cancel prevented retry');
+            shareCancelled=false;shareAllowed=false;share.click();await wait();
+            check(el('Toast').textContent.includes('cannot open a share menu')&&!share.disabled,'Unsupported sharing has no useful message');
+            Object.defineProperty(navigator,'share',{configurable:true,value:undefined});share.click();await wait();
+            check(el('Toast').textContent.includes('cannot open a share menu')&&!copied,'Missing native sharing silently copied text');
+            Object.defineProperty(window,'isSecureContext',{configurable:true,value:false});share.click();await wait();
+            check(el('Toast').textContent.includes('HTTPS')&&!share.disabled,'Insecure sharing has no explanation');
+        ''',setup)
+
+    def test_direct_navigation_accepts_book_abbreviations_and_complete_verse_ranges(self):
+        setup=self.personal_setup()+'''
+        const fixtureFetch=window.fetch;window.navigationRequests=[];
+        window.fetch=async(url,options={})=>{
+            const path=String(url),params=new URL(path,'http://fixture').searchParams;let data={ok:true};
+            if(path.includes('/chapter?'))data.verses=Array.from({length:8},(_,i)=>({id:i+1,verse:i+1,text:'Original verse '+(i+1),tokens:[]}));
+            else if(path.includes('/verse?')){
+                navigationRequests.push(path);
+                if(params.get('verse')==='99')return new Response(JSON.stringify({ok:false,error:'This verse is not present in the selected translation.'}),{status:404,headers:{'Content-Type':'application/json'}});
+                data.verse={reference:params.get('book')+' '+params.get('chapter')+':'+params.get('verse'),text:'Original verse text.'};
+            }else if(path.includes('/illustrations/suggested?')){
+                navigationRequests.push(path);data={...data,available:true,reference:'Selected passage',entries:[]};
+            }else return fixtureFetch(url,options);
+            return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+        };'''
+        self.run_browser(self.render_preview(),'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,40));
+            el('IllustrationsTab').click();await wait();
+            async function go(reference){el('Navigate').click();el('ReferenceInput').value=reference;el('DirectReference').requestSubmit();await wait();}
+            await go('Gen. 1:2-5');
+            check(!el('NavigationDialog').open&&el('Book').value==='Genesis'&&el('Chapter').value==='1','Abbreviated range navigation failed');
+            check([...el('Verses').querySelectorAll('.bs-jump-target')].map(e=>e.id).join(',')==='bsVerse2,bsVerse3,bsVerse4,bsVerse5','Requested verse range was not highlighted');
+            const range=new URL(navigationRequests.filter(p=>p.includes('/verse?')).at(-2),'http://fixture').searchParams;
+            check(range.get('book')==='Genesis'&&range.get('verse')==='2'&&range.get('end_verse')==='5','Navigation dropped a range endpoint');
+            const illustration=new URL(navigationRequests.filter(p=>p.includes('/illustrations/suggested?')).at(-1),'http://fixture').searchParams;
+            check(illustration.get('verse')==='2'&&illustration.get('end_verse')==='5','Illustrations lost the requested verse range');
+            for(const [reference,book,chapter] of [
+                ['gen.1:2','Genesis','1'],['Exod. 2:3–5','Exodus','2'],['Mt. 3:4','Matthew','3'],
+                ['1Cor.13:4-6','1 Corinthians','13'],['II Tim. 2:2','2 Timothy','2'],
+                ['Psalm 1','Psalms','1'],['Song of Solomon 2:1','Song of Songs','2']]){
+                await go(reference);
+                check(!el('NavigationDialog').open&&el('Book').value===book&&el('Chapter').value===chapter,'Reference failed: '+reference+' '+el('NavigationError').textContent);
+            }
+            for(const reference of ['Gen. 1:5-2','Gen. 51:1','Gen. 1:0','Unknown 1:1','Gen. 1:2-99']){
+                await go(reference);
+                check(el('NavigationDialog').open&&el('NavigationError').textContent,'Invalid reference accepted: '+reference);
+                check(el('Book').value==='Song of Songs'&&el('Chapter').value==='2','Invalid reference changed the passage');
+                el('NavigationDialog').close();
+            }
+            check(!el('Verses').querySelector('mark'),'Navigation created a permanent highlight');
+        ''',setup,window_size=(390,844))
+
+    def test_imported_sermon_uses_existing_outline_layout_with_pastor_attribution(self):
+        setup=self.personal_setup().replace("else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/sermons?'))data.sermons=[{id:'outline-fixture',title:"THE LORD'S FAITHFULNESS - part II"}];
+            else if(path.includes('/sermons/'))data.sermon={id:'outline-fixture',title:"the lord's faithfulness - PART ii",author:'Pastor Alan Carr',
+                source_title:'',ranges:[{book_id:43,chapter:3,verse:16,end_chapter:3,end_verse:18},
+                                      {book_id:45,chapter:8,verse:1,end_chapter:8,end_verse:2},
+                                      {book_id:13,chapter:28,verse:1,end_chapter:29,end_verse:176,chapter_only:true}],
+                blocks:[{type:'heading',role:'sermon_heading',text:'I. OUR HOPE'},
+                        {type:'paragraph',role:'sermon_subpoint',text:'A. A supporting point',
+                         runs:[{text:'A. A supporting point',marks:['em']}]},
+                        {type:'paragraph',role:'sermon_paragraph',text:'A complete original paragraph.'}]};
+            else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
+            document.getElementById('bsSermonTab').click();await wait();
+            check(document.querySelector('.bs-sermon-title').textContent==="The Lord's Faithfulness - Part II",'Sermon list capitalization is inconsistent');
+            document.querySelector('.bs-sermon-title').click();await wait();
+            check(document.getElementById('bsSermonTitle').textContent==="The Lord's Faithfulness - Part II",'Opened sermon title does not match list capitalization');
+            const metadata=document.getElementById('bsSermonMetadata').textContent;
+            check(metadata==='Pastor Alan Carr · John 3:16–18; Romans 8:1–2; 1 Chronicles 28–29','Pastor attribution or printed references missing: '+metadata);
+            check(document.querySelector('#bsSermonMetadata strong')?.textContent==='Alan Carr','Pastor name is not bold');
+            const content=document.getElementById('bsSermonContent');
+            check(content.querySelector('h5.bs-sermon-heading'),'Existing sermon heading style missing');
+            check(content.querySelector('.bs-sermon-subpoint em'),'Subpoint emphasis missing');
+            check(content.textContent.includes('complete original paragraph'),'Sermon text missing');
+            check(content.scrollWidth<=content.clientWidth+1,'Imported outline overflows on mobile');
+        ''',setup,window_size=(390,844))
+
     def test_sermon_titles_follow_chapter_only_and_source_selections_save_and_reopen(self):
         setup=self.personal_setup().replace('window.fetch=async(url,options={})=>{','''
         window.studyRecords=[];window.sermonQueries=[];
@@ -741,7 +875,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
             document.getElementById('bsSermonTab').click();await wait();
             check(sermonQueries.length===1&&sermonQueries[0].includes('book=Genesis')&&sermonQueries[0].includes('chapter=1')&&!sermonQueries[0].includes('verse='),'Sermon suggestions do not use chapter-only filtering');
-            check(document.getElementById('bsSermonResults').textContent==='A chapter sermonNicoll entry','Results are not titles only or ordering changed');
+            check(document.getElementById('bsSermonResults').textContent==='A Chapter SermonNicoll Entry','Results are not titles only or ordering changed');
             document.querySelector('.bs-word').click();await wait();
             check(sermonQueries.length===1&&lookupCount===0,'Word selection refreshed sermon suggestions by verse');
             document.querySelector('.bs-sermon-title').click();await wait();
@@ -1655,7 +1789,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             releaseCommentary();await wait(700);
             check(events.filter(x=>x.includes('/sermons?')).length===1,'Sermon titles did not warm after commentary');
             el('SermonTab').click();await wait();
-            check(el('SermonResults').textContent.includes('A source theme'),'Prefetched titles were not rendered');
+            check(el('SermonResults').textContent.includes('A Source Theme'),'Prefetched titles were not rendered');
             check(events.filter(x=>x.includes('/sermons?')).length===1,'Prefetched titles fetched again');
             el('Next').click();await wait();
             check(!events.some(x=>x.includes('/sermons?')&&x.includes('chapter=3')),'New titles preceded Bible');
@@ -1690,6 +1824,40 @@ class BibleStudyBrowserTests(unittest.TestCase):
         '''
         for size in ((1440,900),(390,844),(820,1000)):
             with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_ipad_tabs_are_compact_while_phone_and_desktop_keep_existing_spacing(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('Optional Playwright is required for touch-device layout checks')
+        html=self.render_preview()
+        source=(ROOT/'static/bible_study.js').read_text(encoding='utf-8')
+        html=re.sub(r'<script src="[^\"]*bible_study\.js[^\"]*"[^>]*></script>',
+                    lambda _: '<script>'+source.replace('</script',r'<\/script')+'</script>',html)
+        html=re.sub(r'@import url\([^;]+;','',html)
+        html=html.replace('<head>','<head><script>'+self.personal_setup()+'</script>')
+        with sync_playwright() as p:
+            browser=p.chromium.launch(executable_path=BROWSER,headless=True)
+            try:
+                for width,touch in ((768,True),(820,True),(1024,True),(1366,True),(1024,False),(1440,False),(393,True)):
+                    with self.subTest(width=width,touch=touch):
+                        context=browser.new_context(viewport=dict(width=width,height=1000),has_touch=touch,is_mobile=touch)
+                        page=context.new_page();page.set_content(html);page.wait_for_selector('#bsVerse1')
+                        if width>700:
+                            widths=page.locator('#bsWideTabs [role=tab]').evaluate_all('(tabs)=>tabs.map(tab=>tab.getBoundingClientRect().width)')
+                            self.assertEqual(widths,[88 if touch else 104]*7)
+                            if touch:
+                                gap=page.evaluate('''()=>{const a=document.querySelector('#bsWideTabs>.bs-reader-tabs').getBoundingClientRect();const b=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();return b.left-a.right}''')
+                                self.assertEqual(gap,8)
+                                self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);return range.getBoundingClientRect().bottom<=tab.getBoundingClientRect().bottom+1;})'''),'Compact tablet tabs clip their text')
+                            before=page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width')
+                            page.locator('#bsDivider').dispatch_event('keydown',dict(key='End'))
+                            self.assertEqual(page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width'),before)
+                        else:
+                            self.assertEqual(page.locator('#bsStudy>.bs-study-tabs [role=tab]').count(),5)
+                        self.assertTrue(page.evaluate('''()=>[...document.querySelectorAll('.bs-study-tabs [role=tab]')].every(tab=>{const r=tab.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth;})'''))
+                        context.close()
+            finally:browser.close()
 
     def test_webkit_first_load_restored_passage_and_tablet_tabs_remain_visible(self):
         try:

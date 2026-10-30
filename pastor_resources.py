@@ -9149,7 +9149,7 @@ Pastor's Resources - District 4 Tool
 .pr-download-actions a.show { display:inline-flex; }
 .pr-download-actions button { min-height:44px; font-size:13px; }
 .pr-download-actions button:disabled { opacity:.5; cursor:default; }
-#libraryDownloadShare { background:#26344d; color:#fff; }
+#libraryDownloadShare { background:#26344d; color:#fff; display:inline-flex; align-items:center; gap:6px; }
 
 @media (min-width:600px) {
     .pr-page { padding:20px 18px 55px; }
@@ -9334,7 +9334,7 @@ Pastor's Resources - District 4 Tool
         <p class="pr-download-name" id="libraryDownloadStatus" role="status">Choose Save to device or Share file once the ebook is ready.</p>
         <div class="pr-download-actions">
             <button id="libraryDownloadSave" type="button" disabled>Save to device</button>
-            <button id="libraryDownloadShare" type="button" disabled>Share file</button>
+            <button id="libraryDownloadShare" type="button" disabled><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="20" height="20" alt="" aria-hidden="true">Share file</button>
             <a id="libraryDownloadDirect" href="#">Direct download</a>
             <button id="libraryDownloadCancel" type="button" onclick="cancelLibraryDownload()">Cancel</button>
         </div>
@@ -12304,7 +12304,7 @@ html, body { overflow:hidden !important; }
 .reader-download-direct.show { display:inline-flex; }
 .reader-download-actions button { min-height:44px; font-size:13px; }
 .reader-download-actions button:disabled { opacity:.5; cursor:default; }
-#readerDownloadShare { background:#26344d; color:#fff; }
+#readerDownloadShare { background:#26344d; color:#fff; display:inline-flex; align-items:center; gap:6px; }
 
 .reader-page-busy {
     position:absolute;
@@ -12703,7 +12703,7 @@ html, body { overflow:hidden !important; }
             <p class="reader-download-name" id="readerDownloadStatus" role="status">Choose Save to device or Share file once the ebook is ready.</p>
             <div class="reader-download-actions">
                 <button type="button" id="readerDownloadSave" disabled>Save to device</button>
-                <button type="button" id="readerDownloadShare" disabled>Share file</button>
+                <button type="button" id="readerDownloadShare" disabled><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="20" height="20" alt="" aria-hidden="true">Share file</button>
                 <button type="button" id="readerDownloadCancel" onclick="cancelReaderDownload()">Cancel</button>
                 <a class="reader-download-direct" id="readerDownloadDirect" href="{{ download_url }}">Direct download</a>
             </div>

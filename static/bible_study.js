@@ -554,6 +554,25 @@
         if (action === "copy") {
             const snapshot = pendingSelection;
             await copyScripture(snapshot.reference + (snapshot.study ? "" : " (" + translationLabel() + ")") + "\n" + snapshot.ranges.map(span => span.selected_text).join("\n"));
+        } else if (action === "share") {
+            const snapshot=pendingSelection;
+            const text=snapshot.reference+(snapshot.study?"":" ("+translationLabel()+")")+"\n"+
+                snapshot.ranges.map(span=>span.selected_text).join("\n");
+            button.disabled=true;selectionBusy=true;
+            try {
+                if(!window.isSecureContext){
+                    toast("Open this website using HTTPS to use your phone's share menu. Sharing is unavailable on a local HTTP connection.");return;
+                }
+                const data={title:snapshot.reference,text};
+                if(!navigator.share || (navigator.canShare && !navigator.canShare(data))){
+                    toast("This browser cannot open a share menu for this message. Try a supported mobile browser, such as Chrome or Safari.");return;
+                }
+                // Open directly from the tap, before fetching or saving anything.
+                await navigator.share(data);
+                toast("Message handed to your phone's share menu. Delivery is handled by your chosen app.");
+            } catch(error){
+                toast(error.name==="AbortError"?"Sharing cancelled.":"Unable to open the share menu. Please try again.");
+            } finally {button.disabled=false;selectionBusy=false;}
         } else if (action === "note") openNote();
         else if (action === "bookmark") {
             button.disabled = true;
@@ -1207,6 +1226,10 @@
     });
 
     let sermonListScroll=0;
+    function sermonDisplayTitle(title) {
+        return String(title || "").toLocaleLowerCase().replace(/\p{L}[\p{L}\p{M}'’]*/gu,
+            word=>/^[ivx]+$/.test(word)?word.toLocaleUpperCase():word[0].toLocaleUpperCase()+word.slice(1));
+    }
     function loadSermons(){return visibleStudy(fetchSermons);}
     async function fetchSermons() {
         const chapter=state.book+" "+state.chapter;
@@ -1223,7 +1246,7 @@
             sermonChapter=chapter;element("SermonResults").replaceChildren();
             if(!data.sermons?.length)element("SermonResults").append(node("p","No indexed sermon or teaching outline was found for this chapter."));
             for(const sermon of data.sermons||[]) {
-                const button=node("button",sermon.title,"bs-sermon-title");button.type="button";
+                const button=node("button",sermonDisplayTitle(sermon.title),"bs-sermon-title");button.type="button";
                 button.addEventListener("click",()=>openSermon(sermon.id));element("SermonResults").append(button);
             }
         } catch(error){if(requestId===sermonRequest)element("SermonResults").replaceChildren(node("p",error.message));}
@@ -1237,9 +1260,18 @@
         try {
             const data=await api(apiBase+"/sermons/"+encodeURIComponent(id));
             if(requestId!==sermonRequest)return;
-            const sermon=data.sermon;element("SermonTitle").textContent=sermon.title;
-            const passages=(sermon.ranges||[]).map(span=>books[span.book_id-1].name+" "+span.chapter+":"+span.verse+(span.end_chapter!==span.chapter?"–"+span.end_chapter+":"+span.end_verse:span.end_verse!==span.verse?"–"+span.end_verse:""));
-            element("SermonMetadata").textContent=[sermon.author,sermon.source_title,sermon.publisher,sermon.purpose,passages.join("; "),"Source page/section "+sermon.source_section].filter(Boolean).join(" · ");
+            const sermon=data.sermon;element("SermonTitle").textContent=sermonDisplayTitle(sermon.title);
+            const passages=(sermon.ranges||[]).map(span=>books[span.book_id-1].name+" "+(span.chapter_only
+                ? span.chapter+(span.end_chapter!==span.chapter?"–"+span.end_chapter:"")
+                : span.chapter+":"+span.verse+(span.end_chapter!==span.chapter?"–"+span.end_chapter+":"+span.end_verse:span.end_verse!==span.verse?"–"+span.end_verse:"")));
+            const metadata=element("SermonMetadata");metadata.replaceChildren();
+            if(sermon.author){
+                const prefix=sermon.author.startsWith("Pastor ")?"Pastor ":"";
+                if(prefix)metadata.append(document.createTextNode(prefix));
+                metadata.append(node("strong",sermon.author.slice(prefix.length)));
+            }
+            const details=[sermon.source_title,sermon.publisher,sermon.purpose,passages.join("; "),sermon.source_section != null ? "Source page/section "+sermon.source_section : ""].filter(Boolean).join(" · ");
+            if(details)metadata.append(document.createTextNode((sermon.author?" · ":"")+details));
             element("SermonContent").replaceChildren();appendSourceBlocks(element("SermonContent"),sermon.blocks);
             element("Study").scrollTop=0;
         } catch(error){if(requestId===sermonRequest)element("SermonTitle").textContent=error.message;}
@@ -2003,6 +2035,12 @@
     element("PreviousEnd").addEventListener("click", () => stepChapter(-1));
     element("NextEnd").addEventListener("click", () => stepChapter(1));
     const abbreviations = ["Gen", "Ex", "Lev", "Num", "Deut", "Josh", "Judg", "Ruth", "1 Sam", "2 Sam", "1 Ki", "2 Ki", "1 Chr", "2 Chr", "Ezra", "Neh", "Est", "Job", "Ps", "Prov", "Eccl", "Song", "Isa", "Jer", "Lam", "Ezek", "Dan", "Hos", "Joel", "Amos", "Obad", "Jonah", "Mic", "Nah", "Hab", "Zeph", "Hag", "Zech", "Mal", "Matt", "Mark", "Luke", "John", "Acts", "Rom", "1 Cor", "2 Cor", "Gal", "Eph", "Phil", "Col", "1 Th", "2 Th", "1 Tim", "2 Tim", "Titus", "Phlm", "Heb", "Jas", "1 Pet", "2 Pet", "1 Jn", "2 Jn", "3 Jn", "Jude", "Rev"];
+    const referenceBookNames=new Map();
+    const normalizeBookName=name=>name.toLowerCase().replace(/[\s.]/g,"");
+    books.forEach((book,index)=>{
+        for(const name of [book.name,abbreviations[index]])referenceBookNames.set(normalizeBookName(name),book.name);
+    });
+    for(const [alias,name] of Object.entries(config.referenceBooks || {}))referenceBookNames.set(normalizeBookName(alias),name);
     function showNavigationTab(chapter) {
         element("BookGrid").hidden = chapter; element("ChapterGrid").hidden = !chapter;
         element("BookTab").setAttribute("aria-selected", String(!chapter));
@@ -2021,12 +2059,23 @@
             element("ChapterGrid").replaceChildren(node("h3", book.name), grid);
         }
     }
-    function navigatePassage(book, chapter, verse=1, wholeChapter=false) {
+    function navigatePassage(book, chapter, verse=1, wholeChapter=false, endVerse=verse) {
         readerScroll.bible = 0;
         state.book = book; state.chapter = chapter; state.verse = verse;
         for (const name of ["NavigationDialog", "HistoryDialog"]) if (element(name).open) element(name).close();
         updateChapter(); savePreferences();
-        if(!wholeChapter)setIllustrationPassage(verse,verse);
+        if(!wholeChapter)setIllustrationPassage(verse,endVerse);
+        if(endVerse>verse){
+            const pending=chapterLoadPromise;
+            pending.then(()=>{
+                if(pending!==chapterLoadPromise)return;
+                for(const item of verseData.values())if(item.verse<=endVerse && (item.verse_end || item.verse)>=verse){
+                    const target=element("Verse"+item.verse);
+                    target?.classList.add("bs-jump-target");
+                    setTimeout(()=>target?.classList.remove("bs-jump-target"),2500);
+                }
+            });
+        }
     }
     function drawBookGrid() {
         const panel = element("BookGrid"); panel.replaceChildren();
@@ -2069,17 +2118,24 @@
     element("DirectReference").addEventListener("submit", async event => {
         event.preventDefault();
         const value = element("ReferenceInput").value.trim();
-        const match = value.match(/^(.+?)\s*(\d+)\s*(?::\s*(\d+))?$/);
-        let book = null;
-        if (match) book = books.find((item, index) => [item.name, abbreviations[index], ...(item.name === "Psalms" ? ["Psalm"] : item.name === "Song of Songs" ? ["Song of Solomon"] : [])].some(name => name.toLowerCase().replace(/[\s.]/g, "") === match[1].toLowerCase().replace(/[\s.]/g, "")));
-        if (!book || Number(match[2]) < 1 || Number(match[2]) > book.chapters || Number(match[3] || 1) < 1 || Number(match[3] || 1) > 176) {
-            element("NavigationError").textContent = "Enter a valid reference, such as John 3:16."; return;
+        const match = value.match(/^(.+?)\s*(\d+)\s*(?::\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?$/);
+        const book=match && books.find(item=>item.name===referenceBookNames.get(normalizeBookName(match[1])));
+        const chapter=Number(match?.[2]),verse=Number(match?.[3] || 1),endVerse=Number(match?.[4] || verse);
+        if (!book || chapter < 1 || chapter > book.chapters || verse < 1 || endVerse < verse || endVerse > 176) {
+            element("NavigationError").textContent = "Enter a valid reference, such as Gen. 1:2-5 or John 3:16."; return;
         }
+        element("NavigationError").textContent="";
         if (contentAvailable && match[3]) {
-            try { await api(config.verseUrl + "?" + new URLSearchParams({translation: state.translation, book: book.name, chapter: match[2], verse: match[3]})); }
+            try {
+                const parameters={translation:state.translation,book:book.name,chapter,verse,end_verse:endVerse};
+                await api(config.verseUrl+"?"+new URLSearchParams(parameters));
+                // The preview API can return a partial passage. Check the final
+                // verse too so a range beyond the chapter is not silently cut.
+                if(endVerse!==verse)await api(config.verseUrl+"?"+new URLSearchParams({...parameters,verse:endVerse}));
+            }
             catch (error) { element("NavigationError").textContent = error.message; return; }
         }
-        navigatePassage(book.name, Number(match[2]), Number(match[3] || 1),!match[3]);
+        navigatePassage(book.name,chapter,verse,!match[3],endVerse);
     });
     element("History").addEventListener("click", async () => {
         element("HistoryList").replaceChildren(node("p", "Loading reading history…")); element("HistoryDialog").showModal();

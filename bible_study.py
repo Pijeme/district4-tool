@@ -42,7 +42,7 @@ from pastor_resources import current_reader_user_key, is_resource_admin
 
 
 BASE_DIR = Path(__file__).resolve().parent
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DICTIONARY_LABELS = {'harper': 'HarperCollins', 'mounce': 'Mounce', 'vine': 'Vine',
                      'tagalog': 'Tagalog', 'cebuano': 'Cebuano'}
 DICTIONARY_PRESENTATION_VERSION = 1
@@ -381,6 +381,11 @@ CREATE TABLE IF NOT EXISTS bible_commentary_assets (
     version_id INTEGER NOT NULL REFERENCES bible_commentary_versions(id),
     sha256 TEXT NOT NULL REFERENCES bible_dictionary_assets(sha256), PRIMARY KEY(version_id,sha256));
 '''
+
+SERMON_OUTLINE_SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS bible_sermon_outlines (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, ranges_json TEXT NOT NULL,
+    content_json TEXT NOT NULL, plain_text TEXT NOT NULL);'''
+SERMON_OUTLINE_IMPORT_VERSION = 1
 
 
 def _pdf_clean(value):
@@ -3534,12 +3539,13 @@ def _official_drive_sources(drive, folder_id=''):
     selected, ignored = {}, []
     for item in files:
         name = item.get('name', '')
-        if not name.lower().endswith(('.epub','.pdf','.jsonl','.zip')):
+        if not name.lower().endswith(('.epub','.pdf','.json','.jsonl','.zip')):
             ignored.append(name)
             continue
         normalized = re.sub(r'[^a-z0-9]+', ' ', name.casefold()).strip()
         thompson=name.lower().endswith('.pdf') and all(term in normalized for term in ('niv','thompson','chain reference'))
         family = ('illustrations' if name.casefold()=='sermon_illustrations_codex_v2.zip' else
+                  'sermons' if name.casefold()=='sermonnotebook.json' else
                   'NIV' if normalized == 'holy bible niv epub' or thompson else
                   'mounce' if normalized.startswith('mounce') and 'expository dictionary' in normalized and name.lower().endswith('.epub') else
                   'vine' if normalized.startswith('vine') and 'expository dictionary' in normalized and name.lower().endswith('.epub') else
@@ -3591,6 +3597,11 @@ def _validate_niv_source(content):
 
 
 def _active_source_hash(conn, family):
+    if family=='sermons':
+        if conn.execute('PRAGMA user_version').fetchone()[0]<9:return ''
+        row=conn.execute("SELECT value FROM bible_metadata WHERE key='sermon_outline_import'").fetchone()
+        imported=json.loads(row[0]) if row else {}
+        return imported.get('sha256','') if imported.get('version')==SERMON_OUTLINE_IMPORT_VERSION else ''
     if family!='NIV' and conn.execute('PRAGMA user_version').fetchone()[0]<2:
         return ''
     if family.startswith('be:'):
@@ -3669,6 +3680,21 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
         for family, content in parsed.items():
             source = selected[family]
             digest = source['sha256']
+            if family=='sermons':
+                if _active_source_hash(conn,family)==digest:continue
+                previous={row[0] for row in conn.execute('SELECT id FROM bible_sermon_outlines')}
+                if not previous.issubset({item['id'] for item in content}):
+                    raise SyncError('The sermon file is missing previously imported outlines. Existing data was kept.')
+                conn.executemany('''INSERT INTO bible_sermon_outlines(id,title,ranges_json,content_json,plain_text)
+                    VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,
+                    ranges_json=excluded.ranges_json,content_json=excluded.content_json,plain_text=excluded.plain_text''',
+                    ((item['id'],item['title'],json.dumps(item['ranges']),json.dumps(item['blocks'],ensure_ascii=False),
+                      item['text']) for item in content))
+                conn.execute("INSERT INTO bible_metadata(key,value) VALUES('sermon_outline_import',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (json.dumps(dict(sha256=digest,version=SERMON_OUTLINE_IMPORT_VERSION)),))
+                changed=True
+                continue
             if _active_source_hash(conn, family) == digest:
                 if family in ('mounce','vine'):
                     version_id=conn.execute('SELECT id FROM bible_dictionary_versions WHERE family=? AND is_active=1',(family,)).fetchone()[0]
@@ -3802,6 +3828,10 @@ def _publish_dictionary_sync(path, selected, parsed, folder_id, warnings, *, che
             counts[family+'_entries'] = conn.execute('SELECT COUNT(*) FROM bible_dictionary_entries e JOIN bible_dictionary_versions d ON d.id=e.version_id WHERE d.family=? AND d.is_active=1', (family,)).fetchone()[0]
         counts['be_volumes']=conn.execute('SELECT COUNT(*) FROM bible_commentary_versions WHERE is_active=1').fetchone()[0]
         counts['be_sections']=conn.execute('''SELECT COUNT(*) FROM bible_commentary_sections c JOIN bible_commentary_versions v ON v.id=c.version_id WHERE v.is_active=1''').fetchone()[0]
+        counts['sermon_outlines']=conn.execute('SELECT COUNT(*) FROM bible_sermon_outlines').fetchone()[0]
+        counts['unmapped_sermon_outlines']=conn.execute("SELECT COUNT(*) FROM bible_sermon_outlines WHERE ranges_json='[]'").fetchone()[0]
+        if counts['unmapped_sermon_outlines']:
+            warnings.append(f"{counts['unmapped_sermon_outlines']} outlines have no valid top Scripture reference; their text is retained without guessing a passage.")
         report = dict(status='completed', message='Bible Study sync completed.' if changed else 'Sources are unchanged. Bible Study is already up to date.',
                       counts=counts, warnings=warnings, updated_at=now,formatting_entries=formatting_entries)
         conn.execute("INSERT INTO bible_metadata(key,value) VALUES('sync_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(report),))
@@ -3963,7 +3993,9 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
             data = fetch(source) if fetch else _download_source(drive, source, progress)
             _progress_update(progress, 'Indexing ' + source.get('name',family.title()) + '.', stage='indexing')
             source['sha256'] = hashlib.sha256(data).hexdigest()
-            if family == 'NIV':
+            if family == 'sermons':
+                content=parse_sermon_notebook(data,progress)
+            elif family == 'NIV':
                 content = parse_thompson_pdf(data,progress) if source.get('thompson') else parse_niv_epub(data,progress)
                 _validate_niv_source(content)
             elif family.startswith('be:'):
@@ -5192,6 +5224,124 @@ def _sermon_primary_ranges(text):
             for item in ranges]
 
 
+def parse_sermon_notebook(data, progress=None):
+    """Import complete outlines as safe reader blocks, without export/source metadata."""
+    try:
+        export=json.loads(data.decode('utf-8-sig'))
+        sermons=export['sermons']
+        if (export.get('schema_version')!=2 or export.get('complete') is not True
+                or not isinstance(sermons,list) or not sermons):
+            raise ValueError('Expected a complete version 2 sermon export.')
+        counts=export.get('counts',{})
+        if counts.get('exported',len(sermons))!=len(sermons) or counts.get('failed',0) or export.get('errors'):
+            raise ValueError('The sermon export is incomplete.')
+        result=[];seen=set()
+        for number,sermon in enumerate(sermons):
+            identifier=sermon['id'];title=sermon['title'].strip()
+            if not isinstance(identifier,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}',identifier) or not title:
+                raise ValueError('An outline is missing its ID or title.')
+            identifier='outline-'+identifier
+            if identifier in seen:raise ValueError('Duplicate sermon ID.')
+            seen.add(identifier)
+            parser=_SermonHTML()
+            parser.feed(sermon.get('content_html') or '')
+            parser.close();parser.flush()
+            blocks=parser.blocks
+            if not blocks:
+                paragraphs=sermon.get('paragraphs') or re.split(r'\n\s*\n',sermon.get('content_text',''))
+                blocks=[dict(type='paragraph',text=_text(p),references=scripture_references(_text(p)))
+                        for p in paragraphs if isinstance(p,str) and _text(p)]
+            # Only printed top references establish coverage. The index can name
+            # a different passage, and later illustrations must never add matches.
+            # A series introduction may precede the actual sermon header.
+            ranges=[];series_intro=False
+            for block in blocks:
+                opening=block['text']
+                if re.match(r'^Series\s+Intro',opening,re.I):series_intro=True
+                if re.match(r'^Intro(?:duction)?\b',opening,re.I):break
+                if not series_intro and re.match(r'^[IVXLCDM]+[.)]\s+',opening):break
+                if len(opening)>240:
+                    if ranges:break
+                    continue
+                opening=re.sub(r'^\(?\s*Read\s*:\s*','',opening,flags=re.I).strip('() ')
+                opening=re.sub(r'\s+(?:and|&)\s+','; ',opening,flags=re.I)
+                opening=re.sub(r'^Hebrew(?=\s+\d)','Hebrews',opening,flags=re.I)
+                # A bare continuation after a verse citation is another verse,
+                # not a new chapter: Matthew 13:1-9; 18-23.
+                if ':' in opening:
+                    opening=re.sub(r';\s*(?=\d+(?:\s*[-–]\s*\d+)?\s*(?:[;,]|$))',', ',opening)
+                printed=_commentary_ranges(opening)
+                if not printed:
+                    refs=scripture_references(opening)
+                    if refs and refs[0]['start']==0:printed=_sermon_primary_ranges(opening)
+                for span in printed:
+                    if span not in ranges:ranges.append(span)
+                if printed:series_intro=False
+            if not blocks:raise ValueError('An outline is missing its content: '+title)
+            part=re.fullmatch(r'Part\s+\d+',sermon.get('scripture',''),re.I)
+            if part:title+=' - '+part[0]
+            blocks=_collection_reader_blocks(blocks,sermon['title'])
+            cleaned=[]
+            for block in blocks:
+                text=block['text']
+                # These are export credits, not part of the preaching outline.
+                if re.match(r'^\[\d+\].*another sermon by Alan Carr',text,re.I):continue
+                credit=re.search(r'(?:^|\s+)Alan Carr\s*[-–]\s*Pastor\s+Gilead Baptist Church\s*$',text,re.I)
+                if credit:
+                    text=text[:credit.start()].rstrip();block['text']=text
+                    if not text:continue
+                    remaining=len(text);runs=[]
+                    for run in block.get('runs',[]):
+                        if remaining<=0:break
+                        runs.append(dict(run,text=run['text'][:remaining]));remaining-=len(run['text'])
+                    if runs:block['runs']=runs
+                    block['references']=scripture_references(text)
+                if re.match(r'^[IVXLCDM]+[.)]\s+',text):
+                    block.update(type='heading',role='sermon_heading',level=1)
+                elif re.match(r'^(?:[A-Z]|\d+)[.)]\s+',text):
+                    block.update(role='sermon_subpoint',level=2)
+                # The app's sermon styles own spacing, alignment and font size.
+                block.pop('presentation',None)
+                cleaned.append(block)
+            blocks=cleaned
+            result.append(dict(id=identifier,title=title,ranges=ranges,blocks=blocks,
+                               text='\n\n'.join(block['text'] for block in blocks)))
+            if number%50==0:
+                _progress_update(progress,'Preparing sermon outlines.',stage='indexing',
+                                 completed=number+1,total=len(sermons),unit='sermons')
+        return result
+    except (ValueError,KeyError,TypeError,AttributeError,UnicodeError) as error:
+        raise SyncError('Sermon outline validation failed; existing outlines were kept: '+str(error)) from error
+
+
+def study_sermon_outlines(database_path, book_id=None, chapter=None, identifier=None):
+    """Read imported outlines independently of the AI index; never create storage."""
+    path=Path(database_path).resolve()
+    if not path.is_file():return []
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as conn:
+        conn.row_factory=sqlite3.Row
+        if (conn.execute('PRAGMA application_id').fetchone()[0]!=APPLICATION_ID
+                or conn.execute('PRAGMA user_version').fetchone()[0]<9):return []
+        if identifier is not None:
+            rows=conn.execute('SELECT * FROM bible_sermon_outlines WHERE id=?',(identifier,)).fetchall()
+        else:
+            rows=conn.execute('''SELECT id,title,ranges_json FROM bible_sermon_outlines s
+                WHERE EXISTS(SELECT 1 FROM json_each(s.ranges_json) span
+                    WHERE json_extract(span.value,'$.book_id')=?
+                    AND json_extract(span.value,'$.chapter')<=?
+                    AND json_extract(span.value,'$.end_chapter')>=?)''',(book_id,chapter,chapter)).fetchall()
+        result=[]
+        for row in rows:
+            spans=json.loads(row['ranges_json'])
+            for span in spans:
+                if span['verse']==1 and span['end_verse']==176:span['chapter_only']=True
+            item=dict(id=row['id'],title=row['title'],ranges=spans,
+                      family='imported',source_title='',author='Pastor Alan Carr')
+            if identifier is not None:item['blocks']=json.loads(row['content_json'])
+            result.append(item)
+        return result
+
+
 def _staff_sections(document, rows, styles=None, *, with_blocks=True):
     """Keep printed teaching chapters intact; internal points are not sermons."""
     pages={}
@@ -5483,11 +5633,13 @@ def sermon_catalogue(ai_database):
         return _sermon_catalogue(str(path), tuple(unique.values()))
 
 
-def sermons_for_chapter(ai_database, book_id, chapter):
+def sermons_for_chapter(ai_database, book_id, chapter, study_database=None):
     matches = [item for item in sermon_catalogue(ai_database) if
         item.get('source_chapter')==dict(book_id=book_id,chapter=chapter) or any(
             span['book_id'] == book_id and span['chapter'] <= chapter <= span['end_chapter'] for span in item['ranges'])]
-    matches.sort(key=lambda item: (item['family'] == 'nicoll', item['title'].casefold(), item['source_title'].casefold(), item['id']))
+    if study_database:matches.extend(study_sermon_outlines(study_database,book_id,chapter))
+    matches.sort(key=lambda item: (0 if item['family']=='imported' else 2 if item['family']=='nicoll' else 1,
+                                  item['title'].casefold(), item['source_title'].casefold(), item['id']))
     return [dict(id=item['id'], title=item['title']) for item in matches]
 
 
@@ -5710,7 +5862,7 @@ def initialize_database(database_path, **path_options):
             conn.executemany('INSERT INTO bible_books(id,name,chapter_count) VALUES(?,?,?)',
                              [(index, name, count) for index, (name, count) in enumerate(BOOKS, 1)])
             conn.execute("INSERT INTO bible_metadata(key,value) VALUES('offset_unit','unicode_codepoint')")
-        elif version not in (1, 2, 3, 4, 5, 6, 7) or application_id != APPLICATION_ID:
+        elif version not in range(1, SCHEMA_VERSION) or application_id != APPLICATION_ID:
             raise ValueError('Unsupported Bible Study migration; existing records were kept.')
         migrations = ((DICTIONARY_SCHEMA_SQL if version < 2 else '')
                       + (ORIGINAL_SCHEMA_SQL if version < 3 else '')
@@ -5745,6 +5897,9 @@ def initialize_database(database_path, **path_options):
                 conn.execute('ALTER TABLE bible_dictionary_versions_v8 RENAME TO bible_dictionary_versions')
                 conn.execute('CREATE UNIQUE INDEX bible_active_dictionary ON bible_dictionary_versions(family) WHERE is_active=1')
             for statement in STUDY_RESOURCE_SCHEMA_SQL.split(';'):
+                if statement.strip(): conn.execute(statement)
+        if version < 9 and SCHEMA_VERSION >= 9:
+            for statement in SERMON_OUTLINE_SCHEMA_SQL.split(';'):
                 if statement.strip(): conn.execute(statement)
         if conn.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('Bible Study migration failed foreign-key validation.')
@@ -6101,6 +6256,56 @@ class _IllustrationHTML(HTMLParser):
         if not self.skip:self.runs.append(dict(type='text',text=re.sub(r'[\t\r\n ]+',' ',text),marks=[m for _,m in self.marks]))
 
 
+class _SermonHTML(_IllustrationHTML):
+    """Keep inline emphasis from Office HTML while discarding its page styling."""
+    def __init__(self):
+        super().__init__();self.frames=[];self.pre=0
+
+    def handle_starttag(self,tag,attrs):
+        if tag=='br' and not self.skip:self.flush();return
+        if tag=='pre':self.flush();self.pre+=1
+        attributes=dict(attrs);style=attributes.get('style','')
+        count=len(self.marks)
+        super().handle_starttag(tag,attrs)
+        if self.skip:return
+        for mark,pattern in (('strong',r'font-weight\s*:\s*(?:bold|[7-9]00)'),
+                             ('em',r'font-style\s*:\s*italic'),
+                             ('u',r'text-decoration\s*:[^;]*underline')):
+            if re.search(pattern,style,re.I):self.marks.append((tag,mark))
+        if tag not in ('br','hr','img','meta','link','input','basefont'):
+            self.frames.append((tag,count,bool(re.search(r'mso-(?:tab-count|spacerun)\s*:',style,re.I)) or tag=='o:p'))
+
+    def handle_endtag(self,tag):
+        if tag=='pre':self.flush();self.pre=max(0,self.pre-1)
+        was_skipping=self.skip
+        super().handle_endtag(tag)
+        if was_skipping:return
+        for index in range(len(self.frames)-1,-1,-1):
+            if self.frames[index][0]==tag:
+                del self.marks[self.frames[index][1]:];del self.frames[index:];break
+
+    def handle_data(self,text):
+        # Replacement characters in Office's spacing spans are lost whitespace,
+        # not missing letters. Leave uncertain punctuation in prose untouched.
+        if any(frame[2] for frame in self.frames):text=text.replace('\ufffd',' ')
+        if self.pre:
+            for index,line in enumerate(text.splitlines(keepends=True)):
+                if index:self.flush()
+                super().handle_data(line)
+                if line.endswith(('\n','\r')):self.flush()
+        else:super().handle_data(text)
+
+    def flush(self):
+        runs=[]
+        for run in self.runs:
+            text=re.sub(r'\s+',' ',run['text'])
+            if not runs or runs[-1]['text'].endswith(' '):text=text.lstrip()
+            if text:runs.append(dict(run,text=text,marks=list(dict.fromkeys(run['marks']))))
+        if runs:runs[-1]['text']=runs[-1]['text'].rstrip()
+        self.runs=[run for run in runs if run['text']]
+        super().flush()
+
+
 def _illustration_card(row):
     return dict(id=row['id'],title=row['title'],topic=row['category'],source=row['source'],
         source_title=ILLUSTRATION_SOURCES[row['source']],preview=row['preview'],needs_source_review=not row['has_content'])
@@ -6290,14 +6495,16 @@ def register_bible_study_routes(app):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         categories = {'word_api':'word', 'dictionary_search_api':'word', 'dictionary_entry_api':'word',
             'person_api':'word', 'book_study_api':'book', 'commentary_api':'commentary', 'chain_api':'chain',
-            'thompson_reference_api':'chain', 'concordance_api':'concordance', 'verse_api':'verse', 'sermon_api':'sermon'}
+            'thompson_reference_api':'chain', 'concordance_api':'concordance', 'verse_api':'verse', 'sermon_api':'sermon',
+            'illustration_entry_api':'illustrations'}
         category = categories.get((request.endpoint or '').split('.')[-1])
         if category and response.status_code == 200 and response.is_json:
             data = response.get_json()
             if isinstance(data, dict) and data.get('ok'):
                 anchors, attachments = [], []
                 labels = {'word':'Word Study','book':'Book Study','commentary':'Commentary','chain':'Thompson topic',
-                          'concordance':'Thompson Concordance','verse':'Verse preview','sermon':'Sermon Outlines'}
+                          'concordance':'Thompson Concordance','verse':'Verse preview','sermon':'Sermon Outlines',
+                          'illustrations':'Sermon Illustrations'}
                 origin = request.path + ('?' + request.query_string.decode('utf-8') if request.query_string else '')
                 signer = URLSafeSerializer(app.secret_key, salt='bible-study-text-v1')
                 def collect(value, path=(), title=''):
@@ -6338,6 +6545,7 @@ def register_bible_study_routes(app):
             session['bible_study_csrf'] = secrets.token_urlsafe(32)
         return render_template('bible_study.html', csrf_token=session['bible_study_csrf'],
                                bible_books=[{'name': name, 'chapters': count} for name, count in BOOKS],
+                               bible_reference_books={alias:BOOKS[index-1][0] for alias,index in _REF_NAMES.items()},
                                bible_study_admin=sync_admin(), bible_translations=READER_TRANSLATIONS,
                                bible_preference_key=hashlib.sha256(_account_key().encode()).hexdigest()[:20])
 
@@ -6738,7 +6946,7 @@ def register_bible_study_routes(app):
         if not book or chapter is None or not 1 <= chapter <= book[2]:
             return jsonify(ok=False,error='Choose a valid book and chapter.'),400
         try:
-            items = sermons_for_chapter(app.config['AI_DATABASE'], book[0], chapter)
+            items = sermons_for_chapter(app.config['AI_DATABASE'], book[0], chapter, configured_path())
             return jsonify(ok=True, sermons=items, reference=f'{book[1]} {chapter}')
         except (OSError,sqlite3.DatabaseError):
             return jsonify(ok=False,error='Sermon outlines are temporarily unavailable.'),503
@@ -6746,7 +6954,10 @@ def register_bible_study_routes(app):
     @blueprint.get('/api/sermons/<sermon_id>')
     def sermon_api(sermon_id):
         try:
-            item = next((item for item in sermon_catalogue(app.config['AI_DATABASE']) if item['id']==sermon_id),None)
+            if sermon_id.startswith('outline-'):
+                item=next(iter(study_sermon_outlines(configured_path(),identifier=sermon_id)),None)
+            else:
+                item = next((item for item in sermon_catalogue(app.config['AI_DATABASE']) if item['id']==sermon_id),None)
             if not item: return jsonify(ok=False,error='This sermon is no longer available.'),404
             blocks = item.get('blocks') or _rich_source_blocks(app.config['AI_DATABASE'],item)
             return jsonify(ok=True,sermon={key:value for key,value in item.items() if key!='text'} | dict(blocks=blocks))
