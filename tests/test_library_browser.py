@@ -1759,7 +1759,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             tablet="Object.defineProperty(navigator,'maxTouchPoints',{value:5});" if size[0]==1024 else ''
             with self.subTest(size=size):self.run_browser(self.render_preview(),verify,tablet+setup,window_size=size)
 
-    def test_study_loading_prioritizes_bible_and_visible_tab_then_only_selected_background_sources(self):
+    def test_study_loading_waits_for_bible_and_loads_only_requested_tabs(self):
         setup='''
         window.events=[];window.releaseBible=null;window.releaseCommentary=null;window.releaseTitles=null;
         window.fetch=async(url)=>{
@@ -1787,17 +1787,19 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(events.find(x=>x.includes('/commentary?')).includes('series=moody'),'Wrong selected provider loaded');
             await wait(700);check(!events.some(x=>x.includes('/sermons?')),'Hidden tab loaded before visible commentary finished');
             releaseCommentary();await wait(700);
-            check(events.filter(x=>x.includes('/sermons?')).length===1,'Sermon titles did not warm after commentary');
+            check(!events.some(x=>x.includes('/sermons?')),'Hidden sermon tab loaded automatically');
             el('SermonTab').click();await wait();
-            check(el('SermonResults').textContent.includes('A Source Theme'),'Prefetched titles were not rendered');
-            check(events.filter(x=>x.includes('/sermons?')).length===1,'Prefetched titles fetched again');
+            check(el('SermonResults').textContent.includes('A Source Theme'),'Requested titles were not rendered');
+            check(events.filter(x=>x.includes('/sermons?')).length===1,'Requested titles fetched twice');
             el('Next').click();await wait();
             check(!events.some(x=>x.includes('/sermons?')&&x.includes('chapter=3')),'New titles preceded Bible');
             releaseBible();await wait();
             check(events.at(-1).includes('/sermons?')&&events.at(-1).includes('chapter=3'),'Visible sermon tab did not get priority');
             await wait(700);check(!events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Background commentary preceded visible titles');
             releaseTitles();await wait(700);
-            check(events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Selected commentary did not warm after titles');
+            check(!events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Hidden commentary loaded automatically');
+            el('CommentaryTab').click();await wait();
+            check(events.some(x=>x.includes('/commentary?')&&x.includes('chapter=3')),'Requested commentary did not load');
             check(events.filter(x=>x.includes('/commentary?')).every(x=>x.includes('series=moody')),'Other providers loaded eagerly');
             check(!events.some(x=>x.includes('/sermons/')),'Full sermons loaded in the background');
         '''
@@ -1845,17 +1847,24 @@ class BibleStudyBrowserTests(unittest.TestCase):
                         page=context.new_page();page.set_content(html);page.wait_for_selector('#bsVerse1')
                         if width>700:
                             widths=page.locator('#bsWideTabs [role=tab]').evaluate_all('(tabs)=>tabs.map(tab=>tab.getBoundingClientRect().width)')
-                            self.assertEqual(widths,[88 if touch else 104]*7)
                             if touch:
-                                gap=page.evaluate('''()=>{const a=document.querySelector('#bsWideTabs>.bs-reader-tabs').getBoundingClientRect();const b=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();return b.left-a.right}''')
-                                self.assertEqual(gap,8)
+                                self.assertEqual(widths[:2],[88]*2)
+                                self.assertTrue(all(64<=w<=88 for w in widths[2:]))
+                            else:
+                                self.assertEqual(widths,[104]*7)
+                            if touch:
+                                self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();const pane=document.querySelector('#bsStudy').getBoundingClientRect();return tabs.left>=pane.left-2&&tabs.right<=pane.right+2;}'''),'Study tabs crossed into the Bible pane')
                                 self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);return range.getBoundingClientRect().bottom<=tab.getBoundingClientRect().bottom+1;})'''),'Compact tablet tabs clip their text')
                             before=page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width')
                             page.locator('#bsDivider').dispatch_event('keydown',dict(key='End'))
                             self.assertEqual(page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width'),before)
+                            if touch:
+                                self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();const pane=document.querySelector('#bsStudy').getBoundingClientRect();return tabs.left>=pane.left-2&&tabs.right<=pane.right+2;}'''),'Resizing let study tabs cross the divider')
+                                page.locator('#bsLayoutMode').select_option('study')
+                                self.assertTrue(page.locator('#bsWideTabs>[aria-label="Study tools"]').is_visible())
                         else:
                             self.assertEqual(page.locator('#bsStudy>.bs-study-tabs [role=tab]').count(),5)
-                        self.assertTrue(page.evaluate('''()=>[...document.querySelectorAll('.bs-study-tabs [role=tab]')].every(tab=>{const r=tab.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth;})'''))
+                        self.assertTrue(page.evaluate('''()=>[...document.querySelectorAll('.bs-study-tabs [role=tab]')].filter(tab=>tab.getClientRects().length).every(tab=>{const r=tab.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth;})'''))
                         context.close()
             finally:browser.close()
 
@@ -1892,13 +1901,12 @@ class BibleStudyBrowserTests(unittest.TestCase):
                         assert_navigation()
                         self.assertGreater(page.locator('#bsBible').evaluate('e=>e.scrollTop'),0,'Fixture did not restore a scrolled passage')
                         if width>700:
-                            def tab_positions():return page.locator('.bs-study-tabs button').evaluate_all('(items)=>items.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})')
-                            before=tab_positions()
                             for key in ('Home','End'):
                                 page.locator('#bsDivider').dispatch_event('keydown',dict(key=key));page.wait_for_timeout(20)
-                                self.assertEqual(tab_positions(),before)
                                 self.assertGreaterEqual(page.locator('#bsBible').bounding_box()['width'],219)
-                                self.assertTrue(page.evaluate('''()=>[...document.querySelectorAll('#bsWideTabs button')].every(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})'''))
+                                self.assertTrue(page.evaluate('''()=>{const group=document.querySelector('#bsWideTabs>[aria-label="Study tools"]'),r=group.getBoundingClientRect(),pane=document.querySelector('#bsStudy').getBoundingClientRect();return r.left>=pane.left-2&&r.right<=pane.right+2&&getComputedStyle(group).overflowX==='auto';}'''),'Study tabs escaped their pane instead of scrolling inside it')
+                            page.locator('#bsIllustrationsTab').click()
+                            self.assertTrue(page.locator('#bsIllustrationsTab').evaluate('e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth}'),'Last study tab is unreachable in a narrow pane')
                         page.evaluate('window.scrollTo(0,100);window.dispatchEvent(new Event("pageshow"))')
                         assert_navigation()
                         page.set_viewport_size(dict(width=width,height=height-150));page.wait_for_timeout(40)
@@ -1936,7 +1944,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(bibles.length===3,'Rapid chapters did not request the new Bible text');
             bibles[2]();await wait(700);bibles[0]();bibles[1]();await wait(50);
             const background=requests.filter(x=>x.includes('/commentary?')||x.includes('/sermons?'));
-            check(background.length===2&&background.every(x=>x.includes('chapter=3')),'Obsolete chapters were warmed');
+            check(background.length===0,'Reading Bible text started hidden resource requests');
             check(document.getElementById('bsChapter').value==='3','Old Bible response replaced current chapter');
         '''
         self.run_browser(self.render_preview(),verify,setup)

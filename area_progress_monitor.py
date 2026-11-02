@@ -276,8 +276,9 @@ def _streak_declining(values: list[float]) -> int:
     return streak
 
 
-def ensure_area_progress_monitor_tables() -> None:
-    conn = _connect()
+def ensure_area_progress_monitor_tables(database=None) -> None:
+    """Initialize at application startup, sharing the caller's transaction if supplied."""
+    conn = database if database is not None else _connect()
     cur = conn.cursor()
     cur.execute(
         """
@@ -455,8 +456,9 @@ def ensure_area_progress_monitor_tables() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_report_ym_addr ON sheet_report_cache(year, month, address)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_report_ym_church ON sheet_report_cache(year, month, church)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_report_ym ON sheet_report_cache(year, month)")
-    conn.commit()
-    conn.close()
+    if database is None:
+        conn.commit()
+        conn.close()
 
 
 def _lower(s):
@@ -1692,11 +1694,6 @@ function wireEvents(){const notifBtn=document.getElementById('notifBtn');if(noti
 </script>
 {% endblock %}
 '''
-
-
-@bp.before_app_request
-def _init_monitor_tables_once() -> None:
-    ensure_area_progress_monitor_tables()
 
 
 @bp.route("/ao-tool/area-progress-monitor")

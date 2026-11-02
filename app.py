@@ -45,7 +45,7 @@ from flask import (
     has_request_context,
 )
 from church_finder import register_church_finder_routes
-from area_progress_monitor import register_area_progress_monitor
+from area_progress_monitor import register_area_progress_monitor, ensure_area_progress_monitor_tables
 from church_progress import register_church_progress
 from schedule import register_schedule_routes
 from thanksgiving_pledges import register_thanksgiving_pledges
@@ -588,6 +588,7 @@ def init_db():
     init_website_activity_tables(db)
     init_cache_tables(db)
     migrate_monthly_reports_scope_to_pastor()
+    ensure_area_progress_monitor_tables(db)
     db.commit()
 
 
@@ -3118,6 +3119,24 @@ app.config.update(
         "BIBLE_STUDY_DATABASE", str(Path(data_path("bible_study_data")) / "bible_study.db")),
 )
 
+@app.before_request
+def start_request_timer():
+    g.request_started_at = time.perf_counter()
+
+
+@app.after_request
+def log_slow_request(response):
+    started = getattr(g, 'request_started_at', None)
+    if started is None:
+        return response
+    elapsed = time.perf_counter() - started
+    if request.endpoint != 'healthz' and elapsed >= app.config.get('SLOW_REQUEST_SECONDS', 1.0):
+        # Endpoint names avoid logging chat messages, query strings or credentials.
+        app.logger.warning('slow_request endpoint=%s method=%s status=%s seconds=%.3f',
+                           request.endpoint, request.method, response.status_code, elapsed)
+    return response
+
+
 register_area_progress_monitor(app)
 register_church_progress(app)
 register_schedule_routes(app)
@@ -3595,7 +3614,6 @@ def before_request():
         # Chat must not wait on schema writes or bootstrap network calls. The
         # schema is normally ready from the page that opened the chat.
         return
-    init_db()
     g.website_flashes_before = list(session.get("_flashes", []))
     g.website_actor = website_actor()
     g.website_before = None
@@ -7620,10 +7638,13 @@ def _delete_account_row_in_sheet(username: str):
     ws.delete_rows(sheet_row)
     return True
 
+# Gunicorn imports app:app and never enters __main__. Complete the additive
+# application schema setup here, before accepting any requests, on both servers.
+with app.app_context():
+    init_db()
+
 if __name__ == "__main__":
-    with app.app_context():
-        init_db()
-        print("Database initialized")
-        print("Timezone:", PH_TZ)
+    print("Database initialized")
+    print("Timezone:", PH_TZ)
 
     app.run(debug=True)

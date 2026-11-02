@@ -73,6 +73,10 @@
     function sermonListUrl(){return apiBase+"/sermons?"+new URLSearchParams({book:state.book,chapter:state.chapter});}
     function scheduleBackgroundStudy(){
         cancelBackgroundStudy();const epoch=backgroundEpoch;
+        // Expensive catalogues are on demand by default. Only explicit preview
+        // configurations may opt into prefetching; ordinary Bible reading must
+        // not start hidden commentary or sermon work.
+        if(config.prefetchStudy!==true)return;
         if(!contentAvailable)return;
         backgroundTimer=setTimeout(()=>warmStudy(epoch),650);
     }

@@ -440,3 +440,57 @@ docker compose start district4
 To restore a backup into an empty volume, use the migration commands above with
 `./district4-backup/.` as the source. Back up before updates that change schemas;
 an older image may not support a database upgraded by a newer release.
+
+## CPU improvements and verification
+
+The application and Area Progress Monitor schemas are initialized before the
+server accepts requests, including when Gunicorn imports `app:app`. Restart the
+application after updating code; requests no longer run these migrations.
+Bible Study loads commentary and sermon resources when their tabs are selected.
+Ordinary chapter reading does not prefetch them. Idle sync-notice polling is once
+a minute; an active update still polls every five seconds.
+
+Derived commentary and sermon catalogues now use disposable, private SQLite
+files under `bible_study_data/catalogue_cache`. Passage ranges and sermon IDs
+are indexed so workers read matching articles instead of decompressing an entire
+catalogue. Existing source databases, reading marks and old cache files are kept.
+The first access after this update builds the new cache and can still be slow;
+subsequent accesses and worker restarts reuse it. When changing source parsing
+or section boundaries, bump `_CATALOGUE_PARSER_REVISION` in `bible_study.py`.
+
+An operator can optionally prepare these caches before users open the resources:
+
+```sh
+docker compose exec district4 python bible_study.py prepare-readers --database /data/bible_study_data/bible_study.db --ai-database /data/ai_index.db
+```
+
+This optional command reads existing indexed sources and writes derived caches;
+it does not download books or call Gemini. Run it during a quiet period. Regular
+library, sermon and Bible sync jobs share a deployment lock, so those background
+jobs do not run simultaneously. This is concurrency control, not a CPU quota;
+an individual parsing job can still use a CPU core. Keep one Gunicorn worker as
+configured. Slow requests (one second or longer), catalogue builds and background
+job timings are logged without query strings or chat contents.
+
+To check the changes locally:
+
+1. Restart `app.py`, then hard-refresh the browser to load the new scripts and CSS.
+2. In browser Developer Tools, open Network and clear the list. Open Bible Study
+   and change chapters while staying on Word Study. There should be no new
+   `/api/commentary` or `/api/sermons` requests until their tabs are opened.
+3. Open each commentary provider and a sermon, then revisit the same passage.
+   Compare the text, emphasis and references. The initial cache build may take
+   longer; repeat lookups should reuse the cache. Restart the app and repeat to
+   check that the persisted cache is reused.
+4. Check login, Bulletin, reports, the library and Area Progress Monitor. Confirm
+   that existing highlights, notes and bookmarks still appear. `/healthz` should
+   return `{"status":"ok"}` without opening a database.
+5. On an iPad/tablet, check portrait and landscape layouts and move the divider.
+   Study tabs should stay within the right pane with tighter spacing. In a very
+   narrow study pane, scroll its tab row horizontally to reach all five tabs.
+   Also check Bible Fullscreen, Study Fullscreen and phone layout.
+
+Use Task Manager's CPU column for the Python process while repeating the same
+browsing actions before/after. Request timings and local measurements help
+identify expensive operations; they do not establish the cause of a historical
+hosting-server spike without matching server metrics.

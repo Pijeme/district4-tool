@@ -245,10 +245,15 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
 .bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
 .bs-root .bs-wide-tabs button{flex:0 0 104px;width:104px;min-width:104px;max-width:104px;white-space:normal;padding:5px 8px}
-@media(min-width:701px) and (max-width:1366px) and (hover:none) and (pointer:coarse){
- .bs-wide-tabs{justify-content:flex-start;gap:8px}
- .bs-wide-tabs>.bs-study-tabs{gap:2px;padding-left:4px;padding-right:4px}
+@media(min-width:701px) and (max-width:1366px) and (any-pointer:coarse){
+ /* Match the pane columns so study tabs never spill into the Bible half. */
+ .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,calc(var(--bs-split)*1%)) 10px minmax(0,1fr);gap:0;overflow:hidden;padding:0 1px}
+ .bs-wide-tabs>.bs-reader-tabs{grid-column:1;min-width:0;overflow-x:auto;gap:2px;padding-left:4px;padding-right:4px}
  .bs-root .bs-wide-tabs button{flex-basis:88px;width:88px;min-width:88px;max-width:88px;padding-left:4px;padding-right:4px}
+ .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:3;display:grid;grid-template-columns:repeat(5,minmax(64px,1fr));justify-self:end;width:100%;max-width:444px;min-width:0;gap:0;padding:4px 2px 0;overflow-x:auto;scrollbar-width:thin}
+ .bs-root .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs) button{flex:none;width:100%;min-width:0;max-width:none;padding:4px 2px;font-size:11px;line-height:13px}
+ .bs-root[data-mode=study] .bs-wide-tabs,.bs-root[data-mode=bible] .bs-wide-tabs{grid-template-columns:minmax(0,1fr)}
+ .bs-root[data-mode=study] .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:1}
 }
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}

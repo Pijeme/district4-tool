@@ -1146,7 +1146,7 @@ class LibraryPortabilityTests(unittest.TestCase):
         bible_study._sermon_catalogue.cache_clear()
         with patch.object(bible_study,'_indexed_source',side_effect=AssertionError('A restart reparsed an unchanged book')):
             self.assertEqual(bible_study.sermon_catalogue(self.app.AI_DATABASE),first)
-        cache=next((Path(self.app.AI_DATABASE).parent/'bible_study_data/catalogue_cache').glob('sermons-*.json.gz'))
+        cache=next((Path(self.app.AI_DATABASE).parent/'bible_study_data/catalogue_cache').glob('sermons-*.sqlite'))
         cache.write_bytes(b'broken derived cache')
         bible_study._sermon_catalogue.cache_clear()
         with patch.object(bible_study,'_indexed_source',wraps=bible_study._indexed_source) as reader:
@@ -1156,6 +1156,22 @@ class LibraryPortabilityTests(unittest.TestCase):
         with patch.object(bible_study,'_indexed_source',wraps=bible_study._indexed_source) as reader:
             self.assertEqual(bible_study.sermon_catalogue(self.app.AI_DATABASE),first)
             self.assertEqual(reader.call_count,1)
+
+    def test_reader_catalogue_selects_passages_and_ids_without_loading_other_articles(self):
+        import bible_study as b
+        sections=[dict(id='john',source_title='Fixture',title='John',ranges=[dict(book_id=43,chapter=3,verse=16,end_chapter=3,end_verse=18)],text='John text'),
+                  dict(id='psalm',source_title='Fixture',title='Psalm',ranges=[dict(book_id=19,chapter=23,verse=1,end_chapter=23,end_verse=6)],text='Psalm text')]
+        target=Path(self.app.AI_DATABASE).parent/'reader.sqlite'
+        b._store_reader_catalogue(target,'fixture',sections)
+        catalogue=b._ReaderCatalogue(target,'fixture')
+        # A corrupt unrelated article must never be read for John 3:16.
+        with closing(sqlite3.connect(target)) as conn,conn:
+            conn.execute("UPDATE sections SET payload=x'00' WHERE identifier='psalm'")
+        self.assertEqual(catalogue.select(43,3,16),[sections[0]])
+        self.assertEqual(catalogue.select(43,3,19),[])
+        self.assertEqual(catalogue.select(identifier='john'),[sections[0]])
+        self.assertEqual(catalogue.select(43,3),[sections[0]])
+        self.assertEqual(len(catalogue),2)
 
     def test_rich_source_cache_retains_revision_emphasis_without_sharing_mutable_blocks(self):
         import bible_study

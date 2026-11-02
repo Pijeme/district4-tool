@@ -63,7 +63,7 @@
         }catch(_error){/* Preserve the last known notice until the next successful check. */}
         finally{
             clearTimeout(timeout);busy=false;
-            if(authorized)timer=setTimeout(check,notice.hidden?15000:5000);
+            if(authorized)timer=setTimeout(check,notice.hidden?60000:5000);
         }
     }
     window.addEventListener("bible-study-sync-status",event=>{display(event.detail?.active===true);check();});

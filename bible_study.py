@@ -7,6 +7,7 @@ ordinary reading requests never create or migrate a database.
 import argparse
 import copy
 import ctypes
+from collections.abc import Sequence
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -39,6 +40,7 @@ from itsdangerous import URLSafeSerializer, BadSignature
 
 import pastor_resources as resources
 from pastor_resources import current_reader_user_key, is_resource_admin
+from runtime_config import background_job_slot
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -4041,7 +4043,7 @@ def sync_sources(path, folder_id, progress, fetch=None, drive=None, *, translati
 def _run_sync(app, path, lock, initial=None):
     progress = _SyncProgress(path, initial)
     try:
-        with app.app_context():
+        with app.app_context(), background_job_slot(app.config.get('DATABASE') or path, 'bible-study-sync'):
             options = ({'translation_folder_id':app.config['BIBLE_STUDY_TRANSLATION_FOLDER_ID']}
                        if app.config.get('BIBLE_STUDY_TRANSLATION_FOLDER_ID') else {})
             # Bible Study sync reads its dedicated sources; do not mutate the AI
@@ -4151,7 +4153,96 @@ def _source_documents(conn, rows):
 
 
 _CATALOGUE_BUILD_LOCK=threading.RLock()
-_CATALOGUE_PARSER_REVISION=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+# Bump when source parsing/section boundaries change, not for unrelated UI or
+# route edits. Source checksums, typography versions and live membership are
+# already included in each catalogue's documents fingerprint.
+_CATALOGUE_PARSER_REVISION=2
+
+
+class _ReaderCatalogue(Sequence):
+    """Disposable indexed articles; keep only requested text in worker memory."""
+
+    def __init__(self, path, key):
+        self.path=Path(path)
+        with self.connect() as conn:
+            stored=conn.execute('SELECT fingerprint,section_count FROM metadata').fetchone()
+            if not stored or stored[0]!=key:raise ValueError('Stale reader catalogue')
+            self.size=stored[1]
+
+    def connect(self):
+        return closing(sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True,timeout=5))
+
+    def __len__(self):return self.size
+
+    def __iter__(self):
+        with self.connect() as conn:
+            for row in conn.execute('SELECT payload FROM sections ORDER BY ordinal'):
+                yield json.loads(gzip.decompress(row[0]))
+
+    def __getitem__(self, index):
+        if isinstance(index,slice):return [self[i] for i in range(*index.indices(self.size))]
+        if index<0:index+=self.size
+        if not 0<=index<self.size:raise IndexError(index)
+        with self.connect() as conn:
+            row=conn.execute('SELECT payload FROM sections WHERE ordinal=?',(index,)).fetchone()
+        return json.loads(gzip.decompress(row[0]))
+
+    def __eq__(self, other):
+        if isinstance(other,_ReaderCatalogue) and self.path==other.path:return True
+        return list(self)==list(other) if isinstance(other,(Sequence,_ReaderCatalogue)) else NotImplemented
+
+    def select(self, book_id=None, chapter=None, verse=None, identifier=None):
+        clauses=[];params=[]
+        if identifier is not None:
+            clauses.append('s.identifier=?');params.append(identifier)
+        if book_id is not None:
+            predicate='r.book_id=? AND r.first_chapter<=? AND r.last_chapter>=?'
+            params.extend((book_id,chapter,chapter))
+            if verse is not None:
+                predicate+=' AND r.first_point<=? AND r.last_point>=?'
+                params.extend((chapter*200+verse,chapter*200+verse))
+            clauses.append('s.ordinal IN (SELECT r.section_id FROM ranges r WHERE '+predicate+')')
+        query='SELECT s.payload FROM sections s'+(' WHERE '+' AND '.join(clauses) if clauses else '')+' ORDER BY s.ordinal'
+        with self.connect() as conn:
+            return [json.loads(gzip.decompress(row[0])) for row in conn.execute(query,params)]
+
+    def source_titles(self):
+        with self.connect() as conn:
+            return {row[0].casefold() for row in conn.execute('SELECT DISTINCT source_title FROM sections')}
+
+
+def _store_reader_catalogue(target, key, sections):
+    temporary=None
+    try:
+        target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        with tempfile.NamedTemporaryFile(dir=target.parent,prefix=target.stem+'-',suffix='.tmp',delete=False) as stream:
+            temporary=Path(stream.name)
+        with closing(sqlite3.connect(temporary)) as conn,conn:
+            conn.executescript('''CREATE TABLE metadata(fingerprint TEXT,section_count INTEGER);
+                CREATE TABLE sections(ordinal INTEGER PRIMARY KEY,identifier TEXT,source_title TEXT,payload BLOB NOT NULL);
+                CREATE INDEX section_identifier ON sections(identifier);
+                CREATE INDEX section_source_title ON sections(source_title);
+                CREATE TABLE ranges(section_id INTEGER,book_id INTEGER,first_chapter INTEGER,last_chapter INTEGER,
+                    first_point INTEGER,last_point INTEGER);
+                CREATE INDEX passage_ranges ON ranges(book_id,first_chapter,last_chapter,section_id);
+                CREATE INDEX section_ranges ON ranges(section_id,book_id);''')
+            conn.execute('INSERT INTO metadata VALUES (?,?)',(key,len(sections)))
+            for ordinal,section in enumerate(sections):
+                conn.execute('INSERT INTO sections VALUES (?,?,?,?)',(ordinal,section.get('id'),section['source_title'],
+                    gzip.compress(json.dumps(section,ensure_ascii=False,separators=(',',':')).encode(),compresslevel=1)))
+                spans=list(section['ranges'])
+                if section.get('source_chapter'):
+                    span=section['source_chapter'];spans.append(dict(span,verse=1,end_chapter=span['chapter'],end_verse=176))
+                conn.executemany('INSERT INTO ranges VALUES (?,?,?,?,?,?)',
+                    [(ordinal,s['book_id'],s['chapter'],s['end_chapter'],s['chapter']*200+s['verse'],
+                      s['end_chapter']*200+s['end_verse']) for s in spans])
+        os.replace(temporary,target)
+    finally:
+        if temporary:temporary.unlink(missing_ok=True)
+
+
+def _passage_catalogue(catalogue, book_id, chapter, verse):
+    return catalogue.select(book_id,chapter,verse) if isinstance(catalogue,_ReaderCatalogue) else catalogue
 
 
 def _persisted_catalogue(kind):
@@ -4161,29 +4252,24 @@ def _persisted_catalogue(kind):
         def cached(path, documents):
             key=hashlib.sha256(json.dumps([_CATALOGUE_PARSER_REVISION,str(Path(path).resolve()),documents],sort_keys=True).encode()).hexdigest()
             directory=Path(path).resolve().parent/'bible_study_data'/'catalogue_cache'
-            target=directory/(kind+'-'+key+'.json.gz')
+            target=directory/(kind+'-'+key+'.sqlite')
             # A second simultaneous first request waits for and reuses the first
             # build, rather than parsing the same multi-volume library again.
             with _CATALOGUE_BUILD_LOCK:
                 try:
-                    with gzip.open(target,'rt',encoding='utf-8') as stream:stored=json.load(stream)
-                    if stored.get('key')==key and isinstance(stored.get('sections'),list):return stored['sections']
-                except (OSError,ValueError,EOFError,AttributeError):pass
+                    return _ReaderCatalogue(target,key)
+                except (OSError,ValueError,sqlite3.DatabaseError):pass
+                start=time.perf_counter()
                 sections=build(path,documents)
-                temporary=None
                 try:
-                    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
-                    with tempfile.NamedTemporaryFile(dir=directory,prefix=kind+'-',suffix='.tmp',delete=False) as stream:temporary=Path(stream.name)
-                    with gzip.open(temporary,'wt',encoding='utf-8',compresslevel=1) as stream:
-                        json.dump(dict(key=key,sections=sections),stream,ensure_ascii=False,separators=(',',':'))
-                    os.replace(temporary,target)
-                except OSError:
+                    _store_reader_catalogue(target,key,sections)
+                    result=_ReaderCatalogue(target,key)
+                except (OSError,sqlite3.DatabaseError):
                     logging.getLogger(__name__).debug('Derived study cache unavailable; using the in-memory catalogue.')
-                finally:
-                    try:
-                        if temporary:temporary.unlink(missing_ok=True)
-                    except OSError:pass
-                return sections
+                    result=sections
+                logging.getLogger(__name__).warning('reader_catalogue_built kind=%s sections=%s seconds=%.3f',
+                    kind,len(sections),time.perf_counter()-start)
+                return result
         return cached
     return decorate
 
@@ -4696,9 +4782,11 @@ def wiersbe_commentary(ai_database, book_id, chapter, verse):
     for row in documents:
         unique.setdefault(row['title'].split(' (', 1)[0].casefold(), json.dumps(dict(row), sort_keys=True))
     catalogue = _wiersbe_catalogue(str(path), tuple(unique.values()))
-    result=_commentary_entries(catalogue, book_id, chapter, verse)
+    selected=_passage_catalogue(catalogue,book_id,chapter,verse)
+    result=_commentary_entries(selected, book_id, chapter, verse)
+    result['available']=bool(catalogue)
     for entry in result['entries']:
-        section=next(item for item in catalogue if item['document_id']==entry['document_id']
+        section=next(item for item in selected if item['document_id']==entry['document_id']
                      and item['source_section']==entry['source_section'] and item['title']==entry['title'])
         entry['blocks']=_rich_source_blocks(path,section)
     return result
@@ -4829,9 +4917,11 @@ def exalting_commentary(ai_database, book_id, chapter, verse, local_catalogue=()
     for row in documents:
         unique.setdefault(row['title'].split(' (',1)[0].casefold(), json.dumps(dict(row),sort_keys=True))
     indexed = _exalting_catalogue(str(path),tuple(unique.values()))
-    titles = {section['source_title'].casefold() for section in indexed}
-    combined = list(indexed) + [section for section in local_catalogue if section['source_title'].casefold() not in titles]
-    return _commentary_entries(combined,book_id,chapter,verse,format_outline=True)
+    titles = indexed.source_titles() if isinstance(indexed,_ReaderCatalogue) else {section['source_title'].casefold() for section in indexed}
+    combined = list(_passage_catalogue(indexed,book_id,chapter,verse)) + [section for section in local_catalogue if section['source_title'].casefold() not in titles]
+    result=_commentary_entries(combined,book_id,chapter,verse,format_outline=True)
+    result['available']=bool(indexed) or bool(combined)
+    return result
 
 
 def local_exalting_catalogue(conn):
@@ -4965,9 +5055,11 @@ def moody_commentary(ai_database, book_id, chapter, verse):
     # One preferred edition, with complete typography included in its fingerprint.
     encoded=tuple(json.dumps(doc,sort_keys=True) for doc in documents[:1])
     catalogue=_moody_catalogue(str(path),encoded)
-    result=_commentary_entries(catalogue,book_id,chapter,verse)
+    selected=_passage_catalogue(catalogue,book_id,chapter,verse)
+    result=_commentary_entries(selected,book_id,chapter,verse)
+    result['available']=bool(catalogue)
     for entry in result['entries']:
-        section=next(item for item in catalogue if item['title']==entry['title'] and item['source_section']==entry['source_section'])
+        section=next(item for item in selected if item['title']==entry['title'] and item['source_section']==entry['source_section'])
         entry['blocks']=_rich_source_blocks(path,section)
     return result
 
@@ -5047,7 +5139,7 @@ def pulpit_commentary(ai_database, book_id, chapter, verse, section_kind='exposi
         volume=re.search(r'\bvolume\s+([1-9])\b',doc['title'],re.I)
         if volume:unique.setdefault(volume[1],json.dumps(doc,sort_keys=True))
     catalogue=_pulpit_commentary_catalogue(str(path),tuple(unique.values()))
-    selected=[section for section in catalogue if section['section_kind']==section_kind]
+    selected=[section for section in _passage_catalogue(catalogue,book_id,chapter,verse) if section['section_kind']==section_kind]
     result=_commentary_entries(selected,book_id,chapter,verse)
     result['available']=bool(catalogue)
     greek=re.compile(r'[\u0370-\u03ff\u1f00-\u1fff][\u0370-\u03ff\u1f00-\u1fff\u0300-\u036f]*(?:[ \t]+[\u0370-\u03ff\u1f00-\u1fff][\u0370-\u03ff\u1f00-\u1fff\u0300-\u036f]*)*')
@@ -5634,7 +5726,9 @@ def sermon_catalogue(ai_database):
 
 
 def sermons_for_chapter(ai_database, book_id, chapter, study_database=None):
-    matches = [item for item in sermon_catalogue(ai_database) if
+    catalogue=sermon_catalogue(ai_database)
+    candidates=catalogue.select(book_id,chapter) if isinstance(catalogue,_ReaderCatalogue) else catalogue
+    matches = [item for item in candidates if
         item.get('source_chapter')==dict(book_id=book_id,chapter=chapter) or any(
             span['book_id'] == book_id and span['chapter'] <= chapter <= span['end_chapter'] for span in item['ranges'])]
     if study_database:matches.extend(study_sermon_outlines(study_database,book_id,chapter))
@@ -6957,7 +7051,9 @@ def register_bible_study_routes(app):
             if sermon_id.startswith('outline-'):
                 item=next(iter(study_sermon_outlines(configured_path(),identifier=sermon_id)),None)
             else:
-                item = next((item for item in sermon_catalogue(app.config['AI_DATABASE']) if item['id']==sermon_id),None)
+                catalogue=sermon_catalogue(app.config['AI_DATABASE'])
+                candidates=catalogue.select(identifier=sermon_id) if isinstance(catalogue,_ReaderCatalogue) else catalogue
+                item = next((item for item in candidates if item['id']==sermon_id),None)
             if not item: return jsonify(ok=False,error='This sermon is no longer available.'),404
             blocks = item.get('blocks') or _rich_source_blocks(app.config['AI_DATABASE'],item)
             return jsonify(ok=True,sermon={key:value for key,value in item.items() if key!='text'} | dict(blocks=blocks))

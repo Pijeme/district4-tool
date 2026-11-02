@@ -329,6 +329,9 @@ class CacheSafetyTests(unittest.TestCase):
             db.execute('''INSERT INTO user_login_events
                 (username, name, role, area_number, logged_in_at)
                 VALUES ('oldpastor', 'Old Pastor', 'Pastor', '1', '2020-01-01T00:00:00+00:00')''')
+        # Legacy schemas migrate before serving requests, including on Gunicorn.
+        with appmod.app.app_context():
+            appmod.init_db()
         for route in ('/', '/pastor-login'):
             with self.subTest(route=route):
                 with self.client.session_transaction() as state:

@@ -83,6 +83,46 @@ class RuntimeConfigTests(unittest.TestCase):
 
 
 class HealthEndpointTests(unittest.TestCase):
+    def test_gunicorn_style_import_initializes_a_fresh_database(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            env=dict(os.environ, DATA_DIR=directory, AI_DATABASE=str(Path(directory)/'ai.db'),
+                     BIBLE_STUDY_DATABASE=str(Path(directory)/'bible.db'),
+                     GEMINI_API_KEY='offline-test-key', FLASK_SECRET_KEY='offline-test-session')
+            script="""import app
+with app.app.app_context():
+    tables={row[0] for row in app.get_db().execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {'monthly_reports','sheet_cache_sync_state','area_monitor_remarks','user_login_events'} <= tables
+print('STARTUP_READY')
+"""
+            result=subprocess.run([sys.executable,'-B','-c',script],env=env,capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('STARTUP_READY',result.stdout)
+
+    def test_health_never_opens_sqlite(self):
+        import app as appmod
+        with patch('sqlite3.connect', side_effect=AssertionError('Health opened SQLite')):
+            self.assertEqual(appmod.app.test_client().get('/healthz').status_code, 200)
+
+    def test_startup_schema_survives_requests_without_reinitialization(self):
+        import app as appmod
+        import area_progress_monitor as monitor
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(appmod, 'DATABASE', str(Path(directory) / 'app.db')):
+            with appmod.app.app_context():
+                appmod.init_db()
+                self.assertIsNotNone(appmod.get_db().execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='area_monitor_remarks'").fetchone())
+            with patch.object(appmod, 'init_db', side_effect=AssertionError('Request initialized schema')), \
+                 patch.object(monitor, 'ensure_area_progress_monitor_tables', side_effect=AssertionError('Monitor initialized schema')), \
+                 patch.object(appmod, 'sync_from_sheets_if_needed', side_effect=AssertionError('Static fetched Sheets')):
+                client=appmod.app.test_client()
+                for path in ('/healthz', '/static/bible_study.js', '/static/bible_sync_notice.js'):
+                    response=client.get(path)
+                    self.assertEqual(response.status_code,200)
+                    response.close()
+
     def test_health_does_not_sync_or_write_even_during_maintenance(self):
         import app as appmod
         import pastor_resources
@@ -94,6 +134,57 @@ class HealthEndpointTests(unittest.TestCase):
             response = appmod.app.test_client().get("/healthz")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json(), {"status": "ok"})
+
+
+class BackgroundJobTests(unittest.TestCase):
+    def test_job_slot_is_shared_with_another_process(self):
+        import subprocess
+        import sys
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            path=str(Path(directory)/'app.db')
+            script="""import sys
+from runtime_config import background_job_slot
+with background_job_slot(sys.argv[1],'child'):
+    print('LOCKED',flush=True)
+    sys.stdin.readline()
+"""
+            child=subprocess.Popen([sys.executable,'-B','-c',script,path],stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            acquired=threading.Event()
+            def take_slot():
+                with config.background_job_slot(path,'parent'):
+                    acquired.set()
+            worker=threading.Thread(target=take_slot,daemon=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(),'LOCKED')
+                worker.start()
+                self.assertFalse(acquired.wait(.15),'Separate processes overlapped')
+            finally:
+                child.communicate('\n',timeout=10)
+                if worker.ident is not None:worker.join(3)
+            self.assertTrue(acquired.is_set(),'Process exit did not release the job lock')
+
+    def test_jobs_serialize_and_release_after_failure(self):
+        import threading
+        entered=threading.Event()
+        finished=threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            path=str(Path(directory)/'app.db')
+            def other_job():
+                with config.background_job_slot(path,'second'):
+                    entered.set()
+                finished.set()
+            worker=threading.Thread(target=other_job)
+            try:
+                with self.assertRaisesRegex(RuntimeError,'fixture failure'):
+                    with config.background_job_slot(path,'first'):
+                        worker.start()
+                        self.assertFalse(entered.wait(.1),'Heavy jobs overlapped')
+                        raise RuntimeError('fixture failure')
+            finally:
+                worker.join(3)
+            self.assertTrue(finished.is_set(),'Failed job did not release the slot')
 
 
 class OptionalTokenTests(unittest.TestCase):

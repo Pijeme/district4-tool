@@ -1728,7 +1728,8 @@ def start_sermon_sync(app):
 
     def worker():
         try:
-            with app.app_context():
+            from runtime_config import background_job_slot
+            with app.app_context(), background_job_slot(_appmod().DATABASE, 'sermon-library-sync'):
                 stats = sync_sermon_library(
                     progress_callback=update_sync_state
                 )

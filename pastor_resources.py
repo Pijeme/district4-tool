@@ -17157,7 +17157,8 @@ def start_resource_library_sync(app):
 
     def worker():
         try:
-            with app.app_context():
+            from runtime_config import background_job_slot
+            with app.app_context(), background_job_slot(_appmod().DATABASE, 'resource-library-sync'):
                 stats = sync_library_to_database_v3(
                     progress_callback=update_resource_sync_state,
                     cancel_callback=resource_sync_cancel_requested,

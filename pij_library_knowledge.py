@@ -725,6 +725,12 @@ def _store_index_error(row, error):
 
 
 def index_public_library(force=False):
+    from runtime_config import background_job_slot
+    with background_job_slot(_appmod().DATABASE, 'pij-library-index'):
+        return _index_public_library(force)
+
+
+def _index_public_library(force=False):
     """Index new/changed public ebooks and stop safely when cancellation is requested."""
     ensure_ai_library_tables()
     if not INDEX_LOCK.acquire(blocking=False):
