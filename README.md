@@ -486,9 +486,11 @@ To check the changes locally:
    that existing highlights, notes and bookmarks still appear. `/healthz` should
    return `{"status":"ok"}` without opening a database.
 5. On an iPad/tablet, check portrait and landscape layouts and move the divider.
-   Study tabs should stay within the right pane with tighter spacing. In a very
-   narrow study pane, scroll its tab row horizontally to reach all five tabs.
-   Also check Bible Fullscreen, Study Fullscreen and phone layout.
+   The study tabs stay in the fixed right half of the tab bar; their positions
+   and widths must not change when the reading panes resize. Also check Bible
+   Fullscreen, Study Fullscreen and phone layout. The selector uses `Cebuano -
+   APSD` and `Tagalog - ASND`; full edition names are in Reading settings. The
+   developer area banner is omitted from Bible Study to give the reader space.
 
 Use Task Manager's CPU column for the Python process while repeating the same
 browsing actions before/after. Request timings and local measurements help

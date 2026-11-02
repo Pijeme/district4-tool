@@ -21,6 +21,16 @@ import developer
 
 
 class ActivityTests(unittest.TestCase):
+    def test_bible_reader_omits_developer_area_banner(self):
+        self.login()
+        with self.client.session_transaction() as state:
+            state['ao_area_number']='7'
+        response=self.client.get('/pastor-resources/bible-study')
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn(b'class="developer-area-banner"',response.data)
+        self.assertIn(b'Cebuano - APSD',response.data)
+        self.assertIn(b'Tagalog - ASND',response.data)
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

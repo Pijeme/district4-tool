@@ -47,7 +47,7 @@
     function positionTabs() {
         if(mobile.matches) {
             element("Bible").prepend(readerTabs);element("Study").prepend(studyTabs);
-            element("EditionLabel").after(element("TranslationControl"));
+            element("LayoutMode").parentElement.prepend(element("TranslationControl"));
         } else {
             element("WideTabs").append(readerTabs,studyTabs);
             element("History").before(element("TranslationControl"));

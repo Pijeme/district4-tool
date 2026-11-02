@@ -348,8 +348,14 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const wait=()=>new Promise(resolve=>setTimeout(resolve,100));
             const translation=document.getElementById('bsTranslation');
             check(translation&&!translation.options[1].disabled,'Available translation missing');
+            check(translation.options[1].textContent==='Cebuano - APSD','Cebuano label is not compact');
+            check(translation.options[2].textContent==='Tagalog - ASND','Tagalog label is not compact');
+            check(document.getElementById('bsSettingsDialog').contains(document.getElementById('bsEditionLabel')),'Full edition name was not moved into reading settings');
             for(const [code,word] of [['CEBOCB','Ginoo'],['TCB','Panginoon']]){
                 translation.value=code;translation.dispatchEvent(new Event('change'));await wait();
+                const bounds=translation.getBoundingClientRect(),settings=document.getElementById('bsSettings').getBoundingClientRect();
+                check(bounds.left>=0&&bounds.right<=innerWidth,'Translation selector overflows the viewport');
+                check(bounds.right<=settings.left||bounds.left>=settings.right||bounds.bottom<=settings.top||bounds.top>=settings.bottom,'Translation selector overlaps reading settings');
                 const verse=document.querySelector('.bs-verse-text');
                 check(verse.textContent===word+' synthetic.\\nNext line.','Selected translation text/line breaks lost');
                 check(document.querySelector('.bs-verse-number').textContent==='2–3','Combined verse was split incorrectly');
@@ -1841,7 +1847,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
         with sync_playwright() as p:
             browser=p.chromium.launch(executable_path=BROWSER,headless=True)
             try:
-                for width,touch in ((768,True),(820,True),(1024,True),(1366,True),(1024,False),(1440,False),(393,True)):
+                for width,touch in ((768,True),(820,True),(1024,True),(1366,True),(1440,True),(1024,False),(1440,False),(393,True)):
                     with self.subTest(width=width,touch=touch):
                         context=browser.new_context(viewport=dict(width=width,height=1000),has_touch=touch,is_mobile=touch)
                         page=context.new_page();page.set_content(html);page.wait_for_selector('#bsVerse1')
@@ -1853,13 +1859,14 @@ class BibleStudyBrowserTests(unittest.TestCase):
                             else:
                                 self.assertEqual(widths,[104]*7)
                             if touch:
-                                self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();const pane=document.querySelector('#bsStudy').getBoundingClientRect();return tabs.left>=pane.left-2&&tabs.right<=pane.right+2;}'''),'Study tabs crossed into the Bible pane')
+                                self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();return tabs.left>=innerWidth/2&&tabs.right<=innerWidth;}'''),'Study tabs crossed the fixed center of the tablet')
                                 self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);return range.getBoundingClientRect().bottom<=tab.getBoundingClientRect().bottom+1;})'''),'Compact tablet tabs clip their text')
-                            before=page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width')
-                            page.locator('#bsDivider').dispatch_event('keydown',dict(key='End'))
-                            self.assertEqual(page.locator('#bsWideTabs').evaluate('e=>e.getBoundingClientRect().width'),before)
+                            def positions():return page.locator('#bsWideTabs [role=tab]').evaluate_all('tabs=>tabs.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})')
+                            before=positions()
+                            for key in ('Home','End'):
+                                page.locator('#bsDivider').dispatch_event('keydown',dict(key=key))
+                                self.assertEqual(positions(),before,'Resizing the reading panes moved the tabs')
                             if touch:
-                                self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();const pane=document.querySelector('#bsStudy').getBoundingClientRect();return tabs.left>=pane.left-2&&tabs.right<=pane.right+2;}'''),'Resizing let study tabs cross the divider')
                                 page.locator('#bsLayoutMode').select_option('study')
                                 self.assertTrue(page.locator('#bsWideTabs>[aria-label="Study tools"]').is_visible())
                         else:
@@ -1901,10 +1908,12 @@ class BibleStudyBrowserTests(unittest.TestCase):
                         assert_navigation()
                         self.assertGreater(page.locator('#bsBible').evaluate('e=>e.scrollTop'),0,'Fixture did not restore a scrolled passage')
                         if width>700:
+                            def positions():return page.locator('#bsWideTabs [role=tab]').evaluate_all('tabs=>tabs.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})')
+                            before=positions()
                             for key in ('Home','End'):
                                 page.locator('#bsDivider').dispatch_event('keydown',dict(key=key));page.wait_for_timeout(20)
                                 self.assertGreaterEqual(page.locator('#bsBible').bounding_box()['width'],219)
-                                self.assertTrue(page.evaluate('''()=>{const group=document.querySelector('#bsWideTabs>[aria-label="Study tools"]'),r=group.getBoundingClientRect(),pane=document.querySelector('#bsStudy').getBoundingClientRect();return r.left>=pane.left-2&&r.right<=pane.right+2&&getComputedStyle(group).overflowX==='auto';}'''),'Study tabs escaped their pane instead of scrolling inside it')
+                                self.assertEqual(positions(),before,'Safari moved the tabs with the divider')
                             page.locator('#bsIllustrationsTab').click()
                             self.assertTrue(page.locator('#bsIllustrationsTab').evaluate('e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth}'),'Last study tab is unreachable in a narrow pane')
                         page.evaluate('window.scrollTo(0,100);window.dispatchEvent(new Event("pageshow"))')

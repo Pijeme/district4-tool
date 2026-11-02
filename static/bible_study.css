@@ -245,9 +245,9 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
 .bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
 .bs-root .bs-wide-tabs button{flex:0 0 104px;width:104px;min-width:104px;max-width:104px;white-space:normal;padding:5px 8px}
-@media(min-width:701px) and (max-width:1366px) and (any-pointer:coarse){
- /* Match the pane columns so study tabs never spill into the Bible half. */
- .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,calc(var(--bs-split)*1%)) 10px minmax(0,1fr);gap:0;overflow:hidden;padding:0 1px}
+@media(min-width:701px) and (any-pointer:coarse){
+ /* Anchor tablet tabs to two fixed halves, independently of the pane divider. */
+ .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,1fr) 10px minmax(0,1fr);gap:0;overflow:hidden;padding:0 1px}
  .bs-wide-tabs>.bs-reader-tabs{grid-column:1;min-width:0;overflow-x:auto;gap:2px;padding-left:4px;padding-right:4px}
  .bs-root .bs-wide-tabs button{flex-basis:88px;width:88px;min-width:88px;max-width:88px;padding-left:4px;padding-right:4px}
  .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:3;display:grid;grid-template-columns:repeat(5,minmax(64px,1fr));justify-self:end;width:100%;max-width:444px;min-width:0;gap:0;padding:4px 2px 0;overflow-x:auto;scrollbar-width:thin}
@@ -271,7 +271,8 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 }
 @media(max-width:360px){.bs-root .bs-study>.bs-study-tabs{gap:1px;padding-left:2px;padding-right:2px}.bs-root .bs-study>.bs-study-tabs button{font-size:10px;padding-left:1px;padding-right:1px}}
 
-#bsTranslation{max-width:100px;min-width:70px;flex-shrink:0}.bs-verse-text{white-space:pre-wrap}.bs-verse-footnotes{font:13px/1.6 Arial,sans-serif;color:var(--bs-muted);margin:0 0 14px}.bs-verse-footnotes summary{cursor:pointer}.bs-verse-footnotes p{white-space:pre-wrap}
+#bsTranslation{width:140px;max-width:100%;min-width:0;flex-shrink:0}.bs-verse-text{white-space:pre-wrap}.bs-verse-footnotes{font:13px/1.6 Arial,sans-serif;color:var(--bs-muted);margin:0 0 14px}.bs-verse-footnotes summary{cursor:pointer}.bs-verse-footnotes p{white-space:pre-wrap}
+.bs-settings-edition{margin:0;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
 .bs-translation-control{display:flex;align-items:center;flex:0 0 auto}
 .bs-verse-body,.bs-chain-margin{min-width:0;overflow-wrap:anywhere}
 .bs-root .bs-verse-row>.bs-verse-body{grid-column:1;grid-row:1}

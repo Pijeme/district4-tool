@@ -349,7 +349,7 @@
   {% endif %}
 
   <main class="app-main">
-    {% if website_activity_owner %}
+    {% if website_activity_owner and request.endpoint != 'bible_study.page' %}
     <div class="developer-area-banner">Working in Area {{ developer_working_area }} · Developer
       {% if developer_home_area and developer_home_area != developer_working_area %}
       <form method="post" action="{{ url_for('developer_working_area') }}" style="display:inline">

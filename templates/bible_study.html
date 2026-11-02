@@ -2,12 +2,13 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='tablet-pane-tabs-35') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='tablet-fixed-tabs-36') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
     <div class="bs-dialog-head"><strong id="bsSettingsTitle">Reading settings</strong><button type="button" id="bsCloseSettings" aria-label="Close settings">&times;</button></div>
     <div class="bs-settings-content">
+      <fieldset><legend>Bible edition</legend><p class="bs-settings-edition" id="bsEditionLabel">NIV</p></fieldset>
       <fieldset><legend>Display</legend><div class="bs-modes" role="group" aria-label="Study layout">
         <button type="button" data-bs-mode="split" aria-pressed="true">Split View</button>
         <button type="button" data-bs-mode="bible" aria-pressed="false">Bible Fullscreen</button>
@@ -50,7 +51,7 @@
     <div class="bs-toolbar-main">
       <button type="button" id="bsNavigate" aria-haspopup="dialog" aria-controls="bsNavigationDialog">Genesis 1 &#9662;</button>
       <span class="bs-translation-control" id="bsTranslationControl"><label class="bs-visually-hidden" for="bsTranslation">Bible translation</label>
-        <select id="bsTranslation" aria-label="Bible translation"><option value="NIV">NIV</option><option value="CEBOCB">Cebuano</option><option value="TCB">Tagalog</option></select></span>
+        <select id="bsTranslation" aria-label="Bible translation"><option value="NIV" title="New International Version">NIV</option><option value="CEBOCB" title="Cebuano - Ang Pulong sa Dios">Cebuano - APSD</option><option value="TCB" title="Tagalog - Ang Salita ng Diyos">Tagalog - ASND</option></select></span>
       <button type="button" id="bsHistory" aria-label="Reading history" title="Reading history">{{ icon('clock') }}</button>
       <span hidden><label for="bsBook">Bible book</label><select id="bsBook">{% for book in bible_books %}<option value="{{ book.name }}" data-chapters="{{ book.chapters }}">{{ book.name }}</option>{% endfor %}</select><label for="bsChapter">Chapter</label><select id="bsChapter"><option value="1">1</option></select></span>
       <button type="button" id="bsPrevious" aria-label="Previous chapter">{{ icon('chevron', 'bs-icon-previous') }}</button>
@@ -59,7 +60,7 @@
       <button type="button" id="bsLarger" aria-label="Increase Bible text size">A+</button>
       <button type="button" id="bsSettings" aria-label="Reading settings" title="Reading settings" aria-haspopup="dialog" aria-controls="bsSettingsDialog">{{ icon('settings') }}</button>
     </div>
-    <div class="bs-toolbar-secondary"><span class="bs-translation" id="bsEditionLabel">NIV</span>
+    <div class="bs-toolbar-secondary">
       <label class="bs-visually-hidden" for="bsLayoutMode">Study layout</label><select id="bsLayoutMode"><option value="split">Split View</option><option value="bible">Bible Fullscreen</option><option value="study">Study Fullscreen</option></select>
     </div>
   </div>
@@ -222,5 +223,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='cpu-tablet-35') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='tablet-fixed-tabs-36') }}" defer></script>
 {% endblock %}
