@@ -34,13 +34,26 @@ function doPost(event) {
     if (bytes.length > 8*1024*1024 || signature.some((b,i) => (bytes[i] & 255) !== b)) return reply({ok:false, code:'IMAGE'});
     const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes)
       .map(b => (b & 255).toString(16).padStart(2,'0')).join('').slice(0,16);
-    const name = 'CCM-' + data.record_key + '-' + data.side + '-' + digest + '.png';
+    const isEvent = data.purpose === 'event';
+    if (isEvent && (!/^[a-f0-9]{32}$/.test(data.event_key) || data.side !== 'photo' ||
+        typeof data.filename !== 'string' || !/^Event>[^<>\r\n]+>[1-9][0-9]*\.png$/.test(data.filename) ||
+        data.filename.length > 240)) return reply({ok:false, code:'INPUT'});
+    const name = isEvent ? data.filename : 'CCM-' + data.record_key + '-' + data.side + '-' + digest + '.png';
+    const identity = isEvent ? 'Event:' + data.event_key + ':' + data.record_key + ':' + digest : '';
     lock = LockService.getScriptLock();
     lock.waitLock(25000);
     const folder = DriveApp.getFolderById(CCM_DRIVE_FOLDER);
     const files = folder.getFilesByName(name);
-    const file = files.hasNext() ? files.next() : folder.createFile(Utilities.newBlob(bytes, 'image/png', name));
-    return reply({ok:true, file_id:file.getId()});
+    let file;
+    while (files.hasNext()) {
+      const candidate = files.next();
+      if (!isEvent || candidate.getDescription() === identity) { file = candidate; break; }
+    }
+    if (!file) {
+      file = folder.createFile(Utilities.newBlob(bytes, 'image/png', name));
+      if (isEvent) file.setDescription(identity);
+    }
+    return reply({ok:true, file_id:file.getId(), name:name});
   } catch (error) {
     return reply({ok:false, code:'DRIVE'});
   } finally {

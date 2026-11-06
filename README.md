@@ -112,7 +112,11 @@ one-time migration below.
 Compose creates a named volume called `<project-name>_district4-data` at `/data`.
 It contains `app_v2.db`, `ai_index.db`, `pastor_resource_sync_state.db`, SQLite
 journal/lock files, `generated_reports/`, `book_thumbnail_cache/`, and
-`ccm_assets/`. Pending CCM accounts live in `app_v2.db`; their portraits and ID
+`ccm_assets/`, and `event_assets/`. Event configurations, registration details,
+payment/print/release states and queued Google removals live in `app_v2.db`;
+event backgrounds and portraits stay in `event_assets/`. Keep the existing data
+volume attached when updating. See [Event Registration setup](deployment/EVENT_REGISTRATION.md).
+Pending CCM accounts live in `app_v2.db`; their portraits and ID
 images stay in `ccm_assets/` until verified Google backup. These local records
 and files are runtime data and are not included in a published image. New images
 reuse this volume. Docker documents this [volume lifecycle](https://docs.docker.com/engine/storage/volumes/).

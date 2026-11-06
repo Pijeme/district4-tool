@@ -1,7 +1,9 @@
 """Safety checks use temporary SQLite databases and mocked Google Sheets only."""
 
 import copy
+import io
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -627,6 +629,599 @@ class CacheSafetyTests(unittest.TestCase):
         with appmod.app.app_context():
             self.sync(fake)
             self.assertEqual(appmod.get_db().execute('SELECT dataset FROM sheet_cache_pending_refresh').fetchone()[0],'Accounts')
+
+
+class CCMValidityTests(unittest.TestCase):
+    """Expiration survives local saves and Google backup without shifting old columns."""
+
+    def setUp(self):
+        from PIL import Image
+        directory = tempfile.TemporaryDirectory(prefix='district4_ccm_test_')
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.now = datetime(2026, 11, 6, 16, 0, tzinfo=timezone.utc)  # Nov 7 in Manila.
+        for replacement in (
+            patch.object(appmod, 'DATABASE', str(self.directory / 'app.db')),
+            patch.dict(os.environ, DATA_DIR=str(self.directory)),
+            patch.dict(appmod.app.config, TESTING=True, SECRET_KEY='ccm-test'),
+            patch.object(appmod, 'utc_now', return_value=self.now),
+            patch.object(appmod, 'get_gs_client', side_effect=AssertionError('Unexpected Google request')),
+            patch.object(appmod, 'ccm_churches', return_value=[{
+                'key': 'church', 'area': '1', 'church_id': 'C1', 'address': 'Church address', 'pastor': 'Pastor One'}]),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        with appmod.app.app_context():
+            appmod.init_db()
+            appmod.ccm_cache_write([])
+        self.client = appmod.app.test_client()
+        self.key = 'a' * 32
+        with self.client.session_transaction() as state:
+            state.update(ccm_admin_until=appmod.time.time() + 3600, ccm_csrf='csrf',
+                         ccm_draft={'key': self.key, 'created': self.now.isoformat()})
+        buffer = io.BytesIO()
+        Image.new('RGB', (400, 400), '#cbdcec').save(buffer, 'PNG')
+        self.photo = buffer.getvalue()
+
+    def form(self):
+        return dict(csrf_token='csrf', form_key=self.key, name='Worker One', area='1', church_key='church',
+                    photo=(io.BytesIO(self.photo), 'photo.png'))
+
+    def save(self):
+        response = self.client.post('/ccm/admin/save', data=self.form())
+        self.assertEqual(response.status_code, 200, response.data)
+        with appmod.app.app_context():
+            return appmod.ccm_pending()[self.key]
+
+    def test_preview_and_save_assign_expiration_and_ignore_posted_overrides(self):
+        for endpoint in ('preview', 'save'):
+            with self.subTest(endpoint=endpoint), \
+                 patch.object(appmod, 'ccm_render_id', wraps=appmod.ccm_render_id) as render:
+                data = self.form()
+                data['expiration_date'] = '2099-01-01'
+                response = self.client.post('/ccm/admin/' + endpoint, data=data)
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertTrue(response.json['ok'])
+                self.assertEqual(render.call_args.args[0]['Expiration Date'], '2027-11-07')
+
+    def test_expiration_uses_calendar_anniversary_and_local_creation_date(self):
+        for created, expected in [
+            ('2026-11-06T16:00:00+00:00', '2027-11-07'),
+            ('2023-03-01T00:00:00+08:00', '2024-03-01'),
+            ('2024-02-28T16:00:00+00:00', '2025-02-28'),
+            ('2024-12-31T16:00:00+00:00', '2026-01-01'),
+        ]:
+            with self.subTest(created=created):
+                self.assertEqual(appmod.ccm_id_expiration(created), expected)
+
+    def test_validity_includes_expiration_day_in_manila_and_preserves_legacy(self):
+        for expiration, expired in [('2026-11-06', True), ('2026-11-07', False),
+                                    ('2026-11-08', False), ('', False), (None, False), ('bad-date', True)]:
+            with self.subTest(expiration=expiration):
+                self.assertEqual(appmod.ccm_expired(expiration), expired)
+        record = self.save()
+        with appmod.app.app_context():
+            for expiration, expected in [('2026-11-06', b'Expired worker ID'),
+                                         ('2026-11-07', b'Active worker ID'), ('', b'Active worker ID')]:
+                record['Expiration Date'] = expiration
+                with patch.object(appmod, 'ccm_pending', return_value={self.key: record}):
+                    response = self.client.get('/ccm/verify/' + self.key)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(expected, response.data)
+            record['Status'] = 'Inactive'
+            with patch.object(appmod, 'ccm_pending', return_value={self.key: record}):
+                self.assertIn(b'Inactive worker ID', self.client.get('/ccm/verify/' + self.key).data)
+
+    def test_save_edit_and_pages_preserve_expiration_and_identity(self):
+        record = self.save()
+        self.assertEqual(record['Expiration Date'], '2027-11-07')
+        for path in ('/ccm?tab=workers', '/ccm/saved/' + self.key, '/ccm/print/' + self.key):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b'Nov 07, 2027', response.data)
+            response.close()
+        response = self.client.get('/ccm?tab=admin&edit=' + self.key)
+        self.assertIn(b'id="ccmExpirationDate" type="text" readonly value="Nov 07, 2027"', response.data)
+        self.assertNotIn(b'name="expiration_date"', response.data)
+        data = self.form()
+        data.pop('photo')
+        data.update(record_key=self.key, revision=record['Updated At'])
+        with patch.object(appmod, 'utc_now', return_value=datetime(2027, 1, 1, tzinfo=timezone.utc)):
+            response = self.client.post('/ccm/admin/save', data=data)
+        self.assertEqual(response.status_code, 200, response.data)
+        with appmod.app.app_context():
+            edited = appmod.ccm_pending()[self.key]
+            self.assertEqual(edited['Expiration Date'], '2027-11-07')
+            for field in ('ID Number', 'Created At', 'Verification URL'):
+                self.assertEqual(edited[field], record[field])
+
+    def test_sheet_migration_only_appends_expiration_and_rejects_other_changes(self):
+        legacy_headers = appmod.CCM_HEADERS[:-1]
+        sheet = Mock(col_count=17)
+        sheet.row_values.return_value = legacy_headers
+        google = Mock()
+        google.open.return_value.worksheet.return_value = sheet
+        with patch.object(appmod, 'get_gs_client', return_value=google):
+            self.assertIs(appmod.ccm_sheet(), sheet)
+            sheet.resize.assert_called_once_with(cols=18)
+            sheet.update.assert_called_once_with(range_name='A1:R1', values=[appmod.CCM_HEADERS], value_input_option='RAW')
+            sheet.row_values.return_value = ['Unexpected'] + legacy_headers[1:]
+            with self.assertRaises(appmod.CCMStorageError):
+                appmod.ccm_sheet()
+            self.assertEqual(sheet.update.call_count, 1)
+        row = ['legacy-' + str(i) for i in range(17)]
+        legacy = appmod.ccm_sheet_records([legacy_headers, row])[0]
+        self.assertEqual(legacy['Verification URL'], row[16])
+        self.assertEqual(legacy['Expiration Date'], '')
+
+    def test_backup_round_trip_preserves_expiration_on_append_and_update(self):
+        record = self.save()
+        for existing in (False, True):
+            with self.subTest(existing=existing), appmod.app.app_context():
+                # Recreate the local assets after the first backup's confirmed cleanup.
+                row = {**record, '_cloud_revision': record['Updated At'] if existing else ''}
+                appmod.ccm_write_local_assets(row, {'photo': self.photo,
+                    **appmod.ccm_render_id(row, self.photo)})
+                appmod.get_db().execute('INSERT OR REPLACE INTO ccm_pending_workers (key,payload) VALUES (?,?)',
+                                        (self.key, appmod.json.dumps(row)))
+                appmod.get_db().commit()
+                values = [list(appmod.CCM_HEADERS)]
+                if existing:
+                    values.append([record.get(h, '') for h in appmod.CCM_HEADERS])
+                sheet = Mock()
+                sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+                sheet.append_row.side_effect = lambda row, **kw: values.append(list(row))
+                sheet.update.side_effect = lambda **kw: values.__setitem__(1, list(kw['values'][0]))
+                with patch.object(appmod, 'ccm_sheet', return_value=sheet), \
+                     patch.object(appmod, 'ccm_upload', side_effect=lambda key, side, body: 'cloud-' + side), \
+                     patch.object(appmod, 'ccm_verify_upload'):
+                    result = appmod.ccm_backup_worker(self.key)
+                self.assertTrue(result['cleaned'])
+                self.assertEqual(appmod.ccm_pending(), {})
+                cloud = appmod.ccm_sheet_records(values)[0]
+                self.assertEqual(cloud['Expiration Date'], '2027-11-07')
+                self.assertEqual(cloud['Verification URL'], record['Verification URL'])
+                if existing:
+                    self.assertEqual(sheet.update.call_args.kwargs['range_name'], 'A2:R2')
+
+
+class EventRegistrationTests(unittest.TestCase):
+    """Public registration and local-authoritative administration use no live services."""
+
+    def setUp(self):
+        from PIL import Image
+        directory = tempfile.TemporaryDirectory(prefix='district4_event_test_')
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.now = datetime(2026,11,6,8,0,tzinfo=timezone.utc)
+        buffer = io.BytesIO()
+        Image.new('RGB',(400,400),'#cbdcec').save(buffer,'PNG')
+        self.photo = buffer.getvalue()
+        self.real_renderer = appmod.event_render_id
+        for replacement in (
+            patch.object(appmod,'DATABASE',str(self.directory/'app.db')),
+            patch.dict(os.environ,DATA_DIR=str(self.directory)),
+            patch.dict(appmod.app.config,TESTING=True,SECRET_KEY='event-tests'),
+            patch.object(appmod,'utc_now',return_value=self.now),
+            patch.object(appmod,'get_gs_client',side_effect=AssertionError('Unexpected live Google request')),
+            patch.object(appmod,'event_render_id',return_value=self.photo),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        with appmod.app.app_context():
+            appmod.init_db()
+            appmod.event_tables()
+            sheet_cache.sync_cache(appmod.get_db(),appmod.DATABASE,lambda:FakeSheets(),appmod.parse_float,
+                                   appmod.parse_sheet_date,lambda:self.now.isoformat())
+        self.client = appmod.app.test_client()
+        self.client.get('/event-registration')
+
+    def csrf(self):
+        with self.client.session_transaction() as state:
+            return state['event_csrf']
+
+    def admin(self, developer=False):
+        with self.client.session_transaction() as state:
+            state['event_admin_until'] = appmod.time.time()+3600
+            if developer:
+                state.update(ao_logged_in=True,ao_username='Pijeme',ao_role='Area Overseer',ao_area_number='1')
+
+    def create_event(self, kind='District Convention', year=2026):
+        self.admin(developer=True)
+        response = self.client.post('/event-registration/admin/event/save',data={
+            'csrf_token':self.csrf(),'kind':kind,'start_date':f'{year}-12-20','end_date':f'{year}-12-23',
+            'theme':'THE URGENT CALL FOR THE GREAT HARVEST','scripture':'Matthew 9:35–38',
+            'background':(io.BytesIO(self.photo),'background.png')})
+        self.assertEqual(response.status_code,200,response.data)
+        with appmod.app.app_context():
+            return dict(appmod.event_current())
+
+    def register_details(self,event,name='Attendee One',manual=False):
+        self.client.get('/event-registration?new=1')
+        with self.client.session_transaction() as state:
+            key = state['event_form_key']
+        with appmod.app.app_context():
+            church = appmod.ccm_churches()[0]
+        data = dict(csrf_token=self.csrf(),form_key=key,event_id=str(event['id']),event_key=event['key'],name=name,
+                    birthday='2000-06-01',contact='',area=church['area'],church_key=church['key'],
+                    address='Forged address',pastor='Forged pastor')
+        if manual:
+            data.update(new_church='1',church='New Church',address='New Address',pastor='New Pastor')
+        response = self.client.post('/event-registration/details',data=data)
+        self.assertEqual(response.status_code,200,response.data)
+        return key,data
+
+    def capture(self,key):
+        response = self.client.post('/event-registration/photo/'+key,data={
+            'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(self.photo),'camera-photo.png')})
+        self.assertEqual(response.status_code,200,response.data)
+        with appmod.app.app_context():
+            return dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+
+    def test_public_access_admin_password_and_developer_boundary(self):
+        page = self.client.get('/event-registration?tab=admin')
+        self.assertEqual(page.status_code,200)
+        self.assertNotIn(b'EventAdminD4',page.data)
+        self.assertNotIn(b'eventCreateButton',page.data)
+        self.assertEqual(self.client.post('/event-registration/admin/event/save',data={'csrf_token':self.csrf()}).status_code,403)
+        self.assertEqual(self.client.post('/event-registration/admin/login',data={'password':'EventAdminD4'}).status_code,400)
+        self.client.post('/event-registration/admin/login',data={'password':'EventAdminD4','csrf_token':self.csrf()})
+        self.assertIn(b'eventBackupButton',self.client.get('/event-registration?tab=admin').data)
+        self.assertEqual(self.client.post('/event-registration/admin/event/save',data={'csrf_token':self.csrf()}).status_code,403)
+        self.admin(developer=True)
+        self.assertIn(b'eventCreateButton',self.client.get('/event-registration?tab=admin').data)
+
+    def test_local_details_creation_timestamp_and_registration_number_are_stable(self):
+        event = self.create_event()
+        key,data = self.register_details(event)
+        with appmod.app.app_context():
+            original = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+            self.assertEqual(original['created_at'],self.now.isoformat())
+            self.assertNotEqual(original['address'],'Forged address')
+            self.assertNotEqual(original['pastor'],'Forged pastor')
+            self.assertEqual(original['church'],'ChurchA')
+            self.assertIsNone(original['number'])
+        with patch.object(appmod,'utc_now',return_value=datetime(2026,11,7,tzinfo=timezone.utc)):
+            self.assertEqual(self.client.post('/event-registration/details',data=data).status_code,200)
+            saved = self.capture(key)
+            self.capture(key)
+        self.assertEqual(saved['created_at'],original['created_at'])
+        self.assertEqual(saved['number'],1)
+        with appmod.app.app_context():
+            self.assertEqual(appmod.event_current()['next_number'],2)
+        second,_ = self.register_details(event,'Attendee Two')
+        self.assertEqual(self.capture(second)['number'],2)
+        new_event = self.create_event('Youth Convention')
+        third,_ = self.register_details(new_event,'Attendee Three')
+        self.assertEqual(self.capture(third)['number'],1)
+
+    def test_new_church_is_local_and_camera_step_has_no_upload_control(self):
+        event = self.create_event()
+        key,_ = self.register_details(event,manual=True)
+        page = self.client.get('/event-registration/photo/'+key)
+        self.assertIn(b'eventCameraCapture',page.data)
+        self.assertNotIn(b'type="file"',page.data)
+        with appmod.app.app_context():
+            attendee = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual((attendee['church'],attendee['address'],attendee['pastor']),('New Church','New Address','New Pastor'))
+            self.assertIsNone(appmod.get_db().execute("SELECT 1 FROM sheet_accounts_cache WHERE sex='New Church'").fetchone())
+        self.assertEqual(self.client.post('/event-registration/photo/'+key,data={
+            'csrf_token':self.csrf(),'photo':(io.BytesIO(self.photo),'upload.png')}).status_code,400)
+        stranger = appmod.app.test_client()
+        self.assertEqual(stranger.get('/event-registration/photo/'+key).status_code,403)
+        self.capture(key)
+        self.assertEqual(stranger.get('/event-registration/image/'+key+'/photo.png').status_code,403)
+        ticket = stranger.get('/event-registration/ticket/'+key)
+        self.assertEqual(ticket.status_code,200)
+        self.assertNotIn(b'2000-06-01',ticket.data)
+        self.assertIn('no-store',ticket.headers['Cache-Control'])
+
+    def test_status_reversal_confirmation_and_print_completion_are_explicit(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        original = self.capture(key)
+        url = '/event-registration/admin/status/'+key
+        revision = original['revision']
+        for field in ('paid','released'):
+            data = dict(csrf_token=self.csrf(),field=field,value='1',revision=str(revision))
+            response = self.client.post(url,data=data)
+            self.assertEqual(response.status_code,200,response.data)
+            revision += 1
+            data.update(value='0',revision=str(revision))
+            self.assertEqual(self.client.post(url,data=data).status_code,400)
+            data['confirm'] = 'yes'
+            self.assertEqual(self.client.post(url,data=data).status_code,200)
+            revision += 1
+        page = self.client.get('/event-registration/print/'+key)
+        self.assertEqual(page.status_code,200)
+        self.assertIn(b'eventPrintComplete',page.data)
+        download = self.client.get('/event-registration/image/'+key+'/id.png?download=1')
+        self.assertEqual(download.status_code,200)
+        download.close()
+        with appmod.app.app_context():
+            record = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(record['printed'],0)
+            self.assertEqual(record['created_at'],original['created_at'])
+        response = self.client.post(url,data=dict(csrf_token=self.csrf(),field='printed',value='1',revision=str(revision)))
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.client.post(url,data=dict(csrf_token=self.csrf(),field='paid',value='1',revision='1')).status_code,409)
+        stranger = appmod.app.test_client()
+        self.assertEqual(stranger.get('/event-registration/image/'+key+'/id.png').status_code,403)
+
+    def test_photo_filename_uses_registration_order_and_keeps_local_source(self):
+        event = self.create_event()
+        key,_ = self.register_details(event,'Juan Dela Cruz')
+        attendee = self.capture(key)
+        with appmod.app.app_context(), patch.object(appmod,'ccm_upload',return_value='drive-file') as upload, \
+             patch.object(appmod,'ccm_verify_upload'):
+            self.assertEqual(appmod.event_upload_photo(key),'drive-file')
+            self.assertEqual(upload.call_args.kwargs,{'filename':'Event>Juan Dela Cruz>1.png','event_key':event['key']})
+            self.assertTrue(appmod.event_asset_path(attendee['photo']).exists())
+
+    def test_google_submission_overwrites_remote_values_and_is_idempotent(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        original = self.capture(key)
+        headers = list(reversed(appmod.EVENT_HEADERS))  # Export follows names, not fixed header order.
+        values = [headers]
+        sheet = Mock()
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        sheet.append_row.side_effect = lambda row,**kw: values.append(list(row))
+        sheet.update.side_effect = lambda **kw: values.__setitem__(int(kw['range_name'].split(':')[0][1:])-1,list(kw['values'][0]))
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
+             patch.object(appmod,'event_upload_photo',return_value='drive-file'):
+            appmod.event_backup_attendee(key)
+            values[1][headers.index('Paid')] = 'Remote value'
+            values[1][headers.index('Name')] = 'Edited remotely'
+            appmod.event_backup_attendee(key)
+            self.assertEqual(len(values),2)
+            self.assertEqual(values[1][headers.index('Paid')],'')
+            self.assertEqual(values[1][headers.index('Name')],original['name'])
+            self.assertEqual(values[1][headers.index('Date created')],original['created_at'])
+            self.assertEqual(values[1][headers.index('Event')],event['name'])
+            self.assertTrue(appmod.event_asset_path(original['photo']).exists())
+            def uncertain_append(row,**kw):
+                values.append(list(row))
+                raise TimeoutError('Acknowledgement lost')
+            values[:] = [headers]
+            appmod.get_db().execute("UPDATE event_attendees SET sheet_row=NULL,cloud_snapshot='' WHERE key=?",(key,))
+            appmod.get_db().commit()
+            sheet.append_row.side_effect = uncertain_append
+            with self.assertRaises(TimeoutError):
+                appmod.event_backup_attendee(key)
+            appmod.event_backup_attendee(key)
+            self.assertEqual(len(values),2)
+
+    def test_drive_bridge_preserves_ccm_uploads_and_requires_event_filename_acknowledgement(self):
+        filename = 'Event>Juan Dela Cruz>10.png'
+        response = Mock()
+        response.json.return_value = {'ok':True,'file_id':'drive-file'}
+        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/test/exec',CCM_DRIVE_API_TOKEN='x'*32), \
+             patch.object(appmod.requests,'post',return_value=response) as post:
+            self.assertEqual(appmod.ccm_upload('a'*32,'photo',self.photo),'drive-file')
+            self.assertNotIn('purpose',post.call_args.kwargs['json'])
+            with self.assertRaisesRegex(appmod.CCMStorageError,'Update the CCM Drive upload script'):
+                appmod.ccm_upload('a'*32,'photo',self.photo,filename=filename,event_key='b'*32)
+            response.json.return_value = {'ok':True,'file_id':'drive-file','name':filename}
+            self.assertEqual(appmod.ccm_upload('a'*32,'photo',self.photo,filename=filename,event_key='b'*32),'drive-file')
+            payload = post.call_args.kwargs['json']
+            self.assertEqual((payload['purpose'],payload['filename'],payload['event_key']),('event',filename,'b'*32))
+
+    def test_status_changes_during_backup_remain_unsynced_and_failure_keeps_local_data(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        original = self.capture(key)
+        values = [list(appmod.EVENT_HEADERS)]
+        sheet = Mock()
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        def append_and_change(row,**kw):
+            values.append(list(row))
+            appmod.get_db().execute('UPDATE event_attendees SET paid=1,revision=revision+1 WHERE key=?',(key,))
+            appmod.get_db().commit()
+        sheet.append_row.side_effect = append_and_change
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,appmod.EVENT_HEADERS)), \
+             patch.object(appmod,'event_upload_photo',return_value='drive-file'):
+            result = appmod.event_backup_attendee(key)
+            self.assertFalse(result['clean'])
+            attendee = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(attendee['paid'],1)
+            self.assertLess(attendee['backed_up_revision'],attendee['revision'])
+        with patch.object(appmod,'event_upload_photo',side_effect=appmod.CCMStorageError('Drive unavailable')):
+            response = self.client.post('/event-registration/admin/backup/'+key,data={'csrf_token':self.csrf()})
+            self.assertEqual(response.status_code,503)
+        with appmod.app.app_context():
+            self.assertTrue(appmod.event_asset_path(original['photo']).exists())
+            self.assertEqual(appmod.get_db().execute('SELECT COUNT(*) FROM event_attendees').fetchone()[0],1)
+
+    def test_event_change_keeps_old_details_and_invalidates_old_camera_step(self):
+        first = self.create_event()
+        key,_ = self.register_details(first)
+        second = self.create_event('Youth Convention')
+        response = self.client.post('/event-registration/photo/'+key,data={
+            'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(self.photo),'camera.png')})
+        self.assertEqual(response.status_code,400)
+        self.client.get('/event-registration')
+        with self.client.session_transaction() as state:
+            self.assertNotEqual(state['event_form_key'],key)
+            self.assertEqual(state['event_form_event_id'],second['id'])
+        with appmod.app.app_context():
+            self.assertEqual(appmod.get_db().execute('SELECT complete FROM event_attendees WHERE key=?',(key,)).fetchone()[0],0)
+
+    def test_admin_table_hides_sheet_only_fields_and_deletion_revokes_registration(self):
+        event = self.create_event()
+        key,_ = self.register_details(event,'Wrong Registration')
+        original = self.capture(key)
+        page = self.client.get('/event-registration?tab=admin')
+        headings = page.data.split(b'<thead>')[1].split(b'</thead>')[0]
+        for column in ('Bday','Contact #','Pastor','Date created','Event','Google copy'):
+            self.assertNotIn(('<th>'+column+'</th>').encode(),headings)
+        self.assertIn(b'<th>Delete</th>',headings)
+        body = page.data.split(b'id="eventAttendeeRows"')[1].split(b'</tbody>')[0]
+        self.assertNotIn(b'2000-06-01',body)
+        self.assertNotIn(b'Pastor One',body)
+        self.assertIn(b'data-delete-url=',body)
+        url = '/event-registration/admin/delete/'+key
+        self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf(),'revision':original['revision']}).status_code,400)
+        self.assertEqual(appmod.app.test_client().post(url,data={'confirm':'yes'}).status_code,403)
+        data = dict(csrf_token=self.csrf(),confirm='yes',revision=0)
+        self.assertEqual(self.client.post(url,data=data).status_code,409)
+        data['revision'] = original['revision']
+        self.assertEqual(self.client.post(url,data=data).status_code,200)
+        self.assertEqual(self.client.post(url,data=data).status_code,200)  # Repeated acknowledgement is safe.
+        self.assertNotIn(b'Wrong Registration',self.client.get('/event-registration?tab=admin').data)
+        for path in ('/event-registration/ticket/','/event-registration/print/','/event-registration/photo/'):
+            self.assertEqual(self.client.get(path+key).status_code,404)
+        second,_ = self.register_details(event,'Correct Registration')
+        self.assertEqual(self.capture(second)['number'],2)
+        with appmod.app.app_context():
+            stored = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(stored['birthday'],original['birthday'])
+            self.assertEqual(stored['created_at'],original['created_at'])
+
+    def test_only_developer_can_delete_event_and_name_can_be_reused(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        self.capture(key)
+        ordinary_admin = appmod.app.test_client()
+        with ordinary_admin.session_transaction() as state:
+            state.update(event_admin_until=appmod.time.time()+3600,event_csrf='ordinary-admin')
+        url = f"/event-registration/admin/event/{event['id']}/delete"
+        self.assertNotIn(b'eventDeleteEventButton',ordinary_admin.get('/event-registration?tab=admin').data)
+        self.assertEqual(ordinary_admin.post(url,data={'csrf_token':'ordinary-admin','confirm':'yes','updated_at':event['updated_at']}).status_code,403)
+        self.assertIn(b'eventDeleteEventButton',self.client.get('/event-registration?tab=admin').data)
+        data = dict(csrf_token=self.csrf(),updated_at=event['updated_at'])
+        self.assertEqual(self.client.post(url,data=data).status_code,400)
+        data.update(confirm='yes',updated_at='stale')
+        self.assertEqual(self.client.post(url,data=data).status_code,409)
+        data['updated_at'] = event['updated_at']
+        self.assertEqual(self.client.post(url,data=data).status_code,200)
+        with appmod.app.app_context():
+            self.assertIsNone(appmod.event_current())
+        self.assertEqual(self.client.get('/event-registration/ticket/'+key).status_code,404)
+        self.assertEqual(self.client.get(f"/event-registration/background/{event['id']}.png").status_code,404)
+        queue = self.client.post('/event-registration/admin/backup',data={'csrf_token':self.csrf()})
+        self.assertEqual(queue.json['keys'],[key])
+        replacement = self.create_event()
+        self.assertEqual(replacement['name'],event['name'])
+        self.assertNotEqual(replacement['id'],event['id'])
+        self.assertEqual(replacement['next_number'],1)
+        self.client.get('/event-registration')
+        with self.client.session_transaction() as state:
+            old_form_key = state['event_form_key']
+        response = self.client.post(f"/event-registration/admin/event/{replacement['id']}/delete",data={
+            'csrf_token':self.csrf(),'confirm':'yes','updated_at':replacement['updated_at']})
+        self.assertEqual(response.status_code,200)
+        next_event = self.create_event(year=2027)
+        self.assertEqual(self.client.post('/event-registration/details',data={
+            'csrf_token':self.csrf(),'event_id':replacement['id'],'event_key':replacement['key'],'form_key':old_form_key}).status_code,409)
+        self.client.get('/event-registration')
+        with self.client.session_transaction() as state:
+            self.assertEqual(state['event_form_event_key'],next_event['key'])
+            self.assertNotEqual(state['event_form_key'],old_form_key)
+
+    def test_sheet_deletion_removes_correct_row_and_retries_lost_acknowledgement(self):
+        event = self.create_event()
+        key,_ = self.register_details(event,'Delete Me')
+        original = self.capture(key)
+        headers = list(appmod.EVENT_HEADERS)
+        values = [headers]
+        sheet = Mock()
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        sheet.append_row.side_effect = lambda row,**kw: values.append(list(row))
+        sheet.delete_rows.side_effect = lambda number: values.pop(number-1)
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
+             patch.object(appmod,'event_upload_photo',return_value='drive-file') as upload:
+            appmod.event_backup_attendee(key)
+        self.assertEqual(self.client.post('/event-registration/admin/delete/'+key,data={
+            'csrf_token':self.csrf(),'confirm':'yes','revision':original['revision']}).status_code,200)
+        original_cloud_row = list(values[1])
+        for field in ('Name','Bday','Date created'):
+            values[1][headers.index(field)] = 'Changed externally'
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)):
+            with self.assertRaisesRegex(appmod.CCMStorageError,'cannot be identified safely'):
+                appmod.event_backup_attendee(key)
+            self.assertIsNotNone(appmod.get_db().execute('SELECT 1 FROM event_attendees WHERE key=?',(key,)).fetchone())
+            sheet.delete_rows.assert_not_called()
+        values[1] = original_cloud_row
+        def uncertain_delete(number):
+            values.pop(number-1)
+            raise TimeoutError('Acknowledgement lost')
+        sheet.delete_rows.side_effect = uncertain_delete
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
+             patch.object(appmod,'event_upload_photo') as upload:
+            with self.assertRaises(TimeoutError):
+                appmod.event_backup_attendee(key)
+            self.assertIsNotNone(appmod.get_db().execute('SELECT 1 FROM event_attendees WHERE key=?',(key,)).fetchone())
+            result = appmod.event_backup_attendee(key)
+            self.assertTrue(result['removed'])
+            self.assertEqual(values,[headers])
+            self.assertIsNone(appmod.get_db().execute('SELECT 1 FROM event_attendees WHERE key=?',(key,)).fetchone())
+            upload.assert_not_called()
+            sheet.delete_rows.assert_called_once_with(2)
+
+    def test_deletion_schema_migration_preserves_existing_registrations(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        original = self.capture(key)
+        with appmod.app.app_context():
+            db = appmod.get_db()
+            for table in ('event_attendees','registration_events'):
+                db.execute(f'ALTER TABLE {table} DROP COLUMN deleted_at')
+            db.commit()
+            appmod.event_tables()
+            stored = db.execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(stored['deleted_at'],'')
+            for field in ('name','birthday','contact','pastor','created_at','number'):
+                self.assertEqual(stored[field],original[field])
+            self.assertEqual(appmod.event_current()['id'],event['id'])
+        with self.client.session_transaction() as state:
+            state.pop('event_form_event_key',None)
+        page = self.client.get('/event-registration')
+        self.assertIn(b'View confirmation',page.data)
+        with self.client.session_transaction() as state:
+            self.assertEqual(state['event_registration_key'],key)
+
+    def test_pastors_and_area_overseers_receive_one_ptr_prefix(self):
+        with appmod.app.app_context():
+            appmod.get_db().execute("UPDATE sheet_accounts_cache SET name='Juan Dela Cruz' WHERE username='pastorone'")
+            appmod.get_db().commit()
+            cases = [
+                ('Juan Dela Cruz','ChurchA',False,'Ptr. Juan Dela Cruz'),
+                ('Developer','DevChurch',False,'Ptr. Developer'),
+                ('Developer','ChurchA',False,'Developer'),
+                ('Attendee One','ChurchA',False,'Attendee One'),
+                ('Ana Santos','New Church',True,'Ptr. Ana Santos'),
+                ('Ptr. Ptr. Juan Dela Cruz','ChurchA',True,'Ptr. Juan Dela Cruz'),
+                ('Ptr.Juan Dela Cruz','ChurchA',True,'Ptr. Juan Dela Cruz'),
+            ]
+            for name,church,minister,expected in cases:
+                with self.subTest(name=name,church=church):
+                    self.assertEqual(appmod.event_registration_name(name,'1',church,minister),expected)
+            with self.assertRaises(ValueError):
+                appmod.event_registration_name('Ptr.','1','ChurchA',True)
+        event = self.create_event()
+        key,data = self.register_details(event,'Ana Santos',manual=True)
+        data['minister'] = '1'
+        self.assertEqual(self.client.post('/event-registration/details',data=data).status_code,200)
+        attendee = self.capture(key)
+        self.assertEqual(attendee['name'],'Ptr. Ana Santos')
+        confirmation = self.client.get('/event-registration/photo/'+key)
+        self.assertIn(b'Ptr. Ana Santos',confirmation.data)
+        page = self.client.get('/event-registration?new=1')
+        self.assertIn(b'name="minister"',page.data)
+
+    def test_id_layout_fits_long_theme_and_rejects_unreadable_overflow(self):
+        from PIL import Image
+        event = self.create_event()
+        image = self.real_renderer(event,background=self.photo)
+        long_event = {**event,'theme':'Together we answer the urgent call to serve our communities with faith, hope, love and a commitment to the great harvest'}
+        long_image = self.real_renderer(long_event,background=self.photo)
+        with Image.open(io.BytesIO(image)) as first, Image.open(io.BytesIO(long_image)) as second:
+            self.assertEqual(first.size,(1000,1500))
+            self.assertEqual(first.crop((300,648,700,1043)).tobytes(),second.crop((300,648,700,1043)).tobytes())
+            self.assertEqual(first.crop((400,1290,600,1490)).tobytes(),second.crop((400,1290,600,1490)).tobytes())
+        with self.assertRaisesRegex(ValueError,'too long'):
+            self.real_renderer({**event,'theme':'Too much text '*45},background=self.photo)
 
 
 if __name__ == '__main__':

@@ -56,8 +56,20 @@ need to point to that Shared Drive's folder.
   second. Area and church selections use existing district Accounts data; the
   pastor is resolved on the server. Names from Members Account are suggestions.
 - Worker name, area, church ID/address, pastor, campus, phone, email, status,
-  ID number and creation/update timestamps appear in the public directory.
+  ID number, expiration date and creation/update timestamps appear in the public directory.
   District passwords and birthdays are never copied into CCM records.
+- Expiration is set automatically to one calendar year after the original ID
+  creation date in Philippine time. February 29 expires on February 28 of the
+  following year. The form displays this date read-only; posted date overrides
+  are ignored. It is printed in the front's **Valid Until** field and saved with
+  the worker locally and in Google. The ID remains valid through that date;
+  the directory and QR verification show **Expired** afterward. Editing an
+  account calculates the date from its original creation, without extending it.
+  Existing accounts retain their saved validity until edited and saved; saving
+  applies the automatic date and regenerates both PNGs for printing and backup.
+- The application appends **Expiration Date** as column R when it encounters the
+  original 17-column `CCM Workers` worksheet. Existing columns and rows stay in
+  place; other header changes are rejected. No manual worksheet migration is needed.
 - Registration writes account data into `ccm_pending_workers` in the existing
   app database and writes immutable PNGs into `DATA_DIR/ccm_assets`. There are
   no Google requests during a save. "Local" means the computer/server running
@@ -102,9 +114,15 @@ need to point to that Shared Drive's folder.
 
 The original JPGs are copied byte-for-byte to `static/ccm/id-front-template.jpg`
 and `static/ccm/id-back-template.jpg`. The renderer in `app.py` overlays only
-the portrait, worker name/title, ID number, actual issue date, QR and requested
-contact details. The original border artwork, logos, criteria and signature
-areas are retained. Both output images are 1050 × 1500 PNGs.
+the portrait, worker name/title, ID number, actual issue date, expiration date,
+QR and requested contact details, including `campuschristianmovement2c518@gmail.com`
+in place of the printed website/email. The QR verification URL is unchanged.
+The back includes **Cosme Walawala — District
+Overseer** and **Ferlor Anger Rudrigues — Campus Ministry Overseer** with their supplied
+signatures. `overseer-signatures.png` preserves the supplied transparent image:
+the bottom signature belongs to Cosme and the top to Ferlor. The holder's
+signature space remains blank. The original border artwork, logos and criteria
+are retained. Both output images are 1050 × 1500 PNGs.
 
 Printing starts with the back. **Print back again** and **Next: front** let the
 admin inspect the result before changing sides. Only the selected side appears

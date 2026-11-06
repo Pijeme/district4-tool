@@ -25,6 +25,10 @@ env*
 
 generated_reports/
 ccm_assets/
+event_assets/
+event-photo-*
+event-record-backup-*
+event-google-backup*
 *.sync-progress.json
 *.sync-progress.json.*.tmp
 book_thumbnail_cache/

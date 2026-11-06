@@ -3621,7 +3621,7 @@ def before_request():
         row = get_db().execute("SELECT username,name,church_address,contact,birthday FROM sheet_accounts_cache WHERE username=?",
                                (request.form.get("original_username", ""),)).fetchone()
         g.website_before = dict(row) if row else None
-    if request.endpoint not in {'static', 'devotion_interactions', 'website_activity_api', 'website_activity_read'} and not (request.endpoint or '').startswith('ccm_'):
+    if request.endpoint not in {'static', 'devotion_interactions', 'website_activity_api', 'website_activity_read'} and not (request.endpoint or '').startswith(('ccm_', 'event_')):
         sync_from_sheets_if_needed()
     _log_visit_if_needed()
 
@@ -6842,7 +6842,7 @@ CCM_FOLDER_ID = "1IYlGZPuHL7CUW7HqwWEHnxuaG63gscEY"
 CCM_BASE_URL = "https://iowod4tool.coresite.pro/ccm"
 CCM_HEADERS = ["Record Key", "ID Number", "Name", "Area Number", "Church ID", "Church Address",
                "Pastor", "Campus", "Phone", "Email", "Status", "Created At", "Updated At",
-               "Photo File ID", "Front File ID", "Back File ID", "Verification URL"]
+               "Photo File ID", "Front File ID", "Back File ID", "Verification URL", "Expiration Date"]
 
 
 class CCMStorageError(RuntimeError):
@@ -6860,8 +6860,11 @@ def ccm_sheet():
             except gspread.exceptions.APIError:
                 sheet = book.worksheet("CCM Workers")
         headers = sheet.row_values(1)
-        if not headers:
-            sheet.update(range_name="A1:Q1", values=[CCM_HEADERS], value_input_option="RAW")
+        if not headers or headers == CCM_HEADERS[:-1]:
+            # Append the new field without moving or rewriting existing worker data.
+            if sheet.col_count < len(CCM_HEADERS):
+                sheet.resize(cols=len(CCM_HEADERS))
+            sheet.update(range_name="A1:R1", values=[CCM_HEADERS], value_input_option="RAW")
             sheet.freeze(rows=1)
         elif headers != CCM_HEADERS:
             raise CCMStorageError("The CCM Workers sheet headers have changed. Restore the original columns before saving.")
@@ -6935,6 +6938,32 @@ def ccm_date(value):
         return dt.astimezone(PH_TZ or timezone(timedelta(hours=8))).strftime('%b %d, %Y, %I:%M %p') + ' (UTC+08:00)'
     except (TypeError, ValueError):
         return value or '—'
+
+
+def ccm_id_expiration(created):
+    """Use the creation date's anniversary in Philippine time (Feb 29 becomes Feb 28)."""
+    issued = datetime.fromisoformat(created).astimezone(PH_TZ or timezone(timedelta(hours=8))).date()
+    year = issued.year + 1
+    return issued.replace(year=year, day=min(issued.day, calendar.monthrange(year, issued.month)[1])).isoformat()
+
+
+@app.template_filter('ccm_expiration')
+def ccm_expiration(value):
+    try:
+        return date.fromisoformat(value).strftime('%b %d, %Y')
+    except (TypeError, ValueError):
+        return 'Invalid date' if value else 'Not set'
+
+
+@app.template_filter('ccm_expired')
+def ccm_expired(value):
+    if not value:
+        return False  # Existing IDs remain valid until an expiration is assigned.
+    try:
+        today = utc_now().astimezone(PH_TZ or timezone(timedelta(hours=8))).date()
+        return date.fromisoformat(value) < today
+    except (TypeError, ValueError):
+        return True
 
 
 def ccm_csrf():
@@ -7037,33 +7066,46 @@ def ccm_write_local_assets(row, images):
     row['_local_assets'] = references
 
 
-def ccm_upload(key, side, data):
+def ccm_upload(key, side, data, *, filename=None, event_key=None):
     # Content-addressed filenames make retries idempotent and keep old records
     # intact if a later Sheets update fails during an edit.
     import hashlib
-    name = 'CCM-' + key + '-' + side + '-' + hashlib.sha256(data).hexdigest()[:16] + '.png'
+    digest = hashlib.sha256(data).hexdigest()
+    name = filename or 'CCM-' + key + '-' + side + '-' + digest[:16] + '.png'
+    properties = {'event_key': event_key, 'record_key': key, 'sha256': digest} if filename else {}
     script_url = os.getenv('CCM_DRIVE_SCRIPT_URL', '').strip()
     if script_url:
         token = os.getenv('CCM_DRIVE_API_TOKEN', '').strip()
         if not re.fullmatch(r'https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec', script_url) or len(token) < 32:
             raise CCMStorageError('The CCM Google Drive upload connection needs administrator setup.')
         try:
-            response = requests.post(script_url, json={'token': token, 'record_key': key, 'side': side,
-                'image': base64.b64encode(data).decode('ascii')}, timeout=(10, 60))
+            payload = {'token': token, 'record_key': key, 'side': side, 'image': base64.b64encode(data).decode('ascii')}
+            if filename:
+                payload.update(purpose='event', filename=name, event_key=event_key)
+            response = requests.post(script_url, json=payload, timeout=(10, 60))
             response.raise_for_status()
             result = response.json()
             if not result.get('ok') or not re.fullmatch(r'[A-Za-z0-9_-]+', str(result.get('file_id', ''))):
                 raise ValueError('Upload not acknowledged')
+            if filename and result.get('name') != name:
+                raise CCMStorageError('The photo is saved locally. Update the CCM Drive upload script to support event photo names, then retry backup.')
             return result['file_id']
         except (requests.RequestException, ValueError, AttributeError):
             raise CCMStorageError('The CCM Google Drive upload was not confirmed. Retry this same form; existing uploads will be reused.') from None
-    found = ccm_drive('GET', 'drive/v3/files', params={'q': "'" + CCM_FOLDER_ID + "' in parents and trashed=false and name='" + name + "'",
+    escaped_name = name.replace('\\', '\\\\').replace("'", "\\'")
+    query = "'" + CCM_FOLDER_ID + "' in parents and trashed=false and name='" + escaped_name + "'"
+    for field, value in properties.items():
+        query += " and appProperties has { key='" + field + "' and value='" + value + "' }"
+    found = ccm_drive('GET', 'drive/v3/files', params={'q': query,
         'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}).json()['files']
     if found:
         return found[0]['id']
     else:
         boundary = 'ccm_' + secrets.token_hex(16)
-        metadata = json.dumps({'name': name, 'parents': [CCM_FOLDER_ID]})
+        metadata = {'name': name, 'parents': [CCM_FOLDER_ID]}
+        if properties:
+            metadata['appProperties'] = properties
+        metadata = json.dumps(metadata)
         body = ('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + metadata +
                 '\r\n--' + boundary + '\r\nContent-Type: image/png\r\n\r\n').encode() + data + ('\r\n--' + boundary + '--\r\n').encode()
         file_id = ccm_drive('POST', 'upload/drive/v3/files', params={'uploadType': 'multipart', 'fields': 'id', 'supportsAllDrives': 'true'},
@@ -7122,7 +7164,7 @@ def ccm_photo(upload):
 
 
 def ccm_render_id(record, photo):
-    """Overlay variable fields on unaltered copies of the user's JPG artwork."""
+    """Fill the ID artwork with worker details, validity and authorized signatories."""
     from PIL import Image, ImageDraw, ImageFont, ImageOps
     from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
     root = Path(app.static_folder) / 'ccm'
@@ -7154,13 +7196,32 @@ def ccm_render_id(record, photo):
     front.paste(strip, (170, 1095))
     text(draw, 'C A M P U S  W O R K E R', (170, 1100, 920, 1140), 40, color='white', center=True)
     draw.rectangle((378, 1174, 925, 1306), fill='white')
-    issued = datetime.fromisoformat(record['Created At']).astimezone(PH_TZ or timezone.utc)
+    issued = datetime.fromisoformat(record['Created At']).astimezone(PH_TZ or timezone(timedelta(hours=8)))
     text(draw, record['ID Number'], (383, 1181, 920, 1215), 36)
     text(draw, issued.strftime('%b. %d, %Y'), (383, 1227, 920, 1260), 36)
-    text(draw, 'No expiration date', (383, 1270, 920, 1304), 36)
+    expiry = record.get('Expiration Date', '')
+    text(draw, ccm_expiration(expiry) if expiry else 'No expiration date', (383, 1270, 920, 1304), 36)
     with Image.open(root / 'id-back-template.jpg') as original:
         back = original.convert('RGB')
     draw = ImageDraw.Draw(back)
+    # Replace the placeholder signatory labels; leave the holder's signature blank.
+    draw.rectangle((80, 790, 985, 1002), fill='white')
+    with Image.open(root / 'overseer-signatures.png') as source:
+        source = source.convert('RGBA')
+        # Exclude the captions embedded below each signature in the supplied image.
+        for name, role, crop, left, right in [
+            ('Cosme Walawala', 'District Overseer', (0, 1000, source.width, 1580), 90, 475),
+            ('Ferlor Anger Rudrigues', 'Campus Ministry Overseer', (0, 0, source.width, 685), 540, 975),
+        ]:
+            signature = source.crop(crop)
+            bounds = signature.getbbox()
+            if bounds:
+                signature = signature.crop(bounds)
+                signature.thumbnail((right - left - 30, 115), Image.Resampling.LANCZOS)
+                back.paste(signature, ((left + right - signature.width) // 2, 900 - signature.height), signature)
+            draw.line((left + 10, 910, right - 10, 910), fill='#071e48', width=2)
+            text(draw, name, (left, 922, right, 958), 34, center=True)
+            text(draw, role, (left, 968, right, 997), 28, center=True)
     draw.rectangle((108, 1153, 294, 1338), fill='white')
     qr = QRCode(None, QRErrorCorrectLevel.M)
     qr.addData(record['Verification URL'])
@@ -7177,7 +7238,7 @@ def ccm_render_id(record, photo):
     background = back.crop((375, 1200, 930, 1201)).resize((555, 120))
     back.paste(background, (375, 1202))
     text(draw, '(062) 945 0217', (381, 1206, 927, 1233), 28, color='black')
-    text(draw, CCM_BASE_URL, (381, 1241, 927, 1263), 23, color='black')
+    text(draw, 'campuschristianmovement2c518@gmail.com', (381, 1241, 927, 1263), 23, color='black')
     text(draw, 'International One Way Outreach District 4', (381, 1270, 927, 1292), 24, color='black')
     text(draw, 'Convention Center Lala Pagadian City.', (381, 1296, 927, 1318), 24, color='black')
     result = {}
@@ -7221,6 +7282,7 @@ def ccm_registration():
         row['Created At'] = now
         row['ID Number'] = 'CCM-' + datetime.fromisoformat(now).strftime('%Y') + '-' + key[:12].upper()
         row['Verification URL'] = CCM_BASE_URL + '/verify/' + key
+    row['Expiration Date'] = ccm_id_expiration(row['Created At'])
     if old:
         row['_revision'] = old['Updated At']
         row['_cloud_revision'] = old.get('_cloud_revision', old['Updated At'])
@@ -7258,7 +7320,8 @@ def ccm_page():
         manual = json.loads((Path(app.static_folder) / 'ccm' / 'manual.json').read_text(encoding='utf-8'))
     response = make_response(render_template('ccm.html', tab=tab, workers=visible, stale=stale, error=error,
         admin=ccm_admin(), csrf=ccm_csrf(), churches=churches, member_names=names, selected=selected,
-        draft=session.get('ccm_draft', {}), manual=manual, pending=ccm_pending() if tab == 'admin' and ccm_admin() else {}))
+        draft=session.get('ccm_draft', {}), manual=manual, pending=ccm_pending() if tab == 'admin' and ccm_admin() else {},
+        expiration_date=ccm_id_expiration(selected['Created At'] if selected else utc_now_iso())))
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -7429,7 +7492,7 @@ def ccm_backup_worker(key):
                 number, previous = matching[0]
                 if previous['Updated At'] not in (snapshot.get('_cloud_revision', ''), revision):
                     raise CCMStorageError('This account changed in Google since the local edit. Local files were kept for review.')
-                sheet.update(range_name=f'A{number}:Q{number}', values=[[cloud[h] for h in CCM_HEADERS]], value_input_option='RAW')
+                sheet.update(range_name=f'A{number}:R{number}', values=[[cloud[h] for h in CCM_HEADERS]], value_input_option='RAW')
             else:
                 if snapshot.get('_cloud_revision'):
                     raise CCMStorageError('The original Google account is missing. Local files were kept for review.')
@@ -7574,7 +7637,8 @@ def ccm_verify(key):
             records, stale = ccm_records(force=True)
             record = next((r for r in records if r['Record Key'] == key and r['Status'] != 'Deleted'), None)
         response = make_response(render_template('ccm_verify.html', worker=record,
-            verified=bool(record and not stale and record['Status'] == 'Active'), stale=stale), 200 if record or stale else 404)
+            verified=bool(record and not stale and record['Status'] == 'Active'
+                          and not ccm_expired(record.get('Expiration Date'))), stale=stale), 200 if record or stale else 404)
     except CCMStorageError:
         response = make_response(render_template('ccm_verify.html', worker=None, verified=False, stale=True), 503)
     response.headers['Cache-Control'] = 'no-store'
@@ -7582,13 +7646,825 @@ def ccm_verify(key):
 
 
 # ========================
-# Other pages
+# Event registration — local records are authoritative.
 # ========================
 
-@app.route("/event-registration")
-def event_registration():
-    return render_template("event_registration.html")
+EVENT_HEADERS = ['Name', 'Bday', 'Contact #', 'Area', 'Church Name', 'Church Address',
+                 'Pastor', 'Date created', 'Paid', 'Print', 'Release', 'Event']
+EVENT_TYPES = ('District Convention', 'Youth Convention')
 
+
+def event_tables():
+    db = get_db()
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS registration_events (
+            id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+            theme TEXT NOT NULL, scripture TEXT NOT NULL, background TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1, next_number INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS registration_one_active_event ON registration_events(active) WHERE active=1;
+        CREATE TABLE IF NOT EXISTS event_attendees (
+            key TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES registration_events(id),
+            number INTEGER, name TEXT NOT NULL, birthday TEXT NOT NULL, contact TEXT NOT NULL DEFAULT '',
+            area TEXT NOT NULL, church TEXT NOT NULL, address TEXT NOT NULL, pastor TEXT NOT NULL,
+            new_church INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            photo TEXT NOT NULL DEFAULT '', photo_drive_id TEXT NOT NULL DEFAULT '',
+            complete INTEGER NOT NULL DEFAULT 0, paid INTEGER NOT NULL DEFAULT 0,
+            printed INTEGER NOT NULL DEFAULT 0, released INTEGER NOT NULL DEFAULT 0,
+            revision INTEGER NOT NULL DEFAULT 1, backed_up_revision INTEGER NOT NULL DEFAULT 0,
+            sheet_row INTEGER, cloud_snapshot TEXT NOT NULL DEFAULT '', backup_error TEXT NOT NULL DEFAULT '',
+            UNIQUE(event_id,number));
+        CREATE TABLE IF NOT EXISTS event_request_limits (
+            key TEXT PRIMARY KEY, started REAL NOT NULL, count INTEGER NOT NULL);
+    ''')
+    for table in ('registration_events','event_attendees'):
+        if 'deleted_at' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
+            try:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                if 'deleted_at' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
+                    raise
+    db.commit()
+
+
+def event_admin():
+    return session.get('event_admin_until', 0) > time.time()
+
+
+def event_csrf():
+    if not session.get('event_csrf'):
+        session['event_csrf'] = secrets.token_urlsafe(32)
+    return session['event_csrf']
+
+
+def event_guard(admin=False, developer=False):
+    if admin and not event_admin():
+        abort(403)
+    if developer and not is_cache_developer():
+        abort(403)
+    supplied = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token', '')
+    if not supplied or not hmac.compare_digest(supplied.encode(), session.get('event_csrf', '').encode()):
+        abort(400, 'Reload Event Registration before trying again.')
+    if request.content_length is not None and request.content_length > 13*1024*1024:
+        abort(413, 'The picture is too large. Choose a picture smaller than 12 MB.')
+
+
+def event_limit(label, maximum, seconds):
+    import hashlib
+    key = label + ':' + hashlib.sha256((request.remote_addr or '').encode()).hexdigest()
+    now = time.time()
+    db = get_db()
+    db.execute('''INSERT INTO event_request_limits VALUES (?,?,1) ON CONFLICT(key) DO UPDATE SET
+        count=CASE WHEN started<? THEN 1 ELSE count+1 END,
+        started=CASE WHEN started<? THEN excluded.started ELSE started END''', (key,now,now-seconds,now-seconds))
+    db.commit()
+    if db.execute('SELECT count FROM event_request_limits WHERE key=?', (key,)).fetchone()[0] > maximum:
+        abort(429, 'Too many attempts. Please try again later.')
+
+
+def event_asset_path(filename):
+    if not re.fullmatch(r'[a-f0-9]{64}\.png', filename or ''):
+        abort(404)
+    root = Path(data_path('event_assets'))
+    root.mkdir(parents=True, exist_ok=True)
+    return root / filename
+
+
+def event_asset_write(body):
+    import hashlib
+    path = event_asset_path(hashlib.sha256(body).hexdigest() + '.png')
+    if not path.exists():
+        temporary = path.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+        try:
+            with temporary.open('wb') as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return path.name
+
+
+def event_current():
+    return get_db().execute("SELECT * FROM registration_events WHERE active=1 AND deleted_at='' ").fetchone()
+
+
+def event_attendee(key, admin=False, include_deleted=False):
+    if not re.fullmatch(r'[a-f0-9]{32}', key or ''):
+        abort(404)
+    if not event_admin() and (admin or key != session.get('event_registration_key')):
+        abort(403)
+    row = get_db().execute('SELECT * FROM event_attendees WHERE key=?', (key,)).fetchone()
+    if not row or (row['deleted_at'] and not include_deleted):
+        abort(404)
+    return dict(row)
+
+
+def event_render_id(event, attendee=None, photo=None, background=None):
+    """Render a translucent frosted header/theme panel and glowing attendee text."""
+    from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+    from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
+    width, height = 1000, 1500
+    if background is None and event.get('background'):
+        background = event_asset_path(event['background']).read_bytes()
+    if background:
+        with Image.open(io.BytesIO(background)) as source:
+            card = ImageOps.fit(source.convert('RGB'), (width,height)).convert('RGBA')
+    else:
+        card = Image.new('RGBA', (width,height), '#f1e8d3')
+    font_path = str(Path(app.static_folder) / 'ccm' / 'Tinos-Bold.ttf')
+
+    def layout(value, box, initial, minimum, limit, font_file=font_path):
+        available = box[2]-box[0]-20
+        for size in range(initial, minimum-1, -1):
+            font = ImageFont.truetype(font_file,size)
+            lines = []
+            for paragraph in str(value).splitlines() or ['']:
+                line = ''
+                for word in paragraph.split():
+                    pieces = [word]
+                    if font.getlength(word)>available:
+                        pieces, piece = [], ''
+                        for char in word:
+                            if piece and font.getlength(piece+char)>available:
+                                pieces.append(piece)
+                                piece = ''
+                            piece += char
+                        pieces.append(piece)
+                    for piece in pieces:
+                        candidate = (line+' '+piece).strip()
+                        if line and font.getlength(candidate) > available:
+                            lines.append(line)
+                            line = piece
+                        else:
+                            line = candidate
+                if line:
+                    lines.append(line)
+            bounds = [font.getbbox(line,stroke_width=2) for line in lines]
+            heights = [b[3]-b[1] for b in bounds]
+            gap = max(4,round(size*.12))
+            total = sum(heights)+max(0,len(lines)-1)*gap
+            if lines and len(lines) <= limit and total <= box[3]-box[1]-16:
+                return font,lines,bounds,heights,gap,total
+        raise ValueError('Text is too long to print readably: '+str(value)[:65]+'. Shorten it or add suitable line breaks.')
+
+    def text(value, box, initial, minimum=20, limit=2, color='#071e48', theme=False, glow=True, font_file=None):
+        nonlocal card
+        font,lines,bounds,heights,gap,total = layout(value,box,initial,minimum,limit,font_file or font_path)
+        if glow:
+            backing = Image.new('L',card.size,0)
+            ImageDraw.Draw(backing).rounded_rectangle(box,radius=18,fill=145)
+            backing = backing.filter(ImageFilter.GaussianBlur(13))
+            white = Image.new('RGBA',card.size,'white')
+            white.putalpha(backing)
+            card = Image.alpha_composite(card,white)
+        positions, y = [],box[1]+(box[3]-box[1]-total)/2
+        mask = Image.new('L',card.size,0)
+        for line,bound,line_height in zip(lines,bounds,heights):
+            position = ((box[0]+box[2]-(bound[2]-bound[0]))/2-bound[0],y-bound[1])
+            ImageDraw.Draw(mask).text(position,line,font=font,fill=245,stroke_width=4,stroke_fill=245)
+            positions.append(position)
+            y += line_height+gap
+        if glow:
+            white = Image.new('RGBA',card.size,'white')
+            white.putalpha(mask.filter(ImageFilter.GaussianBlur(5)))
+            card = Image.alpha_composite(card,white)
+        draw = ImageDraw.Draw(card)
+        for index,(line,position) in enumerate(zip(lines,positions)):
+            fill = '#740b12' if theme and index == len(lines)-1 else color
+            draw.text(position,line,font=font,fill=fill,stroke_width=2 if theme else 0,stroke_fill='#d5a43c')
+
+    # A lightly frosted, translucent panel keeps the uploaded background visible.
+    panel_box = (38,28,962,638)
+    frosted = card.crop(panel_box).filter(ImageFilter.GaussianBlur(7))
+    frosted = Image.alpha_composite(frosted,Image.new('RGBA',frosted.size,(255,255,255,100)))
+    panel_mask = Image.new('L',frosted.size,0)
+    ImageDraw.Draw(panel_mask).rounded_rectangle((0,0,frosted.width-1,frosted.height-1),radius=28,fill=255)
+    card.paste(frosted,panel_box[:2],panel_mask)
+    border = Image.new('RGBA',card.size)
+    ImageDraw.Draw(border).rounded_rectangle((38,28,961,637),radius=28,outline=(255,255,255,175),width=2)
+    card = Image.alpha_composite(card,border)
+    organization = 'INTERNATIONAL ONE WAY\nOUTREACH · DISTRICT 4'
+    organization_layout = layout(organization,(0,0,752,118),52,40,2)
+    organization_height = organization_layout[-1]
+    organization_width = max(bound[2]-bound[0] for bound in organization_layout[2])
+    with Image.open(Path(app.static_folder)/'img'/'logo.png') as original:
+        logo = original.convert('RGBA')
+        logo = logo.crop(logo.getbbox())
+        logo.thumbnail((organization_height,organization_height),Image.Resampling.LANCZOS)
+        # Center the actual logo and lettering together, keeping a 14px visual gap.
+        logo_x = round((width-logo.width-14-organization_width)/2)
+        organization_x = logo_x+logo.width+14
+        organization_box = (organization_x-10,48,organization_x+organization_width+10,166)
+        card.alpha_composite(logo,(logo_x,round((organization_box[1]+organization_box[3]-logo.height)/2)))
+    text(organization,organization_box,52,40,2,glow=False)
+    year = date.fromisoformat(event['start_date']).year
+    title = ('General Convention' if event['kind']=='District Convention' else 'Youth Convention')+' '+str(year)
+    text(title,(90,166,910,254),72,36,1,color='#740b12',glow=False,
+         font_file=str(Path(app.static_folder)/'fonts'/'Kalam-Regular.ttf'))
+    text('THEME',(365,254,635,294),28,20,1,color='#740b12',glow=False)
+    text(event['theme'],(60,294,940,532),96,30,5,theme=True,glow=False)
+    text(event['scripture'],(80,538,920,630),42,22,3,glow=False)
+    draw = ImageDraw.Draw(card)
+    draw.rounded_rectangle((300,648,700,1043),radius=24,fill='#fffdf8',outline='#c99b2c',width=5)
+    if photo:
+        with Image.open(io.BytesIO(photo)) as source:
+            portrait = ImageOps.fit(source.convert('RGB'),(388,383),centering=(.5,.4))
+        mask = Image.new('L',portrait.size,0)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,portrait.width-1,portrait.height-1),radius=18,fill=255)
+        card.paste(portrait,(306,654),mask)
+    else:
+        draw.ellipse((420,726,580,886),fill='#b9c3ce')
+        draw.rounded_rectangle((354,899,646,1020),radius=55,fill='#b9c3ce')
+    attendee = attendee or {'name':'SAMPLE ATTENDEE','area':'4','church':'Sample Church','key':'0'*32}
+    text(attendee['name'],(45,1055,955,1140),65,25,2)
+    text('Area '+attendee['area'],(180,1152,820,1197),37,22,1)
+    text(attendee['church'],(80,1204,920,1270),39,22,2)
+    qr = QRCode(None,QRErrorCorrectLevel.M)
+    qr.addData(CCM_BASE_URL.rsplit('/ccm',1)[0]+'/event-registration/ticket/'+attendee['key'])
+    qr.make()
+    scale = max(1,200//(qr.moduleCount+8))
+    qr_image = Image.new('RGB',((qr.moduleCount+8)*scale,)*2,'white')
+    qdraw = ImageDraw.Draw(qr_image)
+    for y,row in enumerate(qr.modules):
+        for x,dark in enumerate(row):
+            if dark:
+                qdraw.rectangle(((x+4)*scale,(y+4)*scale,(x+5)*scale-1,(y+5)*scale-1),fill='black')
+    card.paste(qr_image,((width-qr_image.width)//2,1290+(200-qr_image.height)//2))
+    buffer = io.BytesIO()
+    card.convert('RGB').save(buffer,'PNG',dpi=(363,363),compress_level=3)
+    return buffer.getvalue()
+
+
+def event_form_config():
+    kind = request.form.get('kind','')
+    if kind not in EVENT_TYPES:
+        raise ValueError('Choose District Convention or Youth Convention.')
+    try:
+        start = date.fromisoformat(request.form.get('start_date',''))
+        end = date.fromisoformat(request.form.get('end_date',''))
+        if end < start:
+            raise ValueError
+    except ValueError:
+        raise ValueError('Choose valid event dates; the end must be on or after the start.') from None
+    theme,scripture = (request.form.get(field,'').strip() for field in ('theme','scripture'))
+    if not theme or not scripture or len(theme)>600 or len(scripture)>500:
+        raise ValueError('Enter a theme (up to 600 characters) and Bible verse/reference (up to 500 characters).')
+    event_id = request.form.get('event_id','')
+    old = get_db().execute("SELECT * FROM registration_events WHERE id=? AND deleted_at=''",(event_id,)).fetchone() if event_id else None
+    if event_id and not old:
+        abort(404)
+    config = dict(old) if old else {}
+    config.update(kind=kind,name=kind+' '+str(start.year),start_date=start.isoformat(),end_date=end.isoformat(),theme=theme,scripture=scripture)
+    if old and old['name']!=config['name'] and get_db().execute('SELECT 1 FROM event_attendees WHERE event_id=?',(old['id'],)).fetchone():
+        raise ValueError('An event with registrations must keep its original event type and year.')
+    upload = request.files.get('background')
+    background = ccm_photo(upload) if upload and upload.filename else None
+    if not background and not config.get('background'):
+        raise ValueError('Upload the blank background picture for this event.')
+    return config,background
+
+
+def event_directory():
+    # A missing church name must use New church; never print an address as its name.
+    churches = [church for church in ccm_churches() if church['church_id'].strip()]
+    areas = [r[0] for r in get_db().execute("SELECT DISTINCT TRIM(age) FROM sheet_accounts_cache WHERE TRIM(COALESCE(age,''))<>''")]
+    return churches, sorted(areas, key=lambda v: (not v.isdigit(), int(v) if v.isdigit() else v.casefold()))
+
+
+def event_registration_name(name, area, church, minister=False):
+    """Use one Ptr. title for declared ministers and matching pastor/overseer Accounts."""
+    def without_title(value):
+        return re.sub(r'^(?:(?:ptr\.|rev\.)\s*|(?:ptr|pastor|rev|reverend)\s+)+','', ' '.join(value.split()),flags=re.I).strip()
+
+    name = ' '.join(name.split())
+    base = without_title(name)
+    if not base:
+        raise ValueError('Enter your full name after the title.')
+    has_title = base != name
+    known_minister = any(without_title(row['name'] or '').casefold()==base.casefold()
+                         and (row['sex'] or '').strip().casefold()==church.casefold()
+        for row in get_db().execute("""SELECT name,sex FROM sheet_accounts_cache WHERE TRIM(age)=?
+            AND LOWER(TRIM(position)) IN ('pastor','area overseer')""",(area,)))
+    result = 'Ptr. '+base if minister or has_title or known_minister else name
+    if len(result)>150:
+        raise ValueError('Your full name, including Ptr., must be at most 150 characters.')
+    return result
+
+
+@app.get('/event-registration')
+def event_registration():
+    event_tables()
+    tab = 'admin' if request.args.get('tab') == 'admin' else 'registration'
+    developer, admin = is_cache_developer(), event_admin()
+    active = event_current()
+    events = [dict(r) for r in get_db().execute("SELECT * FROM registration_events WHERE deleted_at='' ORDER BY id DESC")] if admin or developer else []
+    chosen = active
+    if tab=='admin' and admin and not chosen and events:
+        chosen = events[0]
+    if tab == 'admin' and admin and request.args.get('event', type=int):
+        chosen = next((e for e in events if e['id'] == request.args.get('event', type=int)), None)
+    attendees = [dict(r) for r in get_db().execute("SELECT * FROM event_attendees WHERE event_id=? AND complete=1 AND deleted_at='' ORDER BY number",
+                 (chosen['id'],))] if tab == 'admin' and admin and chosen else []
+    churches, areas = event_directory() if tab == 'registration' and active else ([], [])
+    if active and session.get('event_form_event_key')!=active['key']:
+        legacy_same_event = not session.get('event_form_event_key') and session.get('event_form_event_id')==active['id']
+        if not legacy_same_event:
+            session.pop('event_form_key',None)
+            session.pop('event_registration_key',None)
+        session['event_form_event_id'] = active['id']
+        session['event_form_event_key'] = active['key']
+    if request.args.get('new') == '1':
+        session.pop('event_registration_key', None)
+        session.pop('event_form_key', None)
+    if not session.get('event_form_key'):
+        session['event_form_key'] = uuid.uuid4().hex
+    draft = None
+    if session.get('event_registration_key') and active:
+        row = get_db().execute("SELECT * FROM event_attendees WHERE key=? AND event_id=? AND deleted_at=''",
+                              (session['event_registration_key'], active['id'])).fetchone()
+        draft = dict(row) if row else None
+        if not row:
+            session.pop('event_registration_key',None)
+            session['event_form_key'] = uuid.uuid4().hex
+    return render_template('event_registration.html', view='main', tab=tab, active=dict(active) if active else None,
+        event=dict(chosen) if chosen else None, events=events, attendees=attendees, admin=admin, developer=developer,
+        csrf=event_csrf(), churches=churches, areas=areas, draft=draft, form_key=session['event_form_key'],
+        today=utc_now().astimezone(PH_TZ or timezone(timedelta(hours=8))).date().isoformat(), event_types=EVENT_TYPES,
+        pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0] if admin else 0)
+
+
+
+@app.post('/event-registration/admin/login')
+def event_login():
+    event_guard()
+    event_tables()
+    event_limit('login',10,600)
+    if hmac.compare_digest(request.form.get('password','').encode(),b'EventAdminD4'):
+        session['event_admin_until'] = time.time()+4*3600
+        session['event_csrf'] = secrets.token_urlsafe(32)
+    else:
+        flash('Incorrect event admin password.','error')
+    return redirect(url_for('event_registration',tab='admin'))
+
+
+@app.post('/event-registration/admin/logout')
+def event_logout():
+    event_guard(admin=True)
+    session.pop('event_admin_until',None)
+    session.pop('event_csrf',None)
+    return redirect(url_for('event_registration',tab='admin'))
+
+
+@app.post('/event-registration/admin/event/preview')
+def event_preview():
+    event_guard(developer=True)
+    event_tables()
+    try:
+        config,background = event_form_config()
+        return send_file(io.BytesIO(event_render_id(config,background=background)),mimetype='image/png')
+    except (ValueError,CCMStorageError) as exc:
+        return jsonify(ok=False,error=str(exc)),400
+
+
+@app.post('/event-registration/admin/event/save')
+def event_save():
+    event_guard(developer=True)
+    event_tables()
+    try:
+        config,background = event_form_config()
+        event_render_id(config,background=background)
+        if background:
+            config['background'] = event_asset_write(background)
+        now = utc_now_iso()
+        db = get_db()
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            if config.get('id'):
+                changed = db.execute('''UPDATE registration_events SET name=?,kind=?,start_date=?,end_date=?,theme=?,scripture=?,background=?,updated_at=?
+                              WHERE id=? AND deleted_at='' ''',tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background'))+(now,config['id']))
+                if not changed.rowcount:
+                    raise ValueError('This event was deleted. Reload the admin page.')
+            else:
+                db.execute('UPDATE registration_events SET active=0 WHERE active=1')
+                db.execute('''INSERT INTO registration_events
+                    (key,name,kind,start_date,end_date,theme,scripture,background,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                    (uuid.uuid4().hex,)+tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background'))+(now,now))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(ok=True,redirect=url_for('event_registration',tab='admin'))
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False,error='An event with that type and year already exists. Edit that event instead.'),400
+    except (ValueError,CCMStorageError) as exc:
+        return jsonify(ok=False,error=str(exc)),400
+
+
+@app.get('/event-registration/background/<int:event_id>.png')
+def event_background(event_id):
+    event_tables()
+    row = get_db().execute('SELECT * FROM registration_events WHERE id=?',(event_id,)).fetchone()
+    if not row or row['deleted_at'] or not (row['active'] or event_admin() or is_cache_developer()):
+        abort(404)
+    return send_file(event_asset_path(row['background']),mimetype='image/png')
+
+
+@app.post('/event-registration/details')
+def event_details():
+    event_guard()
+    event_tables()
+    event_limit('registration',600,3600)
+    active = event_current()
+    if not active or str(active['id'])!=request.form.get('event_id') or active['key']!=request.form.get('event_key'):
+        return jsonify(ok=False,error='The active event changed. Reload the page before registering.'),409
+    key = request.form.get('form_key','')
+    if not re.fullmatch(r'[a-f0-9]{32}',key) or key!=session.get('event_form_key'):
+        abort(400)
+    try:
+        def field(name,limit,optional=False):
+            value = ' '.join(request.form.get(name,'').split())
+            if (not value and not optional) or len(value)>limit:
+                raise ValueError('Enter a valid '+name.replace('_',' ')+'.')
+            return value
+        name,contact = field('name',150),field('contact',60,True)
+        try:
+            birthday = date.fromisoformat(request.form.get('birthday',''))
+            today = utc_now().astimezone(PH_TZ or timezone(timedelta(hours=8))).date()
+            if birthday<date(1900,1,1) or birthday>today:
+                raise ValueError
+        except ValueError:
+            raise ValueError('Enter a valid birthday that is not in the future.') from None
+        churches,areas = event_directory()
+        area = field('area',30)
+        if area not in areas:
+            raise ValueError('Choose an area from the district records.')
+        new = request.form.get('new_church')=='1'
+        if new:
+            church,address,pastor = field('church',200),field('address',300),field('pastor',150)
+        else:
+            selected = next((c for c in churches if c['key']==request.form.get('church_key') and c['area']==area),None)
+            if not selected:
+                raise ValueError('Choose a church or check New church.')
+            church,address,pastor = selected['church_id'],selected['address'],selected['pastor']
+        name = event_registration_name(name,area,church,request.form.get('minister')=='1')
+        event_render_id(dict(active),dict(name=name,area=area,church=church,key=key))
+        now = utc_now_iso()
+        db = get_db()
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            current_event = db.execute('SELECT id FROM registration_events WHERE active=1').fetchone()
+            if not current_event or current_event['id']!=active['id']:
+                raise ValueError('The active event changed. Reload the registration page.')
+            old = db.execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            if old and (old['event_id']!=active['id'] or old['deleted_at']):
+                raise ValueError('Reload the registration form for the current event.')
+            if not old:
+                db.execute('''INSERT INTO event_attendees
+                    (key,event_id,name,birthday,contact,area,church,address,pastor,new_church,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (key,active['id'],name,birthday.isoformat(),contact,area,church,address,pastor,int(new),now,now))
+            elif not old['complete']:
+                db.execute('''UPDATE event_attendees SET name=?,birthday=?,contact=?,area=?,church=?,address=?,pastor=?,new_church=?,updated_at=?
+                              WHERE key=?''',(name,birthday.isoformat(),contact,area,church,address,pastor,int(new),now,key))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        session['event_registration_key'] = key
+        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+    except (ValueError,CCMStorageError) as exc:
+        return jsonify(ok=False,error=str(exc)),400
+
+
+@app.get('/event-registration/photo/<key>')
+def event_photo_page(key):
+    event_tables()
+    attendee = event_attendee(key)
+    event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+    return render_template('event_registration.html',view='complete' if attendee['complete'] else 'photo',
+                           attendee=attendee,event=event,csrf=event_csrf(),tab='registration',admin=event_admin(),developer=False)
+
+
+@app.post('/event-registration/photo/<key>')
+def event_photo_save(key):
+    event_guard()
+    event_tables()
+    attendee = event_attendee(key)
+    if attendee['complete']:
+        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+    if request.form.get('camera_capture')!='1':
+        return jsonify(ok=False,error='Take your picture using the registration camera.'),400
+    try:
+        photo = ccm_photo(request.files.get('photo'))
+        filename = event_asset_write(photo)
+        db = get_db()
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            active = db.execute('SELECT * FROM registration_events WHERE active=1').fetchone()
+            if not active or active['id']!=attendee['event_id']:
+                raise ValueError('Registration for this event is no longer active. Your details are still saved locally.')
+            current = db.execute('SELECT complete,deleted_at FROM event_attendees WHERE key=?',(key,)).fetchone()
+            if not current or current['deleted_at']:
+                raise ValueError('This registration was deleted. Open a new registration form.')
+            if not current['complete']:
+                db.execute('UPDATE registration_events SET next_number=next_number+1 WHERE id=?',(active['id'],))
+                db.execute('UPDATE event_attendees SET number=?,photo=?,complete=1,updated_at=? WHERE key=?',
+                           (active['next_number'],filename,utc_now_iso(),key))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+    except (ValueError,CCMStorageError) as exc:
+        return jsonify(ok=False,error=str(exc)),400
+
+
+def event_upload_photo(key):
+    from sheet_cache import _locked_sync
+    with _locked_sync(data_path('event-photo-'+key)):
+        attendee = dict(get_db().execute("SELECT * FROM event_attendees WHERE key=? AND complete=1 AND deleted_at=''",(key,)).fetchone() or {})
+        if not attendee:
+            abort(404)
+        if attendee['photo_drive_id']:
+            return attendee['photo_drive_id']
+        event = get_db().execute('SELECT key FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+        safe_name = re.sub(r'[<>/\\\x00-\x1f]','_',attendee['name'])
+        name = 'Event>'+safe_name+'>'+str(attendee['number'])+'.png'
+        body = event_asset_path(attendee['photo']).read_bytes()
+        file_id = ccm_upload(key,'photo',body,filename=name,event_key=event['key'])
+        ccm_verify_upload(file_id,body)
+        get_db().execute("UPDATE event_attendees SET photo_drive_id=?,backup_error='' WHERE key=?",(file_id,key))
+        get_db().commit()
+        return file_id
+
+
+@app.post('/event-registration/photo/<key>/backup')
+def event_photo_backup(key):
+    event_guard()
+    event_tables()
+    event_attendee(key)
+    try:
+        event_upload_photo(key)
+        return jsonify(ok=True)
+    except (CCMStorageError,CacheSyncError,OSError) as exc:
+        return jsonify(ok=False,error='Your registration and photo are saved locally. Photo backup can be retried from Admin. '+str(exc)),503
+
+
+@app.get('/event-registration/image/<key>/<side>.png')
+def event_image(key,side):
+    event_tables()
+    attendee = event_attendee(key,admin=side=='id')
+    if not attendee['complete']:
+        abort(404)
+    photo = event_asset_path(attendee['photo']).read_bytes()
+    if side=='photo':
+        body = photo
+    elif side=='id':
+        event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+        body = event_render_id(event,attendee,photo)
+    else:
+        abort(404)
+    return send_file(io.BytesIO(body),mimetype='image/png',as_attachment=request.args.get('download')=='1',
+                     download_name='Event-'+str(attendee['number'])+'-'+side+'.png')
+
+
+@app.post('/event-registration/admin/status/<key>')
+def event_status(key):
+    event_guard(admin=True)
+    event_tables()
+    attendee = event_attendee(key,admin=True)
+    field = request.form.get('field')
+    if field not in ('paid','released','printed') or request.form.get('value') not in ('0','1') or not attendee['complete']:
+        abort(400)
+    value = int(request.form['value'])
+    if field in ('paid','released') and attendee[field] and not value and request.form.get('confirm')!='yes':
+        return jsonify(ok=False,error='Confirm before changing this status back.'),400
+    revision = request.form.get('revision',type=int)
+    cursor = get_db().execute(f"UPDATE event_attendees SET {field}=?,revision=revision+1,updated_at=? WHERE key=? AND revision=? AND deleted_at=''",
+                             (value,utc_now_iso(),key,revision))
+    get_db().commit()
+    if not cursor.rowcount:
+        return jsonify(ok=False,error='This attendee was updated in another window. Reload before changing their status.'),409
+    return jsonify(ok=True,revision=revision+1,**{field:value})
+
+
+@app.post('/event-registration/admin/delete/<key>')
+def event_delete_attendee(key):
+    event_guard(admin=True)
+    event_tables()
+    attendee = event_attendee(key,admin=True,include_deleted=True)
+    if request.form.get('confirm')!='yes':
+        return jsonify(ok=False,error='Confirm before deleting this registration.'),400
+    if not attendee['deleted_at']:
+        now = utc_now_iso()
+        changed = get_db().execute("""UPDATE event_attendees SET deleted_at=?,updated_at=?,revision=revision+1
+            WHERE key=? AND revision=? AND deleted_at=''""",(now,now,key,request.form.get('revision',type=int)))
+        get_db().commit()
+        if not changed.rowcount:
+            return jsonify(ok=False,error='This registration changed in another window. Reload before deleting it.'),409
+    return jsonify(ok=True,pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0])
+
+
+@app.post('/event-registration/admin/event/<int:event_id>/delete')
+def event_delete_event(event_id):
+    event_guard(developer=True)
+    event_tables()
+    if request.form.get('confirm')!='yes':
+        return jsonify(ok=False,error='Confirm before deleting this event and its registrations.'),400
+    db = get_db()
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        event = db.execute('SELECT * FROM registration_events WHERE id=?',(event_id,)).fetchone()
+        if not event:
+            abort(404)
+        if not event['deleted_at']:
+            if request.form.get('updated_at')!=event['updated_at']:
+                db.rollback()
+                return jsonify(ok=False,error='The event changed in another window. Reload before deleting it.'),409
+            now = utc_now_iso()
+            # Release the visible name so a corrected event with that type/year can be created.
+            db.execute('UPDATE registration_events SET active=0,deleted_at=?,updated_at=?,name=? WHERE id=?',
+                       (now,now,'[deleted:'+event['key']+'] '+event['name'],event_id))
+            db.execute("""UPDATE event_attendees SET deleted_at=?,updated_at=?,revision=revision+1
+                          WHERE event_id=? AND deleted_at=''""",(now,now,event_id))
+            db.execute('''DELETE FROM registration_events WHERE id=?
+                AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)''',(event_id,event_id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return jsonify(ok=True,redirect=url_for('event_registration',tab='admin'))
+
+
+@app.get('/event-registration/print/<key>')
+def event_print(key):
+    if not event_admin():
+        return redirect(url_for('event_registration',tab='admin'))
+    event_tables()
+    attendee = event_attendee(key,admin=True)
+    if not attendee['complete']:
+        abort(404)
+    event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+    return render_template('event_registration.html',view='print',attendee=attendee,event=event,
+                           admin=True,developer=False,csrf=event_csrf(),tab='admin')
+
+
+@app.get('/event-registration/ticket/<key>')
+def event_ticket(key):
+    event_tables()
+    if not re.fullmatch(r'[a-f0-9]{32}',key):
+        abort(404)
+    row = get_db().execute("SELECT name,area,church,event_id FROM event_attendees WHERE key=? AND complete=1 AND deleted_at=''",(key,)).fetchone()
+    if not row:
+        abort(404)
+    event = get_db().execute('SELECT name FROM registration_events WHERE id=?',(row['event_id'],)).fetchone()
+    return render_template('event_registration.html',view='ticket',attendee=dict(row),event=dict(event),
+                           admin=False,developer=False,tab='registration',csrf=event_csrf())
+
+
+def event_sheet():
+    book = get_gs_client().open('District4 Data')
+    try:
+        sheet = book.worksheet('Event Registration')
+    except gspread.WorksheetNotFound:
+        sheet = book.add_worksheet(title='Event Registration',rows=1000,cols=len(EVENT_HEADERS))
+    headers = sheet.row_values(1)
+    if not headers:
+        if sheet.col_count<len(EVENT_HEADERS):
+            sheet.resize(cols=len(EVENT_HEADERS))
+        sheet.update(range_name='A1:L1',values=[EVENT_HEADERS],value_input_option='RAW')
+        sheet.freeze(rows=1)
+        headers = list(EVENT_HEADERS)
+    if len(headers)!=len(EVENT_HEADERS) or set(headers)!=set(EVENT_HEADERS):
+        raise CCMStorageError('The Event Registration worksheet must contain these columns: '+', '.join(EVENT_HEADERS))
+    return sheet,headers
+
+
+def event_remove_sheet_registration(attendee):
+    """Remove a queued deletion from Google before purging its local registration."""
+    from sheet_cache import _locked_sync
+    event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+    event_name = event['kind']+' '+str(date.fromisoformat(event['start_date']).year)
+
+    def matching_rows(values, headers):
+        indexed = [(i,dict(zip(headers,row+['']*len(headers)))) for i,row in enumerate(values[1:],2) if any(row)]
+        matches = [(i,row) for i,row in indexed if row['Date created']==attendee['created_at'] and row['Event']==event_name]
+        if not matches:
+            matches = [(i,row) for i,row in indexed if row['Date created']==attendee['created_at']]
+        if not matches and attendee['cloud_snapshot']:
+            previous = json.loads(attendee['cloud_snapshot'])
+            matches = [(i,row) for i,row in indexed if all(row[h]==previous[h] for h in ('Name','Bday','Event'))]
+        if len(matches)>1:
+            raise CCMStorageError('Multiple Google rows match this deleted registration. Resolve the duplicate rows before retrying removal.')
+        return matches
+
+    with _locked_sync(data_path('event-google-backup')):
+        sheet,headers = event_sheet()
+        values = sheet.get_all_values()
+        matches = matching_rows(values,headers)
+        if not matches and attendee['sheet_row'] and attendee['sheet_row']<=len(values):
+            candidate = dict(zip(headers,values[attendee['sheet_row']-1]+['']*len(headers)))
+            known_other = get_db().execute('SELECT key FROM event_attendees WHERE created_at=? AND key<>?',
+                                          (candidate.get('Date created',''),attendee['key'])).fetchone()
+            if any(candidate.values()) and not known_other:
+                raise CCMStorageError('The saved Google row changed and cannot be identified safely. The local deletion is kept; review that row before retrying.')
+        if matches:
+            number = matches[0][0]
+            sheet.delete_rows(number)
+            if matching_rows(sheet.get_all_values(),headers):
+                raise CCMStorageError('Google has not confirmed registration removal. The local deletion remains queued.')
+            get_db().execute('UPDATE event_attendees SET sheet_row=sheet_row-1 WHERE sheet_row>?',(number,))
+        # The per-record backup lock ensures an older upload cannot recreate a purged record.
+        get_db().execute("DELETE FROM event_attendees WHERE key=? AND deleted_at<>'' AND revision=?",
+                         (attendee['key'],attendee['revision']))
+        get_db().execute("""DELETE FROM registration_events WHERE id=? AND deleted_at<>''
+            AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)""",(attendee['event_id'],attendee['event_id']))
+        get_db().commit()
+    return {'clean':True,'removed':True}
+
+
+def event_backup_attendee(key):
+    from sheet_cache import _locked_sync
+    # Serialize the entire per-record snapshot, including upload, across retrying admins.
+    with _locked_sync(data_path('event-record-backup-'+key)):
+        attendee = dict(get_db().execute("SELECT * FROM event_attendees WHERE key=? AND (complete=1 OR deleted_at<>'')",(key,)).fetchone() or {})
+        if not attendee:
+            abort(404)
+        if attendee['deleted_at']:
+            return event_remove_sheet_registration(attendee)
+        event_upload_photo(key)
+        event = get_db().execute('SELECT name FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+        cloud = dict(zip(EVENT_HEADERS,[attendee['name'],attendee['birthday'],attendee['contact'],attendee['area'],attendee['church'],
+            attendee['address'],attendee['pastor'],attendee['created_at'],'Paid' if attendee['paid'] else '',
+            'Printed' if attendee['printed'] else '','Released' if attendee['released'] else '',event['name']]))
+        with _locked_sync(data_path('event-google-backup')):
+            sheet,headers = event_sheet()
+            values = sheet.get_all_values()
+            indexed = [(i,dict(zip(headers,row+['']*max(0,len(headers)-len(row))))) for i,row in enumerate(values[1:],2) if any(row)]
+            matches = [(i,r) for i,r in indexed if r['Date created']==attendee['created_at'] and r['Event']==event['name']]
+            if not matches and attendee['cloud_snapshot']:
+                previous = json.loads(attendee['cloud_snapshot'])
+                matches = [(i,r) for i,r in indexed if all(r[h]==previous[h] for h in ('Name','Bday','Event'))]
+            if len(matches)>1:
+                raise CCMStorageError('Duplicate matching rows were found in Google. Local records were kept; resolve duplicates before retrying.')
+            number = matches[0][0] if matches else attendee['sheet_row']
+            if number and number<=len(values):
+                remote = dict(zip(headers,values[number-1]+['']*len(headers)))
+                other = get_db().execute('SELECT key FROM event_attendees WHERE created_at=? AND key<>?',
+                                         (remote.get('Date created',''),key)).fetchone()
+                if not matches and other:
+                    raise CCMStorageError('Google rows were moved and this saved row belongs to another attendee. Local records were kept for review.')
+                sheet.update(range_name=f'A{number}:L{number}',values=[[cloud[h] for h in headers]],value_input_option='RAW')
+            else:
+                sheet.append_row([cloud[h] for h in headers],value_input_option='RAW')
+            confirmed = sheet.get_all_values()
+            saved = [(i,r) for i,r in enumerate(confirmed[1:],2)
+                     if (r+['']*max(0,len(headers)-len(r)))[:len(headers)]==[cloud[h] for h in headers]]
+            if len(saved)!=1:
+                raise CCMStorageError('Google has not confirmed the full record. The local registration and photo were kept for retry.')
+            get_db().execute('''UPDATE event_attendees SET sheet_row=?,cloud_snapshot=?,backed_up_revision=MAX(backed_up_revision,?),backup_error=''
+                                WHERE key=?''',(saved[0][0],json.dumps(cloud),attendee['revision'],key))
+            get_db().commit()
+        return {'clean':get_db().execute('SELECT revision=backed_up_revision FROM event_attendees WHERE key=?',(key,)).fetchone()[0]==1}
+
+
+@app.post('/event-registration/admin/backup')
+def event_backup_queue():
+    event_guard(admin=True)
+    event_tables()
+    event_id = request.form.get('event_id',type=int)
+    # Explicit submission rechecks all local rows so remote changes never become authoritative.
+    keys = [r[0] for r in get_db().execute("""SELECT key FROM event_attendees WHERE
+        (event_id=? AND complete=1 AND deleted_at='') OR deleted_at<>'' ORDER BY (deleted_at=''),event_id,number""",(event_id,))]
+    return jsonify(ok=True,keys=keys)
+
+
+@app.post('/event-registration/admin/backup/<key>')
+def event_backup_one(key):
+    event_guard(admin=True)
+    event_tables()
+    event_attendee(key,admin=True,include_deleted=True)
+    try:
+        result = event_backup_attendee(key)
+        return jsonify(ok=True,**result,pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0])
+    except Exception as exc:
+        app.logger.warning('Event backup not confirmed: %s',type(exc).__name__)
+        message = str(exc) if isinstance(exc,(CCMStorageError,CacheSyncError)) else 'Google backup could not be confirmed. Local details and photo are safe; retry backup.'
+        get_db().execute('UPDATE event_attendees SET backup_error=? WHERE key=?',(message[:500],key))
+        get_db().commit()
+        return jsonify(ok=False,error=message),503
+
+
+@app.after_request
+def event_private_responses(response):
+    if (request.endpoint or '').startswith('event_'):
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Referrer-Policy'] = 'same-origin'
+    return response
 
 
 # ===============================
