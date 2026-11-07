@@ -1443,6 +1443,134 @@ class EventRegistrationTests(unittest.TestCase):
         headers = {'Authorization':'Bearer '+'m'*64}
         return self.client.get(url,headers=headers) if payload is None else self.client.post(url,json=payload,headers=headers)
 
+    def scanner_enroll(self,device='11111111-1111-1111-1111-111111111111'):
+        response = self.client.post('/api/v2/meal-scanner/enroll',json={
+            'device_id':device,'label':'Test master','admin_password':'EventAdminD4'})
+        self.assertEqual(response.status_code,200,response.json)
+        return {'X-IOWO-Device-ID':device,'Authorization':'Bearer '+response.json['access_token']}
+
+    def test_scanner_requests_bypass_google_and_logging_and_return_private_json(self):
+        with patch.object(appmod,'sync_from_sheets_if_needed',side_effect=AssertionError('Scanner must not sync Google')), \
+             patch.object(appmod,'_log_visit_if_needed') as visits:
+            prefix = '/api/v2/meal-scanner'
+            for method,path,status in [('get','/events',401),('get','/missing',404),('get','',404),('post','/events',405)]:
+                response = getattr(self.client,method)(prefix+path)
+                self.assertEqual(response.status_code,status)
+                self.assertTrue(response.is_json)
+                self.assertIn('no-store',response.headers['Cache-Control'])
+                self.assertEqual(response.headers['X-Content-Type-Options'],'nosniff')
+            headers = self.scanner_enroll()
+            self.assertEqual(self.client.get(prefix+'/events',headers=headers).status_code,200)
+            visits.assert_not_called()
+
+    def test_scanner_roster_filters_paid_complete_deleted_and_event_scope(self):
+        event = self.create_event()
+        paid,_ = self.register_details(event,'Paid delegate');self.capture(paid)
+        unpaid,_ = self.register_details(event,'Unpaid delegate');self.capture(unpaid)
+        deleted,_ = self.register_details(event,'Deleted delegate');self.capture(deleted)
+        draft,_ = self.register_details(event,'Unfinished delegate')
+        foreign = self.create_event('Youth Convention')
+        other,_ = self.register_details(foreign,'Other event');self.capture(other)
+        with appmod.app.app_context():
+            db = appmod.get_db()
+            db.execute('UPDATE event_attendees SET paid=1 WHERE key<>?',(unpaid,))
+            db.execute('UPDATE event_attendees SET deleted_at=? WHERE key=?',('test-deleted',deleted))
+            db.commit()
+            original = dict(db.execute('SELECT * FROM event_attendees WHERE key=?',(paid,)).fetchone())
+        with patch.object(appmod,'sync_from_sheets_if_needed',side_effect=AssertionError('Unexpected Google sync')):
+            headers = self.scanner_enroll()
+            url = '/api/v2/meal-scanner/events/'+event['key']+'/paid-registrations'
+            response = self.client.get(url,headers=headers)
+            self.assertEqual(response.status_code,200,response.json)
+            data = response.json
+            self.assertEqual([p['key'] for p in data['attendees']],[paid])
+            self.assertEqual(data['total'],1)
+            self.assertFalse(original['printed'])
+            self.assertFalse(original['released'])
+            for field in ('birthday','contact','pastor','address','photo','id_drive_id'):
+                self.assertNotIn(field,data['attendees'][0])
+            unchanged = self.client.get(url+'?cursor='+data['cursor'],headers=headers).json
+            self.assertFalse(unchanged['changed'])
+            self.assertEqual(unchanged['attendees'],[])
+            with appmod.app.app_context():
+                appmod.get_db().execute('UPDATE event_attendees SET paid=0 WHERE key=?',(paid,));appmod.get_db().commit()
+            removed = self.client.get(url+'?cursor='+data['cursor'],headers=headers).json
+            self.assertTrue(removed['changed'])
+            self.assertEqual(removed['attendees'],[])
+            self.assertEqual(removed['total'],0)
+        with appmod.app.app_context():
+            self.assertEqual(appmod.get_db().execute('SELECT COUNT(*) FROM event_attendees').fetchone()[0],5)
+            tables = {row[0] for row in appmod.get_db().execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertNotIn('event_meal_claims',tables)
+            self.assertNotIn('event_meal_audit',tables)
+
+    def test_scanner_deleted_unknown_events_and_ordinary_html_errors(self):
+        event = self.create_event()
+        headers = self.scanner_enroll()
+        url = '/api/v2/meal-scanner/events/'+event['key']+'/paid-registrations'
+        with appmod.app.app_context():
+            appmod.get_db().execute('UPDATE registration_events SET deleted_at=?,active=0 WHERE id=?',('test-deleted',event['id']))
+            appmod.get_db().commit()
+        listing = self.client.get('/api/v2/meal-scanner/events',headers=headers).json
+        self.assertEqual(listing['events'],[])
+        self.assertEqual(listing['deleted_event_keys'],[event['key']])
+        response = self.client.get(url,headers=headers)
+        self.assertEqual(response.status_code,410)
+        self.assertEqual(response.json['code'],'EVENT_DELETED')
+        with appmod.app.app_context():
+            appmod.get_db().execute('DELETE FROM registration_events WHERE id=?',(event['id'],));appmod.get_db().commit()
+        response = self.client.get(url,headers=headers)
+        self.assertEqual(response.status_code,404)
+        self.assertEqual(response.json['code'],'EVENT_NOT_FOUND')
+        with patch.object(appmod,'sync_from_sheets_if_needed',return_value={}):
+            response = self.client.get('/test-unknown-normal-website-page')
+        self.assertEqual(response.status_code,404)
+        self.assertFalse(response.is_json)
+
+    def test_scanner_revocation_and_enrollment_password_attempts_are_rate_limited(self):
+        prefix = '/api/v2/meal-scanner'
+        device = '11111111-1111-1111-1111-111111111111'
+        for operation in ('enroll','revoke'):
+            for _ in range(5):
+                response = self.client.post(prefix+'/'+operation,json={'device_id':device,'admin_password':'incorrect'})
+                self.assertEqual(response.status_code,403,response.json)
+            response = self.client.post(prefix+'/'+operation,json={'device_id':device,'admin_password':'EventAdminD4'})
+            self.assertEqual(response.status_code,429)
+            self.assertEqual(response.json['code'],'RATE_LIMITED')
+
+    def test_scanner_device_token_rotation_revocation_and_hash_storage(self):
+        prefix = '/api/v2/meal-scanner'
+        first = self.scanner_enroll()
+        second = self.scanner_enroll()
+        self.assertNotEqual(first['Authorization'],second['Authorization'])
+        self.assertEqual(self.client.get(prefix+'/events',headers=first).status_code,401)
+        self.assertEqual(self.client.get(prefix+'/events',headers=second).status_code,200)
+        with appmod.app.app_context():
+            row = appmod.get_db().execute('SELECT * FROM meal_scanner_download_devices').fetchone()
+            token = second['Authorization'][7:]
+            self.assertNotEqual(row['secret_hash'],token)
+            import hashlib
+            self.assertEqual(row['secret_hash'],hashlib.sha256(token.encode()).hexdigest())
+        response = self.client.post(prefix+'/revoke',json={'device_id':second['X-IOWO-Device-ID'],'admin_password':'EventAdminD4'})
+        self.assertEqual(response.status_code,200)
+        response = self.client.get(prefix+'/events',headers=second)
+        self.assertEqual(response.status_code,401)
+        self.assertEqual(response.json['code'],'REVOKED_OR_EXPIRED')
+
+    def test_scanner_malformed_json_input_and_size_limit(self):
+        prefix = '/api/v2/meal-scanner'
+        for operation in ('enroll','revoke'):
+            for payload in ([],[1,2],'not an object'):
+                response = self.client.post(prefix+'/'+operation,json=payload)
+                self.assertEqual(response.status_code,400)
+                self.assertEqual(response.json['code'],'INVALID_JSON')
+            response = self.client.post(prefix+'/'+operation,json={'device_id':123,'admin_password':[]})
+            self.assertEqual(response.status_code,400)
+            self.assertEqual(response.json['code'],'INVALID_INPUT')
+            response = self.client.post(prefix+'/'+operation,data='x'*(16*1024+1),content_type='application/json')
+            self.assertEqual(response.status_code,413)
+            self.assertEqual(response.json['code'],'REQUEST_TOO_LARGE')
+
     def meal_set(self,event,revision=1,enabled=True):
         return self.meal_api(event,'meal-sets',{'batch_id':'sets-'+str(revision),'sets':[{
             'set_id':'convention-meals','name':'App configured meals','revision':revision,

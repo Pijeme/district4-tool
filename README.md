@@ -5,6 +5,21 @@ libraries, Gemini assistance, and SQLite storage. No separate database server is
 needed. Run one container: background jobs and their progress use process-local
 state, so the image deliberately runs one Gunicorn worker with four threads.
 
+## Android scanner read-only API
+
+`meal_scanner_readonly.py` provides `/api/v2/meal-scanner` for master-device
+enrollment and event/paid-registration downloads. It uses the existing Event
+Registration admin password to authorize a device, then a per-device bearer token.
+Scanner requests bypass Google Sheets synchronization and website visit logging.
+Only completed, paid, nondeleted registrations are downloadable; Print and Release
+do not affect eligibility. Meal sessions and meal-use history stay on the master
+Android phone. See [the v2 integration guide](deployment/ANDROID_MEAL_API.md).
+
+After deploying the updated image, `/api/v2/meal-scanner/events` should return
+401 JSON without credentials. An old container still returns 404 until updated.
+The separate Android cache fix must handle event revocation while preserving
+phone-local meal and audit history.
+
 ## Build and publish from your development machine
 
 Run these commands inside `district4-tool`. Keep your existing `.env` and add

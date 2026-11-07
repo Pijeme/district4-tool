@@ -1,8 +1,99 @@
-# Android master meal synchronization API, version 1
+# Android scanner download API, version 2
 
-Implemented in `app.py`. This is the supported website contract, not a description
-of Android Bluetooth code. Source snapshots in the integration ZIP are sanitized.
-The website changes must be deployed before the production server supports them.
+The current Android app uses the read-only integration installed from the reviewed
+`IOWO_Meal_Ticket_Scanner_Flask_API_FIXED.zip`. Its module is
+`meal_scanner_readonly.py`, registered near the bottom of `app.py`. The website's
+main request hook excludes the exact `/api/v2/meal-scanner` path and its children
+before Google cache synchronization, session actor setup or visit logging.
+
+## Confirmed data boundary
+
+The website supplies real events and completed, paid, nondeleted registrations.
+Print and Release do not control meal eligibility. Meal sessions, claims, serving
+timestamps, corrections, disputes and audit history stay exclusively in the
+Android master phone. This v2 module has no meal upload or Google Sheets calls.
+It only writes device authorization records and existing IP rate-limit counters;
+it does not change attendee records. Bluetooth master/slave operations are Android
+responsibilities.
+
+The older v1 website features described below remain separate legacy functionality.
+The Android app must not call those meal-write endpoints. Installing v2 does not
+remove or reconfigure existing v1 credentials, routes or Google meal exports.
+
+## Android enrollment and downloads
+
+Base URL: `https://iowod4tool.coresite.pro/api/v2/meal-scanner`.
+
+1. `POST /enroll`, JSON object containing `device_id` (canonical lowercase UUID),
+   optional `label` (1–64 characters), and `admin_password` (the existing Event
+   Registration admin password). Success returns `ok`, `device_id`, `access_token`
+   and `message`. The token is a random 64-character hexadecimal string. Store it
+   securely on the master phone; the server stores only its SHA-256 hash.
+2. Authenticated GETs require both `X-IOWO-Device-ID` and
+   `Authorization: Bearer <device access_token>` headers.
+3. `GET /events` returns `ok`, `events`, `deleted_event_keys`, `server_time`. Event
+   fields: `key`, `name`, `kind`, `start_date`, `end_date`, `active`, `updated_at`.
+   Nondeleted historical events are included; active is not a deletion flag.
+4. `GET /events/<event_key>/paid-registrations[?cursor=<hash>]` returns `ok`,
+   `changed`, `cursor`, `event_key`, `total`, `attendees`, `server_time`.
+   Each attendee contains `key`, `name`, `number`, `area`, `church`, `updated_at`,
+   `revision`. Birthday, contact, address, pastor and images are excluded.
+   `complete=1 AND paid=1 AND deleted_at=''` is required. The ordinal number is
+   not the ticket key.
+5. `POST /revoke`, JSON `device_id` and `admin_password`, revokes that device.
+   Re-enrollment rotates its token and invalidates the former token.
+
+Both password endpoints use the existing persistent per-IP rate limiter: five
+attempts per 15 minutes per operation. Successful attempts also count. There is
+no new environment token required for v2. `EVENT_MEAL_MASTER_TOKEN` belongs to the
+separate legacy v1 API and is not a v2 device credential.
+
+## JSON responses, cursors and Android follow-up
+
+Responses, including errors, have `Cache-Control: private, no-store` and
+`X-Content-Type-Options: nosniff`. Invalid JSON types yield 400, unauthorized or
+revoked tokens 401, incorrect admin passwords 403, unknown events 404, retained
+deleted events 410, invalid HTTP methods 405, oversized requests 413, and exhausted
+password limits 429. Error bodies contain `ok:false`, `code`, `error`. Enroll and
+revoke accept JSON objects only and have a 16 KiB request limit.
+
+An unchanged cursor returns `changed:false,attendees:[]`; keep the cached roster.
+On `changed:true`, atomically replace only that event's eligibility roster. A
+changed empty result clears eligibility, not phone-local claim/audit history.
+
+The Android cache update remains separate from this website installation. It
+must disable cached eligibility for `deleted_event_keys`, 410 `EVENT_DELETED`,
+and a confirmed 404 `EVENT_NOT_FOUND`. After existing website backup/deletion
+cleanup physically purges an event, its tombstone may no longer exist and 404 is
+expected. Preserve local history. A generic routing 404, timeout, or network
+failure is not confirmation that an event was deleted. Remote changes cannot be
+discovered during a total internet outage.
+
+## Deployment verification
+
+The Dockerfile already copies root `*.py`, so the new module is included when
+building the updated image. No dependency changes, Apps Script redeployment,
+private `.env` changes or Android code changes are part of this installation.
+Publishing an image does not update an already-running container; deploy the
+new image through the normal server Compose workflow.
+
+After updating the running server, an unauthenticated request to
+`/api/v2/meal-scanner/events` must return 401 JSON with `NOT_AUTHORIZED`, rather
+than an HTML 404. Then the master app can enroll using the website's current
+Event admin password and download events and paid attendees. Use HTTPS; never
+put the website password or access token in logs, URLs, shared APK source or slave
+pairing QR codes.
+
+---
+
+# Legacy Android master meal synchronization API, version 1
+
+Historical implementation below is retained as documentation of existing code.
+It is not the integration contract for the current phone-only meal scanner.
+
+Implemented in `app.py` for the earlier design. The current Android app uses v2
+above and keeps meal records on the phone. Old integration ZIP snapshots are
+historical references, not instructions to upload current scanner meal records.
 
 ## Setup and ownership
 

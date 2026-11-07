@@ -3610,6 +3610,9 @@ def _insert_pastor_login_event(row):
 def before_request():
     if request.endpoint == "healthz":
         return
+    if request.path == "/api/v2/meal-scanner" or request.path.startswith("/api/v2/meal-scanner/"):
+        # Scanner downloads must not trigger Google synchronization or visit logging.
+        return
     if request.path.startswith("/ai/"):
         # Chat must not wait on schema writes or bootstrap network calls. The
         # schema is normally ready from the page that opened the chat.
@@ -8947,6 +8950,10 @@ def _delete_account_row_in_sheet(username: str):
     verify_sheet_row(ws, "Accounts", sheet_row)
     ws.delete_rows(sheet_row)
     return True
+
+from meal_scanner_readonly import register_meal_scanner_api
+register_meal_scanner_api(app, get_db, event_tables,
+                          event_password_matches, event_limit)
 
 # Gunicorn imports app:app and never enters __main__. Complete the additive
 # application schema setup here, before accepting any requests, on both servers.
