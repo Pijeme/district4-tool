@@ -944,19 +944,161 @@ class EventRegistrationTests(unittest.TestCase):
             self.assertEqual(record['created_at'],original['created_at'])
         response = self.client.post(url,data=dict(csrf_token=self.csrf(),field='printed',value='1',revision=str(revision)))
         self.assertEqual(response.status_code,200)
+        self.assertIn(b'event-print-link printed',self.client.get('/event-registration?tab=admin').data)
+        self.assertIn(b'class="event-btn printed" id="eventPrintNow"',self.client.get('/event-registration/print/'+key).data)
         self.assertEqual(self.client.post(url,data=dict(csrf_token=self.csrf(),field='paid',value='1',revision='1')).status_code,409)
+        response = self.client.post(url,data=dict(csrf_token=self.csrf(),field='printed',value='0',revision=response.json['revision']))
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn(b'event-print-link printed',self.client.get('/event-registration?tab=admin').data)
         stranger = appmod.app.test_client()
         self.assertEqual(stranger.get('/event-registration/image/'+key+'/id.png').status_code,403)
 
-    def test_photo_filename_uses_registration_order_and_keeps_local_source(self):
+    def test_id_filename_uses_registration_order_and_keeps_local_portrait(self):
         event = self.create_event()
         key,_ = self.register_details(event,'Juan Dela Cruz')
         attendee = self.capture(key)
         with appmod.app.app_context(), patch.object(appmod,'ccm_upload',return_value='drive-file') as upload, \
              patch.object(appmod,'ccm_verify_upload'):
-            self.assertEqual(appmod.event_upload_photo(key),'drive-file')
-            self.assertEqual(upload.call_args.kwargs,{'filename':'Event>Juan Dela Cruz>1.png','event_key':event['key']})
+            self.assertEqual(appmod.event_upload_id(attendee,event),'drive-file')
+            self.assertEqual(upload.call_args.kwargs,{'filename':'Event>Juan Dela Cruz>1-ID.png','event_key':event['key']})
             self.assertTrue(appmod.event_asset_path(attendee['photo']).exists())
+
+    def test_registration_stays_local_and_legacy_photo_backup_cannot_upload(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        with patch.object(appmod,'ccm_upload') as upload, patch.object(appmod,'event_sheet') as sheet:
+            self.capture(key)
+            page = self.client.get('/event-registration/photo/'+key)
+            self.assertNotIn(b'eventPhotoBackupStatus',page.data)
+            self.assertNotIn(b'eventPhotoBackupRetry',page.data)
+            self.assertNotIn(b'Campus Ministry / CCM',page.data)
+            legacy = self.client.post('/event-registration/photo/'+key+'/backup',data={'csrf_token':self.csrf()})
+            self.assertEqual(legacy.status_code,409)
+            self.assertIn('Backup Data',legacy.json['error'])
+            upload.assert_not_called()
+            sheet.assert_not_called()
+        admin = self.client.get('/event-registration?tab=admin')
+        self.assertIn(b'>Backup Data</button>',admin.data)
+        self.assertNotIn(b'Submit to Google Sheets',admin.data)
+        with patch.object(appmod,'sync_from_sheets_if_needed',return_value={}):
+            splash = self.client.get('/')
+        self.assertNotIn(b'href="/ccm"',splash.data)
+
+    def test_cancel_draft_requires_owner_confirmation_and_preserves_numbering(self):
+        event = self.create_event()
+        key,details = self.register_details(event)
+        url = '/event-registration/cancel/'+key
+        page = self.client.get('/event-registration/photo/'+key)
+        self.assertIn(b'eventPhotoCancel',page.data)
+        self.assertLess(page.data.index(b'Finish registration'),page.data.index(b'Cancel submission'))
+        self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf()}).status_code,400)
+        stranger = appmod.app.test_client()
+        with stranger.session_transaction() as state:
+            state.update(event_csrf='stranger',event_admin_until=appmod.time.time()+3600)
+        self.assertEqual(stranger.post(url,data={'csrf_token':'stranger','confirm':'yes'}).status_code,403)
+        self.assertEqual(self.client.post(url,data={'confirm':'yes'}).status_code,400)
+        response = self.client.post(url,data={'csrf_token':self.csrf(),'confirm':'yes'})
+        self.assertEqual(response.status_code,200)
+        with appmod.app.app_context():
+            self.assertIsNone(appmod.get_db().execute('SELECT 1 FROM event_attendees WHERE key=?',(key,)).fetchone())
+            self.assertEqual(appmod.event_current()['next_number'],1)
+        self.assertEqual(self.client.post('/event-registration/details',data=details).status_code,400)
+        next_key,_ = self.register_details(event,'Completed Attendee')
+        complete = self.capture(next_key)
+        self.assertEqual(complete['number'],1)
+        self.assertEqual(self.client.post('/event-registration/cancel/'+next_key,data={
+            'csrf_token':self.csrf(),'confirm':'yes'}).status_code,409)
+        with appmod.app.app_context():
+            self.assertEqual(appmod.get_db().execute('SELECT complete FROM event_attendees WHERE key=?',(next_key,)).fetchone()[0],1)
+
+    def test_backup_saves_only_id_before_sheet_and_refreshes_changed_id(self):
+        from PIL import Image
+        event = self.create_event()
+        key,_ = self.register_details(event,'Juan Dela Cruz')
+        attendee = self.capture(key)
+        values = [list(appmod.EVENT_HEADERS)]
+        sheet = Mock()
+        calls = []
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        def append(row,**kwargs):
+            calls.append('sheet')
+            values.append(list(row))
+        sheet.append_row.side_effect = append
+        sheet.update.side_effect = lambda **kw: values.__setitem__(int(kw['range_name'].split(':')[0][1:])-1,list(kw['values'][0]))
+        def upload(record,side,body,**kwargs):
+            calls.append(side)
+            return 'drive-'+side
+        changed = io.BytesIO()
+        Image.new('RGB',(400,400),'gold').save(changed,'PNG')
+        with appmod.app.app_context(), patch.object(appmod,'ccm_upload',side_effect=upload) as uploads, \
+             patch.object(appmod,'ccm_verify_upload') as verify, \
+             patch.object(appmod,'event_sheet',return_value=(sheet,appmod.EVENT_HEADERS)), \
+             patch.object(appmod,'event_render_id',return_value=self.photo) as render:
+            self.assertTrue(appmod.event_backup_attendee(key)['clean'])
+            self.assertEqual(calls,['id','sheet'])
+            self.assertEqual(uploads.call_args.kwargs,{'filename':'Event>Juan Dela Cruz>1-ID.png','event_key':event['key']})
+            verify.assert_any_call('drive-id',self.photo)
+            stored = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+            self.assertEqual((stored['photo_drive_id'],stored['id_drive_id']),('','drive-id'))
+            self.assertTrue(stored['id_backup_hash'])
+            uploads.reset_mock()
+            appmod.event_backup_attendee(key)
+            uploads.assert_not_called()
+            appmod.get_db().execute("UPDATE registration_events SET theme='New theme' WHERE id=?",(event['id'],))
+            appmod.get_db().commit()
+            render.return_value = changed.getvalue()
+            appmod.event_backup_attendee(key)
+            self.assertEqual(uploads.call_count,1)
+            self.assertEqual(uploads.call_args.args[1],'id')
+            self.assertEqual(render.call_args.args[0]['theme'],'New theme')
+            self.assertTrue(appmod.event_asset_path(attendee['photo']).exists())
+            self.assertEqual(len(values),2)
+
+    def test_id_backup_failure_blocks_sheet_write_and_retry_never_uploads_portrait(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        attendee = self.capture(key)
+        values = [list(appmod.EVENT_HEADERS)]
+        sheet = Mock()
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        sheet.append_row.side_effect = lambda row,**kwargs: values.append(list(row))
+        attempts = []
+        def upload(record,side,body,**kwargs):
+            attempts.append(side)
+            if attempts == ['id']:
+                raise appmod.CCMStorageError('ID storage unavailable')
+            return 'drive-'+side
+        with patch.object(appmod,'ccm_upload',side_effect=upload), patch.object(appmod,'ccm_verify_upload'), \
+             patch.object(appmod,'event_sheet',return_value=(sheet,appmod.EVENT_HEADERS)) as connect:
+            url = '/event-registration/admin/backup/'+key
+            response = self.client.post(url,data={'csrf_token':self.csrf()})
+            self.assertEqual(response.status_code,503)
+            connect.assert_not_called()
+            with appmod.app.app_context():
+                stored = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+                self.assertEqual(stored['photo_drive_id'],'')
+                self.assertEqual(stored['id_drive_id'],'')
+                self.assertEqual(stored['backed_up_revision'],0)
+                self.assertTrue(appmod.event_asset_path(attendee['photo']).is_file())
+            self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf()}).status_code,200)
+            self.assertEqual(attempts,['id','id'])
+            self.assertEqual(len(values),2)
+
+    def test_event_design_changed_during_backup_is_reported_for_retry(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        self.capture(key)
+        values = [list(appmod.EVENT_HEADERS)]
+        sheet = Mock()
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        def append(row,**kwargs):
+            values.append(list(row))
+            appmod.get_db().execute("UPDATE registration_events SET theme='Changed during backup' WHERE id=?",(event['id'],))
+            appmod.get_db().commit()
+        sheet.append_row.side_effect = append
+        with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,appmod.EVENT_HEADERS)), \
+             patch.object(appmod,'event_upload_id',return_value='drive-id'):
+            self.assertFalse(appmod.event_backup_attendee(key)['clean'])
 
     def test_google_submission_overwrites_remote_values_and_is_idempotent(self):
         event = self.create_event()
@@ -969,7 +1111,7 @@ class EventRegistrationTests(unittest.TestCase):
         sheet.append_row.side_effect = lambda row,**kw: values.append(list(row))
         sheet.update.side_effect = lambda **kw: values.__setitem__(int(kw['range_name'].split(':')[0][1:])-1,list(kw['values'][0]))
         with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
-             patch.object(appmod,'event_upload_photo',return_value='drive-file'):
+             patch.object(appmod,'event_upload_id',return_value='drive-id'):
             appmod.event_backup_attendee(key)
             values[1][headers.index('Paid')] = 'Remote value'
             values[1][headers.index('Name')] = 'Edited remotely'
@@ -996,16 +1138,78 @@ class EventRegistrationTests(unittest.TestCase):
         filename = 'Event>Juan Dela Cruz>10.png'
         response = Mock()
         response.json.return_value = {'ok':True,'file_id':'drive-file'}
-        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/test/exec',CCM_DRIVE_API_TOKEN='x'*32), \
+        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/test/exec',CCM_DRIVE_API_TOKEN='x'*32,
+                        EVENT_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/event-test/exec',EVENT_DRIVE_API_TOKEN='y'*32), \
              patch.object(appmod.requests,'post',return_value=response) as post:
             self.assertEqual(appmod.ccm_upload('a'*32,'photo',self.photo),'drive-file')
             self.assertNotIn('purpose',post.call_args.kwargs['json'])
-            with self.assertRaisesRegex(appmod.CCMStorageError,'Update the CCM Drive upload script'):
+            self.assertEqual(post.call_args.args[0],os.environ['CCM_DRIVE_SCRIPT_URL'])
+            self.assertEqual(post.call_args.kwargs['json']['token'],'x'*32)
+            with self.assertRaisesRegex(appmod.CCMStorageError,'not confirmed in the correct folder'):
                 appmod.ccm_upload('a'*32,'photo',self.photo,filename=filename,event_key='b'*32)
-            response.json.return_value = {'ok':True,'file_id':'drive-file','name':filename}
+            response.json.return_value = {'ok':True,'file_id':'drive-file','name':filename,
+                                          'purpose':'event','folder_id':appmod.EVENT_FOLDER_ID,'side':'photo'}
             self.assertEqual(appmod.ccm_upload('a'*32,'photo',self.photo,filename=filename,event_key='b'*32),'drive-file')
             payload = post.call_args.kwargs['json']
             self.assertEqual((payload['purpose'],payload['filename'],payload['event_key']),('event',filename,'b'*32))
+            self.assertEqual(post.call_args.args[0],os.environ['EVENT_DRIVE_SCRIPT_URL'])
+            self.assertEqual(payload['token'],'y'*32)
+
+    def test_event_upload_requires_separate_connection_without_ccm_fallback(self):
+        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/test/exec',CCM_DRIVE_API_TOKEN='x'*32,
+                        EVENT_DRIVE_SCRIPT_URL='',EVENT_DRIVE_API_TOKEN=''), \
+             patch.object(appmod.requests,'post') as post, patch.object(appmod,'ccm_drive') as direct:
+            with self.assertRaisesRegex(appmod.CCMStorageError,'EVENT_DRIVE_SCRIPT_URL and EVENT_DRIVE_API_TOKEN'):
+                appmod.ccm_upload('a'*32,'photo',self.photo,filename='Event>Sample>1.png',event_key='b'*32)
+            post.assert_not_called()
+            direct.assert_not_called()
+
+    def test_event_upload_validates_folder_side_and_id_acknowledgement(self):
+        filename = 'Event>Sample>1-ID.png'
+        result = {'ok':True,'file_id':'event-id-file','name':filename,'purpose':'event',
+                  'folder_id':appmod.EVENT_FOLDER_ID,'side':'id'}
+        response = Mock()
+        with patch.dict(os.environ,EVENT_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/event-test/exec',EVENT_DRIVE_API_TOKEN='y'*32), \
+             patch.object(appmod.requests,'post',return_value=response) as post:
+            for change in [{'folder_id':appmod.CCM_FOLDER_ID},{'side':'photo'},{'purpose':'ccm'},
+                           {'name':'CCM-wrong.png'}]:
+                with self.subTest(change=change):
+                    response.json.return_value = {**result,**change}
+                    with self.assertRaisesRegex(appmod.CCMStorageError,'not confirmed in the correct folder'):
+                        appmod.ccm_upload('a'*32,'id',self.photo,filename=filename,event_key='b'*32)
+            response.json.return_value = result
+            self.assertEqual(appmod.ccm_upload('a'*32,'id',self.photo,filename=filename,event_key='b'*32),'event-id-file')
+            self.assertEqual(post.call_args.kwargs['json']['side'],'id')
+            response.json.return_value = {'ok':False,'code':'CCM_ONLY'}
+            with self.assertRaisesRegex(appmod.CCMStorageError,'CCM-only upload endpoint'):
+                appmod.ccm_upload('a'*32,'id',self.photo,filename=filename,event_key='b'*32)
+
+    def test_partial_drive_bridge_configuration_never_falls_back_to_service_account(self):
+        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='',CCM_DRIVE_API_TOKEN='x'*32), \
+             patch.object(appmod,'ccm_drive') as direct, patch.object(appmod.requests,'post') as post:
+            with self.assertRaisesRegex(appmod.CCMStorageError,'CCM_DRIVE_SCRIPT_URL is missing'):
+                appmod.ccm_upload('a'*32,'photo',self.photo)
+            direct.assert_not_called()
+            post.assert_not_called()
+
+    def test_drive_bridge_returns_actionable_script_failures_without_fallback(self):
+        response = Mock()
+        with patch.dict(os.environ,CCM_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/test/exec',CCM_DRIVE_API_TOKEN='x'*32), \
+             patch.object(appmod.requests,'post',return_value=response), patch.object(appmod,'ccm_drive') as direct:
+            for code,message in [('AUTH','rejected its API token'),('INPUT','latest deployment/ccm_drive.gs'),
+                                 ('IMAGE','rejected this PNG'),('DRIVE','Apps Script Executions log')]:
+                with self.subTest(code=code):
+                    response.json.return_value = {'ok':False,'code':code}
+                    with self.assertRaisesRegex(appmod.CCMStorageError,message):
+                        appmod.ccm_upload('a'*32,'photo',self.photo)
+            direct.assert_not_called()
+
+    def test_service_account_storage_quota_error_identifies_deployment_settings(self):
+        response = Mock(ok=False,status_code=403)
+        response.json.return_value = {'error':{'errors':[{'reason':'storageQuotaExceeded'}]}}
+        with patch.object(appmod,'google_credentials'), patch.object(appmod.requests,'request',return_value=response):
+            with self.assertRaisesRegex(appmod.CCMStorageError,'CCM_DRIVE_SCRIPT_URL and CCM_DRIVE_API_TOKEN'):
+                appmod.ccm_drive('POST','upload/drive/v3/files')
 
     def test_status_changes_during_backup_remain_unsynced_and_failure_keeps_local_data(self):
         event = self.create_event()
@@ -1020,13 +1224,13 @@ class EventRegistrationTests(unittest.TestCase):
             appmod.get_db().commit()
         sheet.append_row.side_effect = append_and_change
         with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,appmod.EVENT_HEADERS)), \
-             patch.object(appmod,'event_upload_photo',return_value='drive-file'):
+             patch.object(appmod,'event_upload_id',return_value='drive-id'):
             result = appmod.event_backup_attendee(key)
             self.assertFalse(result['clean'])
             attendee = appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
             self.assertEqual(attendee['paid'],1)
             self.assertLess(attendee['backed_up_revision'],attendee['revision'])
-        with patch.object(appmod,'event_upload_photo',side_effect=appmod.CCMStorageError('Drive unavailable')):
+        with patch.object(appmod,'event_upload_id',side_effect=appmod.CCMStorageError('Drive unavailable')):
             response = self.client.post('/event-registration/admin/backup/'+key,data={'csrf_token':self.csrf()})
             self.assertEqual(response.status_code,503)
         with appmod.app.app_context():
@@ -1052,7 +1256,7 @@ class EventRegistrationTests(unittest.TestCase):
         key,_ = self.register_details(event,'Wrong Registration')
         original = self.capture(key)
         page = self.client.get('/event-registration?tab=admin')
-        headings = page.data.split(b'<thead>')[1].split(b'</thead>')[0]
+        headings = page.data.split(b'<table class="event-table">')[1].split(b'<thead>')[1].split(b'</thead>')[0]
         for column in ('Bday','Contact #','Pastor','Date created','Event','Google copy'):
             self.assertNotIn(('<th>'+column+'</th>').encode(),headings)
         self.assertIn(b'<th>Delete</th>',headings)
@@ -1087,11 +1291,18 @@ class EventRegistrationTests(unittest.TestCase):
             state.update(event_admin_until=appmod.time.time()+3600,event_csrf='ordinary-admin')
         url = f"/event-registration/admin/event/{event['id']}/delete"
         self.assertNotIn(b'eventDeleteEventButton',ordinary_admin.get('/event-registration?tab=admin').data)
-        self.assertEqual(ordinary_admin.post(url,data={'csrf_token':'ordinary-admin','confirm':'yes','updated_at':event['updated_at']}).status_code,403)
+        self.assertEqual(ordinary_admin.post(url,data={'csrf_token':'ordinary-admin','confirm':'yes','updated_at':event['updated_at'],'password':'EventAdminD4'}).status_code,403)
         self.assertIn(b'eventDeleteEventButton',self.client.get('/event-registration?tab=admin').data)
         data = dict(csrf_token=self.csrf(),updated_at=event['updated_at'])
         self.assertEqual(self.client.post(url,data=data).status_code,400)
-        data.update(confirm='yes',updated_at='stale')
+        data.update(confirm='yes')
+        self.assertEqual(self.client.post(url,data=data).status_code,403)
+        data['password'] = 'incorrect'
+        self.assertEqual(self.client.post(url,data=data).status_code,403)
+        with appmod.app.app_context():
+            self.assertEqual(appmod.event_current()['id'],event['id'])
+            self.assertEqual(appmod.get_db().execute('SELECT deleted_at FROM event_attendees WHERE key=?',(key,)).fetchone()[0],'')
+        data.update(password='EventAdminD4',updated_at='stale')
         self.assertEqual(self.client.post(url,data=data).status_code,409)
         data['updated_at'] = event['updated_at']
         self.assertEqual(self.client.post(url,data=data).status_code,200)
@@ -1099,6 +1310,7 @@ class EventRegistrationTests(unittest.TestCase):
             self.assertIsNone(appmod.event_current())
         self.assertEqual(self.client.get('/event-registration/ticket/'+key).status_code,404)
         self.assertEqual(self.client.get(f"/event-registration/background/{event['id']}.png").status_code,404)
+        self.assertEqual(self.client.post(url,data={k:v for k,v in data.items() if k!='password'}).status_code,403)
         queue = self.client.post('/event-registration/admin/backup',data={'csrf_token':self.csrf()})
         self.assertEqual(queue.json['keys'],[key])
         replacement = self.create_event()
@@ -1109,7 +1321,7 @@ class EventRegistrationTests(unittest.TestCase):
         with self.client.session_transaction() as state:
             old_form_key = state['event_form_key']
         response = self.client.post(f"/event-registration/admin/event/{replacement['id']}/delete",data={
-            'csrf_token':self.csrf(),'confirm':'yes','updated_at':replacement['updated_at']})
+            'csrf_token':self.csrf(),'confirm':'yes','updated_at':replacement['updated_at'],'password':'EventAdminD4'})
         self.assertEqual(response.status_code,200)
         next_event = self.create_event(year=2027)
         self.assertEqual(self.client.post('/event-registration/details',data={
@@ -1130,7 +1342,7 @@ class EventRegistrationTests(unittest.TestCase):
         sheet.append_row.side_effect = lambda row,**kw: values.append(list(row))
         sheet.delete_rows.side_effect = lambda number: values.pop(number-1)
         with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
-             patch.object(appmod,'event_upload_photo',return_value='drive-file') as upload:
+             patch.object(appmod,'event_upload_id',return_value='drive-id'):
             appmod.event_backup_attendee(key)
         self.assertEqual(self.client.post('/event-registration/admin/delete/'+key,data={
             'csrf_token':self.csrf(),'confirm':'yes','revision':original['revision']}).status_code,200)
@@ -1148,7 +1360,7 @@ class EventRegistrationTests(unittest.TestCase):
             raise TimeoutError('Acknowledgement lost')
         sheet.delete_rows.side_effect = uncertain_delete
         with appmod.app.app_context(), patch.object(appmod,'event_sheet',return_value=(sheet,headers)), \
-             patch.object(appmod,'event_upload_photo') as upload:
+             patch.object(appmod,'event_upload_id') as upload:
             with self.assertRaises(TimeoutError):
                 appmod.event_backup_attendee(key)
             self.assertIsNotNone(appmod.get_db().execute('SELECT 1 FROM event_attendees WHERE key=?',(key,)).fetchone())
@@ -1167,10 +1379,13 @@ class EventRegistrationTests(unittest.TestCase):
             db = appmod.get_db()
             for table in ('event_attendees','registration_events'):
                 db.execute(f'ALTER TABLE {table} DROP COLUMN deleted_at')
+            for column in ('id_drive_id','id_backup_hash'):
+                db.execute(f'ALTER TABLE event_attendees DROP COLUMN {column}')
             db.commit()
             appmod.event_tables()
             stored = db.execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
             self.assertEqual(stored['deleted_at'],'')
+            self.assertEqual((stored['id_drive_id'],stored['id_backup_hash']),('',''))
             for field in ('name','birthday','contact','pastor','created_at','number'):
                 self.assertEqual(stored[field],original[field])
             self.assertEqual(appmod.event_current()['id'],event['id'])
@@ -1222,6 +1437,165 @@ class EventRegistrationTests(unittest.TestCase):
             self.assertEqual(first.crop((400,1290,600,1490)).tobytes(),second.crop((400,1290,600,1490)).tobytes())
         with self.assertRaisesRegex(ValueError,'too long'):
             self.real_renderer({**event,'theme':'Too much text '*45},background=self.photo)
+
+    def meal_api(self,event,action,payload=None):
+        url = '/event-registration/api/v1/events/'+event['key']+'/'+action
+        headers = {'Authorization':'Bearer '+'m'*64}
+        return self.client.get(url,headers=headers) if payload is None else self.client.post(url,json=payload,headers=headers)
+
+    def meal_set(self,event,revision=1,enabled=True):
+        return self.meal_api(event,'meal-sets',{'batch_id':'sets-'+str(revision),'sets':[{
+            'set_id':'convention-meals','name':'App configured meals','revision':revision,
+            'sessions':[{'session_id':'opening-dinner','name':'Opening Dinner','date':'2026-12-20','enabled':enabled}]}]})
+
+    def meal_claim(self,ticket,claim='claim-1'):
+        return dict(claim_id=claim,ticket_id=ticket,session_id='opening-dinner',scanner_id='slave-1',served_at='2026-12-20T18:00:00+08:00')
+
+    def test_master_auth_roster_snapshots_and_private_full_details(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        self.capture(key)
+        prefix = '/event-registration/api/v1/events'
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN=''):
+            self.assertEqual(self.client.get(prefix).status_code,503)
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN='m'*64):
+            self.assertEqual(self.client.get(prefix).status_code,401)  # Admin cookie is not master auth.
+            self.assertEqual(self.client.get(prefix,headers={'Authorization':'Bearer wrong'}).status_code,401)
+            roster = self.meal_api(event,'delegates')
+            self.assertEqual(roster.status_code,200)
+            item = roster.json['delegates'][0]
+            self.assertEqual(item['ticket_id'],key)
+            self.assertFalse(item['meal_eligible'])
+            self.assertNotIn('birthday',item)
+            self.assertNotIn('contact',item)
+            self.assertIn('no-store',roster.headers['Cache-Control'])
+            cursor = roster.json['snapshot']
+            self.assertFalse(self.meal_api(event,'changes?cursor='+cursor).json['changed'])
+            with appmod.app.app_context():
+                appmod.get_db().execute('UPDATE event_attendees SET paid=1 WHERE key=?',(key,));appmod.get_db().commit()
+            updated = self.meal_api(event,'changes?cursor='+cursor).json
+            self.assertTrue(updated['changed'])
+            self.assertTrue(updated['delegates'][0]['meal_eligible'])
+            self.assertFalse(updated['delegates'][0]['processed'])
+            self.assertEqual(updated['mode'],'replace_event_snapshot')
+            private = self.client.get('/event-registration/admin/delegate/'+key)
+            self.assertEqual(private.json['delegate']['birthday'],'2000-06-01')
+            self.assertEqual(appmod.app.test_client().get('/event-registration/admin/delegate/'+key).status_code,403)
+            self.client.post('/event-registration/admin/delete/'+key,data={'csrf_token':self.csrf(),'confirm':'yes','revision':1})
+            self.assertEqual(self.meal_api(event,'delegates').json['delegates'],[])
+
+    def test_meal_sets_claim_retry_duplicates_and_audit_void(self):
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        self.capture(key)
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN='m'*64):
+            self.assertEqual(self.meal_set(event).status_code,200)
+            claim = self.meal_claim(key)
+            denied = self.meal_api(event,'claims',{'batch_id':'unpaid','claims':[dict(claim,claim_id='unpaid-claim')]})
+            self.assertEqual(denied.json['results'][0]['status'],'unpaid')
+            with appmod.app.app_context():
+                appmod.get_db().execute('UPDATE event_attendees SET paid=1 WHERE key=?',(key,));appmod.get_db().commit()
+            payload = {'batch_id':'claims-1','claims':[claim]}
+            accepted = self.meal_api(event,'claims',payload)
+            self.assertEqual(accepted.status_code,200,accepted.json)
+            self.assertEqual(accepted.json['results'][0]['status'],'accepted')
+            self.assertEqual(self.meal_api(event,'claims',payload).json,accepted.json)
+            self.assertEqual(self.meal_api(event,'claims',dict(payload,claims=[dict(claim,scanner_id='other')])).status_code,409)
+            duplicate = self.meal_api(event,'claims',{'batch_id':'claims-2','claims':[self.meal_claim(key,'claim-2')]})
+            self.assertEqual(duplicate.json['results'][0]['status'],'duplicate')
+            audit = {'batch_id':'audit-1','audit':[dict(audit_id='correction-1',claim_id='claim-1',action='void_claim',reason='Operator correction',occurred_at='2026-12-20T18:10:00+08:00')]}
+            self.assertEqual(self.meal_api(event,'audit',audit).status_code,200)
+            self.assertEqual(self.meal_api(event,'audit',audit).status_code,200)
+            fresh = self.meal_api(event,'claims',{'batch_id':'claims-3','claims':[self.meal_claim(key,'claim-3')]})
+            self.assertEqual(fresh.json['results'][0]['status'],'accepted')
+            with appmod.app.app_context():
+                db = appmod.get_db()
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM event_meal_claims WHERE status='accepted'").fetchone()[0],1)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM event_meal_audit').fetchone()[0],1)
+                original = db.execute("SELECT * FROM event_meal_claims WHERE key='claim-1'").fetchone()
+                self.assertEqual(original['status'],'voided')
+                self.assertEqual(original['served_at'],'2026-12-20T10:00:00+00:00')
+            details = self.client.get('/event-registration/admin/delegate/'+key).json
+            self.assertEqual(len(details['meals']),4)
+            self.assertEqual(details['audit'][0]['reason'],'Operator correction')
+            self.assertEqual(self.meal_api(event,'sync-status').json['claim_counts']['accepted'],1)
+            moved_date = {'batch_id':'move-used-session','sets':[dict(set_id='convention-meals',name='Changed',revision=2,
+                sessions=[dict(session_id='opening-dinner',name='Dinner',date='2026-12-21',enabled=True)])]}
+            self.assertEqual(self.meal_api(event,'meal-sets',moved_date).status_code,409)
+            self.assertEqual(self.meal_api(event,'sync-status').json['sessions'][0]['date'],'2026-12-20')
+
+    def test_meal_batch_validation_rollback_event_isolation_and_set_revisions(self):
+        event = self.create_event()
+        ticket,_ = self.register_details(event);self.capture(ticket)
+        other = self.create_event('Youth Convention')
+        foreign,_ = self.register_details(other);self.capture(foreign)
+        with appmod.app.app_context():
+            appmod.get_db().execute('UPDATE event_attendees SET paid=1');appmod.get_db().commit()
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN='m'*64):
+            self.assertEqual(self.meal_set(event).status_code,200)
+            invalid = {'batch_id':'rollback','claims':[self.meal_claim(ticket),dict(self.meal_claim(ticket,'bad'),ticket_id='bad')]}
+            self.assertEqual(self.meal_api(event,'claims',invalid).status_code,400)
+            with appmod.app.app_context():
+                self.assertEqual(appmod.get_db().execute('SELECT COUNT(*) FROM event_meal_claims').fetchone()[0],0)
+            isolated = self.meal_api(event,'claims',{'batch_id':'foreign','claims':[self.meal_claim(foreign)]})
+            self.assertEqual(isolated.json['results'][0]['status'],'invalid_ticket')
+            self.assertEqual(self.meal_set(event,revision=2,enabled=False).status_code,200)
+            self.assertEqual(self.meal_set(event).status_code,200)  # Exact retry returns original acknowledgement.
+            stale = {'batch_id':'stale-set','sets':[{'set_id':'convention-meals','name':'Old','revision':1,'sessions':[]}]}
+            self.assertEqual(self.meal_api(event,'meal-sets',stale).status_code,409)
+            disabled = self.meal_api(event,'claims',{'batch_id':'disabled','claims':[self.meal_claim(ticket,'disabled')]})
+            self.assertEqual(disabled.json['results'][0]['status'],'invalid_session')
+            self.assertEqual(self.meal_api(event,'claims',{'batch_id':'naive','claims':[dict(self.meal_claim(ticket),served_at='2026-12-20T18:00:00')]}).status_code,400)
+
+    def test_meal_duplicate_constraint_under_concurrent_master_requests(self):
+        from concurrent.futures import ThreadPoolExecutor
+        event = self.create_event()
+        key,_ = self.register_details(event);self.capture(key)
+        with appmod.app.app_context():
+            appmod.get_db().execute('UPDATE event_attendees SET paid=1 WHERE key=?',(key,));appmod.get_db().commit()
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN='m'*64):
+            self.meal_set(event)
+            def sync(index):
+                client = appmod.app.test_client()
+                return client.post('/event-registration/api/v1/events/'+event['key']+'/claims',
+                    headers={'Authorization':'Bearer '+'m'*64},json={'batch_id':'race-'+str(index),'claims':[self.meal_claim(key,'race-'+str(index))]})
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(sync,range(2)))
+            for index,result in enumerate(results):
+                if result.status_code==503:
+                    results[index] = sync(index)
+            self.assertEqual([r.status_code for r in results],[200,200])
+            self.assertEqual(sorted(r.json['results'][0]['status'] for r in results),['accepted','duplicate'])
+
+    def test_meal_google_backup_batches_retries_and_preserves_local_records(self):
+        event = self.create_event()
+        key,_ = self.register_details(event);self.capture(key)
+        with appmod.app.app_context():
+            appmod.get_db().execute('UPDATE event_attendees SET paid=1');appmod.get_db().commit()
+        with patch.dict(os.environ,EVENT_MEAL_MASTER_TOKEN='m'*64):
+            self.meal_set(event)
+            self.meal_api(event,'claims',{'batch_id':'export','claims':[self.meal_claim(key)]})
+        values = []
+        sheet = Mock(col_count=15)
+        sheet.get_all_values.side_effect = lambda: copy.deepcopy(values)
+        sheet.update.side_effect = lambda **kw: values.extend(copy.deepcopy(kw['values']))
+        def append(rows,**kwargs):
+            values.extend(copy.deepcopy(rows))
+            if len(values)==2: raise TimeoutError('Lost acknowledgement')
+        sheet.append_rows.side_effect = append
+        sheet.batch_update.side_effect = lambda updates,**kwargs: [values.__setitem__(int(item['range'].split(':')[0][1:])-1,item['values'][0]) for item in updates]
+        book = Mock();book.worksheet.return_value=sheet
+        client = Mock();client.open.return_value=book
+        url='/event-registration/admin/meals/backup'
+        with patch.object(appmod,'get_gs_client',return_value=client):
+            self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf(),'event_id':event['id']}).status_code,503)
+            response=self.client.post(url,data={'csrf_token':self.csrf(),'event_id':event['id']})
+            self.assertEqual(response.status_code,200,response.json)
+            self.assertEqual(len(values),2)
+            self.assertEqual(values[1][-1],'accepted')
+            self.assertEqual(sheet.append_rows.call_args.kwargs['value_input_option'],'RAW')
+        with appmod.app.app_context():
+            self.assertEqual(appmod.get_db().execute('SELECT COUNT(*) FROM event_meal_claims').fetchone()[0],1)
 
 
 if __name__ == '__main__':

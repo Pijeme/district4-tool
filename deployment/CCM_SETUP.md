@@ -1,7 +1,10 @@
 # CCM
 
 The public page is `/ccm`, with About CCM, Workers, and Admin tabs. Its menu entry
-is directly below Event Registration. The login page also links to CCM.
+is directly below Event Registration in the main signed-in menu.
+
+The CCM link is available in the main signed-in menu; Event pages and the login
+splash do not show a CCM shortcut.
 
 The admin password is `CCMDistric4`, checked only on the server. Admin sessions
 last four hours. Admin actions require a session and CSRF token; the shared
@@ -16,6 +19,12 @@ copies their records, ID numbers, creation/update timestamps, verification links
 and the three verified Drive file IDs into this worksheet.
 
 The supplied folder is `1IYlGZPuHL7CUW7HqwWEHnxuaG63gscEY` (`CCM Profile Pic`).
+The current `deployment/ccm_drive.gs` is **CCM-only**. It accepts the existing
+CCM portrait/front/back payloads and rejects Event purpose, event keys and
+custom filenames before accessing Drive. It preserves the existing private
+token and CCM filenames. Publishing it does not rename or move existing files.
+Event backups need their own upload endpoint; until the website is connected to
+that endpoint, Event requests sent to this script will fail safely and stay local.
 Access to the folder is confirmed, but a real PNG upload returns Google's
 `storageQuotaExceeded`: service accounts cannot use personal Drive storage.
 An empty-file permission check can succeed despite this limitation.
@@ -49,6 +58,27 @@ credentials nor the upload token. Retries use content-addressed filenames and
 reuse completed uploads. If using a Workspace Shared Drive instead, direct API
 uploads are available without the bridge; the current folder constant would
 need to point to that Shared Drive's folder.
+
+### When neither Drive nor Sheets backup completes
+
+The Apps Script only uploads images; the website writes Sheets after it verifies
+those uploads. A Drive failure stops that record before its Sheets write and
+keeps its local form and images for retry.
+
+If the message mentions a service-account upload or connecting the folder
+owner's account, the running app is not using the Apps Script upload connection.
+Check **the deployment's** `.env`, beside the Compose file used to run the server;
+editing a separate development checkout's `.env` does not change that container.
+Both `CCM_DRIVE_SCRIPT_URL` and `CCM_DRIVE_API_TOKEN` must be present. Recreate the
+container with `docker compose up -d --force-recreate district4` from that
+deployment directory. A plain container restart does not reload `.env` settings.
+Then retry the existing backup; there is no need to register again or change
+the Google Sheets columns.
+
+An API token rejection means the server's token differs from the Apps Script
+property. A `DRIVE` error means the script was reached but failed while using
+Drive; inspect its private Apps Script Executions log and verify the folder
+owner's authorization and storage. Keep tokens and credentials out of screenshots.
 
 ## Worker and ID behavior
 

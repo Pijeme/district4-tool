@@ -29,6 +29,7 @@ event_assets/
 event-photo-*
 event-record-backup-*
 event-google-backup*
+event-google-meal-backup*
 *.sync-progress.json
 *.sync-progress.json.*.tmp
 book_thumbnail_cache/

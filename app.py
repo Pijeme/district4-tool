@@ -16,7 +16,7 @@ import io
 import base64
 from pathlib import Path
 from contextlib import closing
-from functools import lru_cache
+from functools import lru_cache, wraps
 
 from sheet_cache import DATASETS, CacheSyncError, init_cache_tables, sync_cache
 from login_events import ensure_login_event_schema, insert_login_event
@@ -6839,6 +6839,7 @@ def get_announcements_for_current_user():
 # ========================
 
 CCM_FOLDER_ID = "1IYlGZPuHL7CUW7HqwWEHnxuaG63gscEY"
+EVENT_FOLDER_ID = "1pvwfSIS0kcvjp__O9--9-1-2f7zIBcEI"
 CCM_BASE_URL = "https://iowod4tool.coresite.pro/ccm"
 CCM_HEADERS = ["Record Key", "ID Number", "Name", "Area Number", "Church ID", "Church Address",
                "Pastor", "Campus", "Phone", "Email", "Status", "Created At", "Updated At",
@@ -7013,7 +7014,7 @@ def ccm_drive(method, path, **kwargs):
             except ValueError:
                 quota = False
             if quota:
-                raise CCMStorageError("Google Drive uploads need to be connected to the folder owner's account before saving. The photo and form are still available for retry.")
+                raise CCMStorageError("Google Drive rejected the service-account upload. Set CCM_DRIVE_SCRIPT_URL and CCM_DRIVE_API_TOKEN in the running server's .env to use the folder owner's Apps Script. For Docker, recreate the district4 container after updating .env. The photo and form are still available for retry.")
             raise CCMStorageError('Google Drive could not save or retrieve this ID. Check folder access and try again.')
         return response
     except Exception as exc:
@@ -7073,11 +7074,22 @@ def ccm_upload(key, side, data, *, filename=None, event_key=None):
     digest = hashlib.sha256(data).hexdigest()
     name = filename or 'CCM-' + key + '-' + side + '-' + digest[:16] + '.png'
     properties = {'event_key': event_key, 'record_key': key, 'sha256': digest} if filename else {}
-    script_url = os.getenv('CCM_DRIVE_SCRIPT_URL', '').strip()
+    is_event = filename is not None or event_key is not None
+    connection = 'EVENT' if is_event else 'CCM'
+    script_file = 'event_drive.gs' if is_event else 'ccm_drive.gs'
+    script_url = os.getenv(connection + '_DRIVE_SCRIPT_URL', '').strip()
+    token = os.getenv(connection + '_DRIVE_API_TOKEN', '').strip()
+    if is_event:
+        if (not filename or not isinstance(event_key,str) or not re.fullmatch(r'[a-f0-9]{32}',event_key)
+                or side not in ('photo','id')):
+            raise CCMStorageError('Invalid Event upload details. Your local files are kept for retry.')
+        if not script_url or not token:
+            raise CCMStorageError("Set EVENT_DRIVE_SCRIPT_URL and EVENT_DRIVE_API_TOKEN in the running server's .env, then restart the app or recreate the Docker container. Event uploads require their own connection; your local files are kept for retry.")
+    if token and not script_url:
+        raise CCMStorageError("CCM_DRIVE_SCRIPT_URL is missing from the running server's environment. Set it beside CCM_DRIVE_API_TOKEN in the server's .env, then restart the app or recreate the Docker container. Your local files are kept for retry.")
     if script_url:
-        token = os.getenv('CCM_DRIVE_API_TOKEN', '').strip()
         if not re.fullmatch(r'https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec', script_url) or len(token) < 32:
-            raise CCMStorageError('The CCM Google Drive upload connection needs administrator setup.')
+            raise CCMStorageError(f"Check {connection}_DRIVE_SCRIPT_URL (the deployed /exec URL) and {connection}_DRIVE_API_TOKEN in the running server's .env, then restart the app or recreate the Docker container.")
         try:
             payload = {'token': token, 'record_key': key, 'side': side, 'image': base64.b64encode(data).decode('ascii')}
             if filename:
@@ -7085,13 +7097,25 @@ def ccm_upload(key, side, data, *, filename=None, event_key=None):
             response = requests.post(script_url, json=payload, timeout=(10, 60))
             response.raise_for_status()
             result = response.json()
+            if not result.get('ok'):
+                errors = {
+                    'AUTH': f"The Drive upload script rejected its API token. Match {connection}_DRIVE_API_TOKEN in the running server's .env to the Apps Script property, then restart the app or recreate the Docker container.",
+                    'INPUT': f'The Drive upload script rejected the upload details. Check that the latest deployment/{script_file} is published in the web app deployment.',
+                    'IMAGE': 'The Drive upload script rejected this PNG image or its size. Your local files are kept for retry.',
+                    'DRIVE': "The upload script could not save to Drive. Check its Apps Script Executions log, folder access and storage, and that the web app executes as the folder owner.",
+                    'CCM_ONLY': 'This is the CCM-only upload endpoint. Set EVENT_DRIVE_SCRIPT_URL to the separate Event script deployment.',
+                    'EVENT_ONLY': 'This is the Event-only upload endpoint. Check the separate CCM and Event script URLs in the server configuration.',
+                }
+                if result.get('code') in errors:
+                    raise CCMStorageError(errors[result['code']])
             if not result.get('ok') or not re.fullmatch(r'[A-Za-z0-9_-]+', str(result.get('file_id', ''))):
                 raise ValueError('Upload not acknowledged')
-            if filename and result.get('name') != name:
-                raise CCMStorageError('The photo is saved locally. Update the CCM Drive upload script to support event photo names, then retry backup.')
+            if is_event and (result.get('name') != name or result.get('folder_id') != EVENT_FOLDER_ID
+                             or result.get('purpose') != 'event' or result.get('side') != side):
+                raise CCMStorageError('The Event upload was not confirmed in the correct folder. Deploy deployment/event_drive.gs and check EVENT_DRIVE_SCRIPT_URL, then retry backup. Your local files are kept.')
             return result['file_id']
         except (requests.RequestException, ValueError, AttributeError):
-            raise CCMStorageError('The CCM Google Drive upload was not confirmed. Retry this same form; existing uploads will be reused.') from None
+            raise CCMStorageError(f'The {connection} Google Drive upload was not confirmed. Retry this same form; existing uploads will be reused.') from None
     escaped_name = name.replace('\\', '\\\\').replace("'", "\\'")
     query = "'" + CCM_FOLDER_ID + "' in parents and trashed=false and name='" + escaped_name + "'"
     for field, value in properties.items():
@@ -7685,11 +7709,383 @@ def event_tables():
             except sqlite3.OperationalError:
                 if 'deleted_at' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                     raise
+    for column in ('id_drive_id','id_backup_hash'):
+        if column not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
+            try:
+                db.execute(f"ALTER TABLE event_attendees ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                if column not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
+                    raise
     db.commit()
 
 
 def event_admin():
     return session.get('event_admin_until', 0) > time.time()
+
+
+def event_password_matches(value):
+    return hmac.compare_digest(value.encode('utf-8'),b'EventAdminD4')
+
+
+def event_meal_tables():
+    get_db().executescript('''
+        CREATE TABLE IF NOT EXISTS event_meal_sets (
+            event_id INTEGER NOT NULL REFERENCES registration_events(id), key TEXT NOT NULL,
+            name TEXT NOT NULL, revision INTEGER NOT NULL, definition_hash TEXT NOT NULL,
+            master_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(event_id,key));
+        CREATE TABLE IF NOT EXISTS event_meal_sessions (
+            event_id INTEGER NOT NULL, key TEXT NOT NULL, set_key TEXT NOT NULL,
+            name TEXT NOT NULL, service_date TEXT NOT NULL, enabled INTEGER NOT NULL,
+            updated_at TEXT NOT NULL, PRIMARY KEY(event_id,key),
+            FOREIGN KEY(event_id,set_key) REFERENCES event_meal_sets(event_id,key));
+        CREATE TABLE IF NOT EXISTS event_meal_claims (
+            key TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES registration_events(id),
+            meal_key TEXT NOT NULL, ticket_key TEXT NOT NULL, served_at TEXT NOT NULL,
+            scanner_id TEXT NOT NULL, master_id TEXT NOT NULL, received_at TEXT NOT NULL,
+            status TEXT NOT NULL, payload_hash TEXT NOT NULL, delegate_name TEXT NOT NULL,
+            delegate_area TEXT NOT NULL, delegate_church TEXT NOT NULL, meal_name TEXT NOT NULL,
+            service_date TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS event_one_accepted_meal
+            ON event_meal_claims(event_id,meal_key,ticket_key) WHERE status='accepted';
+        CREATE INDEX IF NOT EXISTS event_meal_ticket_history ON event_meal_claims(event_id,ticket_key,served_at);
+        CREATE TABLE IF NOT EXISTS event_meal_audit (
+            key TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES registration_events(id),
+            claim_key TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
+            occurred_at TEXT NOT NULL, received_at TEXT NOT NULL, master_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL, previous_status TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS event_meal_batches (
+            event_id INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, master_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL, response_json TEXT NOT NULL, received_at TEXT NOT NULL,
+            PRIMARY KEY(event_id,kind,key));
+    ''')
+
+
+def event_meal_hash(value):
+    import hashlib
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+
+
+def event_meal_text(value, label, limit=96, identifier=False):
+    if not isinstance(value,str) or not value.strip() or len(value)>limit:
+        raise ValueError('Invalid '+label+'.')
+    if identifier and not re.fullmatch(r'[A-Za-z0-9_-]+',value):
+        raise ValueError('Invalid '+label+'.')
+    return value.strip()
+
+
+def event_meal_time(value):
+    value = event_meal_text(value,'timestamp',64)
+    parsed = datetime.fromisoformat(value.replace('Z','+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError('Timestamps must include a UTC offset.')
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def event_master_api(view):
+    @wraps(view)
+    def wrapped(*args,**kwargs):
+        from werkzeug.exceptions import HTTPException
+        token = os.getenv('EVENT_MEAL_MASTER_TOKEN','').strip()
+        if len(token)<32:
+            return jsonify(ok=False,code='NOT_CONFIGURED',error='Master meal synchronization is not configured.'),503
+        supplied = request.headers.get('Authorization','')
+        if not supplied.startswith('Bearer ') or not hmac.compare_digest(supplied[7:].encode(),token.encode()):
+            return jsonify(ok=False,code='UNAUTHORIZED',error='Master authorization required.'),401
+        if request.content_length and request.content_length>512*1024:
+            return jsonify(ok=False,code='TOO_LARGE',error='Sync requests must be at most 512 KiB.'),413
+        g.event_master_id = os.getenv('EVENT_MEAL_MASTER_ID','master').strip() or 'master'
+        try:
+            event_meal_text(g.event_master_id,'configured master ID',identifier=True)
+            event_tables()
+            event_meal_tables()
+            return view(*args,**kwargs)
+        except (ValueError,HTTPException,sqlite3.IntegrityError) as exc:
+            get_db().rollback()
+            status = exc.code if isinstance(exc,HTTPException) else 409 if isinstance(exc,sqlite3.IntegrityError) else 400
+            message = exc.description if isinstance(exc,HTTPException) else 'A conflicting meal record already exists.' if isinstance(exc,sqlite3.IntegrityError) else str(exc)
+            return jsonify(ok=False,code='CONFLICT' if status==409 else 'INVALID_REQUEST',error=message),status
+        except sqlite3.OperationalError:
+            get_db().rollback()
+            return jsonify(ok=False,code='RETRY',error='Synchronization is busy. Retry the same batch ID and payload.'),503
+    return wrapped
+
+
+def event_meal_event(key):
+    if not re.fullmatch(r'[a-f0-9]{32}',key):
+        abort(404,'Event not found.')
+    row = get_db().execute("SELECT * FROM registration_events WHERE key=? AND deleted_at=''",(key,)).fetchone()
+    if not row:
+        abort(404,'Event not found.')
+    return dict(row)
+
+
+def event_meal_roster(event):
+    rows = get_db().execute("""SELECT key,number,name,area,church,paid,printed,released,updated_at,revision
+        FROM event_attendees WHERE event_id=? AND complete=1 AND deleted_at='' ORDER BY key""",(event['id'],))
+    delegates = []
+    for row in rows:
+        item = dict(row)
+        item['ticket_id'] = item.pop('key')
+        item['meal_eligible'] = bool(item['paid'])
+        item['processed'] = bool(item['paid'] and item['printed'] and item['released'])
+        for field in ('paid','printed','released'):
+            item[field] = bool(item[field])
+        item['ticket_url'] = CCM_BASE_URL.rsplit('/ccm',1)[0]+'/event-registration/ticket/'+item['ticket_id']
+        delegates.append(item)
+    return dict(event_key=event['key'],snapshot=event_meal_hash(dict(event_key=event['key'],delegates=delegates)),mode='replace_event_snapshot',delegates=delegates)
+
+
+@app.get('/event-registration/api/v1/events')
+@event_master_api
+def event_meal_api_events():
+    rows = get_db().execute("SELECT key,name,start_date,end_date,active FROM registration_events WHERE deleted_at='' ORDER BY id DESC")
+    return jsonify(ok=True,api_version=1,master_id=g.event_master_id,events=[dict(row) for row in rows])
+
+
+@app.get('/event-registration/api/v1/events/<event_key>/delegates')
+@app.get('/event-registration/api/v1/events/<event_key>/changes')
+@event_master_api
+def event_meal_api_delegates(event_key):
+    result = event_meal_roster(event_meal_event(event_key))
+    changed = request.args.get('cursor') != result['snapshot']
+    if not changed:
+        result['delegates'] = []
+    return jsonify(ok=True,changed=changed,**result)
+
+
+def event_meal_batch(event, kind, handler):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload,dict):
+        raise ValueError('Send a JSON object.')
+    batch_id = event_meal_text(payload.get('batch_id'),'batch ID',identifier=True)
+    items = payload.get(kind)
+    if not isinstance(items,list) or not 1<=len(items)<=100 or any(not isinstance(item,dict) for item in items):
+        raise ValueError('Send between 1 and 100 '+kind+'.')
+    digest = event_meal_hash(payload)
+    db = get_db()
+    db.execute('BEGIN IMMEDIATE')
+    # Recheck deletion inside the write transaction, after any competing edits.
+    event_meal_event(event['key'])
+    previous = db.execute('SELECT * FROM event_meal_batches WHERE event_id=? AND kind=? AND key=?',
+                          (event['id'],kind,batch_id)).fetchone()
+    if previous:
+        if previous['payload_hash']!=digest or previous['master_id']!=g.event_master_id:
+            abort(409,'Batch ID was already used with different content or a different master.')
+        db.rollback()
+        return jsonify(json.loads(previous['response_json']))
+    result = dict(ok=True,batch_id=batch_id,results=handler(items),received_at=utc_now_iso())
+    db.execute('INSERT INTO event_meal_batches VALUES (?,?,?,?,?,?,?)',
+               (event['id'],kind,batch_id,g.event_master_id,digest,json.dumps(result),result['received_at']))
+    db.commit()
+    return jsonify(result)
+
+
+@app.post('/event-registration/api/v1/events/<event_key>/meal-sets')
+@event_master_api
+def event_meal_api_sets(event_key):
+    event = event_meal_event(event_key)
+    def save(items):
+        results = []
+        for item in items:
+            key = event_meal_text(item.get('set_id'),'meal set ID',identifier=True)
+            name = event_meal_text(item.get('name'),'meal set name',150)
+            revision = item.get('revision')
+            sessions = item.get('sessions')
+            if type(revision) is not int or revision<1 or not isinstance(sessions,list) or len(sessions)>100:
+                raise ValueError('Meal sets need a positive revision and at most 100 sessions.')
+            digest = event_meal_hash(item)
+            old = get_db().execute('SELECT * FROM event_meal_sets WHERE event_id=? AND key=?',(event['id'],key)).fetchone()
+            if old and (old['master_id']!=g.event_master_id or revision<old['revision'] or revision==old['revision'] and digest!=old['definition_hash']):
+                abort(409,'Meal set revision is stale or was reused with different content.')
+            if old and digest==old['definition_hash']:
+                results.append(dict(set_id=key,revision=revision,status='unchanged'))
+                continue
+            now = utc_now_iso()
+            get_db().execute('''INSERT INTO event_meal_sets VALUES (?,?,?,?,?,?,?) ON CONFLICT(event_id,key) DO UPDATE SET
+                name=excluded.name,revision=excluded.revision,definition_hash=excluded.definition_hash,
+                master_id=excluded.master_id,updated_at=excluded.updated_at''',
+                             (event['id'],key,name,revision,digest,g.event_master_id,now))
+            get_db().execute('UPDATE event_meal_sessions SET enabled=0,updated_at=? WHERE event_id=? AND set_key=?',(now,event['id'],key))
+            seen = set()
+            for meal in sessions:
+                if not isinstance(meal,dict):
+                    raise ValueError('Invalid meal session.')
+                meal_key = event_meal_text(meal.get('session_id'),'meal session ID',identifier=True)
+                meal_name = event_meal_text(meal.get('name'),'meal name',150)
+                day = date.fromisoformat(event_meal_text(meal.get('date'),'meal date',10)).isoformat()
+                if type(meal.get('enabled',True)) is not bool or meal_key in seen:
+                    raise ValueError('Meal session IDs must be unique and enabled must be boolean.')
+                seen.add(meal_key)
+                other = get_db().execute('SELECT set_key,service_date FROM event_meal_sessions WHERE event_id=? AND key=?',(event['id'],meal_key)).fetchone()
+                if other and other['set_key']!=key:
+                    abort(409,'Meal session ID already belongs to another set.')
+                if other and other['service_date']!=day and get_db().execute('SELECT 1 FROM event_meal_claims WHERE event_id=? AND meal_key=? LIMIT 1',(event['id'],meal_key)).fetchone():
+                    abort(409,'Use a new session ID when changing the date of a meal with scan history.')
+                get_db().execute('''INSERT INTO event_meal_sessions VALUES (?,?,?,?,?,?,?) ON CONFLICT(event_id,key) DO UPDATE SET
+                    name=excluded.name,service_date=excluded.service_date,enabled=excluded.enabled,updated_at=excluded.updated_at''',
+                                 (event['id'],meal_key,key,meal_name,day,int(meal.get('enabled',True)),now))
+            results.append(dict(set_id=key,revision=revision,status='saved'))
+        return results
+    return event_meal_batch(event,'sets',save)
+
+
+@app.post('/event-registration/api/v1/events/<event_key>/claims')
+@event_master_api
+def event_meal_api_claims(event_key):
+    event = event_meal_event(event_key)
+    def save(items):
+        results = []
+        for item in items:
+            key = event_meal_text(item.get('claim_id'),'claim ID',identifier=True)
+            ticket = event_meal_text(item.get('ticket_id'),'ticket ID',32)
+            if not re.fullmatch(r'[a-f0-9]{32}',ticket):
+                raise ValueError('ticket_id must be 32 lowercase hexadecimal characters.')
+            meal_key = event_meal_text(item.get('session_id'),'meal session ID',identifier=True)
+            scanner = event_meal_text(item.get('scanner_id'),'scanner ID',identifier=True)
+            served = event_meal_time(item.get('served_at'))
+            digest = event_meal_hash(item)
+            old = get_db().execute('SELECT * FROM event_meal_claims WHERE key=?',(key,)).fetchone()
+            if old:
+                if old['payload_hash']!=digest or old['event_id']!=event['id'] or old['master_id']!=g.event_master_id:
+                    abort(409,'Claim ID was reused with different content, event or master.')
+                results.append(dict(claim_id=key,status=old['status']))
+                continue
+            meal = get_db().execute('SELECT * FROM event_meal_sessions WHERE event_id=? AND key=?',(event['id'],meal_key)).fetchone()
+            person = get_db().execute("SELECT * FROM event_attendees WHERE event_id=? AND key=? AND complete=1 AND deleted_at=''",(event['id'],ticket)).fetchone()
+            duplicate = get_db().execute("SELECT key FROM event_meal_claims WHERE event_id=? AND meal_key=? AND ticket_key=? AND status='accepted'",(event['id'],meal_key,ticket)).fetchone()
+            status = 'invalid_session' if not meal or not meal['enabled'] else 'invalid_ticket' if not person else 'unpaid' if not person['paid'] else 'duplicate' if duplicate else 'accepted'
+            get_db().execute('INSERT INTO event_meal_claims VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (key,event['id'],meal_key,ticket,served,scanner,g.event_master_id,utc_now_iso(),status,digest,
+                 person['name'] if person else '',person['area'] if person else '',person['church'] if person else '',
+                 meal['name'] if meal else '',meal['service_date'] if meal else ''))
+            results.append(dict(claim_id=key,status=status))
+        return results
+    return event_meal_batch(event,'claims',save)
+
+
+@app.post('/event-registration/api/v1/events/<event_key>/audit')
+@event_master_api
+def event_meal_api_audit(event_key):
+    event = event_meal_event(event_key)
+    def save(items):
+        results = []
+        for item in items:
+            key = event_meal_text(item.get('audit_id'),'audit ID',identifier=True)
+            claim_key = event_meal_text(item.get('claim_id'),'claim ID',identifier=True)
+            action = item.get('action')
+            if action not in ('note','dispute','void_claim'):
+                raise ValueError('Audit action must be note, dispute or void_claim.')
+            reason = event_meal_text(item.get('reason'),'reason',500)
+            occurred = event_meal_time(item.get('occurred_at'))
+            digest = event_meal_hash(item)
+            old = get_db().execute('SELECT * FROM event_meal_audit WHERE key=?',(key,)).fetchone()
+            if old:
+                if old['payload_hash']!=digest or old['event_id']!=event['id'] or old['master_id']!=g.event_master_id:
+                    abort(409,'Audit ID was reused with different content, event or master.')
+                results.append(dict(audit_id=key,status='recorded'))
+                continue
+            claim = get_db().execute('SELECT * FROM event_meal_claims WHERE key=? AND event_id=?',(claim_key,event['id'])).fetchone()
+            if not claim:
+                raise ValueError('Audit claim does not exist in this event.')
+            get_db().execute('INSERT INTO event_meal_audit VALUES (?,?,?,?,?,?,?,?,?,?)',
+                             (key,event['id'],claim_key,action,reason,occurred,utc_now_iso(),g.event_master_id,digest,claim['status']))
+            if action=='void_claim':
+                get_db().execute("UPDATE event_meal_claims SET status='voided' WHERE key=?",(claim_key,))
+            results.append(dict(audit_id=key,status='recorded'))
+        return results
+    return event_meal_batch(event,'audit',save)
+
+
+@app.get('/event-registration/api/v1/events/<event_key>/sync-status')
+@event_master_api
+def event_meal_api_status(event_key):
+    event = event_meal_event(event_key)
+    sets = [dict(row) for row in get_db().execute('SELECT key AS set_id,name,revision,updated_at FROM event_meal_sets WHERE event_id=?',(event['id'],))]
+    sessions = [dict(row) for row in get_db().execute('SELECT key AS session_id,set_key AS set_id,name,service_date AS date,enabled FROM event_meal_sessions WHERE event_id=?',(event['id'],))]
+    counts = {row['status']:row['n'] for row in get_db().execute('SELECT status,COUNT(*) AS n FROM event_meal_claims WHERE event_id=? GROUP BY status',(event['id'],))}
+    last = get_db().execute('SELECT MAX(received_at) FROM event_meal_batches WHERE event_id=?',(event['id'],)).fetchone()[0]
+    return jsonify(ok=True,event_key=event_key,master_id=g.event_master_id,sets=sets,sessions=sessions,claim_counts=counts,last_sync=last)
+
+
+@app.get('/event-registration/admin/delegate/<key>')
+def event_delegate_details(key):
+    if not event_admin():
+        abort(403)
+    event_tables()
+    event_meal_tables()
+    person = event_attendee(key,admin=True)
+    fields = ('key','number','name','birthday','contact','area','church','address','pastor','created_at','paid','printed','released')
+    meals = [dict(row) for row in get_db().execute('''SELECT key AS claim_id,meal_name,service_date,served_at,scanner_id,status,received_at
+        FROM event_meal_claims WHERE event_id=? AND ticket_key=? ORDER BY served_at DESC''',(person['event_id'],key))]
+    audits = [dict(row) for row in get_db().execute('''SELECT a.key AS audit_id,a.claim_key AS claim_id,a.action,a.reason,a.occurred_at
+        FROM event_meal_audit a JOIN event_meal_claims c ON c.key=a.claim_key
+        WHERE a.event_id=? AND c.ticket_key=? ORDER BY a.received_at DESC''',(person['event_id'],key))]
+    return jsonify(ok=True,delegate={field:person[field] for field in fields},meals=meals,audit=audits)
+
+
+@app.post('/event-registration/admin/meals/backup')
+def event_backup_meals():
+    """Explicit RAW batch export; importing master scans never contacts Google."""
+    from sheet_cache import _locked_sync
+    from gspread.utils import rowcol_to_a1
+    event_guard(admin=True)
+    event_tables()
+    event_meal_tables()
+    event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(request.form.get('event_id',type=int),)).fetchone()
+    if not event:
+        abort(404)
+    claims = [dict(row) for row in get_db().execute('SELECT * FROM event_meal_claims WHERE event_id=? ORDER BY received_at,key',(event['id'],))]
+    audits = [dict(row) for row in get_db().execute('SELECT * FROM event_meal_audit WHERE event_id=? ORDER BY received_at,key',(event['id'],))]
+    if not claims and not audits:
+        return jsonify(ok=True,claims=0,audit=0)
+    specs = [
+        ('Event Meals',['Event','Event Key','Claim ID','Ticket ID','Name','Area','Church','Meal Session ID','Meal','Service Date','Served At','Scanner','Master','Received At','Status'],
+         [[event['kind']+' '+event['start_date'][:4],event['key'],r['key'],r['ticket_key'],r['delegate_name'],r['delegate_area'],r['delegate_church'],r['meal_key'],r['meal_name'],r['service_date'],r['served_at'],r['scanner_id'],r['master_id'],r['received_at'],r['status']] for r in claims],'Claim ID'),
+        ('Event Meal Audit',['Event Key','Audit ID','Claim ID','Action','Reason','Occurred At','Received At','Master','Previous Status'],
+         [[event['key'],r['key'],r['claim_key'],r['action'],r['reason'],r['occurred_at'],r['received_at'],r['master_id'],r['previous_status']] for r in audits],'Audit ID')]
+    try:
+        with _locked_sync(data_path('event-google-meal-backup')):
+            book = get_gs_client().open('District4 Data')
+            for title,headers,rows,identity in specs:
+                if not rows:
+                    continue
+                try:
+                    sheet = book.worksheet(title)
+                except gspread.WorksheetNotFound:
+                    sheet = book.add_worksheet(title=title,rows=max(1000,len(rows)+1),cols=len(headers))
+                values = sheet.get_all_values()
+                if not values:
+                    if sheet.col_count<len(headers):
+                        sheet.resize(cols=len(headers))
+                    sheet.update(range_name='A1:'+rowcol_to_a1(1,len(headers)),values=[headers],value_input_option='RAW')
+                    values = [headers]
+                if values[0]!=headers:
+                    raise CCMStorageError(title+' headers differ from the meal backup schema. Local records were kept.')
+                column = headers.index(identity)
+                indexed = {}
+                for number,row in enumerate(values[1:],2):
+                    if len(row)>column and row[column]:
+                        if row[column] in indexed:
+                            raise CCMStorageError('Duplicate meal record IDs found in '+title+'. Resolve them before retrying.')
+                        indexed[row[column]] = number
+                updates,appends = [],[]
+                for row in rows:
+                    number = indexed.get(row[column])
+                    if number:
+                        updates.append(dict(range='A'+str(number)+':'+rowcol_to_a1(number,len(headers)),values=[row]))
+                    else:
+                        appends.append(row)
+                if updates:
+                    sheet.batch_update(updates,value_input_option='RAW')
+                if appends:
+                    sheet.append_rows(appends,value_input_option='RAW')
+                confirmed = {row[column]:row+['']*max(0,len(headers)-len(row)) for row in sheet.get_all_values()[1:] if len(row)>column and row[column]}
+                if any(confirmed.get(row[column])!=row for row in rows):
+                    raise CCMStorageError(title+' backup was not fully confirmed. Retry Backup Data; local records are safe.')
+        return jsonify(ok=True,claims=len(claims),audit=len(audits))
+    except Exception as exc:
+        message = str(exc) if isinstance(exc,CCMStorageError) else 'Meal backup was not confirmed. Local meal and audit records are safe; retry Backup Data.'
+        return jsonify(ok=False,error=message),503
 
 
 def event_csrf():
@@ -7968,6 +8364,15 @@ def event_registration():
         chosen = next((e for e in events if e['id'] == request.args.get('event', type=int)), None)
     attendees = [dict(r) for r in get_db().execute("SELECT * FROM event_attendees WHERE event_id=? AND complete=1 AND deleted_at='' ORDER BY number",
                  (chosen['id'],))] if tab == 'admin' and admin and chosen else []
+    meal_sessions, meal_totals = [], []
+    if tab=='admin' and admin:
+        event_meal_tables()
+        if chosen:
+            meal_sessions = [dict(row) for row in get_db().execute('''SELECT s.key,s.name,s.service_date,s.enabled,
+                SUM(CASE WHEN c.status='accepted' THEN 1 ELSE 0 END) AS served
+                FROM event_meal_sessions s LEFT JOIN event_meal_claims c ON c.event_id=s.event_id AND c.meal_key=s.key
+                WHERE s.event_id=? GROUP BY s.key ORDER BY s.service_date,s.name''',(chosen['id'],))]
+            meal_totals = [dict(row) for row in get_db().execute('SELECT status,COUNT(*) AS count FROM event_meal_claims WHERE event_id=? GROUP BY status',(chosen['id'],))]
     churches, areas = event_directory() if tab == 'registration' and active else ([], [])
     if active and session.get('event_form_event_key')!=active['key']:
         legacy_same_event = not session.get('event_form_event_key') and session.get('event_form_event_id')==active['id']
@@ -7993,6 +8398,8 @@ def event_registration():
         event=dict(chosen) if chosen else None, events=events, attendees=attendees, admin=admin, developer=developer,
         csrf=event_csrf(), churches=churches, areas=areas, draft=draft, form_key=session['event_form_key'],
         today=utc_now().astimezone(PH_TZ or timezone(timedelta(hours=8))).date().isoformat(), event_types=EVENT_TYPES,
+        meal_sessions=meal_sessions,meal_totals=meal_totals,
+        completed_count=sum(bool(p['paid'] and p['printed'] and p['released']) for p in attendees),
         pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0] if admin else 0)
 
 
@@ -8002,7 +8409,7 @@ def event_login():
     event_guard()
     event_tables()
     event_limit('login',10,600)
-    if hmac.compare_digest(request.form.get('password','').encode(),b'EventAdminD4'):
+    if event_password_matches(request.form.get('password','')):
         session['event_admin_until'] = time.time()+4*3600
         session['event_csrf'] = secrets.token_urlsafe(32)
     else:
@@ -8182,35 +8589,50 @@ def event_photo_save(key):
         return jsonify(ok=False,error=str(exc)),400
 
 
-def event_upload_photo(key):
-    from sheet_cache import _locked_sync
-    with _locked_sync(data_path('event-photo-'+key)):
-        attendee = dict(get_db().execute("SELECT * FROM event_attendees WHERE key=? AND complete=1 AND deleted_at=''",(key,)).fetchone() or {})
-        if not attendee:
-            abort(404)
-        if attendee['photo_drive_id']:
-            return attendee['photo_drive_id']
-        event = get_db().execute('SELECT key FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
-        safe_name = re.sub(r'[<>/\\\x00-\x1f]','_',attendee['name'])
-        name = 'Event>'+safe_name+'>'+str(attendee['number'])+'.png'
-        body = event_asset_path(attendee['photo']).read_bytes()
-        file_id = ccm_upload(key,'photo',body,filename=name,event_key=event['key'])
-        ccm_verify_upload(file_id,body)
-        get_db().execute("UPDATE event_attendees SET photo_drive_id=?,backup_error='' WHERE key=?",(file_id,key))
-        get_db().commit()
-        return file_id
-
-
 @app.post('/event-registration/photo/<key>/backup')
 def event_photo_backup(key):
     event_guard()
     event_tables()
     event_attendee(key)
-    try:
-        event_upload_photo(key)
-        return jsonify(ok=True)
-    except (CCMStorageError,CacheSyncError,OSError) as exc:
-        return jsonify(ok=False,error='Your registration and photo are saved locally. Photo backup can be retried from Admin. '+str(exc)),503
+    # Old confirmation pages may still try this URL. Only the admin backup
+    # action may initiate cloud uploads, including for already-completed forms.
+    return jsonify(ok=False,error='Registration is saved locally. An administrator can back up the details and printable ID using Backup Data.'),409
+
+
+@app.post('/event-registration/cancel/<key>')
+def event_cancel_registration(key):
+    event_guard()
+    event_tables()
+    if key != session.get('event_registration_key'):
+        abort(403)
+    event_attendee(key)
+    if request.form.get('confirm') != 'yes':
+        return jsonify(ok=False,error='Confirm before cancelling this registration.'),400
+    changed = get_db().execute("DELETE FROM event_attendees WHERE key=? AND complete=0 AND deleted_at=''",(key,))
+    get_db().commit()
+    if not changed.rowcount:
+        return jsonify(ok=False,error='This registration is already complete. Ask an administrator if it needs to be deleted.'),409
+    for field in ('event_registration_key','event_form_key','event_form_event_id','event_form_event_key'):
+        session.pop(field,None)
+    return jsonify(ok=True,redirect=url_for('event_registration',new=1))
+
+
+def event_upload_id(attendee, event):
+    """Back up the actual printable ID, reusing a confirmed unchanged rendering."""
+    import hashlib
+    photo = event_asset_path(attendee['photo']).read_bytes()
+    body = event_render_id(event,attendee,photo)
+    digest = hashlib.sha256(body).hexdigest()
+    if attendee['id_drive_id'] and attendee['id_backup_hash'] == digest:
+        return attendee['id_drive_id']
+    safe_name = re.sub(r'[<>/\\\x00-\x1f]','_',attendee['name'])
+    name = 'Event>'+safe_name+'>'+str(attendee['number'])+'-ID.png'
+    file_id = ccm_upload(attendee['key'],'id',body,filename=name,event_key=event['key'])
+    ccm_verify_upload(file_id,body)
+    get_db().execute("UPDATE event_attendees SET id_drive_id=?,id_backup_hash=? WHERE key=?",
+                     (file_id,digest,attendee['key']))
+    get_db().commit()
+    return file_id
 
 
 @app.get('/event-registration/image/<key>/<side>.png')
@@ -8272,8 +8694,11 @@ def event_delete_attendee(key):
 def event_delete_event(event_id):
     event_guard(developer=True)
     event_tables()
+    event_meal_tables()
     if request.form.get('confirm')!='yes':
         return jsonify(ok=False,error='Confirm before deleting this event and its registrations.'),400
+    if not event_password_matches(request.form.get('password','')):
+        return jsonify(ok=False,error='Enter the correct event admin password to delete this event. The password is required for every deletion.'),403
     db = get_db()
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -8291,7 +8716,9 @@ def event_delete_event(event_id):
             db.execute("""UPDATE event_attendees SET deleted_at=?,updated_at=?,revision=revision+1
                           WHERE event_id=? AND deleted_at=''""",(now,now,event_id))
             db.execute('''DELETE FROM registration_events WHERE id=?
-                AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)''',(event_id,event_id))
+                AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)
+                AND NOT EXISTS (SELECT 1 FROM event_meal_sets WHERE event_id=?)
+                AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)''',(event_id,)*4)
         db.commit()
     except Exception:
         db.rollback()
@@ -8346,6 +8773,7 @@ def event_sheet():
 def event_remove_sheet_registration(attendee):
     """Remove a queued deletion from Google before purging its local registration."""
     from sheet_cache import _locked_sync
+    event_meal_tables()
     event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
     event_name = event['kind']+' '+str(date.fromisoformat(event['start_date']).year)
 
@@ -8381,7 +8809,9 @@ def event_remove_sheet_registration(attendee):
         get_db().execute("DELETE FROM event_attendees WHERE key=? AND deleted_at<>'' AND revision=?",
                          (attendee['key'],attendee['revision']))
         get_db().execute("""DELETE FROM registration_events WHERE id=? AND deleted_at<>''
-            AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)""",(attendee['event_id'],attendee['event_id']))
+            AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)
+            AND NOT EXISTS (SELECT 1 FROM event_meal_sets WHERE event_id=?)
+            AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)""",(attendee['event_id'],)*4)
         get_db().commit()
     return {'clean':True,'removed':True}
 
@@ -8395,8 +8825,8 @@ def event_backup_attendee(key):
             abort(404)
         if attendee['deleted_at']:
             return event_remove_sheet_registration(attendee)
-        event_upload_photo(key)
-        event = get_db().execute('SELECT name FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+        event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+        event_upload_id(attendee,event)
         cloud = dict(zip(EVENT_HEADERS,[attendee['name'],attendee['birthday'],attendee['contact'],attendee['area'],attendee['church'],
             attendee['address'],attendee['pastor'],attendee['created_at'],'Paid' if attendee['paid'] else '',
             'Printed' if attendee['printed'] else '','Released' if attendee['released'] else '',event['name']]))
@@ -8428,7 +8858,11 @@ def event_backup_attendee(key):
             get_db().execute('''UPDATE event_attendees SET sheet_row=?,cloud_snapshot=?,backed_up_revision=MAX(backed_up_revision,?),backup_error=''
                                 WHERE key=?''',(saved[0][0],json.dumps(cloud),attendee['revision'],key))
             get_db().commit()
-        return {'clean':get_db().execute('SELECT revision=backed_up_revision FROM event_attendees WHERE key=?',(key,)).fetchone()[0]==1}
+        current_event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+        fields = ('name','kind','start_date','end_date','theme','scripture','background','updated_at','deleted_at')
+        design_unchanged = current_event and all(current_event[field] == event[field] for field in fields)
+        current = get_db().execute("SELECT revision=backed_up_revision AND deleted_at='' FROM event_attendees WHERE key=?",(key,)).fetchone()
+        return {'clean':bool(current and current[0] and design_unchanged)}
 
 
 @app.post('/event-registration/admin/backup')
