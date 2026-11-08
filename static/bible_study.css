@@ -81,6 +81,8 @@
 #bsSermonContent{font:16px/1.8 Georgia,serif;overflow-wrap:anywhere}#bsSermonContent p{white-space:pre-wrap;margin:3px 0}#bsSermonContent h5{margin:18px 0 6px;font-size:17px}
 #bsSermonContent .bs-commentary-reference{font-style:italic;font-weight:600;color:var(--bs-accent);margin:6px 0 18px}
 .bs-commentary-text.bs-source-lines p{margin:3px 0}
+.bs-commentary-verse-target{background:#fff0b3;border-radius:3px;box-shadow:-3px 0 #c59635}
+.bs-root[data-theme=dark] .bs-commentary-verse-target{background:#5d4b25;box-shadow:-3px 0 #d9b756}
 #bsGreekDialog{width:min(94vw,640px)}
 #bsGreekContent{font:16px/1.75 Georgia,serif;overflow-wrap:break-word}
 #bsGreekContent p{margin:3px 0}
@@ -152,6 +154,20 @@
 .bs-root .bs-commentary-series button{padding:9px 15px;border-radius:18px;line-height:1.4}
 .bs-root .bs-commentary-series button[aria-pressed=true]{background:#dce7f0;color:#283f56;border-color:#839eb9;font-weight:700}
 .bs-root[data-theme=dark] .bs-commentary-series button[aria-pressed=true]{background:#42576b;color:#f1f5fa}
+.bs-commentary-controls{position:sticky;top:var(--bs-study-tab-height,0px);z-index:2;background:var(--bs-panel);padding:6px 0;box-shadow:0 5px 8px -7px #302c2560}
+.bs-commentary-controls .bs-commentary-series{margin:0}
+.bs-commentary-theme-box{padding:5px;margin-top:5px;border:1px solid #c9ab71;border-radius:9px;background:#fff2d9;color:#644b29}
+.bs-commentary-theme-box>strong{display:block;font:600 11px/1.3 Arial,sans-serif;margin-bottom:3px}
+.bs-commentary-theme-list{display:flex;gap:5px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding:1px 1px 2px}
+.bs-root .bs-commentary-theme{flex:0 0 190px;max-width:75vw;text-align:left;padding:4px 7px;min-height:36px;font:11px/1.3 Arial,sans-serif;background:#fffaf0;border-color:#d5bd94;color:#644b29;white-space:normal}
+.bs-commentary-theme span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-weight:600}
+.bs-commentary-theme small{display:block;font-size:9px;margin-top:1px}
+.bs-root .bs-commentary-theme[aria-pressed=true],.bs-root .bs-pulpit-sections button[aria-pressed=true]{background:#805d32;border-color:#805d32;color:#fff}
+.bs-pulpit-sections{display:flex;gap:6px}.bs-root .bs-pulpit-sections button{flex:1;min-height:34px;padding:5px 9px;font:12px/1.4 Arial,sans-serif;background:#fffaf0;border-color:#d5bd94;color:#644b29}
+.bs-root[data-theme=dark] .bs-commentary-theme-box{background:#3d3426;border-color:#97805b;color:#f1dfbf}
+.bs-root[data-theme=dark] .bs-commentary-theme,.bs-root[data-theme=dark] .bs-pulpit-sections button{background:#483d2c;border-color:#97805b;color:#f1dfbf}
+.bs-root[data-theme=dark] .bs-commentary-theme[aria-pressed=true],.bs-root[data-theme=dark] .bs-pulpit-sections button[aria-pressed=true]{background:#866536;color:#fff}
+@media(max-width:700px){#bsCommentaryChoices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}.bs-root #bsCommentaryChoices button{padding:6px 3px;font-size:11px;border-radius:9px;white-space:normal}.bs-commentary-theme-box{padding:5px}.bs-root .bs-commentary-theme{flex-basis:165px;padding:4px 6px}}
 #bsReaderError{padding:12px;border-left:3px solid var(--bs-accent);font:14px/1.6 Arial,sans-serif}
 @media(max-width:700px){.bs-header-actions{width:100%;justify-content:flex-start}.bs-sync-actions{width:100%}.bs-sync-actions button{flex:1}.bs-root .bs-commentary-series button{flex:1;padding:9px 10px}}
 /* Exalting Jesus: the source outline and its body sections share a clear hierarchy. */
@@ -201,13 +217,27 @@
 .bs-setting-check{display:flex;align-items:center;gap:10px;line-height:1.5}.bs-setting-check input{width:20px;height:20px}
 .bs-settings-content input[type=range]{width:100%;accent-color:var(--bs-accent)}
 .bs-settings-dialog .bs-modes{flex-direction:column}.bs-settings-dialog .bs-modes button{text-align:left}
-.bs-selection-toolbar{position:fixed;left:50%;bottom:max(14px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40020;width:max-content;max-width:calc(100vw - 16px);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px;padding:8px;background:var(--bs-panel);color:var(--bs-ink);border:1px solid var(--bs-line);border-radius:12px;box-shadow:0 6px 25px #18243140}
-.bs-selection-toolbar>span{width:100%;font-size:12px;font-weight:700;text-align:center}.bs-selection-toolbar button{min-height:36px;padding:6px 8px}
-.bs-selection-toolbar button[data-selection-action=share]{display:inline-flex;align-items:center;gap:4px}
-.bs-selection-toolbar #bsDismissSelection{position:absolute;top:3px;right:4px;min-height:25px;width:25px;padding:1px}
-.bs-selection-toolbar #bsSelectionReference{padding:0 22px}
+.bs-selection-toolbar{--bs-tool-ink:#276678;--bs-tool-hover:#e5edf4;position:fixed;left:50%;bottom:max(8px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40020;width:480px;max-width:calc(100vw - 12px);display:grid;gap:3px;padding:4px 8px 6px;background:#f5f8fe;color:#30373d;border:1px solid #dce4ed;border-radius:16px;box-shadow:0 4px 22px #18243130;font:400 13px/1.2 Arial,Helvetica,sans-serif}
+.bs-selection-toolbar #bsSelectionReference{display:block;min-width:0;padding:0 22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font:400 11px/14px Arial,Helvetica,sans-serif;color:inherit}
+.bs-root .bs-selection-toolbar button{border:0;background:transparent;color:inherit;font:inherit;padding:4px;min-width:0;border-radius:7px}
+.bs-selection-colors{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));align-items:center;justify-items:center;gap:3px}
+.bs-root .bs-selection-colors button{width:34px;height:34px;min-height:34px;padding:0}
+.bs-root .bs-selection-colors button[data-selection-action=highlight]{width:32px;height:32px;min-height:32px;border-radius:50%;background:var(--bs-swatch);box-shadow:inset 0 0 0 1px #00000004}
+.bs-root .bs-selection-colors button[data-selection-action=underline]{background:#e6e9ee;font-size:23px;text-decoration:underline;text-underline-offset:3px;color:#454b50}
+.bs-selection-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) repeat(2,minmax(0,1fr));align-items:start;gap:4px}
+.bs-root .bs-selection-actions button{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:2px;width:100%;min-height:42px;padding:2px;line-height:14px;white-space:normal}
+.bs-selection-actions button>.ui-icon,.bs-selection-actions button>img{display:block;flex-shrink:0;width:21px;height:21px;margin:0;color:var(--bs-tool-ink)}
+.bs-selection-actions button[data-selection-action=sermon-notes]>span{font-size:11px;line-height:11px}
+.bs-sermon-notes-actions{display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0;border-radius:8px;background:#e8f1f8}
+.bs-root .bs-sermon-notes-actions .bs-current-notes{display:flex;align-items:center;justify-content:center;gap:3px;margin:0;padding:0 2px 2px;font:400 10px/14px Arial,Helvetica,sans-serif;color:var(--bs-tool-ink);white-space:nowrap;cursor:pointer}
+.bs-root .bs-sermon-notes-actions .bs-current-notes input{width:13px;height:13px;margin:0;accent-color:var(--bs-tool-ink)}
+.bs-root .bs-selection-toolbar #bsDismissSelection{position:absolute;top:3px;right:4px;min-height:22px;width:22px;padding:0;font-size:18px;line-height:22px}
+.bs-root .bs-selection-actions button:hover,.bs-root .bs-selection-toolbar #bsDismissSelection:hover{background:var(--bs-tool-hover)}
+.bs-root .bs-selection-colors button:hover{outline:2px solid var(--bs-tool-ink);outline-offset:2px}
+.bs-root[data-theme=dark] .bs-selection-toolbar{--bs-tool-ink:#a8d6e6;--bs-tool-hover:#394956;background:#29343f;color:#eff3f7;border-color:#495c6d}
+.bs-root[data-theme=dark] .bs-sermon-notes-actions{background:#314859}
+.bs-root[data-theme=dark] .bs-selection-actions button[data-selection-action=share]>img{filter:brightness(0) saturate(100%) invert(88%) sepia(17%) saturate(465%) hue-rotate(155deg)}
 .bs-root .bs-chain-margin button{width:100%;max-width:100%;min-width:0}
-.bs-root .bs-color-yellow{color:#9b7610;background:#ffe66d}.bs-root .bs-color-green{color:#226a3c;background:#9ee6b8}.bs-root .bs-color-blue{color:#245e9c;background:#9ed3ff}
 .bs-toast{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);z-index:40030;max-width:90vw;padding:10px 16px;background:#302c25;color:white;border-radius:9px;font-size:13px;text-align:center;pointer-events:none}
 .bs-root textarea{width:100%;resize:vertical;padding:12px;border:1px solid var(--bs-line);border-radius:8px;background:var(--bs-paper);color:var(--bs-ink);font:16px/1.6 Arial,sans-serif}
 .bs-saved-items{padding-top:12px;max-height:58dvh;overflow:auto}.bs-saved-item{padding:12px 0;border-bottom:1px solid var(--bs-line)}
@@ -224,7 +254,7 @@
  .bs-root .bs-study-header.bs-banner{min-height:72px;padding:10px 16px;margin-top:4px}.bs-root .bs-study-content{padding:12px 14px 44px}
  .bs-root .bs-search-form{margin-bottom:14px}.bs-search-form input{font-size:16px}.bs-root .bs-divider span{width:42px;height:4px}
  .bs-root .bs-entry{padding:11px;margin:10px 0}.bs-root .bs-study-content h3{font-size:20px}
- .bs-selection-toolbar{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 16px)}
+ .bs-selection-toolbar{width:min(480px,calc(100vw - 12px))}
  .bs-settings-dialog select{font-size:16px}.bs-root .bs-settings-dialog{width:100%;max-width:none;max-height:86dvh;overflow:auto}
 }
 /* Tabs retain their own dimensions when the split divider moves. */
@@ -242,18 +272,23 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bible-study-page>.app-main,.district-glass.bible-study-page>.app-main{display:flex;flex:1 1 0;flex-direction:column;min-width:0;min-height:0;overflow:hidden;padding:0;margin:0;width:100%;max-width:none}
 .bible-study-page .bs-root,.bible-study-page .bs-root.bs-fullscreen{flex:1 1 0;height:100%;min-height:0}
 .bs-root .bs-toolbar{flex:0 0 auto;align-self:stretch;isolation:isolate}
-.bs-wide-tabs{display:flex;justify-content:space-between;flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
+.bs-wide-tabs{display:grid;grid-template-columns:minmax(336px,1fr) 128px minmax(550px,1fr);flex:0 0 44px;min-height:44px;background:var(--bs-line);overflow-x:auto;overflow-y:hidden}
 .bs-wide-tabs>.bs-study-tabs{position:static;overflow:visible;flex:0 0 auto}
+.bs-wide-tabs>.bs-reader-tabs{grid-column:1;justify-self:start}.bs-wide-tabs>[aria-label="Study tools"]{grid-column:3;justify-self:end}
+.bs-wide-tabs>.bs-layout-control{grid-column:2;display:flex;justify-content:center;align-items:center;margin:0;padding:3px 5px;min-width:0}
+.bs-root .bs-layout-control #bsLayoutMode{width:118px;max-width:100%;min-width:0;font-size:12px;min-height:34px;padding:5px}
+.bs-root:not([data-mode=split]) .bs-wide-tabs{display:flex;justify-content:space-between}
+.bs-root:not([data-mode=split]) .bs-wide-tabs>.bs-study-tabs{flex:0 1 auto;min-width:0;overflow-x:auto}
+.bs-wide-tabs>.bs-layout-control{flex:0 0 128px}
 .bs-root .bs-wide-tabs button{flex:0 0 104px;width:104px;min-width:104px;max-width:104px;white-space:normal;padding:5px 8px}
 @media(min-width:701px) and (any-pointer:coarse){
  /* Anchor tablet tabs to two fixed halves, independently of the pane divider. */
- .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,1fr) 10px minmax(0,1fr);gap:0;overflow:hidden;padding:0 1px}
+ .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,1fr) 128px minmax(0,1fr);gap:0;overflow:hidden;padding:0 1px}
  .bs-wide-tabs>.bs-reader-tabs{grid-column:1;min-width:0;overflow-x:auto;gap:2px;padding-left:4px;padding-right:4px}
  .bs-root .bs-wide-tabs button{flex-basis:88px;width:88px;min-width:88px;max-width:88px;padding-left:4px;padding-right:4px}
  .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:3;display:grid;grid-template-columns:repeat(5,minmax(64px,1fr));justify-self:end;width:100%;max-width:444px;min-width:0;gap:0;padding:4px 2px 0;overflow-x:auto;scrollbar-width:thin}
  .bs-root .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs) button{flex:none;width:100%;min-width:0;max-width:none;padding:4px 2px;font-size:11px;line-height:13px}
- .bs-root[data-mode=study] .bs-wide-tabs,.bs-root[data-mode=bible] .bs-wide-tabs{grid-template-columns:minmax(0,1fr)}
- .bs-root[data-mode=study] .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:1}
+ .bs-root:not([data-mode=split]) .bs-wide-tabs>.bs-study-tabs{min-width:0;overflow-x:auto}
 }
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
@@ -263,7 +298,11 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-root[data-compact-reader=true] .bs-chain-key{display:inline;margin-right:4px}
 .bs-root[data-compact-reader=true] .bs-chain-name{display:inline}
 @media(max-width:700px){
- .bs-wide-tabs{display:none}
+ .bs-wide-tabs,.bs-root:not([data-mode=split]) .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,1fr) 112px;flex-basis:40px;min-height:40px;overflow:hidden}
+ .bs-root .bs-wide-tabs>.bs-reader-tabs{display:grid;grid-template-columns:.7fr 1fr 1.2fr;justify-self:stretch;gap:0;width:100%;min-width:0;height:40px;min-height:40px;padding:4px 0 0;overflow:hidden}
+ .bs-root .bs-wide-tabs>.bs-reader-tabs button{flex:none;width:100%;min-width:0;max-width:none;height:36px;min-height:36px;padding:4px 2px;font-size:11px;white-space:nowrap}
+ .bs-wide-tabs>.bs-layout-control{padding:2px 4px}
+ .bs-root .bs-layout-control #bsLayoutMode{width:104px;min-height:32px;padding:4px 2px;font-size:11px}
  .bs-root .bs-reader-tabs button{flex-basis:94px;width:94px;min-width:94px;max-width:94px}
  .bs-root .bs-study>.bs-study-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px;width:100%;height:44px;min-height:44px;padding:4px 4px 0;overflow:hidden}
  .bs-root .bs-study>.bs-study-tabs button{flex:none;width:100%;min-width:0;max-width:none;height:40px;min-height:40px;padding:4px 2px;font-size:11px;line-height:13px;white-space:normal;text-wrap:balance}
@@ -341,3 +380,94 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-sync-progress{margin:16px 0;padding:14px;border:1px solid var(--bs-line);border-radius:10px;background:var(--bs-paper)}
 .bs-sync-progress progress{display:block;width:100%;height:18px;accent-color:var(--bs-accent)}
 .bs-sync-progress p{margin:7px 0;overflow-wrap:anywhere}.bs-sync-progress [hidden]{display:none}
+
+/* Navigation belongs to the Bible tab and stays above its scrolling verses. */
+.bs-root #bsBibleNavigation{position:sticky;top:var(--bs-reader-tab-height,0px);z-index:2;padding:7px 8px;background:var(--bs-paper);box-shadow:0 4px 7px -6px #302c2560}
+#bsBibleNavigation .bs-toolbar-main{display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-width:0}
+.bs-root #bsBibleNavigation button{min-height:36px;min-width:32px;padding:5px 7px;font-size:12px}
+.bs-root #bsBibleNavigation #bsNavigate{min-width:95px;max-width:180px;flex:1 1 95px;text-align:left}
+#bsBibleNavigation .bs-translation-control{flex:0 1 125px;min-width:95px}
+.bs-root #bsBibleNavigation #bsTranslation{width:100%;min-width:0;max-width:100%;min-height:36px;padding:5px;font-size:12px}
+@media(max-width:700px){.bs-root #bsBibleNavigation{padding:5px 7px}.bs-root #bsBibleNavigation button{padding:5px;min-width:30px}#bsBibleNavigation .bs-translation-control{flex-basis:100px}}
+
+/* Sermon notes use the same paper, type scale and independent pane scrolling. */
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+.bs-notes-panel{padding:16px;color:var(--bs-ink);font:15px/1.6 Arial,sans-serif;max-width:1000px;margin:auto}
+.bs-notes-actions,.bs-notes-meta-actions,.bs-notes-format,.bs-notes-source-actions{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-bottom:12px}
+.bs-notes-dock{position:sticky;top:var(--bs-reader-tab-height,0px);z-index:2;background:var(--bs-paper);padding:8px 0 6px;border-bottom:1px solid var(--bs-line);box-shadow:0 5px 8px -7px #302c2560}
+.bs-notes-actions{padding:0 0 8px;margin:0;border-bottom:0}
+.bs-root #bsNotesActionsToggle{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;width:38px;min-height:38px;padding:7px;flex-shrink:0}
+#bsNotesActionsToggle .ui-icon{width:20px;height:20px}
+.bs-root #bsNotesActionsMenu{position:fixed;inset:auto;margin:0;left:var(--bs-notes-options-left,8px);top:var(--bs-notes-options-top,100px);z-index:40025;display:grid;gap:5px;width:min(220px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:var(--bs-notes-options-height,75dvh);overflow:auto;overscroll-behavior:contain;padding:8px;border:1px solid var(--bs-line);border-radius:10px;background:var(--bs-paper);color:var(--bs-ink);box-shadow:0 8px 30px #18243140}
+.bs-root #bsNotesActionsMenu[popover]:not(:popover-open){display:none}
+.bs-root #bsNotesActionsMenu button{width:100%;text-align:left;min-height:42px;padding:9px 12px;font:13px/1.4 Arial,sans-serif}
+.bs-notes-edit-controls{display:none;padding-top:6px;border-top:1px solid var(--bs-line)}
+.bs-notes-panel:has(#bsNotesWorkspace:not([hidden])) .bs-notes-edit-controls{display:block}
+.bs-notes-dock .bs-notes-meta-actions{display:none;margin:0}.bs-notes-dock .bs-notes-format{margin-bottom:0}
+.bs-notes-panel:has(#bsNotesWorkspace:not([hidden])) .bs-notes-meta-actions{display:flex}
+.bs-root .bs-notes-meta-actions button{background:#e6eef8;border-color:#a2b6d2;color:#294a70}
+.bs-root .bs-notes-meta-actions button:hover{background:#d7e5f6;border-color:#7797c1}
+.bs-root .bs-notes-meta-actions #bsNotesDelete{background:#f8e9e9;border-color:#d6aaaa;color:#963b40}
+.bs-root[data-notes-menu=compact] .bs-notes-meta-actions{margin-bottom:6px}
+.bs-root[data-notes-menu=inline] #bsNotesTools:has(#bsNotesFormat[hidden]){display:none}
+.bs-notes-tools-launcher{display:none}
+.bs-root[data-notes-menu=compact] .bs-notes-panel:has(#bsNotesWorkspace:not([hidden])) .bs-notes-tools-launcher{display:block;padding:0}
+.bs-root[data-notes-menu=compact] .bs-notes-panel #bsNotesTools{display:none}
+.bs-root[data-notes-menu=compact] .bs-notes-panel #bsNotesTools[data-open=true]{display:block}
+.bs-root[data-notes-menu=compact] #bsNotesTools{position:fixed;inset:auto;margin:0;left:var(--bs-notes-menu-left,8px);top:var(--bs-notes-menu-top,100px);z-index:40025;width:min(420px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:var(--bs-notes-menu-height,75dvh);overflow:auto;overscroll-behavior:contain;padding:8px;border:1px solid var(--bs-line);border-radius:12px;background:var(--bs-paper);box-shadow:0 8px 30px #18243140;color:var(--bs-ink)}
+.bs-root[data-notes-menu=compact] #bsNotesTools[popover]:not(:popover-open){display:none}
+.bs-notes-confirm-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}.bs-root .bs-notes-delete-confirm{background:#a82f35;color:#fff;border-color:#a82f35}.bs-root .bs-notes-delete-confirm:hover{background:#8b242a}
+.bs-root .bs-notes-actions button,.bs-root .bs-notes-meta-actions button{font-size:12px;padding:6px 9px;min-height:36px}
+.bs-notes-status{font-size:12px;color:var(--bs-muted);overflow-wrap:anywhere}.bs-notes-heading{font:400 12px/1.45 Arial,sans-serif;color:var(--bs-muted);margin:10px 0}.bs-notes-heading p{margin:3px 0;font-weight:400;overflow-wrap:anywhere}
+.bs-notes-panel:has(#bsNotesLibrary:not([hidden])) #bsNotesStatus:not([data-error=true]){display:none}
+.bs-root .bs-notes-actions button[aria-current=page],.bs-root .bs-notes-views button[aria-pressed=true]{background:#236d70;border-color:#236d70;color:#fff;box-shadow:inset 0 -3px 0 #164c50;font-weight:600}
+.bs-notes-filters{display:grid;grid-template-columns:minmax(0,1fr);gap:9px;padding-top:14px}
+.bs-notes-views{display:flex;flex-wrap:wrap;gap:7px}.bs-root .bs-notes-views button{font-size:13px;min-height:36px;padding:6px 13px}
+.bs-root .bs-notes-selected-book{justify-self:start;background:#e1f0ef;border-color:#80aaa9;color:#194d50;padding:5px 10px;font-size:13px}
+#bsNotesBooksDialog #bsNotesAllBooks{margin:14px 0 6px}#bsNotesBooksDialog .bs-book-group button[aria-current=true]{outline-color:#236d70}
+.bs-notes-panel label,.bs-root #bsNotesMetaForm label{display:block;font-size:12px;font-weight:600}
+.bs-root .bs-notes-filters input,.bs-root .bs-notes-filters select,.bs-root #bsNotesMetaForm input,.bs-root #bsNotesTargetExisting{display:block;width:100%;padding:9px;border:1px solid var(--bs-line);border-radius:7px;background:var(--bs-paper);color:var(--bs-ink);font:16px/1.4 Arial,sans-serif;margin:5px 0 12px;box-sizing:border-box}
+.bs-root .bs-notes-list-item{display:block;width:100%;text-align:left;padding:13px;margin:8px 0;background:var(--bs-panel)}
+.bs-notes-list-item strong,.bs-notes-list-item span,.bs-notes-list-item small{display:block;overflow-wrap:anywhere}.bs-notes-list-item small{color:var(--bs-muted);font-size:11px}
+.bs-notes-format{border:1px solid var(--bs-line);padding:7px;border-radius:8px;background:var(--bs-panel)}.bs-root .bs-notes-format button{min-width:33px;padding:6px;font-size:12px}.bs-notes-format select{max-width:100%;font-size:13px}
+.bs-notes-format{display:block}.bs-notes-font-row{display:flex;flex-wrap:wrap;align-items:center;gap:5px}.bs-notes-font-row+.bs-notes-font-row{margin-top:6px;padding-top:6px;border-top:1px solid var(--bs-line)}
+.bs-root #bsNotesFont{width:150px;max-width:42%}.bs-root #bsNotesFontSize{width:54px;min-width:0;min-height:33px;padding:5px;border:1px solid var(--bs-line);border-radius:6px;background:var(--bs-paper);color:var(--bs-ink);font:13px Arial,sans-serif}
+.bs-root #bsNotesCase{width:100px;min-width:0}.bs-root .bs-notes-format input[type=color]{width:28px;height:30px;padding:2px;border:1px solid var(--bs-line);border-radius:5px;background:var(--bs-paper);cursor:pointer}.bs-notes-color-letter{border-bottom:3px solid #202124}
+.bs-notes-editor,.bs-notes-preview{min-height:320px;padding:20px 15px;background:var(--bs-paper);border:1px solid var(--bs-line);border-radius:9px;font:15px/1.65 Calibri,Arial,sans-serif;overflow-wrap:anywhere;white-space:pre-wrap;outline:none}
+.bs-notes-editor:focus{outline:2px solid #9c7a42;outline-offset:2px}.bs-notes-editor p{margin:0 0 10px;min-height:1em}
+::highlight(sermon-references){text-decoration:underline dotted #517e92}
+.bs-notes-editor.bs-notes-reference-hover{cursor:pointer}
+.bs-notes-editor [data-notes-type=main_point],.bs-notes-preview [data-notes-type=main_point],.bs-notes-editor [data-notes-type=heading]{font-weight:700;margin-top:20px}
+.bs-notes-editor [data-notes-type=subpoint],.bs-notes-preview [data-notes-type=subpoint]{padding-left:18pt;font-weight:700}
+.bs-notes-editor [data-notes-type=sub_subpoint],.bs-notes-preview [data-notes-type=sub_subpoint]{padding-left:36pt}
+.bs-notes-editor [data-notes-type=illustration],.bs-notes-preview [data-notes-type=illustration]{padding-left:18pt;border-left:3px solid #b29a70}
+.bs-notes-editor [data-notes-type=scripture],.bs-notes-preview [data-notes-type=scripture]{font-style:italic}
+.bs-notes-editor [data-notes-type=conclusion],.bs-notes-preview [data-notes-type=conclusion]{margin-top:18px;font-weight:700}
+.bs-notes-editor [data-page-break=true]{border-top:1px dashed var(--bs-line);margin-top:22px;padding-top:12px}
+.bs-notes-references{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:14px 0}.bs-notes-references small{color:var(--bs-muted)}
+.bs-notes-source-actions{padding:10px 0;border-top:1px solid var(--bs-line);margin:16px 0 0}.bs-root .bs-current-notes{display:inline-flex;align-items:center;gap:5px;font:12px/1.4 Arial,sans-serif;color:var(--bs-ink)}.bs-current-notes input{width:17px;height:17px;margin:0}
+.bs-notes-conflict{background:#fff0ce;color:#654200;border:1px solid #c8a766;padding:12px;border-radius:8px;margin:12px 0}.bs-notes-conflict button{margin:8px 5px 0 0}
+#bsNotesJob progress{width:100%}#bsNotesJobErrors{font-size:12px;max-height:150px;overflow:auto;overflow-wrap:anywhere}
+.bs-root .bs-notes-panel [hidden],.bs-root .bs-notes-format[hidden]{display:none!important}
+@media(max-width:700px){.bs-notes-panel{padding:10px}.bs-notes-editor,.bs-notes-preview{padding:14px 10px;font-size:16px}.bs-notes-actions{gap:4px}.bs-root .bs-notes-actions button{font-size:11px;padding:6px}.bs-root .bs-reader-tabs button{flex:1 0 94px}}
+/* Compact touch controls keep the document visible behind a three-row menu. */
+.bs-root[data-notes-menu=compact] .bs-notes-panel{padding:2px 8px 8px}
+.bs-root[data-notes-menu=compact] .bs-notes-dock{padding:2px 0 3px}
+.bs-root[data-notes-menu=compact] .bs-notes-actions{padding:0;gap:4px;flex-wrap:nowrap}
+.bs-root[data-notes-menu=compact] .bs-notes-status{margin:6px 0}
+.bs-root[data-notes-menu=compact] .bs-notes-heading{margin:6px 0}
+.bs-root[data-notes-menu=compact] .bs-notes-format{padding:5px}
+.bs-root[data-notes-menu=compact] .bs-notes-meta-actions{gap:4px}
+.bs-root[data-notes-menu=compact] .bs-notes-meta-actions button{padding:5px 7px;font-size:11px}
+.bs-root[data-notes-menu=compact] .bs-notes-font-row{gap:3px}
+.bs-root[data-notes-menu=compact] .bs-notes-font-row:first-child{display:grid;grid-template-columns:minmax(70px,1fr) 44px 30px 30px 56px;gap:4px}
+.bs-root[data-notes-menu=compact] .bs-notes-font-row+.bs-notes-font-row{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;margin-top:5px;padding-top:5px}
+.bs-root[data-notes-menu=compact] .bs-notes-format button{flex:0 0 auto;min-width:28px;min-height:34px;padding:4px;font-size:11px}
+.bs-root[data-notes-menu=compact] #bsNotesFont,.bs-root[data-notes-menu=compact] #bsNotesCase{width:100%;max-width:100%;min-width:0;min-height:34px;padding:4px;font-size:13px}
+.bs-root[data-notes-menu=compact] #bsNotesFontSize{width:100%;min-height:34px;padding:4px;font-size:16px;appearance:textfield;-moz-appearance:textfield}
+.bs-root[data-notes-menu=compact] #bsNotesFontSize::-webkit-inner-spin-button,.bs-root[data-notes-menu=compact] #bsNotesFontSize::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.bs-root[data-notes-menu=compact] .bs-notes-format input[type=color]{flex:0 0 24px;width:24px;height:32px;padding:2px}
+.bs-root[data-notes-menu=compact] .bs-notes-clear-long{display:none}

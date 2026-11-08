@@ -178,8 +178,12 @@
                 document.getElementById("pastorReportReminderChurch").textContent = data.church;
                 const list = document.getElementById("pastorReportReminderList"); list.replaceChildren();
                 for (const report of data.reports) {
-                    const item = node("li"), link = node("a", report.label + (report.overdue ? " - Overdue" : " - Not submitted"));
-                    link.href = report.url; item.append(link); list.append(item);
+                    const item = node("li"), link = node("a", undefined, "report-reminder-report");
+                    const status = node("span", report.overdue ? "Overdue" : "Not submitted", "report-reminder-status");
+                    status.dataset.overdue = String(Boolean(report.overdue));
+                    const arrow = node("span", "\u203a", "report-reminder-arrow");arrow.setAttribute("aria-hidden", "true");
+                    link.href = report.url;link.append(node("span", report.label, "report-reminder-month"), status, arrow);
+                    item.append(link); list.append(item);
                 }
                 document.getElementById("pastorReportReminderOpen").href = data.reports[0].url;
                 dialog.showModal();

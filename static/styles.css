@@ -454,6 +454,44 @@ textarea:focus {
 .devotion-counts button{background:transparent;border:0;padding:5px}.devotion-buttons button[aria-pressed=true]{background:#dceaff;color:#174da5;font-weight:700}
 .district-dialog{box-sizing:border-box;width:min(560px,calc(100% - 24px));max-height:85vh;overflow:auto;padding:22px;border:1px solid #c7d6e8;border-radius:18px;background:#fff;color:#162f50;box-shadow:0 24px 70px #0f172a44}
 .district-dialog::backdrop{background:#0f172a66}.devotion-dialog-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.devotion-dialog-heading h3{margin:0}
+/* Pastor's daily report reminder. */
+#pastorReportReminder{width:min(720px,calc(100% - 24px));max-height:calc(100dvh - 32px);padding:0;border:1px solid #e5d5b9;border-top:4px solid #c69b45;border-radius:24px;background:#fffdfa;color:#20314b;box-shadow:0 28px 90px #0b1d4266;font:400 14px/1.5 "Segoe UI",Arial,sans-serif}
+#pastorReportReminder::backdrop{background:#12213b9e;backdrop-filter:blur(4px)}
+.report-reminder-layout{display:grid;grid-template-columns:200px minmax(0,1fr)}
+.report-reminder-visual{display:flex;align-items:center;justify-content:center;min-width:0;padding:20px 0 20px 10px;background:radial-gradient(ellipse at 50% 45%,#ffe9b9 0,#fff3dc 48%,#fff9ee 80%);border-right:1px solid #f0e3ce}
+.report-reminder-visual img{display:block;width:220px;max-width:100%;height:auto;max-height:330px;object-fit:contain;filter:drop-shadow(0 8px 9px #8d64251a)}
+.report-reminder-body{min-width:0;padding:28px}
+.report-reminder-eyebrow{margin:0 0 8px;color:#98702d;font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
+#pastorReportReminder h2{margin:0;color:#172e52;font-size:27px;line-height:1.2;letter-spacing:-.025em;font-weight:750}
+.report-reminder-message{margin:12px 0 14px;color:#5a6575;font-size:14px;line-height:1.6}
+.report-reminder-church{display:flex;align-items:center;gap:7px;max-width:100%;margin:0;color:#405579;font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.report-reminder-church .ui-icon{width:17px;height:17px;flex-shrink:0;color:#a48142}
+#pastorReportReminderList{display:grid;gap:7px;max-height:190px;overflow:auto;margin:16px 0 20px;padding:1px;list-style:none;overscroll-behavior:contain}
+.report-reminder-report{display:grid;grid-template-columns:minmax(0,1fr) auto 10px;align-items:center;gap:8px;min-height:48px;padding:10px 12px;border:1px solid #e9dfcf;border-radius:11px;background:#fffaf1;color:#243956;text-decoration:none}
+.report-reminder-report:hover{background:#fff1d6;border-color:#ccab6c}
+.report-reminder-month{font-size:13px;font-weight:650;overflow-wrap:anywhere}
+.report-reminder-status{padding:3px 7px;border:1px solid #d9e5ee;border-radius:6px;background:#edf4fb;color:#42627d;font-size:10px;font-weight:600;white-space:nowrap}
+.report-reminder-status[data-overdue=true]{border-color:#f0d4ad;background:#fff0d9;color:#986018}
+.report-reminder-arrow{color:#9c7940;font-size:22px;line-height:1}
+.report-reminder-actions{display:flex;gap:8px;align-items:stretch}
+#pastorReportReminder .report-reminder-actions a,#pastorReportReminder .report-reminder-actions button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:10px 14px;border:1px solid #d9dfe8;border-radius:10px;background:#fff;color:#586678;font:600 13px/1.35 "Segoe UI",Arial,sans-serif;text-decoration:none;cursor:pointer}
+#pastorReportReminder .report-reminder-actions a{flex:1;border-color:#233d66;background:#233d66;color:#fff;box-shadow:0 4px 12px #172e521a}
+#pastorReportReminder .report-reminder-actions a:hover{background:#162e52}
+#pastorReportReminder .report-reminder-actions button:hover{background:#f0f3f7}
+.report-reminder-actions .ui-icon{flex-shrink:0;width:16px;height:16px}
+#pastorReportReminder :is(a,button):focus-visible{outline:3px solid #769ccc;outline-offset:2px}
+.report-reminder-footnote{margin:13px 0 0;color:#87909b;font-size:10px;line-height:1.5}
+@media(max-width:600px){
+ .report-reminder-layout{grid-template-columns:minmax(0,1fr)}
+ .report-reminder-visual{height:116px;padding:5px 0 0;border-right:0;border-bottom:1px solid #f0e3ce;background:radial-gradient(ellipse at 50% 80%,#ffe9b9 0,#fff5e3 48%,#fffbf4 80%)}
+ .report-reminder-visual img{width:125px;height:110px}
+ .report-reminder-body{padding:20px}
+ #pastorReportReminder h2{font-size:24px}
+ .report-reminder-message{font-size:13px;margin:10px 0 12px}
+ #pastorReportReminderList{max-height:155px;margin:14px 0 16px}
+ .report-reminder-report{padding:9px 10px;gap:6px}
+}
+@media(max-height:600px) and (max-width:600px){.report-reminder-visual{height:82px}.report-reminder-visual img{height:78px}.report-reminder-body{padding:16px 20px}}
 .devotion-person{padding:14px 0;border-bottom:1px solid #dce5ef;overflow-wrap:anywhere}.devotion-person p{margin:5px 0}.devotion-comment-text{white-space:pre-wrap;overflow-wrap:anywhere}
 #devotionCommentForm{display:grid;gap:10px;margin-top:16px}#devotionCommentForm[hidden]{display:none}#devotionCommentText{box-sizing:border-box;width:100%;padding:10px;border:1px solid #b8cce3;border-radius:9px;font:inherit}
 .global-loading-overlay {
@@ -503,6 +541,7 @@ html.district-page-loading #globalLoadingOverlay { display: flex; }
 .global-loading-bubble::after { content: ""; position: absolute; bottom: 1px; left: 4px; width: 16px; height: 16px; transform: rotate(18deg) skew(-20deg); background: #b8e0ff; border-left: 3px solid #fff; border-bottom: 3px solid #fff; }
 .global-loading-gear { position: absolute; top: 3px; left: 6px; font-family: "Segoe UI Symbol", sans-serif; font-size: 32px; line-height: 1; }
 .global-loading-gear-small { position: absolute; right: 5px; bottom: 5px; font-family: "Segoe UI Symbol", sans-serif; font-size: 20px; line-height: 1; }
+.global-loading-gear .ui-icon, .global-loading-gear-small .ui-icon { display: block; width: 1em; height: 1em; }
 .global-loading-copy { padding: 20px 26px 22px; }
 .global-loading-eyebrow { margin-bottom: 8px; color: #426a9f; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
 .global-loading-title { color: #0b2463; font-size: 24px; font-weight: 800; line-height: 1.25; letter-spacing: -.025em; overflow-wrap: anywhere; }

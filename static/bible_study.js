@@ -11,16 +11,18 @@
     const state = {translation: "NIV", book: "Genesis", chapter: 1, verse: 1, theme: "paper", font_size: 19, layout_mode: "split", split_ratio: 60, version: 0};
     let storageAvailable = false, saveChain = Promise.resolve(), writePaused = false, previousFocus = null;
     let contentAvailable = false, chapterRequest = 0, wordRequest = 0, verseRequest = 0;
-    let lastVerseReference = null;
+    let lastVerseReference = null,notesVerseTarget=null;
     let copiedVerse = "", syncTimer = null, syncBusy = false;
     let navigationBook = state.book, chainRequest = 0;
     let studyTab = "word", selectedWord = null, concordanceRequest = 0, currentChain = null;
     let dictionaryPreviewRequest=0,currentDictionaryPreview=null;
     const dictionaryHistory=[];
     let navigationTestament = "old", readerTab = "bible", bookStudyRequest = 0, bookStudyBook = "";
-    const readerScroll = {bible: 0, book: 0};
+    const readerScroll = {bible: 0, book: 0, notes: 0};
     let readerPassageChanged = false;
     let commentaryRequest = 0, commentarySeries = "wiersbe", pulpitSection = "exposition", greekRequest = 0;
+    let commentaryTheme="",commentaryThemeOwner="",commentaryScrollToTheme="";
+    let commentaryVerseTarget=null,commentaryVerseParts=[];
     let illustrationMode="suggested",illustrationRequest=0,illustrationPassage=null,illustrationSuggestionKey="";
     let illustrationLetter="A",illustrationTopic="",illustrationQuery="",illustrationSource="",illustrationArticle=null,illustrationListScroll=0;
     const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus", moody: "The Moody Bible Commentary", pulpit: "The Pulpit Commentary"};
@@ -46,18 +48,19 @@
     const readerTabs=root.querySelector(".bs-reader-tabs"),studyTabs=element("Study").querySelector(".bs-study-tabs");
     function positionTabs() {
         if(mobile.matches) {
-            element("Bible").prepend(readerTabs);element("Study").prepend(studyTabs);
-            element("LayoutMode").parentElement.prepend(element("TranslationControl"));
+            element("WideTabs").append(readerTabs,element("LayoutControl"));element("Study").prepend(studyTabs);
         } else {
-            element("WideTabs").append(readerTabs,studyTabs);
-            element("History").before(element("TranslationControl"));
+            element("WideTabs").append(readerTabs,element("LayoutControl"),studyTabs);
         }
-        root.style.setProperty("--bs-reader-tab-height",(mobile.matches?readerTabs.offsetHeight:0)+"px");
+        root.style.setProperty("--bs-reader-tab-height",(element("Bible").contains(readerTabs)?readerTabs.offsetHeight:0)+"px");
+        root.style.setProperty("--bs-study-tab-height",(mobile.matches?studyTabs.offsetHeight:0)+"px");
     }
     positionTabs();
-    const readerChromeHeight = () => mobile.matches?readerTabs.getBoundingClientRect().height:0;
-    const readerTabSize = new ResizeObserver(() => root.style.setProperty("--bs-reader-tab-height", readerChromeHeight() + "px"));
+    const readerTabsHeight = () => element("Bible").contains(readerTabs)?readerTabs.getBoundingClientRect().height:0;
+    const readerChromeHeight = () => readerTabsHeight()+(readerTab==="bible"?element("BibleNavigation").getBoundingClientRect().height:0);
+    const readerTabSize = new ResizeObserver(() => root.style.setProperty("--bs-reader-tab-height", readerTabsHeight() + "px"));
     readerTabSize.observe(root.querySelector(".bs-reader-tabs"));
+    new ResizeObserver(()=>root.style.setProperty("--bs-study-tab-height",(mobile.matches?studyTabs.getBoundingClientRect().height:0)+"px")).observe(studyTabs);
     const chainHistory = [];
     let scrollTimer = null, scrollRestoreUntil = 0;
     const apiBase = config.statusUrl.replace(/\/status$/, "");
@@ -69,7 +72,15 @@
     let preferredStudy="commentary";
 
     function cancelBackgroundStudy(){++backgroundEpoch;clearTimeout(backgroundTimer);}
-    function commentaryUrl(){return apiBase+"/commentary?"+new URLSearchParams({book:state.book,chapter:state.chapter,verse:state.verse,series:commentarySeries,section:pulpitSection});}
+    function commentaryFullChapter(){return commentarySeries==="moody"||(commentarySeries==="pulpit"&&pulpitSection==="exposition");}
+    function commentaryQuery(){
+        const owner=[state.book,state.chapter,commentarySeries,pulpitSection].join("|");
+        if(owner!==commentaryThemeOwner){clearCommentaryVerseFocus();commentaryVerseParts=[];commentaryThemeOwner=owner;commentaryTheme="";commentaryScrollToTheme="";}
+        const query=new URLSearchParams({book:state.book,chapter:state.chapter,verse:commentaryFullChapter()?1:state.verse,series:commentarySeries,section:pulpitSection,scope:"chapter"});
+        if(commentaryTheme&&!commentaryFullChapter())query.set("entry",commentaryTheme);
+        return query;
+    }
+    function commentaryUrl(){return apiBase+"/commentary?"+commentaryQuery();}
     function sermonListUrl(){return apiBase+"/sermons?"+new URLSearchParams({book:state.book,chapter:state.chapter});}
     function scheduleBackgroundStudy(){
         cancelBackgroundStudy();const epoch=backgroundEpoch;
@@ -236,7 +247,7 @@
         state.translation = element("Translation").value;
         ++wordRequest; ++concordanceRequest; ++verseRequest; selectedWord = null;
         applyTranslation(); updateChapter(); savePreferences();
-        if (element("VerseDialog").open && lastVerseReference) previewVerse(lastVerseReference);
+        if (element("VerseDialog").open && lastVerseReference) previewVerse(lastVerseReference,notesVerseTarget);
     });
 
     async function loadChapter() {
@@ -273,7 +284,12 @@
                 paragraph.dataset.verseId = verse.id;
                 const number = node("button", verse.verse_end > verse.verse ? verse.verse + "–" + verse.verse_end : verse.verse, "bs-verse-number"); number.type = "button";
                 number.setAttribute("aria-label", "Actions for " + state.book + " " + state.chapter + ":" + verse.verse);
-                number.addEventListener("click", () => selectWholeVerse(verse)); paragraph.append(number);
+                number.addEventListener("click", () => {
+                    selectWholeVerse(verse);
+                    if(studyTab==="commentary"&&commentaryFullChapter()){
+                        state.verse=verse.verse;savePreferences();requestCommentaryVerse(verse.verse);loadCommentary();
+                    }
+                }); paragraph.append(number);
                 const textContainer = node("span", undefined, "bs-verse-text"); paragraph.append(textContainer);
                 const characters = Array.from(verse.text);
                 let offset = 0;
@@ -294,7 +310,7 @@
                         ++wordRequest; ++concordanceRequest;
                         element("Search").value = element("ConcordanceSearch").value = token.text;
                         if (studyTab === "concordance") loadConcordance(token.text);
-                        else if (studyTab === "commentary") loadCommentary();
+                        else if (studyTab === "commentary") {requestCommentaryVerse(verse.verse);loadCommentary();}
                         else if (studyTab === "word") loadWord(verse.id, token.token_index);
                         else scheduleBackgroundStudy();
                         if (mobile.matches) requestAnimationFrame(() => {
@@ -577,6 +593,10 @@
             } catch(error){
                 toast(error.name==="AbortError"?"Sharing cancelled.":"Unable to open the share menu. Please try again.");
             } finally {button.disabled=false;selectionBusy=false;}
+        } else if (action === "sermon-notes") {
+            const snapshot=pendingSelection;
+            const text=snapshot.ranges.map(span=>span.selected_text).join("\n");
+            await addToSermonNotes(notesPlainBlocks(text, snapshot.study?"paragraph":"scripture"));
         } else if (action === "note") openNote();
         else if (action === "bookmark") {
             button.disabled = true;
@@ -611,6 +631,8 @@
             const jump = node("button", "Go to verse"); jump.type = "button";
             if(item.format==="STUDY")jump.textContent="Open source";
             jump.addEventListener("click", () => { element("SavedDialog").close(); item.format==="STUDY"?openSavedStudy(item):jumpToVerse(item.verse); }); actions.append(jump);
+            const toNotes=node("button","Add to Sermon Notes");toNotes.type="button";
+            toNotes.addEventListener("click",()=>{element("SavedDialog").close();addToSermonNotes(notesPlainBlocks([item.selected_text,item.note].filter(Boolean).join("\n\n")));});actions.append(toNotes,notesCurrentControl());
             if (item.kind) {
                 const edit = node("button", "Edit note"); edit.type = "button";
                 edit.addEventListener("click", () => { element("SavedDialog").close(); openNote(item); }); actions.append(edit);
@@ -1198,7 +1220,7 @@
     function selectStudyTab(name, focus = false) {
         if (!["word", "concordance", "commentary", "sermon", "illustrations"].includes(name)) return;
         const changed = studyTab !== name;
-        if (changed) { ++wordRequest; ++concordanceRequest; ++commentaryRequest; ++illustrationRequest; }
+        if (changed) { clearCommentaryVerseFocus();++wordRequest; ++concordanceRequest; ++commentaryRequest; ++illustrationRequest; }
         studyTab = name;
         cancelBackgroundStudy();
         if(["commentary","sermon"].includes(name))preferredStudy=name;
@@ -1277,6 +1299,7 @@
             const details=[sermon.source_title,sermon.publisher,sermon.purpose,passages.join("; "),sermon.source_section != null ? "Source page/section "+sermon.source_section : ""].filter(Boolean).join(" · ");
             if(details)metadata.append(document.createTextNode((sermon.author?" · ":"")+details));
             element("SermonContent").replaceChildren();appendSourceBlocks(element("SermonContent"),sermon.blocks);
+            notesWholeButton(element("SermonReader"),()=>[...notesPlainBlocks(sermon.title,"heading"),...notesSourceBlocks(sermon.blocks)]);
             element("Study").scrollTop=0;
         } catch(error){if(requestId===sermonRequest)element("SermonTitle").textContent=error.message;}
     }
@@ -1296,7 +1319,7 @@
     }
     function illustrationCard(entry){
         const card=node("article",undefined,"bs-illustration-card");card.dataset.illustrationId=entry.id;
-        card.append(node("h4",entry.title),node("p",[entry.topic,entry.source_title].filter(Boolean).join(" · "),"bs-attribution"));
+        card.append(node("h4",entry.title),node("p",[entry.topic?.toLocaleUpperCase(),entry.source_title].filter(Boolean).join(" · "),"bs-attribution"));
         if(entry.needs_source_review)card.append(node("p","Content needs source review.","bs-notice"));
         else card.append(node("p",entry.preview));
         if(entry.match){
@@ -1343,8 +1366,8 @@
                 topics.hidden=Boolean(illustrationTopic);
                 if(!data.available){results.append(node("p","The illustration library has not been imported yet. Use Sync Bible Study in reading settings."));return;}
                 if(!illustrationTopic)for(const topic of data.topics){
-                    const button=node("button",topic.display_name+" ("+topic.illustration_count+")");button.type="button";
-                    button.addEventListener("click",()=>{illustrationTopic=topic.topic_key;illustrationQuery="";element("IllustrationsSearch").value="";element("IllustrationsTopicHeading").dataset.topicLabel=topic.display_name;loadIllustrations();});topics.append(button);
+                    const label=topic.display_name.toLocaleUpperCase(),button=node("button",label+" ("+topic.illustration_count+")");button.type="button";
+                    button.addEventListener("click",()=>{illustrationTopic=topic.topic_key;illustrationQuery="";element("IllustrationsSearch").value="";element("IllustrationsTopicHeading").dataset.topicLabel=label;loadIllustrations();});topics.append(button);
                 }
                 if(!illustrationTopic&&!illustrationQuery&&!data.topics.length)topics.append(node("p","No topics for this letter and collection."));
                 if((illustrationTopic||illustrationQuery)&&!data.entries.length)results.append(node("p","No illustrations match this search."));
@@ -1367,7 +1390,7 @@
             if(requestId!==illustrationRequest || studyTab!=="illustrations")return;
             const article=illustrationArticle=data.illustration,content=element("IllustrationsContent");
             element("IllustrationsTitle").textContent=article.title;
-            element("IllustrationsMetadata").textContent=[article.source_title,...(article.topics.length?article.topics:[article.topic])].filter(Boolean).join(" · ");
+            element("IllustrationsMetadata").textContent=[article.source_title,...(article.topics.length?article.topics:[article.topic]).map(topic=>topic?.toLocaleUpperCase())].filter(Boolean).join(" · ");
             appendSourceBlocks(content,article.blocks);
             if(article.needs_source_review)content.append(node("p","Content needs source review. This record has no stored illustration body.","bs-notice"));
             const credit=element("IllustrationsCredit");
@@ -1400,6 +1423,9 @@
     }
     element("IllustrationsBack").addEventListener("click",()=>{++illustrationRequest;illustrationReaderClosed();element("Study").scrollTop=illustrationListScroll;});
     element("IllustrationsCopy").addEventListener("click",()=>{if(illustrationArticle){const a=illustrationArticle;copyScripture([a.title,a.body_text,a.credit_in_body?"":a.source_credit,a.source_title,a.source_file].filter(Boolean).join("\n\n"),"Illustration");}});
+    notesWholeButton(element("IllustrationsReader"),()=>illustrationArticle?
+        [...notesPlainBlocks(illustrationArticle.title,"heading"),...notesBlocksFromDOM(element("IllustrationsContent")),
+         ...notesPlainBlocks(illustrationArticle.source_credit||illustrationArticle.source_title||"")]:[]);
     function selectIllustrationMode(mode,focus=false){
         illustrationMode=mode;++illustrationRequest;illustrationReaderClosed();
         for(const button of root.querySelectorAll("[data-illustration-mode]")){const active=button.dataset.illustrationMode===mode;button.setAttribute("aria-selected",String(active));button.tabIndex=active?0:-1;if(active&&focus)button.focus();}
@@ -1417,29 +1443,80 @@
     element("IllustrationsSource").addEventListener("change",event=>{illustrationSource=event.target.value;loadIllustrations();});
     element("IllustrationsTopicsBack").addEventListener("click",()=>{illustrationTopic="";loadIllustrations();});
 
+    function clearCommentaryVerseFocus(){
+        commentaryVerseTarget=null;
+        element("CommentaryResults").querySelectorAll(".bs-commentary-verse-target").forEach(block=>block.classList.remove("bs-commentary-verse-target"));
+    }
+    function requestCommentaryVerse(verse){
+        clearCommentaryVerseFocus();
+        if(studyTab==="commentary"&&commentaryFullChapter()){
+            // Resolve an owner change before recording the user's new target.
+            commentaryQuery();
+            commentaryVerseTarget={owner:commentaryThemeOwner,bookId:books.findIndex(book=>book.name===state.book)+1,chapter:state.chapter,verse};
+        }
+    }
+    function focusCommentaryVerse(){
+        const target=commentaryVerseTarget;if(!target)return;
+        clearCommentaryVerseFocus();
+        if(studyTab!=="commentary"||!commentaryFullChapter()||target.owner!==commentaryThemeOwner)return;
+        const point=target.chapter*200+target.verse,matches=[];
+        for(const part of commentaryVerseParts)for(const span of part.ranges){
+            const start=span.chapter*200+span.verse,end=span.end_chapter*200+span.end_verse;
+            if(span.book_id===target.bookId&&start<=point&&point<=end)matches.push({part,width:end-start});
+        }
+        // A verse explanation takes precedence over a broad chapter introduction.
+        matches.sort((a,b)=>a.width-b.width);const part=matches[0]?.part;
+        if(!part?.nodes.length)return;
+        for(const block of part.nodes)block.classList.add("bs-commentary-verse-target");
+        const pane=element("Study"),tabs=mobile.matches?studyTabs.getBoundingClientRect().height:0;
+        pane.scrollTop+=part.nodes[0].getBoundingClientRect().top-pane.getBoundingClientRect().top-tabs-element("CommentaryControls").getBoundingClientRect().height-10;
+    }
+    element("CommentaryPanel").addEventListener("click",clearCommentaryVerseFocus,true);
+    element("CommentaryTab").addEventListener("click",clearCommentaryVerseFocus);
+    function renderCommentaryThemes(data,owner){
+        const box=element("CommentaryThemes"),list=element("CommentaryThemeList"),themes=data.themes||[];
+        const scroll=list.scrollLeft,focused=list.contains(document.activeElement);list.replaceChildren();box.dataset.owner=owner;
+        const fullChapter=commentaryFullChapter(),hasChoices=!fullChapter&&themes.length>1;
+        box.hidden=!hasChoices;
+        element("CommentaryGuide").hidden=!fullChapter&&!hasChoices;
+        element("CommentaryGuide").textContent=fullChapter?"Full chapter commentary.":"Choose a chapter theme to read its commentary.";
+        for(const theme of themes){
+            const button=node("button",undefined,"bs-commentary-theme");button.type="button";button.dataset.commentaryTheme=theme.id;
+            button.setAttribute("aria-pressed",String(theme.id===data.selected_theme));button.title=[theme.title,theme.passage,theme.source_title].filter(Boolean).join(" · ");
+            button.append(node("span",theme.title),node("small",theme.passage));
+            button.addEventListener("click",()=>{
+                if(button.getAttribute("aria-pressed")==="true"&&commentaryRenderedKey)return;
+                commentaryTheme=theme.id;commentaryScrollToTheme=theme.id;loadCommentary();
+            });list.append(button);
+        }
+        list.scrollLeft=scroll;
+        if(focused)list.querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
+    }
     async function fetchCommentary() {
-        const renderedKey=[state.book,state.chapter,state.verse,commentarySeries,pulpitSection].join("|");
-        if(commentaryRenderedKey===renderedKey && Date.now()-commentaryRenderedAt<sourceCacheLifetime)return;
+        const query=commentaryQuery(),owner=commentaryThemeOwner,renderedKey=query.toString();
+        if(commentaryRenderedKey===renderedKey && Date.now()-commentaryRenderedAt<sourceCacheLifetime){focusCommentaryVerse();return;}
         commentaryRenderedKey="";
         const requestId = ++commentaryRequest;
         const results = element("CommentaryResults");
-        const query = new URLSearchParams({book: state.book, chapter: state.chapter, verse: state.verse, series: commentarySeries, section:pulpitSection});
-        results.replaceChildren(node("p", "Loading passage commentary…"));
+        commentaryVerseParts=[];
+        if(element("CommentaryThemes").dataset.owner!==owner){element("CommentaryThemes").hidden=true;element("CommentaryThemeList").replaceChildren();}
+        results.replaceChildren(node("p", "Loading chapter commentary…"));
         try {
             await chapterLoadPromise;
             if(requestId!==commentaryRequest || studyTab!=="commentary")return;
             const data = await api(apiBase + "/commentary?" + query);
             if (requestId !== commentaryRequest || studyTab !== "commentary") return;
+            renderCommentaryThemes(data,owner);
             results.replaceChildren(node("h3", data.reference));
             if (!data.available) results.append(node("p", commentaryNames[commentarySeries] + " is not available in the study library yet."));
-            else if (!data.entries.length) results.append(node("p", "No indexed " + commentaryNames[commentarySeries] + " section was found for this passage."));
+            else if (!data.entries.length) results.append(node("p", "No indexed " + commentaryNames[commentarySeries] + " section was found for this chapter."));
             for (const entry of data.entries) {
                 const article = node("article", undefined, "bs-commentary-entry");
                 article.append(node("p", entry.source_title, "bs-commentary-volume"), node("h4", entry.title),
                     node("p", "Passage covered: " + entry.passage, "bs-commentary-range"));
                 const content = node("div", undefined, "bs-source-content bs-commentary-text");
                 if (["moody","pulpit"].includes(commentarySeries)) content.classList.add("bs-source-lines");
-                let outline = null;
+                let outline = null;const renderedBlocks=[];
                 for (const block of entry.blocks) {
                     if (commentarySeries === "exalting-jesus" && ["commentary_outline", "commentary_outline_continuation"].includes(block.role)) {
                         if (!outline) {
@@ -1448,12 +1525,24 @@
                             outline.append(node("h5", "Outline")); content.append(outline);
                         }
                         outline.append(renderSourceBlock(block));
-                    } else { outline = null; content.append(renderSourceBlock(block,entry.blocks)); }
+                    } else { outline = null;const rendered=renderSourceBlock(block,entry.blocks);content.append(rendered);renderedBlocks.push(rendered); }
+                }
+                if(commentaryFullChapter())for(const part of entry.verse_sections||[]){
+                    if(Array.isArray(part.ranges)&&Number.isInteger(part.start_block)&&Number.isInteger(part.end_block)&&part.start_block>=0&&part.end_block<=renderedBlocks.length)
+                        commentaryVerseParts.push({ranges:part.ranges,nodes:renderedBlocks.slice(part.start_block,part.end_block)});
                 }
                 article.append(content, node("p", entry.author + " · " + entry.source_title, "bs-attribution"));
+                notesWholeButton(article,()=>[...notesPlainBlocks(entry.title,"heading"),...notesSourceBlocks(entry.blocks),
+                    ...notesPlainBlocks([entry.author,entry.source_title].filter(Boolean).join(" · "))]);
                 results.append(article);
             }
             commentaryRenderedKey=renderedKey;commentaryRenderedAt=Date.now();
+            focusCommentaryVerse();
+            if(commentaryScrollToTheme&&commentaryScrollToTheme===data.selected_theme){
+                const pane=element("Study"),tabs=mobile.matches?studyTabs.getBoundingClientRect().height:0;
+                pane.scrollTop+=results.getBoundingClientRect().top-pane.getBoundingClientRect().top-tabs-element("CommentaryControls").getBoundingClientRect().height-8;
+                commentaryScrollToTheme="";
+            }
         } catch (error) {
             if (requestId === commentaryRequest) results.replaceChildren(node("p", error.message));
         }
@@ -1622,13 +1711,679 @@
             element("BookStudyResults").replaceChildren(content);
         } catch (error) { if (requestId === bookStudyRequest) element("BookStudyResults").replaceChildren(node("p", error.message)); }
     }
+    // Personal sermon documents share the study workspace, but have their own
+    // save queue and owner-scoped recovery drafts, independent of reader state.
+    let notesLoaded=false,notesItems=[],notesActive=null,notesChanged=false,notesSerial=0,notesOpenRequest=0;
+    let notesSaveChain=Promise.resolve(),notesTimer=null,notesRange=null,notesEditingMeta=false;
+    let notesPendingBlocks=[],notesReadMode=false,notesJobTimer=null,notesPDF=null,notesPDFUrl=null;
+    let notesLibraryView="recent",notesLibraryBook=0;
+    let notesInlineReferences=[],notesReferenceTimer=null,notesReferencePointer=null,notesComposing=false,notesReferencePattern=null;
+    const notesEditor=element("NotesEditor"),notesDraftKey=preferenceKey+"-sermon-draft-";
+    const notesFonts=[...element("NotesFont").options].map(option=>option.value);
+    const notesActions=element("NotesActionsMenu"),notesActionsToggle=element("NotesActionsToggle");
+    let notesActionsOpen=false;
+    if(typeof notesActions.showPopover==="function")notesActions.setAttribute("popover","auto");
+    function notesPositionActions(){
+        if(!notesActionsOpen)return;
+        const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
+        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight,anchor=notesActionsToggle.getBoundingClientRect();
+        notesActions.style.setProperty("--bs-notes-options-height",Math.max(100,height-16)+"px");
+        const bounds=notesActions.getBoundingClientRect(),x=Math.max(left+8,Math.min(anchor.right-bounds.width,left+width-bounds.width-8));
+        const below=anchor.bottom+6,y=below+bounds.height<=top+height-8?below:Math.max(top+8,anchor.top-bounds.height-6);
+        notesActions.style.setProperty("--bs-notes-options-left",x+"px");notesActions.style.setProperty("--bs-notes-options-top",y+"px");
+    }
+    function notesCloseActions(focusToggle=false){
+        notesActionsOpen=false;notesActionsToggle.setAttribute("aria-expanded","false");
+        if(notesActions.hasAttribute("popover")&&notesActions.matches(":popover-open"))notesActions.hidePopover();
+        notesActions.hidden=true;
+        if(focusToggle&&notesActionsToggle.getClientRects().length)notesActionsToggle.focus();
+    }
+    notesActionsToggle.addEventListener("click",()=>{
+        if(notesActionsOpen){notesCloseActions();return;}
+        notesCloseMenu();notesActionsOpen=true;notesActions.hidden=false;notesActionsToggle.setAttribute("aria-expanded","true");
+        if(notesActions.hasAttribute("popover"))notesActions.showPopover();
+        notesPositionActions();notesActions.querySelector("button:not([disabled]):not([hidden])")?.focus({preventScroll:true});
+    });
+    notesActions.addEventListener("toggle",event=>{if(event.newState==="closed")notesCloseActions();});
+    notesActions.addEventListener("click",event=>{if(event.target.closest("button:not([disabled])"))notesCloseActions();});
+    document.addEventListener("pointerdown",event=>{
+        if(notesActionsOpen&&!notesActions.contains(event.target)&&!notesActionsToggle.contains(event.target))notesCloseActions();
+    },true);
+    document.addEventListener("keydown",event=>{
+        if(event.key==="Escape"&&notesActionsOpen){event.preventDefault();event.stopPropagation();notesCloseActions(true);}
+    },true);
+    notesActions.addEventListener("focusout",event=>{
+        if(event.relatedTarget&&!notesActions.contains(event.relatedTarget)&&event.relatedTarget!==notesActionsToggle)notesCloseActions();
+    });
+    element("Bible").addEventListener("scroll",()=>{if(notesActionsOpen)notesCloseActions();},{passive:true});
+    window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);
+    const notesTools=element("NotesTools"),notesToolsToggle=element("NotesToolsToggle");
+    const notesMenuMedia=window.matchMedia("(max-width: 700px), (any-pointer: coarse)");
+    let notesMenuOpen=false;
+    function notesPositionMenu(){
+        if(!notesMenuOpen)return;
+        const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
+        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight,anchor=notesToolsToggle.getBoundingClientRect();
+        notesTools.style.setProperty("--bs-notes-menu-height",Math.max(100,height-16)+"px");
+        const bounds=notesTools.getBoundingClientRect(),x=Math.max(left+8,Math.min(anchor.left,left+width-bounds.width-8));
+        const below=anchor.bottom+6,y=below+bounds.height<=top+height-8?below:Math.max(top+8,anchor.top-bounds.height-6);
+        notesTools.style.setProperty("--bs-notes-menu-left",x+"px");notesTools.style.setProperty("--bs-notes-menu-top",y+"px");
+    }
+    function notesCloseMenu(focusToggle=false){
+        notesMenuOpen=false;notesTools.removeAttribute("data-open");notesToolsToggle.setAttribute("aria-expanded","false");
+        if(notesTools.hasAttribute("popover")&&notesTools.matches(":popover-open"))notesTools.hidePopover();
+        if(focusToggle&&notesToolsToggle.getClientRects().length)notesToolsToggle.focus();
+    }
+    function notesMenuMode(){
+        notesCloseMenu();const compact=notesMenuMedia.matches||navigator.maxTouchPoints>0;
+        root.dataset.notesMenu=compact?"compact":"inline";
+        if(compact){notesTools.prepend(element("NotesMetaActions"));notesActionsToggle.before(element("NotesToolsLauncher"));}
+        else{notesActionsToggle.before(element("NotesMetaActions"));notesTools.before(element("NotesToolsLauncher"));}
+        if(compact&&typeof notesTools.showPopover==="function")notesTools.setAttribute("popover","auto");
+        else notesTools.removeAttribute("popover");
+    }
+    notesMenuMode();notesMenuMedia.addEventListener("change",notesMenuMode);
+    notesToolsToggle.addEventListener("click",()=>{
+        if(notesMenuOpen){notesCloseMenu();return;}
+        notesCloseActions();
+        notesMenuOpen=true;notesTools.dataset.open="true";notesToolsToggle.setAttribute("aria-expanded","true");
+        if(notesTools.hasAttribute("popover"))notesTools.showPopover();
+        notesPositionMenu();
+    });
+    notesTools.addEventListener("toggle",event=>{if(event.newState==="closed")notesCloseMenu();});
+    // Delegated handlers run after the existing font/edit handlers have used
+    // the saved editor selection. Merely opening a selector does not dismiss it.
+    notesTools.addEventListener("click",event=>{if(event.target.closest("button"))notesCloseMenu();});
+    notesTools.addEventListener("change",event=>{if(event.target.matches("select,input"))notesCloseMenu();});
+    document.addEventListener("pointerdown",event=>{
+        if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesToolsToggle.contains(event.target))notesCloseMenu();
+    },true);
+    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesCloseMenu(true);}},true);
+    element("Bible").addEventListener("scroll",()=>{if(notesMenuOpen)notesCloseMenu();},{passive:true});
+    window.addEventListener("resize",()=>{if(notesMenuOpen)notesPositionMenu();});
+    window.visualViewport?.addEventListener("resize",()=>{if(notesMenuOpen)notesPositionMenu();});
+    const notesMenuVisibility=new MutationObserver(()=>{
+        if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)notesCloseMenu();
+        if(element("NotesPanel").hidden)notesCloseActions();
+        if(!element("NotesLibrary").hidden)element("NotesAll").setAttribute("aria-current","page");
+        else element("NotesAll").removeAttribute("aria-current");
+    });
+    for(const name of ["NotesPanel","NotesWorkspace","NotesLibrary"])notesMenuVisibility.observe(element(name),{attributes:true,attributeFilter:["hidden"]});
+    function notesStatus(message,error=false){element("NotesStatus").textContent=message;element("NotesStatus").dataset.error=String(error);}
+    function notesDetectType(text){
+        if(/^\s*[IVXLCDM]+\s*[.\-–—]\s+/.test(text))return "main_point";
+        if(/^\s*[A-Z][.)]\s+/.test(text))return "subpoint";
+        if(/^\s*(?:\d+|[a-z])[.)]\s+/.test(text))return "sub_subpoint";
+        if(/^\s*(illustration|story|example)\s*:/i.test(text))return "illustration";
+        if(/^\s*(conclusion|application)\s*:/i.test(text))return "conclusion";
+        return "paragraph";
+    }
+    function notesPlainBlocks(text,type=null){return String(text).split(/\n\s*\n|\n/).map(line=>({type:type||notesDetectType(line),runs:[{text:line}]}));}
+    function notesColor(value){
+        if(!value||value==="transparent")return null;
+        if(/^#[a-f0-9]{6}$/i.test(value))return value;
+        const rgb=value.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        return rgb?"#"+rgb.slice(1).map(v=>Number(v).toString(16).padStart(2,"0")).join(""):null;
+    }
+    function notesRuns(container){
+        const runs=[];
+        function walk(item,inherited={}){
+            if(item.nodeType===Node.TEXT_NODE){if(item.textContent)runs.push({...inherited,text:item.textContent});return;}
+            if(item.nodeType!==Node.ELEMENT_NODE)return;
+            if(["SCRIPT","STYLE","IMG","IFRAME"].includes(item.tagName))return;
+            const style={...inherited},css=item.style;
+            if(["B","STRONG"].includes(item.tagName))style.bold=true;
+            if(["I","EM"].includes(item.tagName))style.italic=true;
+            if(item.tagName==="U")style.underline=true;
+            if(item.tagName==="SUP"||css.verticalAlign==="super")style.superscript=true;
+            if(item.tagName==="MARK")style.highlight="#ffe66d";
+            if(css.fontWeight)style.bold=css.fontWeight==="bold"||Number(css.fontWeight)>=600;
+            if(css.fontStyle)style.italic=css.fontStyle==="italic";
+            if(css.textDecoration)style.underline=css.textDecoration.includes("underline");
+            const color=notesColor(css.color||item.getAttribute("color")),highlight=notesColor(css.backgroundColor);
+            if(color)style.color=color;if(highlight)style.highlight=highlight;
+            if(css.fontSize)style.font_size=parseFloat(css.fontSize)*(css.fontSize.endsWith("px")?.75:1);
+            const family=(css.fontFamily||item.getAttribute("face")||"").split(",")[0].trim().replace(/^["']|["']$/g,"");
+            if(notesFonts.includes(family))style.font_family=family;
+            if(item.tagName==="BR"){runs.push({...style,text:"\n"});return;}
+            for(const child of item.childNodes)walk(child,style);
+        }
+        for(const child of container.childNodes)walk(child);
+        return runs;
+    }
+    function notesBlocksFromDOM(container){
+        const blocks=[];
+        function collect(child){
+            if(child.nodeType===Node.TEXT_NODE){if(child.textContent.trim())blocks.push({type:notesDetectType(child.textContent),runs:[{text:child.textContent}]});return;}
+            if(child.nodeType!==Node.ELEMENT_NODE)return;
+            if(["SCRIPT","STYLE","IMG","IFRAME"].includes(child.tagName))return;
+            if(["UL","OL"].includes(child.tagName)){for(const item of child.children)collect(item);return;}
+            if(child.querySelector("p,div,h1,h2,h3,h4,h5,h6,li")){
+                for(const item of child.childNodes)collect(item);return;
+            }
+            const text=child.textContent||"";
+            blocks.push({type:child.dataset.notesType||notesDetectType(text),runs:notesRuns(child),
+                ...(child.style.paddingLeft?{indent:parseFloat(child.style.paddingLeft)}:{}),
+                ...(child.style.marginBottom?{space_after:parseFloat(child.style.marginBottom)}:{}),
+                ...(child.style.textAlign?{align:child.style.textAlign}:{}),
+                ...(child.dataset.pageBreak==="true"?{page_break:true}:{})});
+        }
+        for(const child of container.childNodes)collect(child);
+        return blocks;
+    }
+    function notesBlockDOM(block){
+        const p=node("p");p.dataset.notesType=block.type||"paragraph";
+        if(["scripture","illustration","heading","theme","text"].includes(block.type))p.dataset.notesManual="true";
+        if(block.indent!==undefined)p.style.paddingLeft=block.indent+"pt";
+        if(block.space_after!==undefined)p.style.marginBottom=block.space_after+"pt";
+        if(block.align)p.style.textAlign=block.align;
+        if(block.page_break)p.dataset.pageBreak="true";
+        for(const run of block.runs||[]){
+            const span=node("span",run.text);
+            if(typeof run.bold==="boolean")span.style.fontWeight=run.bold?"bold":"normal";
+            if(typeof run.italic==="boolean")span.style.fontStyle=run.italic?"italic":"normal";
+            if(typeof run.underline==="boolean")span.style.textDecoration=run.underline?"underline":"none";
+            if(run.highlight)span.style.backgroundColor=run.highlight;if(run.color)span.style.color=run.color;
+            if(run.font_size)span.style.fontSize=run.font_size+"pt";
+            if(run.font_family)span.style.fontFamily='"'+run.font_family+'", '+(["Times New Roman","Georgia","Cambria"].includes(run.font_family)?"serif":run.font_family==="Courier New"?"monospace":"Arial, sans-serif");
+            if(run.superscript)span.style.verticalAlign="super";
+            p.append(span);
+        }
+        if(!p.textContent)p.append(document.createElement("br"));
+        return p;
+    }
+    function notesSourceBlocks(blocks){return (blocks||[]).filter(b=>b.type!=="image").map(block=>({
+        type:notesDetectType(block.text||""),runs:(block.runs||[{text:block.text||""}]).map(run=>({text:run.text||"",
+            ...((run.marks||[]).includes("strong")?{bold:true}:{}),...((run.marks||[]).includes("em")?{italic:true}:{}),
+            ...((run.marks||[]).includes("u")?{underline:true}:{})}))}));}
+    function notesCurrentControl(){
+        const label=node("label",undefined,"bs-current-notes"),input=node("input");input.type="checkbox";
+        input.checked=localSettings.currentNotes===true;input.dataset.notesCurrent="true";
+        input.addEventListener("change",()=>notesSetCurrent(input.checked));label.append(input,document.createTextNode(" Current notes"));return label;
+    }
+    function notesSetCurrent(checked){
+        localSettings.currentNotes=checked;saveLocalSettings();
+        for(const input of root.querySelectorAll('[data-notes-current],#bsNotesCurrent,#bsNotesTargetCurrent'))input.checked=checked;
+    }
+    for(const id of ["NotesCurrent","NotesTargetCurrent"]){element(id).checked=localSettings.currentNotes===true;element(id).addEventListener("change",()=>notesSetCurrent(element(id).checked));}
+    function notesWholeButton(parent,supplier){
+        parent.querySelector(":scope > .bs-notes-source-actions")?.remove();
+        const actions=node("div",undefined,"bs-notes-source-actions"),button=node("button","Add whole entry to Sermon Notes");button.type="button";
+        button.addEventListener("click",()=>addToSermonNotes(supplier()));actions.append(button,notesCurrentControl());parent.append(actions);
+    }
+    function notesCompactText(text){const refs=notesReferences(text);return refs.length?refs[0].label:text;}
+    function notesMetadataBlocks(note){
+        const blocks=note.content.blocks,body=blocks.filter(block=>!["theme","text"].includes(block.type));
+        const metadata=[["theme","Theme",note.theme,16],["text","Text",notesCompactText(note.text),12]].map(([type,label,value,size])=>{
+            const previous=blocks.find(block=>block.type===type);
+            return previous||{type,runs:[{text:label+": "+value,bold:true,font_size:size,font_family:"Calibri"}]};
+        });return [...metadata,...body];
+    }
+    function notesDocument(){
+        const blocks=notesBlocksFromDOM(notesEditor),value=(type,fallback)=>{
+            const block=blocks.find(block=>block.type===type);
+            return block?block.runs.map(run=>run.text).join("").replace(new RegExp("^\\s*"+type+"\\s*:\\s*","i"),"").trim():fallback;
+        };
+        return {...notesActive.note,theme:value("theme",notesActive.note.theme),text:value("text",notesActive.note.text),content:{blocks}};
+    }
+    function notesUpdateHeader(note=notesActive.note){
+        element("NotesTheme").textContent="Theme: "+note.theme;element("NotesText").textContent="Text: "+notesCompactText(note.text);
+    }
+    function notesStoreDraft(){
+        if(!notesActive||!notesChanged)return;
+        try{localStorage.setItem(notesDraftKey+notesActive.id,JSON.stringify({version:notesActive.version,note:notesDocument()}));}
+        catch(_){/* The live editor remains available if device storage is full. */}
+    }
+    function notesMarkChanged(){
+        if(!notesActive)return;notesChanged=true;++notesSerial;notesStoreDraft();notesStatus("Saving locally…");
+        clearTimeout(notesTimer);notesTimer=setTimeout(()=>saveSermonNotes().catch(error=>notesStatus(error.message,true)),650);
+        notesRenderReferences();
+    }
+    function saveSermonNotes(){
+        clearTimeout(notesTimer);
+        notesSaveChain=notesSaveChain.catch(()=>{}).then(async()=>{
+            if(!notesActive||!notesChanged)return;
+            const id=notesActive.id,serial=notesSerial,document=notesDocument();
+            try{
+                let data;
+                try{data=await api(apiBase+"/notes/"+id,jsonWrite("PATCH",{version:notesActive.version,note:document}));}
+                catch(error){
+                    if(error.status!==409)throw error;
+                    data=await api(apiBase+"/notes",jsonWrite("POST",{note:{...document,theme:(document.theme+" (local copy)").slice(0,500)}}));
+                    try{localStorage.removeItem(notesDraftKey+id);}catch(_){}
+                    toast("Another tab changed this sermon. Your edits were saved as a separate local copy.");
+                }
+                if(notesActive?.id===id){
+                    notesActive={...data.item,note:notesSerial===serial?data.item.note:notesDocument()};
+                    notesChanged=notesSerial!==serial;
+                    notesUpdateHeader();
+                    if(!notesChanged){try{localStorage.removeItem(notesDraftKey+id);}catch(_){};}
+                    else notesStoreDraft();
+                    notesStatus(notesChanged?"Newer edits are waiting to save…":"Saved locally · "+(notesActive.conflict?"Resolve the Drive conflict.":"Use Sync Notes to back up."));
+                }
+            }catch(error){notesStoreDraft();throw error;}
+        });return notesSaveChain;
+    }
+    async function loadSermonNotes(query=element("NotesSearch").value){
+        const data=await api(apiBase+"/notes?"+new URLSearchParams({q:query}));notesItems=data.notes||[];notesLoaded=true;
+        element("NotesSync").disabled=!data.drive_configured;
+        element("NotesSync").title=data.drive_configured?"Back up and restore your notes":"Drive connection is not configured";
+        if(element("NotesConvert"))element("NotesConvert").hidden=data.can_convert!==true;
+        renderSermonNotesList();
+        if(element("NotesStatus").dataset.error==="true")notesStatus("");
+        if(!notesActive){element("NotesLibrary").hidden=false;notesStatus("Create a sermon or select a saved note. Sync Notes restores your Drive library.");}
+    }
+    function renderSermonNotesList(){
+        const list=element("NotesList");list.replaceChildren();
+        root.querySelectorAll("[data-notes-view]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.notesView===notesLibraryView)));
+        const selectedBook=element("NotesSelectedBook");selectedBook.hidden=!notesLibraryBook;
+        selectedBook.textContent=notesLibraryBook?books[notesLibraryBook-1].name+" ×":"";
+        selectedBook.setAttribute("aria-label",notesLibraryBook?"Clear book filter: "+books[notesLibraryBook-1].name:"Clear book filter");
+        const filtered=notesItems.filter(item=>{
+            const id=item.primary_reference?.book_id;
+            return (notesLibraryView==="recent"||(notesLibraryView==="review"?item.needs_review:
+                !item.needs_review&&(notesLibraryView==="old"?id>=1&&id<=39:id>=40&&id<=66)))&&
+                (!notesLibraryBook||id===notesLibraryBook);
+        });
+        if(notesLibraryView==="recent")filtered.sort((a,b)=>(b.updated_at||"").localeCompare(a.updated_at||"")||a.theme.localeCompare(b.theme)||a.id.localeCompare(b.id));
+        let group="";
+        for(const item of filtered){
+            const title=item.needs_review?"For Review":books[(item.primary_reference?.book_id||1)-1]?.name;
+            if(notesLibraryView!=="recent"&&notesLibraryView!=="review"&&title!==group){list.append(node("h3",title));group=title;}
+            const button=node("button",undefined,"bs-notes-list-item");button.type="button";
+            button.append(node("strong",item.theme),node("span",item.text),node("small",item.conflict?"Resolve Drive conflict":item.dirty?"Saved locally · Not yet backed up":"Synced"));
+            button.addEventListener("click",()=>openSermonNote(item.id).catch(error=>notesStatus(error.message,true)));list.append(button);
+        }
+        if(!filtered.length)list.append(node("p","No matching notes. Create Notes or use Sync Notes to restore your library."));
+    }
+    function notesChooseBook(){
+        const old=notesLibraryView==="old",grid=element("NotesBooksGrid");grid.replaceChildren();
+        element("NotesBooksTitle").textContent=old?"Old Testament":"New Testament";
+        element("NotesAllBooks").textContent=old?"All OT books":"All NT books";
+        element("NotesAllBooks").setAttribute("aria-current",String(!notesLibraryBook));
+        books.slice(old?0:39,old?39:66).forEach((book,offset)=>{
+            const index=(old?0:39)+offset,button=node("button",abbreviations[index]);button.type="button";
+            button.title=book.name;button.setAttribute("aria-label",book.name);
+            button.dataset.bookGroup=index<5?"law":index<17?"history":index<22?"poetry":index<39?"prophets":index<44?"gospel":index<65?"letters":"apocalypse";
+            if(index+1===notesLibraryBook)button.setAttribute("aria-current","true");
+            button.addEventListener("click",()=>{notesLibraryBook=index+1;renderSermonNotesList();element("NotesBooksDialog").close();});grid.append(button);
+        });
+        element("NotesBooksDialog").showModal();grid.parentElement.scrollTop=0;
+    }
+    async function openSermonNote(id){
+        const opening=++notesOpenRequest;
+        await saveSermonNotes();
+        const serial=notesSerial;
+        const data=await api(apiBase+"/notes/"+id);
+        if(opening!==notesOpenRequest)return;
+        if(notesSerial!==serial&&notesActive?.id===id)return;
+        if(notesChanged)await saveSermonNotes();
+        if(opening!==notesOpenRequest)return;
+        notesActive=data.item;notesChanged=false;notesRange=null;
+        let draft;try{draft=JSON.parse(localStorage.getItem(notesDraftKey+id)||"null");}catch(_){}
+        if(draft?.note){
+            if(draft.version===notesActive.version){notesActive.note=draft.note;notesChanged=true;++notesSerial;}
+            else{
+                const recovered=await api(apiBase+"/notes",jsonWrite("POST",{note:{...draft.note,theme:(draft.note.theme+" (recovered draft)").slice(0,500)}}));
+                localStorage.removeItem(notesDraftKey+id);notesActive=recovered.item;toast("Recovered an unsaved device draft as a separate sermon.");
+            }
+        }
+        renderSermonNote();selectReaderTab("notes");
+        notesStatus(notesChanged?"Recovered an unsaved device draft. Press Save to keep it.":notesActive.conflict?"This sermon has a Drive conflict. Both versions are preserved.":"Saved locally"+(notesActive.dirty?" · Use Sync Notes to back up.":" · Synced"));
+    }
+    function renderSermonNote(){
+        element("NotesLibrary").hidden=true;element("NotesWorkspace").hidden=false;element("NotesExport").disabled=false;
+        notesUpdateHeader();
+        notesEditor.replaceChildren(...notesMetadataBlocks(notesActive.note).map(notesBlockDOM));
+        if(!notesActive.note.content.blocks.some(block=>!["theme","text"].includes(block.type)))notesEditor.append(notesBlockDOM({type:"paragraph",runs:[]}));
+        element("NotesConflict").hidden=!notesActive.conflict;
+        element("NotesOrigin").textContent=notesActive.note.origin?"Imported from "+notesActive.note.origin.filename+". "+(notesActive.note.origin.format_note||""):"";
+        notesReadMode=false;notesSetReadMode(false);notesRenderReferences();
+    }
+    function notesReferences(text){
+        if(!notesReferencePattern){
+            const aliases=[...books.map(b=>b.name),...Object.keys(config.referenceBooks||{}),...abbreviations];
+            const patterns=[...new Set(aliases)].sort((a,b)=>b.length-a.length).map(name=>name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&").replace(/\s+/g,"\\s*").replace(/^(iii|ii|i|[1-3])(?=[a-z])/i,"$1\\s*"));
+            notesReferencePattern=new RegExp("(?<![\\w])("+patterns.join("|")+")\\.?\\s*(\\d{1,3}):(\\d{1,3})(?:\\s*[-–—]\\s*(?:(\\d{1,3}):)?(\\d{1,3}))?","gi");
+        }
+        const refs=[];
+        for(const match of text.matchAll(notesReferencePattern)){
+            const book=referenceBookNames.get(normalizeBookName(match[1])),chapter=Number(match[2]),verse=Number(match[3]);
+            const lastChapter=Number(match[4]||chapter),lastVerse=Number(match[5]||verse),definition=books.find(b=>b.name===book);
+            if(!definition||chapter<1||chapter>definition.chapters||lastChapter<chapter||lastChapter>definition.chapters||verse<1||verse>176||lastVerse<1||lastVerse>176||(lastChapter===chapter&&lastVerse<verse))continue;
+            refs.push({book,chapter,verse,end_chapter:lastChapter,end_verse:lastVerse,label:match[0],
+                start:Array.from(text.slice(0,match.index)).length,end:Array.from(text.slice(0,match.index+match[0].length)).length});
+        }return refs;
+    }
+    function notesRenderReferences(){
+        if(!notesActive)return;const list=element("NotesReferences");list.replaceChildren();
+        notesInlineReferences=[];
+        // Keep links out of the editable DOM: live Ranges preserve the caret,
+        // run formatting and the browser's undo history, including on touch.
+        for(const block of notesEditor.childNodes){
+            const text=block.textContent||"";
+            for(const reference of notesReferences(text)){
+                const range=notesReferenceRange(block,text,reference);
+                if(range)notesInlineReferences.push({reference,range});
+            }
+        }
+        if(window.CSS?.highlights&&typeof window.Highlight==="function"){
+            CSS.highlights.set("sermon-references",new Highlight(...notesInlineReferences.map(item=>item.range)));
+        }
+        const text=notesActive.note.text+"\n"+notesEditor.innerText,seen=new Set();
+        for(const reference of notesReferences(text)){
+            if(seen.has(reference.label))continue;seen.add(reference.label);
+            const button=node("button",reference.label,"bs-scripture-ref");button.type="button";
+            button.addEventListener("click",()=>{
+                const item=!notesReadMode&&notesInlineReferences.find(item=>item.reference.label===reference.label);
+                if(item)notesPreviewEditorReference(item);else previewVerse(reference);
+            });list.append(button);
+        }
+        if(list.children.length)list.prepend(node("small","Recognized verses: "));
+    }
+    function notesReferenceRange(container,text,reference){
+        const start=Array.from(text).slice(0,reference.start).join("").length,end=Array.from(text).slice(0,reference.end).join("").length;
+        const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT),range=document.createRange();let offset=0,first=false;
+        const nodes=container.nodeType===Node.TEXT_NODE?[container]:[];let current;
+        while((current=walker.nextNode()))nodes.push(current);
+        for(current of nodes){
+            const next=offset+current.textContent.length;
+            if(!first&&start<=next){range.setStart(current,start-offset);first=true;}
+            if(first&&end<=next){range.setEnd(current,end-offset);return range;}offset=next;
+        }return null;
+    }
+    function notesReferenceAt(x,y){
+        return notesInlineReferences.find(item=>[...item.range.getClientRects()].some(rect=>
+            rect.width>0&&rect.height>0&&x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom));
+    }
+    function notesPreviewEditorReference(item){
+        const range=item.range.cloneRange();range.collapse(false);
+        previewVerse(item.reference,{noteId:notesActive.id,range,referenceRange:item.range.cloneRange(),referenceText:item.range.toString()});
+    }
+    notesEditor.addEventListener("pointermove",event=>{
+        const item=notesReferenceAt(event.clientX,event.clientY);
+        notesEditor.classList.toggle("bs-notes-reference-hover",Boolean(item));
+        if(item)notesEditor.title="Preview "+item.reference.label+" · Alt+Enter at the reference";
+        else notesEditor.removeAttribute("title");
+    });
+    notesEditor.addEventListener("pointerleave",()=>{notesEditor.classList.remove("bs-notes-reference-hover");notesEditor.removeAttribute("title");});
+    notesEditor.addEventListener("pointerdown",event=>{
+        clearTimeout(notesReferenceTimer);notesReferencePointer={x:event.clientX,y:event.clientY};
+    });
+    notesEditor.addEventListener("pointercancel",()=>{clearTimeout(notesReferenceTimer);notesReferencePointer=null;});
+    notesEditor.addEventListener("compositionstart",()=>{notesComposing=true;clearTimeout(notesReferenceTimer);});
+    notesEditor.addEventListener("compositionend",()=>{notesComposing=false;});
+    notesEditor.addEventListener("click",event=>{
+        clearTimeout(notesReferenceTimer);
+        const pointer=notesReferencePointer;notesReferencePointer=null;
+        if(notesComposing||event.detail>1||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||window.getSelection()?.toString()||
+            (pointer&&Math.hypot(event.clientX-pointer.x,event.clientY-pointer.y)>6))return;
+        const item=notesReferenceAt(event.clientX,event.clientY);
+        if(!item)return;
+        // Let a double click or a drag select the text instead of opening a dialog.
+        notesReferenceTimer=setTimeout(()=>{
+            if(!notesEditor.hidden&&!element("NotesPanel").hidden&&!element("NotesWorkspace").hidden&&document.activeElement===notesEditor&&!window.getSelection()?.toString())notesPreviewEditorReference(item);
+        },300);
+    });
+    document.addEventListener("pointerdown",event=>{if(!notesEditor.contains(event.target))clearTimeout(notesReferenceTimer);},true);
+    notesEditor.addEventListener("keydown",event=>{
+        clearTimeout(notesReferenceTimer);
+        if(event.key!=="Enter"||!event.altKey||event.isComposing)return;
+        const selection=window.getSelection();if(!selection?.isCollapsed||!selection.anchorNode)return;
+        const item=notesInlineReferences.find(item=>item.range.isPointInRange(selection.anchorNode,selection.anchorOffset));
+        if(item){event.preventDefault();notesPreviewEditorReference(item);}
+    });
+    element("Bible").addEventListener("scroll",()=>clearTimeout(notesReferenceTimer),{passive:true});
+    function notesSetReadMode(read){
+        notesReadMode=read;element("NotesRead").textContent=read?"Edit Notes":"Read Notes";element("NotesRead").setAttribute("aria-pressed",String(read));
+        element("NotesFormat").hidden=read;notesEditor.hidden=read;element("NotesPreview").hidden=!read;
+        if(read){
+            const preview=element("NotesPreview");preview.replaceChildren();
+            for(const block of notesBlocksFromDOM(notesEditor)){
+                const text=block.runs.map(r=>r.text).join("");
+                const rendered=notesBlockDOM(block);
+                for(const reference of notesReferences(text).reverse()){
+                    const range=notesReferenceRange(rendered,text,reference);if(!range)continue;
+                    const link=node("button",undefined,"bs-scripture-ref");link.type="button";link.append(range.extractContents());range.insertNode(link);
+                    link.addEventListener("click",()=>previewVerse(reference));
+                }
+                preview.append(rendered);
+            }
+        }
+    }
+    document.addEventListener("selectionchange",()=>{
+        const selection=window.getSelection();if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode)){
+            notesRange=selection.getRangeAt(0).cloneRange();
+            const parent=selection.anchorNode.nodeType===Node.ELEMENT_NODE?selection.anchorNode:selection.anchorNode.parentElement;
+            if(parent){const css=getComputedStyle(parent),family=css.fontFamily.split(",")[0].replace(/^["']|["']$/g,"");
+                if(notesFonts.includes(family))element("NotesFont").value=family;
+                element("NotesFontSize").value=Math.round(parseFloat(css.fontSize)*.75*10)/10;}
+        }
+    });
+    function notesNormalizeFontSizes(){
+        const size=Math.max(6,Math.min(72,Number(element("NotesFontSize").value)||12));
+        for(const font of notesEditor.querySelectorAll("font[size]")){font.style.fontSize=size+"pt";font.removeAttribute("size");}
+    }
+    notesEditor.addEventListener("input",()=>{
+        notesNormalizeFontSizes();
+        const metadata=new Set();
+        for(const child of notesEditor.children)if(["theme","text"].includes(child.dataset.notesType)){
+            const type=child.dataset.notesType;
+            if(metadata.has(type)){child.dataset.notesType="paragraph";delete child.dataset.notesManual;}
+            else metadata.add(type);
+        }
+        for(const child of notesEditor.children)if(!child.dataset.notesManual)child.dataset.notesType=notesDetectType(child.textContent||"");
+        notesUpdateHeader(notesDocument());
+        notesMarkChanged();
+    });
+    notesEditor.addEventListener("paste",event=>{event.preventDefault();document.execCommand("insertText",false,event.clipboardData?.getData("text/plain")||"");notesMarkChanged();});
+    element("NotesFormat").addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
+    function notesRestoreSelection(){
+        notesEditor.focus();if(notesRange&&notesEditor.contains(notesRange.commonAncestorContainer)){const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);}
+    }
+    function notesFormat(command,value){
+        if(!notesActive)return;notesRestoreSelection();document.execCommand(command,false,value);notesMarkChanged();
+    }
+    element("NotesFormat").addEventListener("click",event=>{
+        const command=event.target.closest("[data-notes-command]")?.dataset.notesCommand;if(!command)return;
+        notesFormat(command,command==="hiliteColor"?element("NotesHighlightColor").value:command==="foreColor"?element("NotesTextColor").value:undefined);
+    });
+    element("NotesFont").addEventListener("change",()=>notesFormat("fontName",element("NotesFont").value));
+    function notesApplySize(value){
+        if(!notesActive)return;const size=Math.max(6,Math.min(72,Number(value)||12));
+        element("NotesFontSize").value=size;notesRestoreSelection();document.execCommand("styleWithCSS",false,false);document.execCommand("fontSize",false,"7");
+        notesNormalizeFontSizes();notesMarkChanged();
+    }
+    element("NotesFontSize").addEventListener("change",()=>notesApplySize(element("NotesFontSize").value));
+    const notesSizeSteps=[6,8,9,10,11,12,14,16,18,20,22,24,26,28,36,48,72];
+    element("NotesGrow").addEventListener("click",()=>notesApplySize(notesSizeSteps.find(size=>size>Number(element("NotesFontSize").value))||72));
+    element("NotesShrink").addEventListener("click",()=>notesApplySize([...notesSizeSteps].reverse().find(size=>size<Number(element("NotesFontSize").value))||6));
+    element("NotesHighlightColor").addEventListener("change",()=>notesFormat("hiliteColor",element("NotesHighlightColor").value));
+    element("NotesTextColor").addEventListener("change",()=>notesFormat("foreColor",element("NotesTextColor").value));
+    element("NotesCase").addEventListener("change",()=>{
+        const mode=element("NotesCase").value;element("NotesCase").value="";
+        if(!notesActive||!mode||!notesRange||notesRange.collapsed)return;
+        notesRestoreSelection();const range=window.getSelection().getRangeAt(0),walker=document.createTreeWalker(notesEditor,NodeFilter.SHOW_TEXT),pieces=[];let current;
+        while((current=walker.nextNode()))if(range.intersectsNode(current)){
+            const start=current===range.startContainer?range.startOffset:0,end=current===range.endContainer?range.endOffset:current.textContent.length;
+            pieces.push({node:current,start,end});
+        }
+        let sentenceStart=true,wordStart=true;
+        for(const piece of pieces){
+            const source=piece.node.textContent.slice(piece.start,piece.end);
+            let value=mode==="upper"?source.toLocaleUpperCase():source.toLocaleLowerCase();
+            if(mode==="title")value=Array.from(value).map(char=>{const result=wordStart?char.toLocaleUpperCase():char;wordStart=!/\p{L}/u.test(char);return result;}).join("");
+            if(mode==="sentence")value=Array.from(value).map(char=>{let result=char;if(sentenceStart&&/\p{L}/u.test(char)){result=char.toLocaleUpperCase();sentenceStart=false;}if(/[.!?]/.test(char))sentenceStart=true;return result;}).join("");
+            piece.node.textContent=piece.node.textContent.slice(0,piece.start)+value+piece.node.textContent.slice(piece.end);
+        }
+        notesUpdateHeader(notesDocument());notesMarkChanged();
+    });
+    function notesOpenMeta(edit=false,blocks=[]){
+        notesEditingMeta=edit;notesPendingBlocks=blocks;
+        element("NotesMetaTitle").textContent=element("NotesMetaSubmit").textContent=edit?"Save Text & Theme":"Create Notes";
+        element("NotesMetaText").value=edit?notesActive.note.text:"";element("NotesMetaTheme").value=edit?notesActive.note.theme:"";element("NotesMetaError").textContent="";
+        element("NotesMetaDialog").showModal();element("NotesMetaText").focus();
+    }
+    element("NotesCreate").addEventListener("click",()=>notesOpenMeta());
+    element("NotesEditMeta").addEventListener("click",()=>notesOpenMeta(true));
+    element("NotesMetaForm").addEventListener("submit",async event=>{
+        event.preventDefault();const button=element("NotesMetaSubmit");button.disabled=true;
+        try{
+            await saveSermonNotes();
+            const theme=element("NotesMetaTheme").value.trim(),text=element("NotesMetaText").value.trim();
+            if(!theme||!text)throw Error("Enter Text and Theme first.");
+            if(notesEditingMeta){
+                notesActive.note={...notesActive.note,theme,text};
+                for(const [type,label,value] of [["theme","Theme",theme],["text","Text",text]]){
+                    const block=notesEditor.querySelector('[data-notes-type="'+type+'"]');
+                    if(block){const style=notesRuns(block)[0]||{};block.replaceChildren(...notesBlockDOM({type,runs:[{...style,text:label+": "+value}]}).childNodes);}
+                }
+                notesMarkChanged();await saveSermonNotes();
+            }
+            else{
+                const data=await api(apiBase+"/notes",jsonWrite("POST",{note:{schema_version:1,theme,text,content:{blocks:notesPendingBlocks}}}));
+                notesActive=data.item;notesChanged=false;notesRange=null;
+            }
+            notesPendingBlocks=[];element("NotesMetaDialog").close();renderSermonNote();selectReaderTab("notes");
+            notesStatus("Saved locally · Use Sync Notes to back up.");
+        }catch(error){element("NotesMetaError").textContent=error.message;}
+        finally{button.disabled=false;}
+    });
+    async function notesInsertBlocks(blocks,insertionRange=null){
+        if(!notesActive)throw Error("Open a sermon first.");
+        const targetRange=insertionRange||notesRange;
+        selectReaderTab("notes");notesSetReadMode(false);notesEditor.focus();
+        const selection=window.getSelection();selection.removeAllRanges();
+        if(targetRange&&notesEditor.contains(targetRange.commonAncestorContainer)){const range=targetRange.cloneRange();range.collapse(false);selection.addRange(range);}
+        else{const range=document.createRange();range.selectNodeContents(notesEditor);range.collapse(false);selection.addRange(range);}
+        const container=node("div");for(const block of blocks)container.append(notesBlockDOM(block));
+        // Paragraph boundaries prevent the browser from merging a verse into
+        // a bold Text header or swallowing the words after the reference.
+        const html=insertionRange?"<p><br></p>"+container.innerHTML+"<p><br></p>":container.innerHTML;
+        document.execCommand("insertHTML",false,html);notesMarkChanged();await saveSermonNotes();
+        toast("Added to sermon notes. Use Undo to remove the insertion.");
+    }
+    async function addToSermonNotes(blocks){
+        try{
+            if(localSettings.currentNotes===true&&notesActive){await notesInsertBlocks(blocks);return;}
+            notesPendingBlocks=blocks;await loadSermonNotes("");
+            const select=element("NotesTargetExisting");select.replaceChildren();
+            for(const item of notesItems.filter(n=>!n.deleted)){const option=node("option",item.theme+" · "+item.text);option.value=item.id;select.append(option);}
+            if(notesActive&&[...select.options].some(o=>o.value===notesActive.id))select.value=notesActive.id;
+            element("NotesTargetAdd").disabled=!select.options.length;element("NotesTargetError").textContent="";element("NotesTargetDialog").showModal();
+        }catch(error){toast(error.message);}
+    }
+    element("NotesTargetNew").addEventListener("click",()=>{element("NotesTargetDialog").close();notesOpenMeta(false,notesPendingBlocks);});
+    element("NotesTargetAdd").addEventListener("click",async()=>{
+        const button=element("NotesTargetAdd");button.disabled=true;
+        try{const blocks=notesPendingBlocks;await openSermonNote(element("NotesTargetExisting").value);element("NotesTargetDialog").close();await notesInsertBlocks(blocks);notesPendingBlocks=[];}
+        catch(error){element("NotesTargetError").textContent=error.message;}finally{button.disabled=false;}
+    });
+    element("NotesInsertVerse").addEventListener("click",async()=>{
+        const blocks=notesPlainBlocks(element("VerseText").textContent,"scripture"),target=notesVerseTarget;
+        notesVerseTarget=null;element("VerseDialog").close();
+        if(!target){addToSermonNotes(blocks);return;}
+        try{
+            if(target.noteId!==notesActive?.id||element("NotesWorkspace").hidden||element("NotesPanel").hidden||
+                !notesEditor.contains(target.range.commonAncestorContainer)||target.referenceRange.toString()!==target.referenceText)
+                throw Error("This sermon changed. Open the reference again before inserting its verses.");
+            await notesInsertBlocks(blocks,target.range);
+        }catch(error){notesStatus(error.message,true);}
+    });
+    element("VerseDialog").addEventListener("close",()=>{if(!element("VerseDialog").open)notesVerseTarget=null;});
+    element("NotesAll").addEventListener("click",async()=>{
+        try{await saveSermonNotes();await loadSermonNotes();element("NotesLibrary").hidden=false;element("NotesWorkspace").hidden=true;}
+        catch(error){notesStatus(error.message,true);}
+    });
+    root.querySelectorAll("[data-notes-view]").forEach(button=>button.addEventListener("click",()=>{
+        const view=button.dataset.notesView;
+        if(view!==notesLibraryView)notesLibraryBook=0;
+        notesLibraryView=view;renderSermonNotesList();
+        if(view==="old"||view==="new")notesChooseBook();
+    }));
+    element("NotesSelectedBook").addEventListener("click",()=>{notesLibraryBook=0;renderSermonNotesList();});
+    element("NotesAllBooks").addEventListener("click",()=>{notesLibraryBook=0;renderSermonNotesList();element("NotesBooksDialog").close();});
+    let notesSearchTimer=null;
+    element("NotesSearch").addEventListener("input",()=>{clearTimeout(notesSearchTimer);notesSearchTimer=setTimeout(()=>loadSermonNotes().catch(error=>notesStatus(error.message,true)),250);});
+    element("NotesRead").addEventListener("click",()=>notesSetReadMode(!notesReadMode));
+    element("NotesSave").addEventListener("click",()=>saveSermonNotes().catch(error=>notesStatus(error.message,true)));
+    function notesConfirm(message,action,{title="Confirm",confirmLabel="Continue",danger=false}={}){
+        const dialog=element("NotesConfirmDialog"),button=element("NotesConfirmYes");
+        element("NotesConfirmText").textContent=message;element("NotesConfirmTitle").textContent=title;
+        button.textContent=confirmLabel;button.classList.toggle("bs-notes-delete-confirm",danger);
+        button.onclick=async()=>{if(!dialog.open||button.disabled)return;button.disabled=true;try{await action();dialog.close();}catch(error){notesStatus(error.message,true);dialog.close();}finally{button.disabled=false;}};
+        notesCloseMenu();dialog.showModal();element("NotesConfirmCancel").focus();
+    }
+    element("NotesDelete").addEventListener("click",()=>{
+        if(!notesActive)return;const id=notesActive.id,theme=notesChanged?notesDocument().theme:notesActive.note.theme;
+        notesConfirm('Are you sure you want to delete “'+theme+'”? Sync Notes will also remove its current copy from your other devices.',async()=>{
+        await saveSermonNotes();if(notesActive?.id!==id)throw Error("The open sermon changed. Reopen the sermon you want to delete.");
+        await api(apiBase+"/notes/"+id,jsonWrite("DELETE",{version:notesActive.version}));
+        notesActive=null;notesRange=null;notesChanged=false;element("NotesWorkspace").hidden=true;element("NotesExport").disabled=true;await loadSermonNotes();
+        },{title:"Delete sermon notes?",confirmLabel:"Delete sermon",danger:true});
+    });
+    async function notesResolve(choice){
+        await saveSermonNotes();const id=notesActive.id;const result=await api(apiBase+"/notes/"+id+"/resolve",jsonWrite("POST",{version:notesActive.version,choice}));
+        notesActive=null;notesChanged=false;await loadSermonNotes();
+        const target=result.copy_id||notesItems.find(n=>n.id===id&&!n.deleted)?.id;
+        if(target)await openSermonNote(target);else{element("NotesWorkspace").hidden=true;element("NotesExport").disabled=true;}
+    }
+    element("NotesKeepBoth").addEventListener("click",()=>notesResolve("copy").catch(error=>notesStatus(error.message,true)));
+    element("NotesUseRemote").addEventListener("click",()=>notesConfirm("Use the Drive version and discard the conflicting local copy?",()=>notesResolve("remote")));
+    async function notesPollJob(){
+        try{
+            const data=await api(apiBase+"/notes/job"),job=data.job;notesRenderJob(job);
+            if(job.running){notesJobTimer=setTimeout(notesPollJob,1500);return;}
+            await loadSermonNotes();
+            if(notesActive&&!notesChanged){
+                try{await openSermonNote(notesActive.id);}
+                catch(error){if(error.status!==404)throw error;notesActive=null;element("NotesWorkspace").hidden=true;element("NotesLibrary").hidden=false;element("NotesExport").disabled=true;}
+            }
+        }catch(error){notesStatus(error.message,true);element("NotesSync").disabled=false;if(element("NotesConvert"))element("NotesConvert").disabled=false;}
+    }
+    function notesRenderJob(job){
+        element("NotesJob").hidden=false;element("NotesJobMessage").textContent=job.message||"";
+        const progress=element("NotesProgress");progress.hidden=!job.running;if(job.total)progress.value=job.completed/job.total*100;else progress.removeAttribute("value");
+        element("NotesJobErrors").replaceChildren(...(job.errors||[]).map(e=>node("li",e.filename+": "+e.error)));
+        element("NotesSync").disabled=job.running;if(element("NotesConvert"))element("NotesConvert").disabled=job.running;
+    }
+    async function notesStartJob(action){
+        try{await saveSermonNotes();clearTimeout(notesJobTimer);const data=await api(apiBase+"/notes/"+action,jsonWrite("POST",{}));notesRenderJob(data.job);await notesPollJob();}
+        catch(error){notesStatus(error.message,true);}
+    }
+    element("NotesSync").addEventListener("click",()=>notesStartJob("sync"));
+    element("NotesConvert")?.addEventListener("click",()=>notesConfirm("Convert your Sermon eBooks and repair older imports? A backup is made before repairs. Your text edits are kept, and current conversions are skipped.",()=>notesStartJob("convert")));
+    element("NotesExport").addEventListener("click",async()=>{
+        try{
+            await saveSermonNotes();if(!notesActive)return;
+            element("NotesExportDialog").showModal();element("NotesExportStatus").textContent="Preparing PDF…";element("NotesDownload").disabled=element("NotesShare").disabled=true;
+            const response=await fetch(apiBase+"/notes/"+notesActive.id+"/pdf",{credentials:"same-origin",cache:"no-store"});
+            if(!response.ok||!(response.headers.get("Content-Type")||"").includes("application/pdf"))throw Error("Could not export this sermon. Your local notes are saved.");
+            if(notesPDFUrl)URL.revokeObjectURL(notesPDFUrl);
+            const filename=(response.headers.get("Content-Disposition")||"").match(/filename="([^"]+)"/)?.[1]||"sermon-notes.pdf";
+            notesPDF=new File([await response.blob()],filename,{type:"application/pdf"});notesPDFUrl=URL.createObjectURL(notesPDF);
+            element("NotesDownload").disabled=element("NotesShare").disabled=false;element("NotesExportStatus").textContent="PDF ready. Download to this device or share it.";
+        }catch(error){if(element("NotesExportDialog").open)element("NotesExportStatus").textContent=error.message;else notesStatus(error.message,true);}
+    });
+    function notesDownload(){if(!notesPDFUrl)return;const link=node("a");link.href=notesPDFUrl;link.download=notesPDF.name;document.body.append(link);link.click();link.remove();}
+    element("NotesDownload").addEventListener("click",notesDownload);
+    element("NotesShare").addEventListener("click",async()=>{
+        if(!notesPDF)return;
+        try{if(navigator.share&&(!navigator.canShare||navigator.canShare({files:[notesPDF]})))await navigator.share({files:[notesPDF],title:notesPDF.name});
+            else{notesDownload();element("NotesExportStatus").textContent="File sharing is unavailable here, so the PDF was downloaded.";}}
+        catch(error){element("NotesExportStatus").textContent=error.name==="AbortError"?"Sharing cancelled.":"Could not share the PDF. You can still download it.";}
+    });
+    root.querySelectorAll("[data-notes-close]").forEach(button=>button.addEventListener("click",()=>element(button.dataset.notesClose).close()));
+    window.addEventListener("beforeunload",event=>{if(notesChanged){notesStoreDraft();event.preventDefault();event.returnValue="";}if(notesPDFUrl)URL.revokeObjectURL(notesPDFUrl);});
+
     function selectReaderTab(name, focus = false) {
-        if (!["bible", "book"].includes(name) || name === readerTab) return;
+        if (!["bible", "book", "notes"].includes(name) || name === readerTab) return;
         window.getSelection()?.removeAllRanges(); clearSelectionActions();
         readerScroll[readerTab] = element("Bible").scrollTop;
         readerTab = name; scrollRestoreUntil = performance.now() + 500;
         element("ReaderPanel").hidden = name !== "bible"; element("BookStudyPanel").hidden = name !== "book";
-        for (const [tab, prefix] of [["bible", "Reader"], ["book", "BookStudy"]]) {
+        element("NotesPanel").hidden = name !== "notes";
+        for (const [tab, prefix] of [["bible", "Reader"], ["book", "BookStudy"], ["notes", "Notes"]]) {
             element(prefix + "Tab").setAttribute("aria-selected", String(name === tab));
             element(prefix + "Tab").tabIndex = name === tab ? 0 : -1;
         }
@@ -1639,20 +2394,23 @@
             if (target && state.verse > 1) element("Bible").scrollTop += target.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 20;
         }
         if (name === "book") loadBookStudy();
-        if (focus) element(name === "bible" ? "ReaderTab" : "BookStudyTab").focus();
+        if (name === "notes" && !notesLoaded) loadSermonNotes().catch(error=>notesStatus(error.message,true));
+        if (focus) element(({bible:"ReaderTab",book:"BookStudyTab",notes:"NotesTab"})[name]).focus();
     }
     root.querySelectorAll("[data-reader-tab]").forEach(button => {
         button.addEventListener("click", () => selectReaderTab(button.dataset.readerTab));
         button.addEventListener("keydown", event => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-            event.preventDefault(); selectReaderTab(event.key === "Home" ? "bible" : event.key === "End" ? "book" : readerTab === "bible" ? "book" : "bible", true);
+            const tabs=["bible","book","notes"],index=tabs.indexOf(readerTab);
+            event.preventDefault(); selectReaderTab(event.key === "Home" ? "bible" : event.key === "End" ? "notes" : tabs[(index+(event.key==="ArrowRight"?1:2))%3], true);
         });
     });
 
-    async function previewVerse(reference) {
+    async function previewVerse(reference,notesTarget=null) {
         lastVerseReference = reference;
+        notesVerseTarget=notesTarget;
         const requestId = ++verseRequest;
-        copiedVerse = ""; element("CopyVerse").disabled = true;
+        copiedVerse = ""; element("CopyVerse").disabled = true; element("NotesInsertVerse").disabled=true;
         element("CopyVerse").textContent = "Copy Verse";
         element("VerseReference").textContent = reference.book + " " + reference.chapter + ":" + reference.verse;
         element("VerseText").textContent = "Loading verse…"; element("VerseAttribution").textContent = "";
@@ -1666,6 +2424,7 @@
             element("VerseAttribution").textContent = data.verse.attribution;
             copiedVerse = data.verse.reference + " (" + (data.verse.edition_label || translationLabel()) + ")\n" + data.verse.text;
             element("CopyVerse").disabled = false;
+            element("NotesInsertVerse").disabled=false;
         } catch (error) {
             if (requestId === verseRequest) element("VerseText").textContent = error.message;
         }
@@ -2104,7 +2863,7 @@
         navigationBook = state.book; drawBookGrid(); showNavigationTab(false);
         element("NavigationError").textContent = ""; element("ReferenceInput").value = "";
         element("NavigationDialog").showModal();
-        root.querySelector(".bs-navigation-body").scrollTop = 0;
+        element("NavigationDialog").querySelector(".bs-navigation-body").scrollTop = 0;
     });
     element("OldTestament").addEventListener("click", () => { navigationTestament = "old"; drawBookGrid(); showNavigationTab(false); });
     element("NewTestament").addEventListener("click", () => { navigationTestament = "new"; drawBookGrid(); showNavigationTab(false); });

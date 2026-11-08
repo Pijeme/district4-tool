@@ -236,6 +236,8 @@ class BibleStudyBrowserTests(unittest.TestCase):
             html = app.jinja_env.from_string('''<html><head>{% from 'ui_icons.html' import loading_head,loading_overlay %}{{ loading_head() }}</head><body>{{ loading_overlay() }}</body></html>''').render()
         self.run_browser(html, '''
             const overlay=document.getElementById('globalLoadingOverlay');
+            const gears=[...overlay.querySelectorAll('.global-loading-bubble use')];
+            check(gears.length===2&&gears.every(gear=>gear.getAttribute('href').includes('/static/icons/gear.svg')),'Loading gears do not use the custom static icon');
             window.showPageLoading(location.href,null,true);
             check(overlay.classList.contains('show'),'Initial loading did not show');
             document.dispatchEvent(new Event('DOMContentLoaded'));
@@ -585,7 +587,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const selection=getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait();
             check(!document.getElementById('bsSelectionToolbar').hidden,'Text selection has no action toolbar');
             words[1].click();check(lookupCount===1,'Selecting text opened word lookup');
-            document.querySelector('[data-selection-action="highlight"][data-color="#9ee6b8"]').click();await wait();
+            document.querySelector('[data-selection-action="highlight"][data-color="#e7fcc3"]').click();await wait();
             check(savedPosts[0].options.headers['X-CSRF-Token']==='test-csrf','Annotation save lacks CSRF');
             const span=savedPosts[0].body.ranges[0];
             check(span.start_offset===6&&span.end_offset===12&&span.selected_text==='😀 beta','UTF-16 offsets corrupted Bible anchor');
@@ -596,10 +598,12 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!document.getElementById('bsSelectionToolbar').hidden,'Verse action menu vanished after selection cleared');
             document.querySelector('[data-selection-action="copy"]').click();await wait();
             check(copied==='Genesis 1:1 (NIV)\\nAlpha 😀 beta.','Copy lost text or reference');
-            document.querySelector('.bs-verse-number').click();document.querySelector('[data-selection-action="note"]').click();
+            check(!document.querySelector('[data-selection-action="note"]'),'Removed legacy Note action returned');
+            document.querySelector('.bs-verse-mark').click();
+            [...document.querySelectorAll('#bsSavedItems button')].find(b=>b.textContent==='Edit note').click();
             document.getElementById('bsNoteText').value='<img src=x onerror=alert(1)> My note';
             document.getElementById('bsNoteForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait();
-            check(savedAnnotations.length===2&&savedAnnotations[1].kind==='note','Selected verse note was not saved');
+            check(savedAnnotations.length===1&&savedAnnotations[0].note.includes('My note'),'Saved highlight note was not updated');
             document.querySelector('.bs-verse-mark').click();check(document.getElementById('bsSavedDialog').open,'Saved marker does not open notes');
             check(!document.querySelector('#bsSavedItems img'),'Note content rendered as HTML');
             [...document.querySelectorAll('#bsSavedItems button')].find(b=>b.textContent==='Delete').click();await wait();
@@ -749,12 +753,11 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(share.querySelector('img').src.endsWith('/icons/devotion-share.svg'),'Share does not use the bulletin icon');
             share.click();await wait();
             check(sharedIllustration.text.includes(illustrationAnchor.text)&&sharedIllustration.text.includes('An original story'),'Device share menu received incomplete text');
-            for(const action of ['highlight','underline','note','bookmark']){
+            for(const action of ['highlight','underline','bookmark']){
                 await select();document.querySelector('[data-selection-action="'+action+'"]').click();
-                if(action==='note'){el('NoteText').value='My illustration note';el('NoteForm').requestSubmit();}
                 await wait();
             }
-            check(studyRecords.map(i=>i.kind).join(',')==='highlight,underline,note,bookmark','Illustration tools did not save all annotation types');
+            check(studyRecords.map(i=>i.kind).join(',')==='highlight,underline,bookmark','Illustration tools did not save their annotation types');
             check(el('IllustrationsContent').querySelector('mark'),'Illustration highlight missing');
             check(el('IllustrationsContent').querySelector('[data-study-source]').textContent===illustrationAnchor.text,'Personal marks changed source text');
             check(savedPosts.every(p=>p.body.ranges[0].token===illustrationAnchor.token),'Illustration save lost signed source anchor');
@@ -897,7 +900,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const source=document.querySelector('#bsSermonContent [data-study-source]');check(source,'Original sermon has no selectable source anchor');
             const range=document.createRange();range.selectNodeContents(source);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait();
             check(!document.getElementById('bsSelectionToolbar').hidden,'Sermon text selection has no actions');
-            document.querySelector('[data-selection-action="highlight"][data-color="#9ed3ff"]').click();await wait();
+            document.querySelector('[data-selection-action="highlight"][data-color="#ddf0ff"]').click();await wait();
             check(studyRecords.length===1&&savedPosts[0].body.ranges[0].token==='fixture-signed-token','Study highlight did not save its signed source');
             check(source.querySelector('mark'),'Study highlight not rendered');
             document.querySelector('.bs-study-mark').click();await wait();
@@ -1146,9 +1149,9 @@ class BibleStudyBrowserTests(unittest.TestCase):
             el('IllustrationsBrowseTab').click();await wait();
             check(el('IllustrationsAlphabet').querySelectorAll('button').length===26,'Alphabet incomplete');
             [...el('IllustrationsAlphabet').children].find(b=>b.textContent==='F').click();await wait();
-            check(el('IllustrationsTopics').textContent.includes('Faith (45)'),'Topic count missing');
+            check(el('IllustrationsTopics').textContent.includes('FAITH (45)'),'Uppercase topic or count missing');
             el('IllustrationsTopics').querySelector('button').click();await wait();
-            check(el('IllustrationsTopicHeading').textContent==='Faith'&&el('IllustrationsBrowseResults').textContent.includes('Illustration 35'),'Topic drilldown failed');
+            check(el('IllustrationsTopicHeading').textContent==='FAITH'&&el('IllustrationsBrowseResults').textContent.includes('Illustration 35'),'Topic drilldown failed');
             [...el('IllustrationsBrowseResults').querySelectorAll('button')].find(b=>b.textContent==='More illustrations').click();await wait();
             check(el('IllustrationsBrowseResults').textContent.includes('Illustration 40')&&el('IllustrationsBrowseResults').textContent.includes('Content needs source review'),'Empty record inaccessible through browsing');
             el('IllustrationsTopicsBack').click();await wait();el('IllustrationsSearch').value='hope';el('IllustrationsSearchForm').requestSubmit();await wait();
@@ -1673,6 +1676,150 @@ class BibleStudyBrowserTests(unittest.TestCase):
         for size in ((1100,900),(390,844)):
             with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
 
+    def test_continuous_commentary_jumps_to_verse_and_clears_temporary_section_highlight(self):
+        setup=self.personal_setup()+r'''
+            const originalFetch=window.fetch;
+            window.focusRequests=[];window.focusWrites=[];window.deferChapter=false;window.releaseFocusedChapter=null;
+            window.fetch=async(url,options={})=>{
+                const path=String(url),q=new URL(path,'https://example.test').searchParams;
+                if(options.method&&options.method!=='GET')focusWrites.push(path);
+                if(path.includes('/chapter?')){
+                    const response=await originalFetch(url,options),data=await response.json();
+                    data.verses=Array.from({length:8},(_,i)=>({id:i+1,verse:i+1,text:'Faith '+(i+1),tokens:[{text:'Faith',token_index:0,start_offset:0,end_offset:5}]}));
+                    return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+                }
+                if(!path.includes('/commentary?'))return originalFetch(url,options);
+                focusRequests.push(path);
+                if(deferChapter&&q.get('chapter')==='2')await new Promise(resolve=>{releaseFocusedChapter=resolve});
+                const chapter=Number(q.get('chapter')),blocks=[],verse_sections=[];
+                for(const [label,first,last,count] of [['Introduction',1,6,3],['Verses one to three',1,3,6],['Verse four',4,4,6],['Verses five and six',5,6,6]]){
+                    const start=blocks.length;
+                    for(let i=0;i<count;i++)blocks.push({type:'paragraph',text:label+' paragraph '+i+'. '+('The complete original explanation remains readable in its chapter. ').repeat(4)});
+                    verse_sections.push({start_block:start,end_block:blocks.length,ranges:[{book_id:1,chapter,verse:first,end_chapter:chapter,end_verse:last}]});
+                }
+                const data={ok:true,available:true,reference:'Genesis '+chapter,entries:[{source_title:'Original commentary',author:'Source author',title:'Genesis '+chapter,passage:'Genesis '+chapter,blocks,verse_sections}]};
+                return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,50));
+            const word=n=>el('Verse'+n).querySelector('.bs-word'),targets=()=>[...el('CommentaryResults').querySelectorAll('.bs-commentary-verse-target')];
+            el('CommentaryTab').click();await wait();document.querySelector('[data-commentary-series="moody"]').click();await wait();
+            const original=el('CommentaryResults').querySelector('.bs-commentary-text').firstElementChild,requests=focusRequests.length;
+            const savedParagraph=[...el('CommentaryResults').querySelectorAll('.bs-commentary-text p')].find(p=>p.textContent.startsWith('Verse four'));
+            const sourceText=savedParagraph.querySelector('span'),savedMark=document.createElement('mark');savedMark.style.backgroundColor='#9ee6b8';
+            sourceText.insertBefore(savedMark,sourceText.firstChild);savedMark.append(savedMark.nextSibling);
+            word(4).click();await wait();
+            check(targets().length===6&&targets().every(p=>p.textContent.startsWith('Verse four')),'Verse click did not highlight its whole commentary section');
+            check(focusRequests.length===requests,'Verse jump downloaded the full chapter again');
+            check(original===el('CommentaryResults').querySelector('.bs-commentary-text').firstElementChild,'Verse jump rebuilt the commentary document');
+            check(el('CommentaryResults').querySelectorAll('.bs-commentary-entry').length===1,'Verse jump split the chapter article');
+            const pane=el('Study').getBoundingClientRect(),first=targets()[0].getBoundingClientRect(),controls=el('CommentaryControls').getBoundingClientRect();
+            const tabs=matchMedia('(max-width:700px)').matches?document.querySelector('#bsStudy>.bs-study-tabs').getBoundingClientRect().height:0;
+            check(Math.abs(first.top-pane.top-tabs-controls.height-10)<3,'Target section is not scrolled below the pinned commentary controls');
+            check(el('CommentaryResults').querySelectorAll('mark').length===1&&el('CommentaryResults').querySelector('mark')===savedMark,'Temporary focus changed personal highlight markup');
+            targets()[0].click();await wait();check(targets().length===0,'Clicking commentary did not clear the temporary highlight');
+            check(el('CommentaryResults').contains(savedMark)&&savedMark.style.backgroundColor==='rgb(158, 230, 184)','Clearing temporary focus removed an existing personal highlight');
+            word(3).click();await wait();check(targets().length===6&&targets().every(p=>p.textContent.startsWith('Verses one to three')),'Verse inside a source range did not select that whole range');
+            word(4).click();word(6).click();await wait();
+            check(targets().length===6&&targets().every(p=>p.textContent.startsWith('Verses five and six')),'A newer verse click left the old section highlighted');
+            el('Verse5').querySelector('.bs-verse-number').click();await wait();
+            check(targets().length===6&&targets()[0].textContent.startsWith('Verses five and six'),'Clicking the verse number did not locate commentary');
+            check(!el('SelectionToolbar').hidden,'Verse-number focus broke the Bible reading actions');
+            const scroll=el('Study').scrollTop;word(8).click();await wait();
+            check(!targets().length&&el('Study').scrollTop===scroll,'An unlinked verse highlighted or scrolled to an unrelated section');
+            el('Theme').value='dark';el('Theme').dispatchEvent(new Event('change'));word(4).click();await wait();
+            check(getComputedStyle(targets()[0]).backgroundColor==='rgb(93, 75, 37)','Temporary focus is not readable in night mode');
+            document.querySelector('[data-commentary-series="pulpit"]').click();await wait();
+            check(!targets().length,'Switching commentaries retained a temporary highlight');
+            word(4).click();await wait();check(targets().length===6,'Pulpit Exposition did not locate the verse section');
+            document.querySelector('[data-pulpit-section="homiletics"]').click();await wait();word(4).click();await wait();
+            check(!targets().length,'Homiletics incorrectly received continuous-chapter focusing');
+            document.querySelector('[data-commentary-series="moody"]').click();await wait();
+            deferChapter=true;el('Next').click();await wait();word(4).click();await wait();
+            el('CommentaryResults').click();releaseFocusedChapter();await wait();
+            check(!targets().length,'A late commentary response restored a highlight cleared by the user');
+            check(!focusWrites.some(path=>path.includes('/study-saves')||path.includes('/notes')),'Temporary focus was saved as a personal mark or note');
+            check(document.documentElement.scrollWidth<=innerWidth,'Verse focus caused page overflow');
+        '''
+        for size in ((1440,900),(390,844),(820,1000)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_commentary_chapter_themes_and_choices_stay_visible_while_reading(self):
+        setup=self.personal_setup()+r'''
+            const originalFetch=window.fetch;
+            window.commentaryRequests=[];window.deferTheme=false;window.releaseTheme=null;
+            window.fetch=async(url,options={})=>{
+                const path=String(url);
+                if(!path.includes('/commentary?'))return originalFetch(url,options);
+                commentaryRequests.push(path);
+                const q=new URL(path,'https://example.test').searchParams,series=q.get('series'),section=q.get('section');
+                check(q.get('scope')==='chapter','Commentary is still requesting only a verse');
+                const continuous=series==='moody'||(series==='pulpit'&&section==='exposition');
+                if(continuous)check(!q.has('entry'),'Continuous chapter request kept a theme filter');
+                const themes=[1,2,3].map(n=>({id:String(n).repeat(32),title:(series==='pulpit'?section+' ':series+' ')+'original theme '+n,
+                    passage:'Genesis '+q.get('chapter')+':'+(n===1?'1-3':n===2?'8-10':'18-22'),source_title:'Original source volume'}));
+                const chosen=q.get('entry')||themes[0].id;
+                if(chosen==='2'.repeat(32)&&deferTheme)await new Promise(resolve=>{releaseTheme=resolve});
+                const entry=(title,n)=>({title,source_title:'Original source volume',author:'Source author',passage:themes[n]?.passage||'Genesis 1',
+                    blocks:Array.from({length:45},(_,i)=>({type:'paragraph',text:title+' complete original paragraph '+i+'.',runs:[{text:title+' complete original paragraph '+i+'.',marks:i===1?['em']:[]}]}))});
+                const data={ok:true,available:true,reference:'Genesis '+q.get('chapter'),entries:continuous?[{...entry('Genesis '+q.get('chapter'),0),blocks:Array.from({length:7},(_,i)=>entry((series==='moody'?'Moody':'Exposition')+' section '+i,i).blocks).flat()}]:
+                    [entry(themes.find(t=>t.id===chosen).title,Number(chosen[0])-1)]};
+                if(!continuous){data.themes=themes;data.selected_theme=chosen;}
+                return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,60));
+            const provider=series=>document.querySelector('[data-commentary-series="'+series+'"]');
+            const theme=n=>el('CommentaryThemeList').querySelector('[data-commentary-theme="'+String(n).repeat(32)+'"]');
+            el('CommentaryTab').click();await wait();
+            check(el('CommentaryThemeList').children.length===3&&!el('CommentaryThemes').hidden,'Chapter themes are missing');
+            check(!el('CommentaryControls').contains(el('CommentaryThemes'))&&getComputedStyle(el('CommentaryThemes')).position==='static','Chapter themes are still pinned with commentary choices');
+            check(getComputedStyle(el('CommentaryThemes')).backgroundColor!==getComputedStyle(provider('wiersbe')).backgroundColor,'Theme box is not a different color');
+            const verse=el('Chapter').value,book=el('Book').value;
+            theme(3).click();await wait();
+            check(el('CommentaryResults').textContent.includes('wiersbe original theme 3 complete original paragraph 44.'),'Theme outside selected verse did not open its full commentary');
+            check(!el('CommentaryResults').textContent.includes('theme 1 complete'),'Unselected chapter articles were rendered');
+            check(el('Chapter').value===verse&&el('Book').value===book,'Choosing commentary changed Bible navigation');
+            check(theme(3).getAttribute('aria-pressed')==='true','Selected theme highlight is missing');
+            function checkSticky(){
+                const pane=el('Study').getBoundingClientRect(),controls=el('CommentaryControls').getBoundingClientRect();
+                const offset=matchMedia('(max-width:700px)').matches?document.querySelector('#bsStudy>.bs-study-tabs').getBoundingClientRect().height:0;
+                check(Math.abs(controls.top-pane.top-offset)<2,'Commentary choices scrolled out of view or covered the tabs');
+                const r=provider('wiersbe').getBoundingClientRect();
+                check(provider('wiersbe').contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),'Sticky commentary choices are covered');
+            }
+            el('Study').scrollTop=700;await wait();checkSticky();
+            check(el('CommentaryThemes').getBoundingClientRect().bottom<el('CommentaryControls').getBoundingClientRect().bottom,'Chapter themes did not scroll away');
+            provider('exalting-jesus').click();await wait();theme(2).click();await wait();
+            check(el('CommentaryResults').textContent.includes('exalting-jesus original theme 2 complete'),'Exalting chapter theme did not open');
+            provider('pulpit').click();await wait();
+            check(el('CommentaryThemes').hidden,'Pulpit Exposition still shows chapter themes');
+            check(el('CommentaryResults').querySelectorAll('.bs-commentary-entry').length===1&&el('CommentaryResults').textContent.includes('Exposition section 6 complete original paragraph 44.'),'Pulpit Exposition is not one complete chapter article');
+            check(el('CommentaryResults').querySelectorAll('.bs-notes-source-actions').length===1,'Pulpit Exposition repeats its notes action');
+            document.querySelector('[data-pulpit-section="homiletics"]').click();await wait();theme(3).click();await wait();
+            check(el('CommentaryResults').textContent.includes('homiletics original theme 3 complete'),'Pulpit theme did not open');
+            check(el('PulpitSections').classList.contains('bs-commentary-theme-box'),'Pulpit sections do not use the chapter-theme box style');
+            check(getComputedStyle(theme(3)).backgroundColor===getComputedStyle(document.querySelector('[data-pulpit-section="homiletics"]')).backgroundColor,'Pulpit active choices do not share theme styling');
+            document.querySelector('[data-pulpit-section="exposition"]').click();await wait();
+            check(el('CommentaryThemes').hidden&&el('CommentaryResults').textContent.includes('Exposition section 6 complete'),'Returning from Homiletics did not restore the whole exposition');
+            provider('moody').click();await wait();
+            check(el('CommentaryThemes').hidden&&el('PulpitSections').hidden,'Theme or Pulpit controls leaked into Moody');
+            check(el('CommentaryResults').querySelectorAll('.bs-commentary-entry').length===1&&el('CommentaryResults').textContent.includes('Moody section 6 complete original paragraph 44.'),'Moody did not display one continuous chapter article');
+            check(el('CommentaryResults').querySelectorAll('.bs-notes-source-actions').length===1,'Moody repeats the notes controls for individual sections');
+            el('Study').scrollTop=700;await wait();checkSticky();
+            provider('wiersbe').click();await wait();
+            deferTheme=true;theme(2).click();await wait();theme(3).click();await wait();releaseTheme();await wait();
+            check(theme(3).getAttribute('aria-pressed')==='true'&&el('CommentaryResults').textContent.includes('wiersbe original theme 3 complete'),'Late theme response replaced the selected article');
+            el('Next').click();await wait();
+            check(!new URL(commentaryRequests.at(-1),'https://example.test').searchParams.has('entry'),'New chapter kept the previous chapter theme');
+            check(el('CommentaryResults').querySelector('h3').textContent==='Genesis 2','New chapter did not refresh commentary');
+            check(document.documentElement.scrollWidth<=innerWidth,'Chapter theme cards overflow the page');
+        '''
+        for size in ((1440,900),(390,844),(820,1000)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
     def test_commentary_passage_selection_inline_outline_and_mobile_chapter_swipes(self):
         setup='''
         window.events=[];window.pendingCommentary=null;window.pendingSeries=null;window.deferSeries=false;
@@ -1811,6 +1958,50 @@ class BibleStudyBrowserTests(unittest.TestCase):
         '''
         self.run_browser(self.render_preview(),verify,setup,window_size=(1100,900))
 
+    def test_bible_navigation_stays_in_reader_and_layout_control_between_tabs(self):
+        setup=self.personal_setup()+r'''
+            const originalFetch=window.fetch;
+            window.fetch=async(url,options)=>{
+                const response=await originalFetch(url,options),data=await response.json();
+                if(String(url).includes('/chapter?'))data.verses=Array.from({length:50},(_,i)=>({...data.verses[0],id:i+7,verse:i+1}));
+                return new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,60));
+            const nav=el('BibleNavigation'),pane=el('Bible'),control=el('LayoutControl'),phone=matchMedia('(max-width:700px)').matches;
+            check(el('ReaderPanel').contains(nav)&&nav.contains(el('Navigate'))&&nav.contains(el('Translation')),'Navigation is not inside the Bible reading tab');
+            check(el('WideTabs').contains(control),'Layout selector is not in the shared tab row');
+            const center=control.getBoundingClientRect(),tabs=el('ReaderTab').parentElement.getBoundingClientRect(),tools=el('WordTab').parentElement.getBoundingClientRect();
+            if(!phone)check(center.left>=tabs.right-1&&center.right<=tools.left+1,'Layout control is not between the tab groups');
+            else {
+                check(el('WideTabs').contains(el('ReaderTab')),'Phone reader tabs are not beside the view selector');
+                check(center.left>=tabs.right-1&&center.right<=innerWidth,'Phone view selector does not fit after the reader tabs');
+                check(Math.abs(center.y+center.height/2-tabs.y-tabs.height/2)<3,'Phone tabs and view selector are not in one row');
+            }
+            const before=nav.getBoundingClientRect().top;pane.scrollTop=500;await wait();
+            check(pane.scrollTop>0&&Math.abs(nav.getBoundingClientRect().top-before)<2,'Bible navigation scrolls away');
+            const target=el('Navigate').getBoundingClientRect();check(el('Navigate').contains(document.elementFromPoint(target.x+target.width/2,target.y+target.height/2)),'Sticky navigation is covered');
+            el('Navigate').click();check(el('NavigationDialog').open,'Sticky book picker no longer opens');el('CloseNavigation').click();
+            el('Settings').click();check(el('SettingsDialog').open,'Sticky settings no longer open');el('CloseSettings').click();
+            el('BookStudyTab').click();await wait();check(!nav.getClientRects().length,'Bible navigation leaks into Book Study');
+            el('ReaderTab').click();await wait();check(nav.getClientRects().length,'Navigation did not return with Bible tab');
+            el('LayoutMode').value='study';el('LayoutMode').dispatchEvent(new Event('change'));await wait();
+            check(!pane.getClientRects().length&&control.getClientRects().length,'Study fullscreen hides its return control');
+            el('LayoutMode').value='bible';el('LayoutMode').dispatchEvent(new Event('change'));await wait();
+            check(nav.getClientRects().length&&control.getClientRects().length,'Bible fullscreen lost navigation');
+            el('LayoutMode').value='split';el('LayoutMode').dispatchEvent(new Event('change'));await wait();
+            check(el('Study').getClientRects().length,'Split mode did not return');
+            const bounds=pane.getBoundingClientRect();
+            for(const item of nav.querySelectorAll('button,select')){
+                if(!item.getClientRects().length)continue;const r=item.getBoundingClientRect();
+                check(r.left>=bounds.left-1&&r.right<=bounds.right+1,'Bible control overflows its reading pane');
+            }
+            check(document.documentElement.scrollWidth<=innerWidth,'Navigation causes page overflow');
+        '''
+        for size in ((1480,900),(1100,850),(820,1000),(420,900),(320,700)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
     def test_tab_dimensions_stay_fixed_when_reading_panels_resize(self):
         setup=self.personal_setup()
         verify='''
@@ -1857,7 +2048,7 @@ class BibleStudyBrowserTests(unittest.TestCase):
                                 self.assertEqual(widths[:2],[88]*2)
                                 self.assertTrue(all(64<=w<=88 for w in widths[2:]))
                             else:
-                                self.assertEqual(widths,[104]*7)
+                                self.assertEqual(widths,[104]*8)
                             if touch:
                                 self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();return tabs.left>=innerWidth/2&&tabs.right<=innerWidth;}'''),'Study tabs crossed the fixed center of the tablet')
                                 self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);return range.getBoundingClientRect().bottom<=tab.getBoundingClientRect().bottom+1;})'''),'Compact tablet tabs clip their text')
@@ -1922,15 +2113,17 @@ class BibleStudyBrowserTests(unittest.TestCase):
                         assert_navigation()
                         page.locator('#bsNavigate').click();self.assertTrue(page.locator('#bsNavigationDialog').evaluate('e=>e.open'))
                         page.locator('#bsCloseNavigation').click()
-                        # Crossing the phone breakpoint moves each unique tab
-                        # group back into its own pane and restores it on return.
+                        # Phone reader tabs share the view-selector row; study
+                        # tabs return to their pane and stay unique on rotation.
                         if width>700:
-                            page.set_viewport_size(dict(width=393,height=852));page.wait_for_timeout(40)
-                            self.assertEqual(page.locator('#bsBible>.bs-reader-tabs').count(),1)
+                            page.set_viewport_size(dict(width=393,height=852))
+                            page.wait_for_function("matchMedia('(max-width:700px)').matches&&document.querySelectorAll('#bsWideTabs [role=tab]').length===3")
+                            self.assertEqual(page.locator('#bsWideTabs>.bs-reader-tabs').count(),1)
                             self.assertEqual(page.locator('#bsStudy>.bs-study-tabs').count(),1)
                             self.assertEqual(page.locator('#bsSermonTab').count(),1)
-                            page.set_viewport_size(dict(width=width,height=height));page.wait_for_timeout(40)
-                            self.assertEqual(page.locator('#bsWideTabs [role=tab]').count(),7)
+                            page.set_viewport_size(dict(width=width,height=height))
+                            page.wait_for_function("document.querySelectorAll('#bsWideTabs [role=tab]').length===8")
+                            self.assertEqual(page.locator('#bsWideTabs [role=tab]').count(),8)
                             assert_navigation()
                         context.close()
             finally:browser.close()
@@ -1983,6 +2176,616 @@ class BibleStudyBrowserTests(unittest.TestCase):
             card.querySelector('summary').click();await new Promise(resolve=>setTimeout(resolve,20));
             check(card.querySelector('summary').textContent==='Read less','Expanded article control failed');
         ''', '''window.fetch=async()=>new Response(JSON.stringify({ok:true,reference:'Genesis 1:1',day:'2026-10-21',insight:{title:'<img src=x onerror=alert(1)>',passage:'Genesis 1:1-2',excerpt:'Exact indexed source.',content:'Exact indexed source.\\nSecond original paragraph.'}}),{headers:{'Content-Type':'application/json'}});''')
+
+
+@unittest.skipUnless(BROWSER, 'An installed Chromium browser is required')
+class SermonNotesEditorTests(unittest.TestCase):
+    run_browser = LibraryBrowserTests.run_browser
+    render_preview = BibleStudyBrowserTests.render_preview
+
+    def test_inline_edit_references_preserve_format_selection_and_undo(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('Optional Playwright is required for real editor interactions')
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r'''
+            const originalFetch=window.fetch;
+            window.verseRequests=[];window.notePatches=[];
+            window.fixtureNote={id:'1'.repeat(32),version:1,dirty:true,note:{schema_version:1,
+                theme:'Testing references',text:'John 3:16',content:{blocks:[{type:'paragraph',runs:[
+                    {text:'😀 Read '},{text:'II Kings ',bold:true},{text:'6:15–17',italic:true,highlight:'#ffe66d'},
+                    {text:' with care. John 3:16.'}
+                ]}]}}};
+            const json=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];
+                if(path.includes('/api/verse')){
+                    const reference=Object.fromEntries(new URL(String(url),'https://district.test').searchParams);verseRequests.push(reference);
+                    return json({verse:{text:'First full passage verse.\n\nSecond full passage verse.',reference:reference.book+' '+reference.chapter+':'+reference.verse,edition_label:'NIV',attribution:'Fixture'}});
+                }
+                if(!path.includes('/api/notes'))return originalFetch(url,options);
+                if(options.method==='PATCH'){
+                    fixtureNote.note=JSON.parse(options.body).note;fixtureNote.version++;notePatches.push(fixtureNote.note);
+                }
+                if(path.endsWith('/notes'))return json({notes:[{id:fixtureNote.id,theme:fixtureNote.note.theme,text:fixtureNote.note.text}],drive_configured:true,can_convert:false});
+                return json({item:fixtureNote});
+            };
+        '''
+        source=(ROOT/'static/bible_study.js').read_text(encoding='utf-8')
+        html=re.sub(r'<script src="[^"]*bible_study\.js[^"]*"[^>]*></script>',
+                    lambda _: '<script>'+source.replace('</script',r'<\/script')+'</script>',self.render_preview())
+        html=re.sub(r'@import url\([^;]+;','',html)
+        point=r'''text=>{
+            const editor=document.getElementById('bsNotesEditor'),walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT);
+            let node;while(node=walker.nextNode())if(node.textContent.includes(text)){
+                const range=document.createRange(),offset=node.textContent.indexOf(text);range.setStart(node,offset);range.setEnd(node,offset+text.length);
+                const r=range.getClientRects()[0];return {x:r.x+r.width/2,y:r.y+r.height/2,left:r.left,right:r.right};
+            }throw Error('Missing reference text: '+text);
+        }'''
+        with sync_playwright() as p:
+            browser=p.chromium.launch(executable_path=BROWSER,headless=True)
+            try:webkit=p.webkit.launch(headless=True)
+            except Exception:webkit=None
+            try:
+                for width,touch,fallback in ((1100,False,False),(420,True,False),(820,True,True)):
+                    with self.subTest(width=width,highlight_fallback=fallback):
+                        context=(webkit if fallback and webkit else browser).new_context(viewport=dict(width=width,height=1000),has_touch=touch,is_mobile=touch)
+                        page=context.new_page()
+                        environment='if(window.CSS)Object.defineProperty(CSS,"highlights",{value:undefined});' if fallback else ''
+                        fixture=html.replace('<head>','<head><meta charset="utf-8"><script>'+environment+setup+'</script>')
+                        def route(request):
+                            path=request.request.url.split('?',1)[0]
+                            if path=='https://district.test/':request.fulfill(body=fixture,content_type='text/html; charset=utf-8')
+                            elif path.endswith('/static/icons/gear.svg'):request.fulfill(path=str(ROOT/'static/icons/gear.svg'),content_type='image/svg+xml')
+                            else:request.abort()
+                        page.route('**/*',route);page.goto('https://district.test/')
+                        page.locator('#bsNotesTab').click();page.locator('#bsNotesList button').click()
+                        editor=page.locator('#bsNotesEditor');editor.wait_for(state='visible')
+                        # Both settings buttons load the same custom vector from static.
+                        page.wait_for_function('document.querySelector("#bsNotesActionsToggle svg").getBBox().width>18')
+                        self.assertEqual(page.locator('#bsSettings use').get_attribute('href'),page.locator('#bsNotesActionsToggle use').get_attribute('href'))
+                        before=editor.inner_html()
+                        if not fallback:self.assertGreaterEqual(page.evaluate('CSS.highlights.get("sermon-references").size'),3)
+                        pos=page.evaluate(point,'II Kings ')
+                        if touch:page.touchscreen.tap(pos['x'],pos['y'])
+                        else:page.mouse.click(pos['x'],pos['y'])
+                        page.wait_for_function('document.getElementById("bsVerseDialog").open')
+                        page.wait_for_function('verseRequests.length===1')
+                        ref=page.evaluate('verseRequests.at(-1)')
+                        self.assertEqual((ref['book'],ref['chapter'],ref['verse'],ref['end_verse']),('2 Kings','6','15','17'),ascii(editor.inner_text()))
+                        self.assertEqual(editor.inner_html(),before,'Opening a reference changed editable markup')
+                        self.assertEqual(page.evaluate('notePatches.length'),0,'Previewing saved a spurious edit')
+                        page.locator('#bsCloseVerse').click()
+                        if not touch:
+                            page.mouse.dblclick(pos['x'],pos['y']);page.wait_for_timeout(360)
+                            self.assertFalse(page.locator('#bsVerseDialog').evaluate('e=>e.open'),'Double-click selection opened a verse')
+                            page.evaluate('getSelection().removeAllRanges()')
+                            page.mouse.move(pos['left']+1,pos['y']);page.mouse.down();page.mouse.move(pos['right']-1,pos['y'],steps=8);page.mouse.up();page.wait_for_timeout(360)
+                            self.assertTrue(page.evaluate('Boolean(getSelection().toString())'))
+                            self.assertFalse(page.locator('#bsVerseDialog').evaluate('e=>e.open'),'Dragging a reference opened a verse')
+                        # Editing a verse number refreshes the clickable range immediately.
+                        page.evaluate(r'''()=>{
+                            const editor=document.getElementById('bsNotesEditor'),node=editor.lastElementChild.lastChild.firstChild;
+                            editor.focus();const range=document.createRange();range.setStart(node,node.textContent.indexOf('3:16')+4);range.collapse(true);
+                            getSelection().removeAllRanges();getSelection().addRange(range);
+                        }''')
+                        page.keyboard.press('Backspace')
+                        self.assertIn('John 3:1.',editor.inner_text())
+                        pos=page.evaluate(point,'John 3:1.')
+                        # The final full stop is outside the link; aim at the book name.
+                        page.mouse.click(pos['left']+10,pos['y']);page.wait_for_function('document.getElementById("bsVerseDialog").open')
+                        page.wait_for_function('verseRequests.at(-1).verse==="1"')
+                        page.locator('#bsCloseVerse').click();editor.focus();page.keyboard.press('Control+z')
+                        self.assertIn('John 3:16.',editor.inner_text(),'Inline links broke Undo')
+                        page.evaluate(r'''()=>{
+                            const editor=document.getElementById('bsNotesEditor'),node=editor.lastElementChild.lastChild.firstChild;
+                            editor.focus();const range=document.createRange();range.setStart(node,node.textContent.indexOf('John')+2);range.collapse(true);
+                            getSelection().removeAllRanges();getSelection().addRange(range);
+                        }''')
+                        page.keyboard.press('Alt+Enter');page.wait_for_function('document.getElementById("bsVerseDialog").open')
+                        page.wait_for_function('verseRequests.at(-1).verse==="16"');page.locator('#bsCloseVerse').click()
+                        if touch:page.locator('#bsNotesToolsToggle').click()
+                        page.locator('#bsNotesSave').click();page.wait_for_function('notePatches.length>0')
+                        saved=page.evaluate('notePatches.at(-1).content.blocks.at(-1).runs')
+                        self.assertTrue(any(r.get('bold') and 'II Kings' in r['text'] for r in saved))
+                        self.assertTrue(any(r.get('italic') and r.get('highlight')=='#ffe66d' and '6:15' in r['text'] for r in saved))
+                        self.assertFalse(any(r.get('underline') for r in saved),'Link decoration leaked into the saved sermon')
+                        self.assertEqual(editor.locator('a,button').count(),0,'Links modified the editable document')
+                        # An editor-origin popup always inserts after the clicked
+                        # reference, regardless of the global Current notes setting.
+                        self.assertFalse(page.locator('#bsNotesCurrent').is_checked())
+                        before_insert=editor.inner_text()
+                        pos=page.evaluate(point,'II Kings ')
+                        if touch:page.touchscreen.tap(pos['x'],pos['y'])
+                        else:page.mouse.click(pos['x'],pos['y'])
+                        page.wait_for_function('document.getElementById("bsVerseDialog").open&&!document.getElementById("bsNotesInsertVerse").disabled')
+                        page.locator('#bsNotesInsertVerse').click()
+                        page.wait_for_function('fixtureNote.note.content.blocks.some(b=>b.runs.some(r=>r.text.includes("Second full passage verse.")))')
+                        self.assertFalse(page.locator('#bsNotesTargetDialog').evaluate('e=>e.open'),'Editor insertion asked for a destination')
+                        self.assertFalse(page.locator('#bsNotesMetaDialog').evaluate('e=>e.open'),'Editor insertion tried to create another sermon')
+                        body=editor.inner_text()
+                        self.assertLess(body.index('II Kings 6:15–17'),body.index('First full passage verse.'))
+                        self.assertLess(body.index('First full passage verse.'),body.index('Second full passage verse.'))
+                        self.assertLess(body.index('Second full passage verse.'),body.index('with care. John 3:16.'))
+                        self.assertEqual(editor.locator('[data-notes-type="scripture"]').count(),2,'Verses did not retain separate scripture paragraphs')
+                        self.assertEqual(page.locator('#bsNotesText').inner_text(),'Text: John 3:16')
+                        self.assertNotIn('NIV',body)
+                        editor.focus();page.keyboard.press('Control+z')
+                        self.assertEqual(editor.inner_text(),before_insert,'One Undo did not remove just the verse insertion')
+                        # Metadata references need the same direct insertion while
+                        # their Text header remains a reference, not verse content.
+                        pos=page.evaluate(point,'John 3:16')
+                        page.mouse.click(pos['left']+10,pos['y'])
+                        page.wait_for_function('document.getElementById("bsVerseDialog").open&&!document.getElementById("bsNotesInsertVerse").disabled')
+                        page.locator('#bsNotesInsertVerse').click()
+                        page.wait_for_function('document.querySelectorAll("#bsNotesEditor [data-notes-type=scripture]").length===2')
+                        self.assertEqual(editor.locator('[data-notes-type="text"]').inner_text(),'Text: John 3:16')
+                        body=editor.inner_text()
+                        self.assertLess(body.index('Text: John 3:16'),body.index('First full passage verse.'))
+                        self.assertLess(body.index('Second full passage verse.'),body.index('😀 Read'))
+                        editor.focus();page.keyboard.press('Control+z')
+                        self.assertEqual(editor.inner_text(),before_insert)
+                        # Read-mode previews do not inherit the previous editor
+                        # destination; other areas keep the existing chooser.
+                        if touch:page.locator('#bsNotesToolsToggle').click()
+                        page.locator('#bsNotesRead').click()
+                        page.evaluate('getSelection().removeAllRanges()')
+                        page.locator('#bsNotesPreview .bs-scripture-ref').first.click()
+                        page.wait_for_function('document.getElementById("bsVerseDialog").open&&!document.getElementById("bsNotesInsertVerse").disabled')
+                        page.locator('#bsNotesInsertVerse').click()
+                        page.wait_for_function('document.getElementById("bsNotesTargetDialog").open')
+                        self.assertNotIn('First full passage verse.',editor.inner_text())
+                        context.close()
+            finally:
+                browser.close()
+                if webkit:webkit.close()
+
+    def test_notes_options_gear_placement_dismissal_and_developer_access(self):
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r'''
+            const originalFetch=window.fetch;
+            window.notesJobWrites=[];
+            const json=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];
+                if(!path.includes('/api/notes'))return originalFetch(url,options);
+                if(options.method==='POST')notesJobWrites.push(path);
+                if(path.endsWith('/notes'))return json({notes:[],drive_configured:true,can_convert:fixtureAdmin});
+                return json({job:{running:false,message:'Sync complete'}});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,40));
+            el('NotesTab').click();await wait();
+            const toggle=el('NotesActionsToggle'),menu=el('NotesActionsMenu'),row=toggle.parentElement;
+            const isOpen=()=>!menu.hidden&&toggle.getAttribute('aria-expanded')==='true';
+            check(menu.contains(el('NotesExport'))&&menu.contains(el('NotesSync')),'Actions were not moved into the gear');
+            check(!row.contains(el('NotesExport'))&&!row.contains(el('NotesSync')),'Old action buttons remain in toolbar');
+            check(Math.abs(toggle.getBoundingClientRect().right-row.getBoundingClientRect().right)<2,'Gear is not at the far right');
+            check(el('NotesExport').disabled&&!isOpen(),'Export should start disabled and the menu closed');
+            check(Boolean(el('NotesConvert'))===fixtureAdmin,'Developer converter access changed');
+            toggle.click();await wait();check(isOpen(),'Gear did not open options');
+            const bounds=menu.getBoundingClientRect();check(bounds.left>=0&&bounds.right<=innerWidth&&bounds.top>=0&&bounds.bottom<=innerHeight,'Options menu overflows screen');
+            check(document.activeElement===el('NotesSync'),'Gear did not focus first available action');
+            check(notesJobWrites.length===0,'Opening gear started a job');
+            el('NotesStatus').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await wait();check(!isOpen(),'Outside tap did not close options');
+            toggle.click();await wait();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await wait();
+            check(!isOpen()&&document.activeElement===toggle,'Escape failed to close options and return focus');
+            toggle.click();await wait();toggle.click();await wait();check(!isOpen(),'Second gear click did not close options');
+            toggle.click();await wait();el('NotesSync').click();await wait();
+            check(!isOpen()&&notesJobWrites.length===1&&notesJobWrites[0].endsWith('/sync'),'Sync action did not work or dismiss menu');
+            check(el('NotesJobMessage').textContent==='Sync complete','Sync result missing');
+            if(fixtureAdmin){
+                toggle.click();await wait();check(!el('NotesConvert').hidden,'Developer conversion is unavailable');
+                el('NotesConvert').click();await wait();check(!isOpen()&&el('NotesConfirmDialog').open,'Convert did not keep its confirmation');
+                el('NotesConfirmCancel').click();await wait();check(notesJobWrites.length===1,'Cancelling conversion started a job');
+            }
+            toggle.click();await wait();el('ReaderTab').click();await wait();check(!isOpen(),'Options stayed open after leaving Sermon Notes');
+            el('NotesTab').click();await wait();toggle.click();await wait();el('NotesAll').focus();await wait();check(!isOpen(),'Keyboard focus leaving options did not dismiss');
+            check(document.documentElement.scrollWidth<=innerWidth,'Options gear causes horizontal overflow');
+        '''
+        for width,admin,fallback in ((1100,False,False),(420,False,False),(820,True,False),
+                                     (1100,True,False),(420,True,True)):
+            with self.subTest(width=width,admin=admin,fallback=fallback):
+                environment='const fixtureAdmin='+json.dumps(admin)+';'
+                if fallback:environment+='HTMLElement.prototype.showPopover=undefined;'
+                self.run_browser(self.render_preview(admin=admin),verify,environment+setup,window_size=(width,900))
+
+    def test_recent_notes_and_testament_book_pickers(self):
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r'''
+            const originalFetch=window.fetch;
+            window.notesFail=false;
+            window.libraryNotes=[
+                {id:'1'.repeat(32),theme:'First promise',text:'Genesis 12:1-3',primary_reference:{book_id:1,chapter:12,verse:1},updated_at:'2026-11-03T00:00:00+00:00'},
+                {id:'2'.repeat(32),theme:'Second promise',text:'Genesis 25:29-34',primary_reference:{book_id:1,chapter:25,verse:29},updated_at:'2026-11-05T00:00:00+00:00'},
+                {id:'3'.repeat(32),theme:'Freedom',text:'Exodus 3:1',primary_reference:{book_id:2,chapter:3,verse:1},updated_at:'2026-11-01T00:00:00+00:00'},
+                {id:'4'.repeat(32),theme:'The harvest',text:'Matthew 9:35-38',primary_reference:{book_id:40,chapter:9,verse:35},updated_at:'2026-11-08T00:00:00+00:00'},
+                {id:'5'.repeat(32),theme:'Love',text:'John 3:16',primary_reference:{book_id:43,chapter:3,verse:16},updated_at:'2026-11-07T00:00:00+00:00'},
+                {id:'6'.repeat(32),theme:'Unclassified sermon',text:'Check passage',primary_reference:null,needs_review:true,updated_at:'2026-11-02T00:00:00+00:00'}
+            ];
+            const json=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];
+                if(!path.includes('/api/notes'))return originalFetch(url,options);
+                if(path.endsWith('/notes')){
+                    if(notesFail)return new Response(JSON.stringify({ok:false,error:'Could not load notes.'}),{status:503,headers:{'Content-Type':'application/json'}});
+                    const query=new URL(String(url),'https://example.test').searchParams.get('q')||'';
+                    return json({notes:libraryNotes.filter(n=>(n.theme+' '+n.text).toLowerCase().includes(query.toLowerCase())),drive_configured:true,can_convert:false});
+                }
+                const item=libraryNotes.find(n=>path.endsWith('/'+n.id));
+                return json({item:{...item,version:1,note:{schema_version:1,theme:item.theme,text:item.text,content:{blocks:[{type:'paragraph',runs:[{text:'Sermon body.'}]}]}}}});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=(ms=40)=>new Promise(resolve=>setTimeout(resolve,ms));
+            const view=name=>el('NotesViews').querySelector('[data-notes-view="'+name+'"]');
+            const titles=()=>[...el('NotesList').querySelectorAll('.bs-notes-list-item strong')].map(n=>n.textContent).join('|');
+            const bibleBook=el('Book').value;
+            el('NotesTab').click();await wait();
+            check(view('recent').getAttribute('aria-pressed')==='true','Recent is not the default');
+            check([...el('NotesViews').children].map(n=>n.textContent).join('|')==='Recent|OT|NT|For Review','Browse buttons are incorrect');
+            check(!el('NotesLibrary').querySelector('select')&&!el('NotesLibrary').querySelector('h2'),'Old dropdowns or repeated heading remain');
+            check(getComputedStyle(el('NotesStatus')).display==='none','Routine status is still shown in All Notes');
+            check(el('NotesAll').getAttribute('aria-current')==='page','All Notes is not marked current');
+            check(getComputedStyle(el('NotesAll')).backgroundColor===getComputedStyle(view('recent')).backgroundColor,'Current view is not highlighted consistently');
+            check(titles()==='The harvest|Love|Second promise|First promise|Unclassified sermon|Freedom','Recent order is not newest first');
+            view('old').click();await wait();
+            check(el('NotesBooksDialog').open&&el('NotesBooksGrid').children.length===39,'OT did not open its book picker');
+            check(el('NotesBooksTitle').textContent==='Old Testament'&&el('NotesAllBooks').textContent==='All OT books','OT picker label is wrong');
+            check(titles()==='First promise|Second promise|Freedom','OT did not keep canonical order');
+            el('NotesAllBooks').click();await wait();check(!el('NotesBooksDialog').open,'All books did not dismiss picker');
+            view('old').click();el('NotesBooksGrid').querySelector('[aria-label="Genesis"]').click();await wait();
+            check(titles()==='First promise|Second promise'&&!el('NotesSelectedBook').hidden,'Selected OT book did not filter notes');
+            view('old').click();check(el('NotesBooksGrid').querySelector('[aria-current="true"]').title==='Genesis','Picker lost selected book');
+            el('NotesBooksDialog').querySelector('[data-notes-close]').click();el('NotesSelectedBook').click();await wait();
+            check(titles()==='First promise|Second promise|Freedom'&&el('NotesSelectedBook').hidden,'Clearing book filter failed');
+            view('new').click();await wait();
+            check(el('NotesBooksDialog').open&&el('NotesBooksGrid').children.length===27,'NT did not show exactly its books');
+            check(!el('NotesBooksGrid').querySelector('[aria-label="Genesis"]'),'OT book leaked into NT picker');
+            el('NotesBooksGrid').querySelector('[aria-label="John"]').click();await wait();check(titles()==='Love','NT book filter failed');
+            check(el('Book').value===bibleBook&&!el('NavigationDialog').open,'Notes picker changed Bible navigation');
+            view('review').click();await wait();check(titles()==='Unclassified sermon'&&el('NotesSelectedBook').hidden,'For Review did not reset book filter');
+            view('recent').click();el('NotesSearch').value='First';el('NotesSearch').dispatchEvent(new Event('input'));await wait(320);
+            check(titles()==='First promise','Search did not filter Recent notes');
+            el('NotesList').querySelector('button').click();await wait();check(!el('NotesAll').hasAttribute('aria-current'),'All Notes stays active inside a sermon');
+            el('NotesAll').click();await wait();check(el('NotesAll').getAttribute('aria-current')==='page','Returning to All Notes lost highlight');
+            notesFail=true;el('NotesSearch').value='fail';el('NotesSearch').dispatchEvent(new Event('input'));await wait(320);
+            check(el('NotesStatus').textContent==='Could not load notes.'&&getComputedStyle(el('NotesStatus')).display!=='none','Library errors are hidden');
+            notesFail=false;el('NotesSearch').value='';el('NotesSearch').dispatchEvent(new Event('input'));await wait(320);
+            check(el('NotesList').querySelectorAll('button').length===6&&getComputedStyle(el('NotesStatus')).display==='none','Search recovery failed');
+            check(document.documentElement.scrollWidth<=innerWidth,'Library controls cause horizontal overflow');
+        '''
+        for size in ((1100,850),(820,1000),(420,900)):
+            with self.subTest(size=size):
+                self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_responsive_tools_menu_and_explicit_delete_confirmation(self):
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r'''
+            const originalFetch=window.fetch;
+            window.noteDeletes=0;window.notePatches=[];window.fixtureDeleted=false;
+            window.fixtureNote={id:'1'.repeat(32),version:1,dirty:true,note:{schema_version:1,
+                theme:'Keep this sermon safe',text:'Genesis 12:1-3',content:{blocks:[{type:'paragraph',runs:[{text:'Selected sermon words.'}]}]}}};
+            const json=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0],method=options.method||'GET';
+                if(!path.includes('/api/notes'))return originalFetch(url,options);
+                if(method==='DELETE'){
+                    check(JSON.parse(options.body).version===fixtureNote.version,'Delete used a stale version');
+                    check(options.headers['X-CSRF-Token']==='test-csrf','Delete missed CSRF');
+                    noteDeletes++;fixtureDeleted=true;return json({});
+                }
+                if(method==='PATCH'){fixtureNote.version++;fixtureNote.note=JSON.parse(options.body).note;notePatches.push(fixtureNote.note);return json({item:fixtureNote});}
+                if(path.endsWith('/notes'))return json({notes:fixtureDeleted?[]:[{id:fixtureNote.id,theme:fixtureNote.note.theme,text:fixtureNote.note.text,primary_reference:{book_id:1,chapter:12,verse:1},dirty:true}],drive_configured:true});
+                return json({item:fixtureNote});
+            };
+        '''
+        verify=r'''
+            const el=name=>document.getElementById('bs'+name),wait=()=>new Promise(resolve=>setTimeout(resolve,40));
+            el('NotesTab').click();await wait();document.querySelector('.bs-notes-list-item').click();await wait();
+            const compact=innerWidth<=700||navigator.maxTouchPoints>0,toggle=el('NotesToolsToggle'),tools=el('NotesTools');
+            check((compact?tools:el('NotesActionsToggle').parentElement).contains(el('NotesMetaActions')),'Editing actions are in the wrong toolbar');
+            check(getComputedStyle(el('NotesSave')).backgroundColor!==getComputedStyle(el('NotesCreate')).backgroundColor,'Editing actions do not have their own color');
+            const isOpen=()=>getComputedStyle(tools).display!=='none';
+            function openTools(){if(compact&&toggle.getAttribute('aria-expanded')!=='true')toggle.click();}
+            check(isOpen()===!compact,'Wrong initial toolbar mode');
+            check(Boolean(toggle.getClientRects().length)===compact,'Menu launcher has wrong visibility');
+            if(compact){
+                const all=el('NotesAll').getBoundingClientRect(),launch=toggle.getBoundingClientRect();
+                check(launch.left>=all.right&&Math.abs(launch.top-all.top)<3,'Editing tools is not beside All Notes');
+                check(el('NotesActionsToggle').getBoundingClientRect().left>=launch.right,'Options gear overlaps Editing tools');
+                check(el('NotesActionsToggle').parentElement.getBoundingClientRect().top-el('NotesPanel').getBoundingClientRect().top<=6,'Unused space remains above mobile controls');
+            }
+            const body=el('NotesEditor').lastElementChild,range=document.createRange();range.selectNodeContents(body);
+            el('NotesEditor').focus();getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));await wait();
+            openTools();await wait();check(isOpen(),'Tools menu did not open');
+            if(compact){
+                const bounds=tools.getBoundingClientRect();check(bounds.left>=0&&bounds.right<=innerWidth&&bounds.top>=0&&bounds.bottom<=innerHeight,'Tools menu is clipped');
+                check(Math.abs(el('NotesCase').getBoundingClientRect().top-el('NotesFont').getBoundingClientRect().top)<2,'Change case wrapped below the font controls');
+                if(innerWidth>=360){
+                    const bold=tools.querySelector('[data-notes-command="bold"]').getBoundingClientRect();
+                    for(const command of ['removeFormat','undo'])check(Math.abs(tools.querySelector('[data-notes-command="'+command+'"]').getBoundingClientRect().top-bold.top)<2,'Clear or Undo wrapped onto a separate row');
+                    check(bounds.height<=165,'Compact editing menu still occupies too much height');
+                }
+            }
+            tools.querySelector('[data-notes-command="bold"]').click();await wait();
+            check(isOpen()===!compact,'Tools did not close after formatting, or desktop toolbar disappeared');
+            openTools();el('NotesSave').click();await wait();
+            check(notePatches.some(n=>n.content.blocks.some(b=>b.runs.some(r=>r.text.includes('Selected sermon')&&r.bold))),'Opening/closing the menu lost the editor selection');
+            if(compact){
+                openTools();await wait();el('NotesStatus').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));await wait();check(!isOpen(),'Outside tap did not dismiss');
+                openTools();await wait();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await wait();check(!isOpen()&&document.activeElement===toggle,'Escape did not dismiss and restore focus');
+                openTools();el('NotesFont').value='Arial';el('NotesFont').dispatchEvent(new Event('change',{bubbles:true}));await wait();check(!isOpen(),'Font selection did not dismiss');
+            }
+            openTools();el('NotesDelete').click();await wait();
+            check(el('NotesConfirmDialog').open,'Delete did not ask for confirmation');
+            check(el('NotesConfirmYes').textContent==='Delete sermon','Confirmation action is ambiguous');
+            check(el('NotesConfirmText').textContent.includes('Keep this sermon safe'),'Confirmation does not name the target');
+            check(document.activeElement===el('NotesConfirmCancel'),'Cancel is not the safe default focus');
+            check(noteDeletes===0,'A delete request happened before confirmation');
+            el('NotesConfirmCancel').click();await wait();check(noteDeletes===0&&!fixtureDeleted,'Cancel deleted the sermon');
+            el('NotesConfirmYes').click();await wait();check(noteDeletes===0,'Closed confirmation can still delete');
+            openTools();el('NotesDelete').click();await wait();
+            el('NotesConfirmYes').click();await wait();
+            check(noteDeletes===1&&fixtureDeleted,'Explicit confirmation did not delete exactly once');
+            check(!el('NotesLibrary').hidden&&el('NotesWorkspace').hidden,'Deleted note remains open');
+            check(document.documentElement.scrollWidth<=innerWidth,'Menu introduced horizontal overflow');
+        '''
+        for width,height,touch,fallback in ((1100,850,False,False),(420,900,False,False),(360,800,True,False),(320,700,True,False),
+                                          (820,1000,True,False),(1366,1000,True,False),(420,900,False,True)):
+            with self.subTest(width=width,touch=touch,fallback=fallback):
+                environment='Object.defineProperty(navigator,"maxTouchPoints",{value:'+('5' if touch else '0')+'});'
+                if fallback: environment+='HTMLElement.prototype.showPopover=undefined;'
+                self.run_browser(self.render_preview(),verify,environment+setup,window_size=(width,height))
+
+    def test_editor_creation_formatting_sources_verses_and_pdf_on_desktop_and_mobile(self):
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r'''
+            const bibleFetch=window.fetch;
+            window.noteStore=new Map();window.noteWrites=[];window.sharedPDF=null;
+            let nextNote=1;
+            const json=data=>new Response(JSON.stringify({ok:true,...data}),{headers:{'Content-Type':'application/json'}});
+            const summary=item=>({id:item.id,version:item.version,theme:item.note.theme,text:item.note.text,
+                primary_reference:{book_id:40,chapter:9,verse:35},needs_review:false,dirty:true,conflict:false});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0],method=options.method||'GET';
+                if(path.includes('/api/verse'))return json({verse:{text:'First full verse.\n\nSecond full verse.',reference:'2 Kings 6:15-17',edition_label:'NIV',attribution:'Synthetic attribution'}});
+                if(path.endsWith('/commentary'))return json({entries:[{title:'Synthetic commentary',source_title:'A commentary',author:'A Writer',passage:'Matthew 9:35-38',blocks:[
+                    {type:'paragraph',text:'Whole commentary body.',runs:[{text:'Whole commentary body.',marks:['em']}]}]}]});
+                if(!path.includes('/api/notes'))return bibleFetch(url,options);
+                if(method==='POST'||method==='PATCH'){
+                    check(options.headers['X-CSRF-Token']==='test-csrf','Notes write missed CSRF');
+                    const body=JSON.parse(options.body);noteWrites.push({path,method,body});
+                    if(path.endsWith('/sync'))return json({job:{running:false,message:'Sync complete: restored and backed up.'}});
+                    if(path.endsWith('/notes')){
+                        const item={id:String(nextNote++).padStart(32,'0'),version:1,note:body.note,dirty:true};noteStore.set(item.id,item);return json({item});
+                    }
+                    const id=path.split('/').at(-1),item=noteStore.get(id);check(item,'Unknown note');
+                    check(body.version===item.version,'Overlapping saves used an old version');item.version++;item.note=body.note;return json({item});
+                }
+                if(path.endsWith('/notes'))return json({notes:[...noteStore.values()].map(summary),drive_configured:true,can_convert:false});
+                if(path.endsWith('/job'))return json({job:{running:false,message:'Sync complete: restored and backed up.'}});
+                if(path.endsWith('/pdf'))return new Response('%PDF-1.4 synthetic',{headers:{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="vision.pdf"'}});
+                return json({item:noteStore.get(path.split('/').at(-1))});
+            };
+            Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>true});
+            Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{sharedPDF=data.files?.[0]}});
+        '''
+        verify=r'''
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,35)),el=name=>document.getElementById('bs'+name);
+            el('NotesTab').click();await wait();
+            check(el('NotesTab').getAttribute('aria-selected')==='true','Notes tab did not open');
+            check(el('NotesLibrary').contains(el('NotesViews')),'Filters escaped All Notes');
+            el('NotesCreate').click();el('NotesMetaForm').requestSubmit();await wait();
+            check(noteStore.size===0,'Created notes without required Text and Theme');
+            el('NotesMetaText').value='Matthew 9:35-38';el('NotesMetaTheme').value='THE BIRTH OF A VISION';
+            el('NotesMetaForm').requestSubmit();await wait();
+            check(noteStore.size===1,'Creation failed');check(el('NotesTheme').textContent==='Theme: THE BIRTH OF A VISION','Theme not formatted');
+            check(el('NotesText').textContent==='Text: Matthew 9:35-38','Text missing');
+            const editor=el('NotesEditor');
+            check(editor.querySelector('[data-notes-type="theme"]').textContent==='Theme: THE BIRTH OF A VISION','Theme missing inside document');
+            check(editor.querySelector('[data-notes-type="text"]').textContent==='Text: Matthew 9:35-38','Reference missing inside document');
+            check(getComputedStyle(el('NotesTheme')).fontWeight==='400'&&parseFloat(getComputedStyle(el('NotesTheme')).fontSize)<=13,'Outer header is not small and plain');
+            check(!el('NotesStyle')&&el('NotesFont')&&el('NotesFontSize')&&el('NotesCase'),'Word-style font controls missing');
+            editor.innerHTML='<p>I - WHY SPIRITUAL VISION?</p><p>A. Read II Kings 6:15-17.</p><p>Make this bold.</p>';
+            editor.dispatchEvent(new Event('input',{bubbles:true}));
+            check(editor.children[0].dataset.notesType==='main_point','Main point not recognized');
+            check(editor.children[1].dataset.notesType==='subpoint','Subpoint not recognized');
+            const selection=getSelection(),range=document.createRange();range.selectNodeContents(editor.children[2]);editor.focus();selection.removeAllRanges();selection.addRange(range);await wait();
+            document.querySelector('[data-notes-command="bold"]').click();await wait();
+            document.querySelector('[data-notes-command="italic"]').click();await wait();
+            document.querySelector('[data-notes-command="hiliteColor"]').click();await wait();
+            el('NotesFont').value='Times New Roman';el('NotesFont').dispatchEvent(new Event('change'));await wait();
+            el('NotesFontSize').value='18';el('NotesFontSize').dispatchEvent(new Event('change'));await wait();
+            el('NotesGrow').click();await wait();check(Number(el('NotesFontSize').value)===20,'Grow font failed');
+            el('NotesShrink').click();await wait();check(Number(el('NotesFontSize').value)===18,'Shrink font failed');
+            el('NotesTextColor').value='#294a70';el('NotesTextColor').dispatchEvent(new Event('change'));await wait();
+            el('NotesSave').click();await wait();
+            const stored=[...noteStore.values()][0],runs=stored.note.content.blocks.flatMap(b=>b.runs);
+            check(runs.some(r=>r.bold),'Bold formatting was lost');check(runs.some(r=>r.italic),'Italic formatting was lost');
+            check(runs.some(r=>r.highlight==='#ffff00'||r.highlight==='#ffe66d'),'Highlight was lost');
+            check(runs.some(r=>r.font_size===18&&r.font_family==='Times New Roman'),'Font family or exact size was lost');
+            check(runs.some(r=>r.color==='#294a70'),'Text color was lost');
+            const caseParagraph=document.createElement('p');caseParagraph.textContent='mixed case example';editor.append(caseParagraph);
+            editor.dispatchEvent(new Event('input',{bubbles:true}));
+            const caseRange=document.createRange();caseRange.selectNodeContents(caseParagraph);selection.removeAllRanges();selection.addRange(caseRange);await wait();
+            el('NotesCase').value='upper';el('NotesCase').dispatchEvent(new Event('change'));await wait();
+            check(caseParagraph.textContent==='MIXED CASE EXAMPLE','Change case failed');
+            check(el('NotesReferences').textContent.includes('II Kings 6:15-17'),'Roman book reference not recognized');
+            el('NotesRead').click();
+            check(el('NotesPreview').querySelector('.bs-scripture-ref'),'Read mode did not make references clickable');
+            check(el('NotesPreview').querySelector('[style*="background-color"]'),'Read mode lost highlighting');
+            const verse=[...el('NotesPreview').querySelectorAll('.bs-scripture-ref')].find(b=>b.textContent.includes('Kings'));verse.click();await wait();
+            check(el('VerseDialog').open,'Verse popup did not open');
+            el('NotesCurrent').checked=true;el('NotesCurrent').dispatchEvent(new Event('change'));
+            el('NotesInsertVerse').click();await wait();
+            const body=[...noteStore.values()][0].note.content.blocks.map(b=>b.runs.map(r=>r.text).join('')).join('\n');
+            check(body.includes('First full verse.')&&body.includes('Second full verse.'),'Whole passage not inserted');
+            check(body.includes('Make this bold.'),'Insertion replaced an earlier notes selection');
+            check(!body.includes('Synthetic attribution')&&!body.includes('(NIV)'),'Verse insertion added translation labels');
+            el('CommentaryTab').click();await wait();
+            const action=el('CommentaryResults').querySelector('.bs-notes-source-actions button');check(action,'Whole commentary action absent');
+            action.click();await wait();
+            check(el('NotesEditor').textContent.includes('Whole commentary body.'),'Whole entry not added to current note');
+            const current=document.querySelector('.bs-notes-source-actions input');current.checked=false;current.dispatchEvent(new Event('change'));
+            action.click();await wait();check(el('NotesTargetDialog').open,'Unchecked current notes did not open chooser');
+            check(el('NotesTargetExisting').options.length===1,'Existing note chooser missing');
+            document.querySelector('[data-notes-close="NotesTargetDialog"]').click();
+            el('NotesActionsToggle').click();await wait();
+            check(!el('NotesActionsMenu').hidden,'Options menu did not open for export');
+            el('NotesExport').click();await wait();
+            check(el('NotesActionsMenu').hidden,'Options menu stayed open after export');
+            check(!el('NotesDownload').disabled&&!el('NotesShare').disabled,'PDF download/share options unavailable');
+            el('NotesShare').click();await wait();check(sharedPDF?.name==='vision.pdf','PDF share did not pass a file');
+            document.querySelector('[data-notes-close="NotesExportDialog"]').click();
+            el('NotesActionsToggle').click();await wait();el('NotesSync').click();await wait();check(el('NotesJobMessage').textContent.includes('Sync complete'),'Sync result missing');
+            check(!document.getElementById('bsNotesConvert'),'Converter visible to a regular account');
+            check(document.documentElement.scrollWidth<=innerWidth,'Notes introduced horizontal overflow');
+        '''
+        for size in ((1100,850),(420,900)):
+            with self.subTest(size=size):self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+
+@unittest.skipUnless(BROWSER, 'An installed Chromium browser is required')
+class SermonNotesDriveTests(unittest.TestCase):
+    """Execute the actual bridge against in-memory Apps Script services."""
+
+    run_browser = LibraryBrowserTests.run_browser
+
+    def test_personal_backup_restore_conflict_and_interrupted_publication(self):
+        source = (ROOT / 'deployment' / 'sermon_notes_drive.gs').read_text(encoding='utf-8')
+        html = '<html><head></head><body><script>' + source + '</script></body></html>'
+        setup = r'''
+            const properties=new Map(), allFolders=[];
+            let nextId=0, driveCalls=0, failIndexWrite=false, busy=false;
+            const encoder=new TextEncoder();
+            const iterator=items=>{let i=0;return {hasNext:()=>i<items.length,next:()=>items[i++]}};
+            function blob(text,type,name){return {text:String(text),name,
+                getBytes:()=>[...encoder.encode(String(text))],getDataAsString:()=>String(text)}}
+            class Folder {
+                constructor(name){this.name=name;this.id='folder-'+(++nextId);this.folders=[];this.files=[];this.trashed=false;allFolders.push(this)}
+                getId(){return this.id} getName(){return this.name} setTrashed(value){this.trashed=value}
+                getFoldersByName(name){return iterator(this.folders.filter(f=>!f.trashed&&f.name===name))}
+                getFilesByName(name){return iterator(this.files.filter(f=>f.name===name))}
+                createFolder(name){const folder=new Folder(name);this.folders.push(folder);return folder}
+                createFile(value){
+                    if(value.name==='index.json'&&failIndexWrite){failIndexWrite=false;throw Error('simulated publication failure')}
+                    const file={name:value.name,text:value.text,getSize(){return encoder.encode(this.text).length},
+                        getBlob(){return blob(this.text)},setContent(text){
+                            if(this.name==='index.json'&&failIndexWrite){failIndexWrite=false;throw Error('simulated publication failure')}
+                            this.text=text;return this}};
+                    this.files.push(file);return file;
+                }
+            }
+            const root=new Folder('Personal Sermon Notes');
+            window.DriveApp={getFolderById:()=>{driveCalls++;return root}};
+            window.PropertiesService={getScriptProperties:()=>({
+                getProperty:key=>properties.get(key),setProperty:(key,value)=>properties.set(key,value)})};
+            // Digest determinism is sufficient for protocol tests; Google's SHA-256
+            // implementation is external, and is not replaced in the real script.
+            window.Utilities={DigestAlgorithm:{SHA_256:'SHA_256'},Charset:{UTF_8:'UTF-8'},
+                newBlob:blob,getUuid:()=>crypto.randomUUID(),computeDigest:(algorithm,text)=>{
+                    const bytes=encoder.encode(text),out=[];
+                    for(let i=0;i<8;i++){
+                        let h=(2166136261+i*1234567)>>>0;
+                        for(const byte of bytes)h=Math.imul(h^byte,16777619)>>>0;
+                        out.push((h>>>24)&255,(h>>>16)&255,(h>>>8)&255,h&255);
+                    }return out;
+                }};
+            const scriptLock={locked:false,waitLock(){this.locked=true},tryLock(){if(busy)return false;this.locked=true;return true},
+                hasLock(){return this.locked},releaseLock(){this.locked=false}};
+            window.LockService={getScriptLock:()=>scriptLock};
+            window.ContentService={MimeType:{JSON:'json'},createTextOutput:text=>({text,setMimeType(){return this}})};
+        '''
+        verify = r'''
+            const token='a'.repeat(64),id='1'.repeat(32),secondId='2'.repeat(32);
+            const user='pastor:alice', other='pastor:bob', roleUser='ao:alice';
+            properties.set(SN_TOKEN_PROPERTY,token);
+            const call=(action,extra={})=>JSON.parse(doPost({postData:{contents:JSON.stringify({
+                purpose:'sermon_notes',token,action,user_key:user,...extra})}}).text);
+            const note={schema_version:1,theme:'THE BIRTH OF A VISION',text:'Matthew 9:35-38',
+                content:{blocks:[{type:'main_point',runs:[{text:'WHY SPIRITUAL VISION?',bold:true,italic:true,highlight:'#ffe66d'}]}]},
+                source:{pdf:'unchanged-source',indent:24}};
+            const mutation=(base,request,n=note,note_id=id)=>({note_id,base_version:base,request_id:request.repeat(32),note:n});
+
+            const before=driveCalls;
+            check(call('status',{token:'bad'}).code==='AUTH','Invalid token accepted');
+            check(call('status',{purpose:'event'}).code==='SERMON_NOTES_ONLY','Other service accepted');
+            check(call('get',{note_id:[id]}).code==='INPUT','Coerced ID accepted');
+            check(call('put',mutation(0,'a',{...note,theme:''})).code==='NOTE','Empty Theme accepted');
+            check(call('put',mutation(0,'a',{...note,text:''})).code==='NOTE','Empty Text accepted');
+            check(call('put',mutation(0,'a',{...note,content:{text:'é'.repeat(270000)}})).code==='NOTE','UTF-8 limit ignored');
+            check(driveCalls===before,'Invalid requests accessed Drive');
+            check(JSON.parse(doGet().text).code==='POST_REQUIRED','GET exposed data');
+            check(call('status').ok,'Authenticated status failed');
+            check(call('list').notes.length===0&&root.folders.length===0,'Read created a user folder');
+            busy=true;check(call('list').code==='BUSY','Busy lock ignored');busy=false;
+
+            const first=call('put',mutation(0,'a'));
+            check(first.ok&&first.item.version===1,'First backup failed');
+            const users=root.folders[0],account=users.folders[0];
+            check(account.name.startsWith('alice--'),'Folder does not show username');
+            check(call('put',mutation(0,'a')).replayed,'Successful retry not idempotent');
+            check(call('put',mutation(0,'a',{...note,theme:'Different'})).code==='REQUEST_REUSED','Request ID reused with changed content');
+            check(call('put',mutation(0,'b')).code==='CONFLICT','Stale device overwrote data');
+            const restored=call('get',{note_id:id}).record;
+            check(JSON.stringify(restored.note)===JSON.stringify(note),'Formatting or origin lost on restore');
+            check(call('get',{note_id:id,user_key:other}).code==='NOT_FOUND','Another username read a note');
+            check(call('get',{note_id:id,user_key:roleUser}).code==='NOT_FOUND','Another role read a note');
+            check(call('put',{...mutation(0,'b'),user_key:other}).ok,'Second user backup failed');
+            check(call('put',{...mutation(0,'b'),user_key:roleUser}).ok,'Second role backup failed');
+            check(users.folders.length===3,'Users or roles shared their folder');
+
+            const updated={...note,theme:'Updated theme'};
+            failIndexWrite=true;
+            check(call('put',mutation(1,'c',updated)).code==='STORAGE','Interrupted publication not reported');
+            check(call('get',{note_id:id}).record.version===1,'Unpublished revision became visible');
+            const revisions=account.folders[0];
+            check(revisions.files.length===2,'Prior revision not retained');
+            check(call('put',mutation(1,'c',updated)).item.version===2,'Interrupted upload did not resume');
+            check(revisions.files.length===2,'Retry duplicated revision file');
+            check(call('get',{note_id:id,version:1}).code==='CHANGED','Stale get version ignored');
+            check(call('get',{note_id:id}).record.note.theme==='Updated theme','Latest revision not restored');
+
+            check(call('put',mutation(0,'d',note,secondId)).ok,'Second sermon failed');
+            const page=call('list',{limit:1});
+            check(page.next_after===id&&page.notes.length===1,'Paging failed');
+            check(call('list',{after:page.next_after,index_version:page.index_version}).notes[0].note_id===secondId,'Second page failed');
+            const deletion={note_id:id,base_version:2,request_id:'e'.repeat(32)};
+            check(call('delete',deletion).item.deleted,'Deletion marker missing');
+            check(call('delete',deletion).replayed,'Deletion retry changed version');
+            check(call('get',{note_id:id}).record.deleted,'Deletion not available to restore');
+            check(call('list').notes.some(n=>n.note_id===id&&n.deleted),'List dropped deletion marker');
+            check(call('list',{after:page.next_after,index_version:page.index_version}).code==='CURSOR_EXPIRED','Changed index did not invalidate paging');
+            check(call('put',mutation(2,'f')).code==='CONFLICT','Old device resurrected deletion');
+            check(call('get',{note_id:id,user_key:other}).record.version===1,'Deletion crossed accounts');
+
+            // A failed first publication must be retryable without duplicating a
+            // folder or publishing an incomplete synthetic account.
+            failIndexWrite=true;
+            check(call('put',{...mutation(0,'f'),user_key:'pastor:new'}).code==='STORAGE','Initial publication failure ignored');
+            check(call('list',{user_key:'pastor:new'}).notes.length===0,'Initial staged record appeared live');
+            check(call('put',{...mutation(0,'f'),user_key:'pastor:new'}).ok,'Initial publication could not resume');
+
+            const index=account.files.find(f=>f.name==='index.json'),savedIndex=index.text;
+            index.text='{';
+            check(call('list').code==='STORAGE','Damaged index treated as empty library');
+            index.text=savedIndex;
+            const latest=JSON.parse(index.text).notes[secondId];
+            const revision=revisions.files.find(f=>f.name===latest.file_name),savedRevision=revision.text;
+            revision.text=revision.text.replace('THE BIRTH OF A VISION','CORRUPTED');
+            check(call('get',{note_id:secondId}).code==='STORAGE','Damaged revision not detected');
+            revision.text=savedRevision;
+            account.createFile(blob(savedIndex,'application/json','index.json'));
+            check(call('list').code==='STORAGE','Duplicate index was silently selected');
+            account.files.pop();
+
+            const oldToken=properties.get(SN_TOKEN_PROPERTY),count=users.folders.length;
+            setupSermonNotesDrive();setupSermonNotesDrive();
+            check(properties.get(SN_TOKEN_PROPERTY)===oldToken,'Setup rotated a live token');
+            check(users.folders.length===count,'Setup created extra account folders');
+            verifySermonNotesDrive();
+            check(root.folders.some(f=>f.name.startsWith('setup-check-')&&f.trashed),'Setup check did not clean up');
+            check(!scriptLock.locked,'Operation leaked its lock');
+        '''
+        self.run_browser(html, verify, setup)
 
 
 if __name__ == '__main__':

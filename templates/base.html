@@ -944,18 +944,27 @@
 <script src="{{ url_for('static',filename='activity_updates.js') }}" defer></script>
 {% endif %}
 {% if pastor_reminder_enabled %}
-<dialog id="pastorReportReminder" class="district-dialog" aria-labelledby="pastorReportReminderTitle">
-  <h2 id="pastorReportReminderTitle">You have unsubmitted reports</h2>
-  <p id="pastorReportReminderChurch"></p>
-  <ul id="pastorReportReminderList"></ul>
-  <p class="muted small">This reminder appears at most once a day.</p>
-  <div class="devotion-buttons"><a id="pastorReportReminderOpen" class="btn-primary">Open Pastor’s Tool</a>
-    <button type="button" id="pastorReportReminderClose">Close</button></div>
+<dialog id="pastorReportReminder" class="district-dialog report-reminder" aria-labelledby="pastorReportReminderTitle" aria-describedby="pastorReportReminderMessage">
+  <div class="report-reminder-layout">
+    <div class="report-reminder-visual">
+      <img src="{{ url_for('static', filename='pij/pij-no-report-reminder.png') }}" width="240" height="260" alt="PIJ reminding you about your reports." decoding="async">
+    </div>
+    <div class="report-reminder-body">
+      <p class="report-reminder-eyebrow">A friendly reminder</p>
+      <h2 id="pastorReportReminderTitle">You have unsubmitted reports</h2>
+      <p id="pastorReportReminderMessage" class="report-reminder-message">Please submit the reports below to keep your church records up to date.</p>
+      <p class="report-reminder-church">{{ icon('church') }}<span id="pastorReportReminderChurch"></span></p>
+      <ul id="pastorReportReminderList" aria-label="Reports awaiting submission"></ul>
+      <div class="report-reminder-actions"><a id="pastorReportReminderOpen" class="btn-primary">Open Pastor’s Tool {{ icon('chevron') }}</a>
+        <button type="button" id="pastorReportReminderClose">Close</button></div>
+      <p class="report-reminder-footnote">This reminder appears at most once a day.</p>
+    </div>
+  </div>
 </dialog>
 <script id="pastorReminderConfig" type="application/json">{{ {'url': url_for('pastor_report_reminder'), 'csrf': district_interaction_csrf}|tojson }}</script>
 {% endif %}
 {% if pastor_reminder_enabled or request.endpoint == 'bulletin' %}
-<script src="{{ url_for('static',filename='bulletin_insight.js',v='5') }}" defer></script>
+<script src="{{ url_for('static',filename='bulletin_insight.js',v='6') }}" defer></script>
 {% endif %}
 </body>
 </html>

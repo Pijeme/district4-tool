@@ -2,7 +2,7 @@
 {% from "ui_icons.html" import icon %}
 {% block title %}Bible Study — District 4 Tool{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='tablet-fixed-tabs-36') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='mobile-tab-row-19') }}">
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
   <dialog class="bs-navigation-dialog bs-settings-dialog" id="bsSettingsDialog" aria-labelledby="bsSettingsTitle">
@@ -47,31 +47,33 @@
   {% else %}
   <span id="bsStatus" class="bs-visually-hidden" role="status">Checking Bible Study availability…</span>
   {% endif %}
-  <div class="bs-toolbar" aria-label="Bible reading controls">
-    <div class="bs-toolbar-main">
-      <button type="button" id="bsNavigate" aria-haspopup="dialog" aria-controls="bsNavigationDialog">Genesis 1 &#9662;</button>
-      <span class="bs-translation-control" id="bsTranslationControl"><label class="bs-visually-hidden" for="bsTranslation">Bible translation</label>
-        <select id="bsTranslation" aria-label="Bible translation"><option value="NIV" title="New International Version">NIV</option><option value="CEBOCB" title="Cebuano - Ang Pulong sa Dios">Cebuano - APSD</option><option value="TCB" title="Tagalog - Ang Salita ng Diyos">Tagalog - ASND</option></select></span>
-      <button type="button" id="bsHistory" aria-label="Reading history" title="Reading history">{{ icon('clock') }}</button>
-      <span hidden><label for="bsBook">Bible book</label><select id="bsBook">{% for book in bible_books %}<option value="{{ book.name }}" data-chapters="{{ book.chapters }}">{{ book.name }}</option>{% endfor %}</select><label for="bsChapter">Chapter</label><select id="bsChapter"><option value="1">1</option></select></span>
-      <button type="button" id="bsPrevious" aria-label="Previous chapter">{{ icon('chevron', 'bs-icon-previous') }}</button>
-      <button type="button" id="bsNext" aria-label="Next chapter">{{ icon('chevron') }}</button>
-      <button type="button" id="bsSmaller" aria-label="Decrease Bible text size">A&minus;</button>
-      <button type="button" id="bsLarger" aria-label="Increase Bible text size">A+</button>
-      <button type="button" id="bsSettings" aria-label="Reading settings" title="Reading settings" aria-haspopup="dialog" aria-controls="bsSettingsDialog">{{ icon('settings') }}</button>
-    </div>
-    <div class="bs-toolbar-secondary">
+  <div class="bs-wide-tabs" id="bsWideTabs" aria-label="Bible and study tabs">
+    <div class="bs-toolbar-secondary bs-layout-control" id="bsLayoutControl">
       <label class="bs-visually-hidden" for="bsLayoutMode">Study layout</label><select id="bsLayoutMode"><option value="split">Split View</option><option value="bible">Bible Fullscreen</option><option value="study">Study Fullscreen</option></select>
     </div>
   </div>
-  <div class="bs-wide-tabs" id="bsWideTabs" aria-label="Bible and study tabs"></div>
   <div class="bs-layout" id="bsLayout">
     <section class="bs-pane bs-bible" id="bsBible" aria-label="Bible reader" tabindex="-1">
       <div class="bs-study-tabs bs-reader-tabs" role="tablist" aria-label="Bible tools">
         <button type="button" id="bsReaderTab" role="tab" aria-selected="true" aria-controls="bsReaderPanel" data-reader-tab="bible">Bible</button>
         <button type="button" id="bsBookStudyTab" role="tab" aria-selected="false" aria-controls="bsBookStudyPanel" tabindex="-1" data-reader-tab="book">Book Study</button>
+        <button type="button" id="bsNotesTab" role="tab" aria-selected="false" aria-controls="bsNotesPanel" tabindex="-1" data-reader-tab="notes">Sermon Notes</button>
       </div>
       <div id="bsReaderPanel" role="tabpanel" aria-labelledby="bsReaderTab">
+      <div class="bs-toolbar" id="bsBibleNavigation" role="group" aria-label="Bible reading controls">
+        <div class="bs-toolbar-main">
+          <button type="button" id="bsNavigate" aria-haspopup="dialog" aria-controls="bsNavigationDialog">Genesis 1 &#9662;</button>
+          <span class="bs-translation-control" id="bsTranslationControl"><label class="bs-visually-hidden" for="bsTranslation">Bible translation</label>
+            <select id="bsTranslation" aria-label="Bible translation"><option value="NIV" title="New International Version">English - NIV</option><option value="CEBOCB" title="Cebuano - Ang Pulong sa Dios">Cebuano - APSD</option><option value="TCB" title="Tagalog - Ang Salita ng Diyos">Tagalog - ASND</option></select></span>
+          <button type="button" id="bsHistory" aria-label="Reading history" title="Reading history">{{ icon('clock') }}</button>
+          <span hidden><label for="bsBook">Bible book</label><select id="bsBook">{% for book in bible_books %}<option value="{{ book.name }}" data-chapters="{{ book.chapters }}">{{ book.name }}</option>{% endfor %}</select><label for="bsChapter">Chapter</label><select id="bsChapter"><option value="1">1</option></select></span>
+          <button type="button" id="bsPrevious" aria-label="Previous chapter">{{ icon('chevron', 'bs-icon-previous') }}</button>
+          <button type="button" id="bsNext" aria-label="Next chapter">{{ icon('chevron') }}</button>
+          <button type="button" id="bsSmaller" aria-label="Decrease Bible text size">A&minus;</button>
+          <button type="button" id="bsLarger" aria-label="Increase Bible text size">A+</button>
+          <button type="button" id="bsSettings" aria-label="Reading settings" title="Reading settings" aria-haspopup="dialog" aria-controls="bsSettingsDialog">{{ icon('settings') }}</button>
+        </div>
+      </div>
       <article class="bs-scripture" id="bsScripture">
         <p class="bs-kicker" id="bsBibleKicker">The Holy Bible · New International Version</p>
         <h2 id="bsBookHeading">Genesis</h2>
@@ -92,6 +94,65 @@
       <section id="bsBookStudyPanel" data-study-kind="book" role="tabpanel" aria-labelledby="bsBookStudyTab" class="bs-tool-book" hidden>
         <header class="bs-study-header bs-banner"><h2 class="bs-handwritten">Book Study</h2></header>
         <div class="bs-study-content bs-book-study"><h3 id="bsBookStudyTitle">Genesis</h3><div id="bsBookStudyResults" aria-live="polite"></div></div>
+      </section>
+      <section id="bsNotesPanel" role="tabpanel" aria-labelledby="bsNotesTab" class="bs-notes-panel" hidden>
+        <div class="bs-notes-dock">
+        <nav class="bs-notes-actions" aria-label="Sermon notes controls">
+          <button type="button" id="bsNotesCreate">Create Notes</button>
+          <button type="button" id="bsNotesAll">All Notes</button>
+          <button type="button" id="bsNotesActionsToggle" aria-label="Sermon notes options" title="Sermon notes options" aria-expanded="false" aria-controls="bsNotesActionsMenu">{{ icon('settings') }}</button>
+        </nav>
+        <div id="bsNotesActionsMenu" class="bs-notes-options" role="group" aria-label="Sermon notes options" hidden>
+          <button type="button" id="bsNotesExport" disabled>Export Notes</button>
+          <button type="button" id="bsNotesSync">Sync Notes</button>
+          {% if bible_study_admin %}<button type="button" id="bsNotesConvert">Convert my sermons</button>{% endif %}
+        </div>
+          <div class="bs-notes-tools-launcher" id="bsNotesToolsLauncher"><button type="button" id="bsNotesToolsToggle" aria-expanded="false" aria-controls="bsNotesTools">Editing tools &#9662;</button></div>
+          <div class="bs-notes-edit-controls" id="bsNotesTools" role="group" aria-label="Editing and font controls">
+          <div class="bs-notes-meta-actions" id="bsNotesMetaActions" role="group" aria-label="Edit this sermon"><button type="button" id="bsNotesEditMeta">Edit Text &amp; Theme</button><button type="button" id="bsNotesRead" aria-pressed="false">Read Notes</button><button type="button" id="bsNotesSave">Save</button><button type="button" id="bsNotesDelete">Delete</button></div>
+          <div id="bsNotesFormat" class="bs-notes-format" role="toolbar" aria-label="Format sermon notes">
+            <div class="bs-notes-font-row">
+              <label class="bs-visually-hidden" for="bsNotesFont">Font family</label><select id="bsNotesFont" aria-label="Font family"><option>Calibri</option><option>Arial</option><option>Cambria</option><option>Times New Roman</option><option>Georgia</option><option>Courier New</option><option>Verdana</option><option>Tahoma</option><option>Noto Sans</option></select>
+              <label class="bs-visually-hidden" for="bsNotesFontSize">Font size</label><input id="bsNotesFontSize" type="number" min="6" max="72" step="1" value="12" aria-label="Font size in points" title="Font size in points">
+              <button type="button" id="bsNotesGrow" aria-label="Increase selected text size" title="Grow font">A+</button><button type="button" id="bsNotesShrink" aria-label="Decrease selected text size" title="Shrink font">A−</button>
+              <label class="bs-visually-hidden" for="bsNotesCase">Change case</label><select id="bsNotesCase" aria-label="Change case"><option value="">Aa</option><option value="sentence">Sentence case</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option><option value="title">Title Case</option></select>
+            </div>
+            <div class="bs-notes-font-row">
+            <button type="button" data-notes-command="bold" aria-label="Bold"><strong>B</strong></button>
+            <button type="button" data-notes-command="italic" aria-label="Italic"><em>I</em></button>
+            <button type="button" data-notes-command="underline" aria-label="Underline"><u>U</u></button>
+            <button type="button" data-notes-command="hiliteColor" aria-label="Highlight selection">Highlight</button>
+            <input type="color" id="bsNotesHighlightColor" value="#ffe66d" aria-label="Highlight color" title="Highlight color">
+            <button type="button" data-notes-command="foreColor" aria-label="Text color" title="Text color"><span class="bs-notes-color-letter">A</span></button><input type="color" id="bsNotesTextColor" value="#202124" aria-label="Text color selection" title="Text color selection">
+            <button type="button" data-notes-command="removeFormat" aria-label="Clear formatting" title="Clear formatting">Clear<span class="bs-notes-clear-long"> format</span></button>
+            <button type="button" data-notes-command="undo">Undo</button>
+            </div>
+          </div>
+          </div>
+        </div>
+        <p id="bsNotesStatus" class="bs-notes-status" role="status">Create a sermon or open All Notes.</p>
+        <div id="bsNotesJob" hidden><progress id="bsNotesProgress" max="100"></progress><p id="bsNotesJobMessage" role="status"></p><ul id="bsNotesJobErrors"></ul></div>
+        <section id="bsNotesLibrary" hidden aria-label="All sermon notes">
+          <div class="bs-notes-filters">
+            <div id="bsNotesViews" class="bs-notes-views" role="group" aria-label="Browse sermon notes">
+              <button type="button" data-notes-view="recent" aria-pressed="true">Recent</button>
+              <button type="button" data-notes-view="old" aria-pressed="false" aria-haspopup="dialog" aria-controls="bsNotesBooksDialog" aria-label="Old Testament">OT</button>
+              <button type="button" data-notes-view="new" aria-pressed="false" aria-haspopup="dialog" aria-controls="bsNotesBooksDialog" aria-label="New Testament">NT</button>
+              <button type="button" data-notes-view="review" aria-pressed="false">For Review</button>
+            </div>
+            <button type="button" id="bsNotesSelectedBook" class="bs-notes-selected-book" hidden></button>
+            <label>Search<input type="search" id="bsNotesSearch" placeholder="Theme, Text, or sermon content" maxlength="200"></label>
+          </div>
+          <div id="bsNotesList" class="bs-notes-list" aria-live="polite"></div>
+        </section>
+        <section id="bsNotesWorkspace" hidden>
+          <div class="bs-notes-heading"><p id="bsNotesTheme"></p><p id="bsNotesText"></p></div>
+          <div id="bsNotesConflict" class="bs-notes-conflict" role="status" hidden>This sermon also changed in Drive. Keep both copies, or use the Drive version.<button type="button" id="bsNotesKeepBoth">Keep both copies</button><button type="button" id="bsNotesUseRemote">Use Drive version</button></div>
+          <div id="bsNotesEditor" class="bs-notes-editor" contenteditable="true" role="textbox" aria-label="Sermon notes editor" aria-multiline="true" spellcheck="true"></div>
+          <article id="bsNotesPreview" class="bs-notes-preview bs-source-content" hidden></article>
+          <div id="bsNotesReferences" class="bs-notes-references" aria-label="Recognized Bible references"></div>
+          <p id="bsNotesOrigin" class="bs-attribution"></p>
+        </section>
       </section>
     </section>
     <div class="bs-divider" id="bsDivider" role="separator" tabindex="0" aria-label="Resize Bible and Study panels"
@@ -127,17 +188,23 @@
       <section id="bsCommentaryPanel" data-study-kind="commentary" role="tabpanel" aria-labelledby="bsCommentaryTab" class="bs-tool-commentary" hidden>
         <header class="bs-study-header bs-banner"><h2 class="bs-handwritten">Commentary</h2></header>
         <div class="bs-study-content">
-          <div class="bs-commentary-series" role="group" aria-label="Choose commentary series">
+          <div id="bsCommentaryControls" class="bs-commentary-controls">
+          <div id="bsCommentaryChoices" class="bs-commentary-series" role="group" aria-label="Choose commentary series">
             <button type="button" data-commentary-series="wiersbe" aria-pressed="true">Wiersbe · Be Series</button>
             <button type="button" data-commentary-series="exalting-jesus" aria-pressed="false">Exalting Jesus</button>
             <button type="button" data-commentary-series="moody" aria-pressed="false">Moody</button>
             <button type="button" data-commentary-series="pulpit" aria-pressed="false">The Pulpit</button>
           </div>
-          <div id="bsPulpitSections" class="bs-commentary-series" role="group" aria-label="Pulpit commentary section" hidden>
+          <div id="bsPulpitSections" class="bs-commentary-theme-box bs-pulpit-sections" role="group" aria-label="Pulpit commentary section" hidden>
             <button type="button" data-pulpit-section="exposition" aria-pressed="true">Exposition</button>
             <button type="button" data-pulpit-section="homiletics" aria-pressed="false">Homiletics</button>
           </div>
-          <p class="bs-commentary-guide">Select a word in the Bible to read commentary for its passage.</p>
+          </div>
+          <section id="bsCommentaryThemes" class="bs-commentary-theme-box" aria-labelledby="bsCommentaryThemesTitle" hidden>
+            <strong id="bsCommentaryThemesTitle">Chapter themes</strong>
+            <div id="bsCommentaryThemeList" class="bs-commentary-theme-list" role="group" aria-label="Choose a chapter theme"></div>
+          </section>
+          <p id="bsCommentaryGuide" class="bs-commentary-guide">Choose a chapter theme to read its commentary.</p>
           <div id="bsCommentaryResults" aria-live="polite"></div>
         </div>
       </section>
@@ -189,18 +256,47 @@
   <p class="bs-save-status bs-visually-hidden" id="bsSaveStatus" role="status">Preferences are saved to your account when Bible Study storage is initialized.</p>
   <div id="bsSelectionToolbar" class="bs-selection-toolbar" role="toolbar" aria-label="Selected text actions" hidden>
     <span id="bsSelectionReference"></span>
-    <button type="button" data-selection-action="copy">Copy</button>
-    <button type="button" data-selection-action="highlight" data-color="#ffe66d" class="bs-color-yellow" aria-label="Yellow highlight">&#9679;</button>
-    <button type="button" data-selection-action="highlight" data-color="#9ee6b8" class="bs-color-green" aria-label="Green highlight">&#9679;</button>
-    <button type="button" data-selection-action="highlight" data-color="#9ed3ff" class="bs-color-blue" aria-label="Blue highlight">&#9679;</button>
-    <button type="button" data-selection-action="underline">Underline</button>
-    <button type="button" data-selection-action="note">Note</button>
-    <button type="button" data-selection-action="bookmark">Bookmark</button>
-    <button type="button" data-selection-action="share"><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="20" height="20" alt="" aria-hidden="true"><span>Share</span></button>
+    <div class="bs-selection-colors" role="group" aria-label="Underline and highlight colors">
+      <button type="button" data-selection-action="underline" aria-label="Underline" title="Underline"><span aria-hidden="true">U</span></button>
+      <button type="button" data-selection-action="highlight" data-color="#ddf0ff" style="--bs-swatch:#ddf0ff" aria-label="Blue highlight" title="Blue highlight"></button>
+      <button type="button" data-selection-action="highlight" data-color="#fffeb3" style="--bs-swatch:#fffeb3" aria-label="Yellow highlight" title="Yellow highlight"></button>
+      <button type="button" data-selection-action="highlight" data-color="#ffdef3" style="--bs-swatch:#ffdef3" aria-label="Pink highlight" title="Pink highlight"></button>
+      <button type="button" data-selection-action="highlight" data-color="#e7fcc3" style="--bs-swatch:#e7fcc3" aria-label="Green highlight" title="Green highlight"></button>
+      <button type="button" data-selection-action="highlight" data-color="#bafeff" style="--bs-swatch:#bafeff" aria-label="Cyan highlight" title="Cyan highlight"></button>
+      <button type="button" data-selection-action="highlight" data-color="#ecdcff" style="--bs-swatch:#ecdcff" aria-label="Purple highlight" title="Purple highlight"></button>
+    </div>
+    <div class="bs-selection-actions">
+      <button type="button" data-selection-action="copy">{{ icon('copy') }}<span>Copy</span></button>
+      <div class="bs-sermon-notes-actions" role="group" aria-label="Add selected text to sermon notes">
+        <button type="button" data-selection-action="sermon-notes">{{ icon('book') }}<span>Add to<br>Sermon Notes</span></button>
+        <label class="bs-current-notes"><input type="checkbox" id="bsNotesCurrent"><span>Current notes</span></label>
+      </div>
+      <button type="button" data-selection-action="bookmark" aria-label="Save to bookmarks">{{ icon('bookmark') }}<span>Save</span></button>
+      <button type="button" data-selection-action="share"><img src="{{ url_for('static', filename='icons/devotion-share.svg') }}" width="24" height="24" alt="" aria-hidden="true"><span>Share</span></button>
+    </div>
     <button type="button" id="bsDismissSelection" aria-label="Dismiss selection actions">&times;</button>
   </div>
   <div id="bsToast" class="bs-toast" role="status" hidden></div>
   <dialog class="bs-navigation-dialog" id="bsSavedDialog" aria-labelledby="bsSavedTitle"><div class="bs-dialog-head"><strong id="bsSavedTitle">This chapter&rsquo;s notes &amp; marks</strong><button type="button" id="bsCloseSaved" aria-label="Close saved items">&times;</button></div><div id="bsSavedItems" class="bs-saved-items"></div></dialog>
+  <dialog class="bs-navigation-dialog" id="bsNotesMetaDialog" aria-labelledby="bsNotesMetaTitle">
+    <form id="bsNotesMetaForm"><div class="bs-dialog-head"><strong id="bsNotesMetaTitle">Create Notes</strong><button type="button" data-notes-close="NotesMetaDialog" aria-label="Close">&times;</button></div>
+      <label for="bsNotesMetaText">Text</label><input id="bsNotesMetaText" required maxlength="500" placeholder="Matthew 9:35–38">
+      <label for="bsNotesMetaTheme">Theme</label><input id="bsNotesMetaTheme" required maxlength="500" placeholder="The Birth of a Vision">
+      <p id="bsNotesMetaError" role="alert"></p><button type="submit" id="bsNotesMetaSubmit">Create Notes</button>
+    </form>
+  </dialog>
+  <dialog class="bs-navigation-dialog" id="bsNotesBooksDialog" aria-labelledby="bsNotesBooksTitle"><div class="bs-dialog-head"><strong id="bsNotesBooksTitle">Choose a book</strong><button type="button" data-notes-close="NotesBooksDialog" aria-label="Close book selector">&times;</button></div>
+    <button type="button" id="bsNotesAllBooks">All books</button>
+    <div class="bs-navigation-body"><div id="bsNotesBooksGrid" class="bs-book-group" role="group" aria-label="Choose a book"></div></div>
+  </dialog>
+  <dialog class="bs-navigation-dialog" id="bsNotesTargetDialog" aria-labelledby="bsNotesTargetTitle"><div class="bs-dialog-head"><strong id="bsNotesTargetTitle">Add to Sermon Notes</strong><button type="button" data-notes-close="NotesTargetDialog" aria-label="Close">&times;</button></div>
+    <label class="bs-current-notes"><input type="checkbox" id="bsNotesTargetCurrent"> Current notes</label>
+    <button type="button" id="bsNotesTargetNew">Create new sermon notes</button>
+    <label for="bsNotesTargetExisting">Add to existing sermon notes</label><select id="bsNotesTargetExisting"></select>
+    <button type="button" id="bsNotesTargetAdd">Add to selected notes</button><p id="bsNotesTargetError" role="alert"></p>
+  </dialog>
+  <dialog class="bs-navigation-dialog" id="bsNotesExportDialog" aria-labelledby="bsNotesExportTitle"><div class="bs-dialog-head"><strong id="bsNotesExportTitle">Export Notes</strong><button type="button" data-notes-close="NotesExportDialog" aria-label="Close">&times;</button></div><p id="bsNotesExportStatus" role="status">Preparing PDF…</p><button type="button" id="bsNotesDownload" disabled>Download PDF</button><button type="button" id="bsNotesShare" disabled>Share PDF</button></dialog>
+  <dialog class="bs-navigation-dialog" id="bsNotesConfirmDialog" aria-labelledby="bsNotesConfirmTitle" aria-describedby="bsNotesConfirmText"><div class="bs-dialog-head"><strong id="bsNotesConfirmTitle">Confirm</strong><button type="button" data-notes-close="NotesConfirmDialog" aria-label="Close">&times;</button></div><p id="bsNotesConfirmText"></p><div class="bs-notes-confirm-actions"><button type="button" id="bsNotesConfirmCancel" data-notes-close="NotesConfirmDialog">Cancel</button><button type="button" id="bsNotesConfirmYes">Continue</button></div></dialog>
   <dialog class="bs-navigation-dialog" id="bsNoteDialog" aria-labelledby="bsNoteTitle"><form id="bsNoteForm"><div class="bs-dialog-head"><strong id="bsNoteTitle">Add a note</strong><button type="button" id="bsCloseNote" aria-label="Close note">&times;</button></div><p id="bsNoteReference"></p><label for="bsNoteText">Your note</label><textarea id="bsNoteText" maxlength="8000" rows="6" required></textarea><p id="bsNoteError" role="alert"></p><button type="submit" id="bsSaveNote">Save note</button></form></dialog>
   <dialog class="bs-verse-dialog" id="bsCopyDialog" aria-labelledby="bsCopyTitle"><div class="bs-dialog-head"><strong id="bsCopyTitle">Copy Scripture</strong><button type="button" id="bsCloseCopy" aria-label="Close copy">&times;</button></div><p>Select and copy the text below.</p><textarea id="bsCopyText" rows="6" readonly aria-label="Scripture to copy"></textarea></dialog>
   <dialog class="bs-navigation-dialog" id="bsNavigationDialog" aria-labelledby="bsNavigationTitle">
@@ -216,6 +312,7 @@
     <div class="bs-dialog-head"><strong id="bsVerseReference">Verse preview</strong><button type="button" id="bsCloseVerse" aria-label="Close verse preview">×</button></div>
     <p id="bsVerseText"></p><p class="bs-attribution" id="bsVerseAttribution"></p>
     <button type="button" id="bsCopyVerse" disabled>Copy Verse</button>
+    <button type="button" id="bsNotesInsertVerse" disabled>Insert verse into sermon notes</button>
   </dialog>
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsSavedStudyDialog" aria-labelledby="bsSavedStudyTitle"><div class="bs-dialog-head"><strong id="bsSavedStudyTitle">Saved study</strong><button type="button" id="bsCloseSavedStudy" aria-label="Close saved study">&times;</button></div><p id="bsSavedStudyNotice" role="status"></p><div id="bsSavedStudyContent" class="bs-source-content"></div></dialog>
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsGreekDialog" aria-labelledby="bsGreekTitle"><div class="bs-dialog-head"><strong id="bsGreekTitle">Greek term</strong><button type="button" id="bsCloseGreek" aria-label="Close Greek explanation">×</button></div><p id="bsGreekAttribution" class="bs-attribution"></p><div id="bsGreekActions"></div><div id="bsGreekContent" class="bs-source-content"></div></dialog>
@@ -223,5 +320,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='tablet-fixed-tabs-36') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='mobile-tab-row-19') }}" defer></script>
 {% endblock %}

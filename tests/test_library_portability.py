@@ -2140,6 +2140,45 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             self.assertTrue(any(e['id']=='i-001' for e in self.bible.illustration_suggestions(conn,49,6)))
             self.assertFalse(self.bible.illustration_suggestions(conn,23,54,11))
 
+    def test_illustration_equivalent_categories_merge_counts_pages_and_source_filters(self):
+        import hashlib
+        archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
+        self.bible.import_illustration_archive(path,archive,expected_count=45)
+        topics={'assumption':'ASSUMPTION','assumptions':'Assumptions','assumption punctuation':'Assumption!',
+                'attitude':'Attitude','attitudes':'Attitudes','appearance':'Appearance','appearances':'APPEARANCES',
+                'selfcontrol':'Selfcontrol','self control':'Self-control','right':'RIGHT','rights':'RIGHTS'}
+        links={'assumption':range(20),'assumptions':range(15,40),'assumption punctuation':[4],
+               'attitude':[0,1],'attitudes':[1,2],'appearance':[3],'appearances':[4],
+               'selfcontrol':[5],'self control':[6],'right':[7],'rights':[8,9]}
+        with closing(sqlite3.connect(path)) as conn,conn:
+            for key,label in topics.items():
+                conn.execute('INSERT INTO browse_topics VALUES(?,?,?,?,?)',(key,label,label[0].upper(),0,0))
+                conn.executemany('INSERT INTO browse_topic_illustrations VALUES(?,?,?)',
+                    [(key,f'i-{i:03d}',f'Illustration {i}') for i in links[key]])
+            conn.execute('UPDATE illustrations SET category=?,topics_json=? WHERE id=?',('Assumptions','["Assumption","Assumptions","Faith"]','i-000'))
+        before=hashlib.sha256(path.read_bytes()).hexdigest()
+        with self.bible.illustration_connection(path) as conn:
+            browsed=self.bible.illustration_browse(conn,letter='A')
+            counts={topic['display_name']:topic['illustration_count'] for topic in browsed['topics']}
+            self.assertEqual(counts,{'APPEARANCE':2,'ASSUMPTION':40,'ATTITUDE':3})
+            first=self.bible.illustration_browse(conn,topic='assumption')
+            second=self.bible.illustration_browse(conn,topic='assumptions',offset=first['next_offset'])
+            ids=[entry['id'] for page in (first,second) for entry in page['entries']]
+            self.assertEqual(len(ids),40);self.assertEqual(len(set(ids)),40)
+            self.assertEqual(set(ids),{f'i-{i:03d}' for i in range(40)})
+            self.assertIsNone(second['next_offset'])
+            filtered=self.bible.illustration_browse(conn,letter='A',topic='assumptions',source='connect_1001')
+            self.assertEqual({entry['id'] for entry in filtered['entries']},{f'i-{i:03d}' for i in range(0,40,3)})
+            self.assertEqual(next(topic['illustration_count'] for topic in filtered['topics'] if topic['topic_key']=='assumption'),14)
+            self.assertEqual(self.bible.illustration_browse(conn,query='Assumptions')['topics'][0]['display_name'],'ASSUMPTION')
+            self.assertEqual(self.bible.illustration_browse(conn,letter='S')['topics'][0]['display_name'],'SELF CONTROL')
+            self.assertEqual(len(self.bible.illustration_browse(conn,topic='selfcontrol')['entries']),2)
+            self.assertEqual([topic['display_name'] for topic in self.bible.illustration_browse(conn,letter='R')['topics']],['RIGHT','RIGHTS'])
+            article=self.bible.illustration_article(conn,'i-000')
+            self.assertEqual(article['topic'],'ASSUMPTION');self.assertEqual(article['topics'],['ASSUMPTION','FAITH'])
+            self.assertEqual(article['body_text'],'Shared story.')
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),before,'Browsing merged topics modified original illustration data')
+
     def test_illustration_routes_are_private_read_only_and_validate_inputs(self):
         archive=self.illustration_fixture();path=Path(self.directory.name)/'sermon_illustrations.db'
         self.app.config['BIBLE_ILLUSTRATIONS_DATABASE']=str(path)
@@ -3678,6 +3717,100 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.bible.find_maxwell_note(path,1,'Galatians 6:7'))
         self.assertEqual(self.bible.find_maxwell_note(path,1,'1 John 3:16')['passage'],'1 John 3:16')
 
+    def test_wiersbe_chapter_themes_include_later_verses_and_preserve_source_read_only(self):
+        self.preview(initialize=True)
+        articles=[]
+        for number,start in enumerate((1,5,9,13,17,21),1):
+            end=min(23,start+3)
+            articles.append(f'<p>Chapter {number}</p><p>Original theme {number}</p><p>(Colossians 2:{start}-{end})</p>'
+                            f'<p>Original explanation {number} with <em>source emphasis</em> and its complete wording retained.</p>')
+        epub=self.fixture_epub([(f'chapter-{i}.xhtml',article) for i,article in enumerate(articles,1)],metadata='<title>Be Complete: Colossians</title><creator>Warren W. Wiersbe</creator>')
+        content=self.bible.parse_be_epub(epub,'Be Complete (Colossians)')
+        self.assertEqual(len(content['sections']),6)
+        source='be:chapter_fixture'
+        self.bible._publish_dictionary_sync(self.path,{source:dict(title=content['title'],drive_file_id='chapter_fixture',sha256='c'*64,fingerprint={})},
+                                             {source:content},'fixture_folder',[])
+        before=self.path.read_bytes()
+        query=self.base+'/api/commentary?book=Colossians&chapter=2&verse=2&scope=chapter'
+        data=self.client.get(query).json
+        self.assertEqual((data['reference'],data['scope']),('Colossians 2','chapter'))
+        self.assertEqual(len(data['themes']),6)
+        self.assertEqual(len(data['entries']),1)
+        self.assertTrue(all('blocks' not in theme for theme in data['themes']))
+        self.assertIn('Original explanation 1',str(data['entries']))
+        last=self.client.get(query+'&entry='+data['themes'][-1]['id']).json
+        self.assertEqual(last['selected_theme'],data['themes'][-1]['id'])
+        self.assertIn('Original explanation 6',str(last['entries']))
+        self.assertNotIn('Original explanation 1',str(last['entries']))
+        self.assertTrue(any('em' in run.get('marks',[]) for block in last['entries'][0]['blocks'] for run in block.get('runs',[])))
+        self.assertTrue(last['study_anchors'])
+        self.assertEqual(self.client.get(query.replace('chapter=2','chapter=3')).json['themes'],[])
+        self.assertEqual(self.client.get(query+'&entry='+'f'*32).status_code,404)
+        self.assertEqual(self.client.get(query.replace('scope=chapter','scope=invalid')).status_code,400)
+        self.assertEqual(self.client.get(query.replace('&scope=chapter','')+'&entry='+data['themes'][0]['id']).status_code,400)
+        self.assertEqual(self.path.read_bytes(),before)
+
+    def test_moody_chapter_includes_all_source_sections_without_four_entry_limit(self):
+        self.preview(initialize=True)
+        path=Path(self.directory.name)/'moody-chapter.db'
+        blocks=[dict(text=line,runs=[dict(text=line,marks=['strong'] if line.startswith('2:') else [])])
+                for line in ['COLOSSIANS','SOURCE AUTHOR','OUTLINE','I. A source outline (1:1-4:18)',
+                             *[text for start in (1,5,9,13,17,21) for text in
+                               (f'2:{start}-{min(23,start+3)}. Original section {start}.',f'The full original explanation for section {start}.')],
+                             '3:1-4. A neighboring chapter.','This chapter three explanation must not be included.']]
+        with closing(sqlite3.connect(path)) as conn,conn:
+            conn.execute('CREATE TABLE pij_library_documents(id INTEGER,title TEXT,author TEXT,format TEXT,source_type TEXT,searchable INTEGER,checksum TEXT,modified_time TEXT,indexed_at TEXT,chunk_count INTEGER)')
+            conn.execute("INSERT INTO pij_library_documents VALUES(1,'The Moody Bible Commentary','Source Author','epub','public_ebook',1,'hash','now','now',1)")
+            conn.execute('CREATE TABLE pij_library_chunks(document_id INTEGER,chunk_number INTEGER,page_start INTEGER,content TEXT)')
+            conn.execute('CREATE TABLE pij_library_source_formats(document_id INTEGER,checksum TEXT,modified_time TEXT,version INTEGER,sections_json TEXT)')
+            conn.execute('INSERT INTO pij_library_source_formats VALUES(1,?,?,1,?)',('hash','now',json.dumps([blocks])))
+        self.app.config['AI_DATABASE']=str(path);before=path.read_bytes()
+        query=self.base+'/api/commentary?series=moody&scope=chapter&book=Colossians&chapter=2&verse=1'
+        data=self.client.get(query).json
+        self.assertEqual(len(data['entries']),1)
+        self.assertEqual(data['entries'][0]['title'],'Colossians 2')
+        parts=data['entries'][0]['verse_sections']
+        self.assertEqual([part['ranges'][0]['verse'] for part in parts],[1,5,9,13,17,21])
+        self.assertEqual(parts[0]['start_block'],0)
+        self.assertEqual(parts[-1]['end_block'],len(data['entries'][0]['blocks']))
+        for part in parts:
+            self.assertGreater(part['end_block'],part['start_block'])
+            self.assertTrue(data['entries'][0]['blocks'][part['start_block']:part['end_block']])
+        self.assertNotIn('themes',data)
+        text=' '.join(block['text'] for entry in data['entries'] for block in entry['blocks'])
+        for start in (1,5,9,13,17,21):self.assertIn(f'full original explanation for section {start}',text)
+        self.assertNotIn('neighboring chapter',text)
+        self.assertTrue(any('strong' in run.get('marks',[]) for block in data['entries'][0]['blocks'] for run in block.get('runs',[])))
+        verse_data=self.client.get(query.replace('&scope=chapter','')).json
+        self.assertEqual(len(verse_data['entries']),1)
+        source_text='The full original explanation for section 1.'
+        self.assertEqual(next(anchor['key'] for anchor in data['study_anchors'] if anchor['text']==source_text),
+                         next(anchor['key'] for anchor in verse_data['study_anchors'] if anchor['text']==source_text))
+        later=self.client.get(query.replace('verse=1','verse=23')).json
+        self.assertEqual([(entry['title'],[block['text'] for block in entry['blocks']]) for entry in later['entries']],
+                         [(entry['title'],[block['text'] for block in entry['blocks']]) for entry in data['entries']])
+        self.assertEqual(path.read_bytes(),before)
+
+    def test_exalting_chapter_themes_include_cross_chapter_sources_and_select_without_verse_match(self):
+        self.preview(initialize=True)
+        catalogue=[]
+        for ordinal,(chapter,verse,end_chapter,end_verse) in enumerate(((1,20,2,3),(2,8,2,15),(2,20,2,23),(3,1,3,4)),1):
+            text=f'Original explanation {ordinal}.'
+            catalogue.append(dict(document_id=1,source_title='Exalting Jesus in Colossians',author='Source author',title=f'Source theme {ordinal}',
+                passage=f'Colossians {chapter}:{verse}-{end_chapter}:{end_verse}',source_section=ordinal,text=text,
+                ranges=[dict(book_id=51,chapter=chapter,verse=verse,end_chapter=end_chapter,end_verse=end_verse)],
+                blocks=[dict(type='paragraph',text=text,runs=[dict(text=text,marks=['em'])])]))
+        with closing(sqlite3.connect(self.path)) as conn,conn:
+            conn.execute('CREATE TABLE bible_local_commentaries(source_key TEXT,sections_json TEXT)')
+            conn.execute('INSERT INTO bible_local_commentaries VALUES(?,?)',('chapter-test',json.dumps(catalogue)))
+        query=self.base+'/api/commentary?series=exalting-jesus&scope=chapter&book=Colossians&chapter=2&verse=1'
+        data=self.client.get(query).json
+        self.assertEqual([theme['title'] for theme in data['themes']],['Source theme 1','Source theme 2','Source theme 3'])
+        last=self.client.get(query+'&entry='+data['themes'][-1]['id']).json
+        self.assertEqual(last['entries'][0]['title'],'Source theme 3')
+        self.assertEqual(last['entries'][0]['blocks'][0]['runs'],[dict(text='Original explanation 3.',marks=['em'])])
+        self.assertNotIn('Original explanation 4',str(last))
+
     def test_wiersbe_commentary_matches_source_ranges_and_keeps_original_continuations(self):
         self.preview(initialize=True)
         path=Path(self.directory.name)/'commentary-index.db'
@@ -3862,6 +3995,32 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertNotIn('separate homily',' '.join(b['text'] for b in hom['entries'][0]['blocks']))
         self.assertEqual(self.client.get(query+'&section=invalid').status_code,400)
         self.assertFalse(self.client.get(query.replace('verse=3','verse=5')).json['entries'])
+        chapter_query=query.replace('verse=3','verse=1')+'&scope=chapter'
+        chapter=self.client.get(chapter_query).json
+        self.assertNotIn('themes',chapter)
+        self.assertEqual(len(chapter['entries']),1)
+        self.assertEqual(chapter['entries'][0]['title'],'1 Timothy 1')
+        parts=chapter['entries'][0]['verse_sections']
+        self.assertEqual([part['ranges'][0]['verse'] for part in parts],[3,4])
+        self.assertEqual(parts[0]['start_block'],0)
+        self.assertEqual(parts[-1]['end_block'],len(chapter['entries'][0]['blocks']))
+        self.assertTrue(any(b.get('greek_source',{}).get('verse')==3 for b in chapter['entries'][0]['blocks']))
+        self.assertIn('next verse',str(chapter['entries']))
+        self.assertIn('continues the same',str(chapter['entries']))
+        self.assertNotIn('homiletics section',str(chapter['entries']))
+        chapter_greek=next(b for b in chapter['entries'][0]['blocks'] if b.get('greek_links'))
+        self.assertEqual(greek['_study_texts']['text']['key'],chapter_greek['_study_texts']['text']['key'])
+        self.assertEqual(self.client.get(chapter_query+'&entry='+'a'*32).status_code,404)
+        legacy=self.bible._commentary_entries([dict(entry,ranges=[dict(book_id=54,chapter=1,verse=3,end_chapter=1,end_verse=3)])],
+                                             54,1,None,chapter_titles=True)
+        restored=self.client.get(chapter_query+'&entry='+legacy['selected_theme']).json
+        self.assertIn('continues the same',str(restored['entries']))
+        self.assertNotIn('next verse',str(restored['entries']))
+        hom_chapter=self.client.get(chapter_query+'&section=homiletics').json
+        self.assertEqual([theme['title'] for theme in hom_chapter['themes']],['Faithful teaching.'])
+        self.assertNotIn('separate homily',str(hom_chapter['entries']))
+        selected_hom=self.client.get(chapter_query+'&section=homiletics&entry='+hom_chapter['themes'][0]['id']).json
+        self.assertEqual(selected_hom['selected_theme'],hom_chapter['themes'][0]['id'])
         self.assertIsNone(self.client.get(self.base+'/api/pulpit-greek?word=παρεκάλεσα&book=1+Timothy&chapter=1&verse=3').json['match'])
 
     def test_pulpit_exposition_keeps_chapter_introductions_and_resolves_relative_headings(self):
@@ -3972,6 +4131,36 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2').json['sermons'][0]['title'],'CHANGED HOPE')
         with self.client.session_transaction() as account:account.clear()
         self.assertEqual(self.client.get(self.base+'/api/sermons?book=Colossians&chapter=2').status_code,401)
+
+    def test_selection_palette_persists_for_bible_and_study_sources_with_legacy_colors(self):
+        headers=self.preview(initialize=True);self.publish_fixture()
+        verse=self.client.get(self.base+'/api/chapter').json['verses'][0]
+        content='An original commentary paragraph.'
+        provider=dict(available=True,entries=[dict(title='A source article',source_title='Wiersbe fixture',
+            author='Fixture',passage='Colossians 2:1-23',blocks=[dict(type='paragraph',text=content)])])
+        with patch.object(self.bible,'bible_study_be_commentary',return_value=provider):
+            data=self.client.get(self.base+'/api/commentary?book=Colossians&chapter=2&verse=1').json
+        anchor=next(a for a in data['study_anchors'] if a['text']==content)
+        spans={
+            'annotations':dict(verse_id=verse['id'],start_offset=0,end_offset=5,selected_text=verse['text'][:5]),
+            'study-saves':dict(token=anchor['token'],text=content,start_offset=0,end_offset=5,selected_text=content[:5]),
+        }
+        colors=['#ddf0ff','#fffeb3','#ffdef3','#e7fcc3','#bafeff','#ecdcff',
+                '#ffe66d','#9ee6b8','#9ed3ff','#ffd2df','#e5962d']
+        for endpoint,span in spans.items():
+            for color in colors:
+                with self.subTest(endpoint=endpoint,color=color):
+                    result=self.client.post(self.base+'/api/'+endpoint,
+                        json=dict(kind='highlight',color=color,ranges=[span]),headers=headers)
+                    self.assertEqual(result.status_code,201,result.json)
+            for color in ('#123456','red',[],{}):
+                with self.subTest(endpoint=endpoint,invalid=color):
+                    result=self.client.post(self.base+'/api/'+endpoint,
+                        json=dict(kind='highlight',color=color,ranges=[span]),headers=headers)
+                    self.assertEqual(result.status_code,400,result.json)
+        personal=self.client.get(self.base+'/api/personal').json
+        for key in ('annotations','study_annotations'):
+            self.assertEqual(sorted(item['color'] for item in personal[key]),sorted(colors))
 
     def test_study_saves_validate_signed_unicode_sources_preserve_order_and_are_account_scoped(self):
         headers=self.preview(initialize=True)
@@ -4304,6 +4493,273 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertIn('Genesis 1:1-2',html)
         self.assertIn('&lt;script&gt;untrusted&lt;/script&gt;',html)
         self.assertNotIn('<script>untrusted</script>',html)
+
+
+class SermonNotesIntegrationTests(unittest.TestCase):
+    login = BibleStudyIntegrationTests.login
+    preview = BibleStudyIntegrationTests.preview
+
+    def setUp(self):
+        BibleStudyIntegrationTests.setUp(self)
+        self.app.config.update(SERMON_NOTES_JOBS_INLINE=True)
+        self.headers=self.preview()
+        self.notes=self.base+'/api/notes'
+
+    def document(self,text='Matthew 9:35-38',theme='THE BIRTH OF A VISION'):
+        return dict(schema_version=1,theme=theme,text=text,content=dict(blocks=[
+            dict(type='main_point',runs=[dict(text='I - WHY SPIRITUAL VISION?',bold=True)]),
+            dict(type='subpoint',runs=[dict(text='A. Read II Kings 6:15-17.',italic=True,highlight='#ffe66d')]),
+            dict(type='paragraph',runs=[dict(text='Full sermon body, with Tagalog: pananampalataya. Greek: λόγος.')])]))
+
+    def create(self,**changes):
+        response=self.client.post(self.notes,json={'note':self.document(**changes)},headers=self.headers)
+        self.assertEqual(response.status_code,201,response.json)
+        return response.json['item']
+
+    def test_private_crud_validation_search_canonical_and_pdf(self):
+        path=Path(self.app.config['BIBLE_SERMON_NOTES_DATABASE'])
+        self.assertFalse(path.exists())
+        self.assertEqual(self.client.get(self.notes).json['notes'],[])
+        self.assertFalse(path.exists(),'Opening the reader created personal storage')
+        self.assertEqual(self.client.post(self.notes,json={'note':self.document()}).status_code,400)
+        for field in ('theme','text'):
+            note=self.document();note[field]=''
+            self.assertEqual(self.client.post(self.notes,json={'note':note},headers=self.headers).status_code,400)
+        self.assertFalse(path.exists())
+        item=self.create();identifier=item['id']
+        self.assertEqual(item['note']['primary_reference']['book_id'],40)
+        self.assertTrue(item['dirty'])
+        self.assertFalse(item['needs_review'])
+        doc=item['note'];doc['content']['blocks'][0]['runs'][0].update(onclick='alert(1)',highlight='url(evil)')
+        patched=self.client.patch(self.notes+'/'+identifier,json={'version':1,'note':doc},headers=self.headers)
+        self.assertEqual(patched.status_code,200)
+        run=patched.json['item']['note']['content']['blocks'][0]['runs'][0]
+        self.assertNotIn('onclick',run);self.assertNotIn('highlight',run)
+        self.assertEqual(self.client.patch(self.notes+'/'+identifier,json={'version':1,'note':doc},headers=self.headers).status_code,409)
+        self.assertEqual(len(self.client.get(self.notes+'?q=pananampalataya').json['notes']),1)
+        self.create(text='Genesis 1:1',theme='Genesis')
+        self.create(text='Unresolved passage',theme='For Review sermon')
+        ordered=self.client.get(self.notes).json['notes']
+        self.assertEqual([n['theme'] for n in ordered],['Genesis','THE BIRTH OF A VISION','For Review sermon'])
+        self.assertTrue(ordered[-1]['needs_review'])
+        pdf=self.client.get(self.notes+'/'+identifier+'/pdf')
+        self.assertEqual(pdf.mimetype,'application/pdf')
+        from pypdf import PdfReader
+        text='\n'.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.data)).pages)
+        self.assertIn('Theme: THE BIRTH OF A VISION',text)
+        self.assertIn('Matthew 9:35-38',text)
+        self.assertIn('WHY SPIRITUAL VISION?',text)
+        self.assertIn('λόγος',text)
+        self.login(username='Other',pastor=True);self.client.get(self.base)
+        with self.client.session_transaction() as account: other_headers={'X-CSRF-Token':account['bible_study_csrf']}
+        self.assertEqual(self.client.get(self.notes).json['notes'],[])
+        for suffix in ('','/pdf'):
+            self.assertEqual(self.client.get(self.notes+'/'+identifier+suffix).status_code,404)
+        self.assertEqual(self.client.delete(self.notes+'/'+identifier,json={'version':2},headers=other_headers).status_code,404)
+        self.assertEqual(self.client.post(self.notes+'/convert',json={},headers=other_headers).status_code,403)
+        with self.client.session_transaction() as account: account.clear()
+        self.assertEqual(self.client.get(self.notes).status_code,401)
+
+    def remote(self):
+        records={}
+        def endpoint(app,user_key,action,**payload):
+            user=records.setdefault(user_key,{})
+            def summary(record):
+                return dict(note_id=record['note_id'],version=record['version'],deleted=record['deleted'],
+                    theme=(record.get('note') or {}).get('theme','Deleted'),text=(record.get('note') or {}).get('text','For Review'),
+                    sha256=hashlib.sha256(json.dumps(record).encode()).hexdigest())
+            if action=='list':return dict(ok=True,notes=[summary(r) for r in user.values()],index_version=len(user),next_after=None)
+            if action=='get':
+                record=user[payload['note_id']]
+                return dict(ok=True,record=copy.deepcopy(record)) if record['version']==payload.get('version',record['version']) else dict(ok=False,code='CHANGED')
+            old=user.get(payload['note_id'])
+            if old and old['request_id']==payload['request_id']:return dict(ok=True,item=summary(old),replayed=True)
+            if (old['version'] if old else 0)!=payload['base_version']:return dict(ok=False,code='CONFLICT',current=summary(old) if old else None)
+            record=dict(note_id=payload['note_id'],user_key=self.bible.sermon_notes_drive_key(user_key),version=payload['base_version']+1,
+                request_id=payload['request_id'],deleted=action=='delete',note=copy.deepcopy(payload.get('note')))
+            user[payload['note_id']]=record
+            return dict(ok=True,item=summary(record))
+        return records,endpoint
+
+    def test_drive_transport_encodes_existing_roles_and_rejects_foreign_records(self):
+        self.app.config.update(SERMON_NOTES_DRIVE_SCRIPT_URL='https://script.google.com/macros/s/fixture/exec',
+                               SERMON_NOTES_DRIVE_API_TOKEN='x'*64)
+        with patch.object(self.bible.requests,'post') as post:
+            response=post.return_value.__enter__.return_value
+            response.iter_content.return_value=[b'{"ok":true,"notes":[],"index_version":0,"next_after":null}']
+            self.bible.sermon_notes_remote(self.app,'area overseer:pijeme','list')
+            payload=post.call_args.kwargs['json']
+            self.assertEqual(payload['user_key'],'area%20overseer:pijeme')
+            self.assertEqual(payload['purpose'],'sermon_notes')
+        record=dict(note_id='1'*32,user_key='pastor:someone-else',version=1,deleted=False,note=self.document())
+        with self.assertRaises(ValueError):
+            self.bible._notes_remote_record(record,dict(note_id='1'*32,version=1,deleted=False),'area overseer:pijeme')
+
+    def superscript_pdf(self):
+        from reportlab.pdfgen import canvas
+        output=io.BytesIO();c=canvas.Canvas(output)
+        c.setFont('Helvetica',11);c.drawString(42,790,'Text: Genesis 12:1-3 The Lord said to Abram: go to the land I will show you.')
+        c.drawString(58,770,'I will make you a great nation and bless you.')
+        c.setFont('Helvetica',7);c.drawString(49,774,'2')
+        c.setFillColorRGB(0,0,1);c.drawString(320,774,'[a]')
+        c.setFillColorRGB(0,0,0);c.setFont('Helvetica',11);c.drawString(42,740,'Theme: A VISION')
+        c.setFont('Helvetica-Bold',13);c.drawString(42,710,'I - A MAIN POINT')
+        c.setFont('Helvetica-Oblique',11);c.drawString(60,690,'A supporting thought that must be preserved.')
+        c.setFont('Helvetica',8);c.drawString(290,20,'1');c.save()
+        return output.getvalue()
+
+    def test_conversion_keeps_quoted_scripture_and_inline_markers_in_document(self):
+        source=dict(filename='Vision.pdf',drive_file_id='fixture-vision')
+        note=self.bible.convert_sermon_pdf(self.superscript_pdf(),source)
+        self.assertEqual(note['text'],'Genesis 12:1-3')
+        blocks=note['content']['blocks']
+        self.assertEqual([b['type'] for b in blocks[:2]],['theme','text'])
+        self.assertEqual(''.join(r['text'] for r in blocks[0]['runs']),'Theme: A VISION')
+        quoted=' '.join(''.join(r['text'] for r in b['runs']) for b in blocks[2:])
+        self.assertIn('The Lord said to Abram',quoted)
+        self.assertIn('I will make you a great nation',quoted)
+        self.assertTrue(any(r.get('superscript') and '2' in r['text'] for b in blocks for r in b['runs']))
+        self.assertFalse(any(''.join(r['text'] for r in b['runs']).strip() in ('2','[a]','[','a',']','1') for b in blocks))
+        self.assertEqual(note['origin']['converter_version'],self.bible.NOTES_CONVERTER_VERSION)
+
+    def test_repair_preserves_manual_styles_and_keeps_authored_text(self):
+        data=self.superscript_pdf();source=dict(filename='Vision.pdf',drive_file_id='fixture-vision')
+        old=self.bible._convert_sermon_pdf_legacy(data,source)
+        target=next(b for b in old['content']['blocks'] if 'A supporting thought' in ''.join(r['text'] for r in b['runs']))
+        target['runs'][0]['highlight']='#9ee6b8'
+        fixed,mode=self.bible.repair_converted_sermon(data,source,old)
+        self.assertEqual(mode,'repaired')
+        self.assertTrue(any(r.get('highlight')=='#9ee6b8' for b in fixed['content']['blocks'] for r in b['runs']))
+        target['runs'][0]['text']+=' My handwritten addition.'
+        kept,mode=self.bible.repair_converted_sermon(data,source,old)
+        self.assertEqual(mode,'edited_text_kept')
+        self.assertIn('My handwritten addition.',json.dumps(kept))
+
+    def test_convert_repairs_old_imports_with_backup_and_is_repeatable(self):
+        source=dict(filename='Vision.pdf',drive_file_id='fixture-vision')
+        old=self.bible._convert_sermon_pdf_legacy(self.superscript_pdf(),source)
+        item=self.client.post(self.notes,json={'note':old},headers=self.headers).json['item']
+        with self.bible.sermon_notes_storage(self.app,True) as conn:
+            conn.execute('UPDATE sermon_notes SET source_key=? WHERE id=?',('sermon-pdf:fixture-vision',item['id']))
+        main=Path(self.directory.name)/'repair-catalog.db';self.app.config['BIBLE_STUDY_LIBRARY_DATABASE']=str(main)
+        with closing(sqlite3.connect(main)) as db,db:
+            db.execute('CREATE TABLE sermon_library_files(id INTEGER,drive_file_id TEXT,filename TEXT,is_active INTEGER)')
+            db.execute('INSERT INTO sermon_library_files VALUES(1,?,?,1)',('fixture-vision','Vision.pdf'))
+        with patch('sermon_ebooks.get_drive_session',return_value=Mock()),patch('sermon_ebooks.download_drive_file_bytes',return_value=self.superscript_pdf()) as download:
+            job=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
+            self.assertEqual(job['repaired'],1,job)
+            backup=Path(self.app.config['BIBLE_SERMON_NOTES_DATABASE']).parent/'backups'/job['backup']
+            self.assertTrue(backup.is_file())
+            repaired=self.client.get(self.notes+'/'+item['id']).json['item']
+            self.assertEqual(repaired['version'],item['version']+1)
+            self.assertEqual(repaired['note']['origin']['converter_version'],'2')
+            again=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
+            self.assertEqual(again['skipped'],1,again)
+            self.assertEqual(download.call_count,1)
+            self.assertEqual(len(self.client.get(self.notes).json['notes']),1)
+
+    def test_two_way_restore_conflicts_deletions_and_retry(self):
+        item=self.create();identifier=item['id']
+        records,endpoint=self.remote()
+        with patch.object(self.bible,'sermon_notes_remote',side_effect=endpoint):
+            job=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+            self.assertFalse(job.get('error'),job)
+            self.assertEqual(job['pushed'],1)
+            self.assertFalse(self.client.get(self.notes+'/'+identifier).json['item']['dirty'])
+            user_key=next(iter(records))
+            # Simulate a new installation without touching the first device DB.
+            original=self.app.config['BIBLE_SERMON_NOTES_DATABASE']
+            self.app.config['BIBLE_SERMON_NOTES_DATABASE']=str(Path(self.directory.name)/'new-device.db')
+            restored=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+            self.assertEqual(restored['pulled'],1,restored)
+            new=self.client.get(self.notes+'/'+identifier).json['item']
+            self.assertEqual(new['note']['content'],item['note']['content'])
+            # Edit device B and back it up. Device A edits its older revision.
+            edited=new['note'];edited['theme']='From new device'
+            self.client.patch(self.notes+'/'+identifier,json={'version':new['version'],'note':edited},headers=self.headers)
+            self.client.post(self.notes+'/sync',json={},headers=self.headers)
+            self.app.config['BIBLE_SERMON_NOTES_DATABASE']=original
+            edited=item['note'];edited['theme']='My conflicting local edit'
+            self.client.patch(self.notes+'/'+identifier,json={'version':1,'note':edited},headers=self.headers)
+            conflict=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+            self.assertEqual(conflict['conflicts'],1,conflict)
+            local=self.client.get(self.notes+'/'+identifier).json['item']
+            self.assertEqual(local['note']['theme'],'My conflicting local edit')
+            resolved=self.client.post(self.notes+'/'+identifier+'/resolve',json={'version':local['version'],'choice':'copy'},headers=self.headers)
+            self.assertEqual(resolved.status_code,200,resolved.json)
+            self.assertEqual(self.client.get(self.notes+'/'+identifier).json['item']['note']['theme'],'From new device')
+            self.assertIn('local copy',self.client.get(self.notes+'/'+resolved.json['copy_id']).json['item']['note']['theme'])
+            self.client.post(self.notes+'/sync',json={},headers=self.headers)
+            # Remote deletion must hide a clean note without resurrecting it.
+            remote=records[user_key][identifier];remote.update(version=remote['version']+1,deleted=True,note=None,request_id='9'*32)
+            self.client.post(self.notes+'/sync',json={},headers=self.headers)
+            self.assertEqual(self.client.get(self.notes+'/'+identifier).status_code,404)
+            self.assertTrue(records[user_key][identifier]['deleted'])
+            # An acknowledged upload whose response is lost retries the same mutation.
+            another=self.create(theme='Interrupted upload');lost=[True]
+            def flaky(app,key,action,**payload):
+                result=endpoint(app,key,action,**payload)
+                if action=='put' and payload['note_id']==another['id'] and lost[0]:
+                    lost[0]=False;raise ValueError('Simulated timeout after remote commit')
+                return result
+            with patch.object(self.bible,'sermon_notes_remote',side_effect=flaky):
+                interrupted=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+                self.assertIn('error',interrupted)
+                retried=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+                self.assertFalse(retried.get('error'),retried)
+            self.assertEqual(records[user_key][another['id']]['version'],1)
+            self.assertFalse(self.client.get(self.notes+'/'+another['id']).json['item']['dirty'])
+
+    def test_edits_during_upload_remain_pending_and_unsynced_deletion_stays_local(self):
+        item=self.create();records,endpoint=self.remote();edited=[False]
+        def concurrent(app,key,action,**payload):
+            result=endpoint(app,key,action,**payload)
+            if action=='put' and not edited[0]:
+                edited[0]=True
+                with self.bible.sermon_notes_storage(app,True) as conn:
+                    note=copy.deepcopy(payload['note']);note['theme']='Newer live edit'
+                    conn.execute('UPDATE sermon_notes SET note_json=?,version=version+1 WHERE user_key=? AND id=?',
+                        (json.dumps(note),key,item['id']))
+            return result
+        with patch.object(self.bible,'sermon_notes_remote',side_effect=concurrent):
+            job=self.client.post(self.notes+'/sync',json={},headers=self.headers).json['job']
+            self.assertEqual(job['pending'],1,job)
+            live=self.client.get(self.notes+'/'+item['id']).json['item']
+            self.assertEqual(live['note']['theme'],'Newer live edit');self.assertTrue(live['dirty'])
+            self.client.post(self.notes+'/sync',json={},headers=self.headers)
+        unsynced=self.create(theme='Never uploaded')
+        self.assertEqual(self.client.delete(self.notes+'/'+unsynced['id'],json={'version':1},headers=self.headers).status_code,200)
+        with patch.object(self.bible,'sermon_notes_remote',side_effect=endpoint):self.client.post(self.notes+'/sync',json={},headers=self.headers)
+        self.assertFalse(any(unsynced['id'] in user for user in records.values()))
+
+    def test_pdf_conversion_retains_styles_page_boundaries_and_repeat_import_keeps_edits(self):
+        from reportlab.pdfgen import canvas
+        output=io.BytesIO();c=canvas.Canvas(output)
+        c.setFont('Helvetica-Bold',11);c.drawString(42,790,'Theme: A VISION')
+        c.setFont('Helvetica',11);c.drawString(42,770,'Text: Matthew 9:35-38')
+        c.setFont('Helvetica-Bold',13);c.drawString(42,740,'I - A MAIN POINT')
+        c.setFont('Helvetica-Oblique',11);c.drawString(64,720,'A. An italic subpoint')
+        c.showPage();c.setFont('Helvetica',11);c.drawString(42,790,'Second page remains.');c.save()
+        data=output.getvalue();source=dict(filename='Vision.pdf',drive_file_id='pdf-vision',manual_text='',manual_theme='',detected_text='',detected_theme='')
+        note=self.bible.convert_sermon_pdf(data,source)
+        self.assertEqual(note['theme'],'A VISION');self.assertEqual(note['primary_reference']['book_id'],40)
+        blocks=note['content']['blocks']
+        self.assertTrue(any(r.get('bold') and r.get('font_size')==13 for b in blocks for r in b['runs']))
+        self.assertTrue(any(r.get('italic') for b in blocks for r in b['runs']))
+        self.assertTrue(any(b.get('page_break') for b in blocks))
+        main=Path(self.directory.name)/'library.db';self.app.config['BIBLE_STUDY_LIBRARY_DATABASE']=str(main)
+        with closing(sqlite3.connect(main)) as conn, conn:
+            conn.execute('CREATE TABLE sermon_library_files (id INTEGER,drive_file_id TEXT,filename TEXT,is_active INTEGER)')
+            conn.execute('INSERT INTO sermon_library_files VALUES(1,?,?,1)',('pdf-vision','Vision.pdf'))
+        with patch('sermon_ebooks.get_drive_session',return_value=Mock()),patch('sermon_ebooks.download_drive_file_bytes',return_value=data):
+            result=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
+            self.assertEqual(result['converted'],1,result)
+            item=self.client.get(self.notes).json['notes'][0]
+            doc=self.client.get(self.notes+'/'+item['id']).json['item']['note'];doc['theme']='My manual correction'
+            self.client.patch(self.notes+'/'+item['id'],json={'version':item['version'],'note':doc},headers=self.headers)
+            repeated=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
+            self.assertEqual(repeated['skipped'],1,repeated)
+            self.assertEqual(self.client.get(self.notes+'/'+item['id']).json['item']['note']['theme'],'My manual correction')
 
 
 if __name__ == '__main__':

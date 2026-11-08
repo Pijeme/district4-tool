@@ -7,11 +7,12 @@ ordinary reading requests never create or migrate a database.
 import argparse
 import copy
 import ctypes
+import difflib
 from collections.abc import Sequence
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
-from html import unescape as unescape_html
+from html import escape as escape_html, unescape as unescape_html
 from html.parser import HTMLParser
 import hmac
 import hashlib
@@ -20,6 +21,7 @@ import html.entities
 import io
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import posixpath
@@ -30,10 +32,11 @@ import threading
 import tempfile
 import time
 import unicodedata
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+import requests
 
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, session, url_for
 from itsdangerous import URLSafeSerializer, BadSignature
@@ -50,6 +53,11 @@ DICTIONARY_LABELS = {'harper': 'HarperCollins', 'mounce': 'Mounce', 'vine': 'Vin
 DICTIONARY_PRESENTATION_VERSION = 1
 APPLICATION_ID = 0x4249424C
 MAX_JSON_BYTES = 16384
+# The selection palette plus existing colors, so older saved marks remain valid.
+ANNOTATION_COLORS = frozenset({
+    '#ddf0ff', '#fffeb3', '#ffdef3', '#e7fcc3', '#bafeff', '#ecdcff',
+    '#ffe66d', '#9ee6b8', '#9ed3ff', '#ffd2df', '#e5962d',
+})
 STUDY_SAVE_SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS bible_study_saves (
     id TEXT PRIMARY KEY,user_key TEXT NOT NULL,group_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('highlight','underline','note','bookmark')),
@@ -421,7 +429,9 @@ def _thompson_glyphs(page):
             box = text.get_charbox(index)
             pdfium.raw.FPDFText_GetFillColor(text, index, *[ctypes.byref(v) for v in channels])
             red, green, blue, alpha = (v.value for v in channels)
-            yield dict(char=char, font=font, size=abs(matrix.d), x=box[0], y=matrix.f,
+            yield dict(char=char, font=font, size=abs(matrix.d), x=box[0], right=box[2], y=matrix.f,
+                       color=f'#{red:02x}{green:02x}{blue:02x}',
+                       font_size=pdfium.raw.FPDFText_GetFontSize(text, index),
                        red=alpha>0 and red>100 and red>green*1.7 and red>blue*1.4, index=index)
     finally:
         text.close()
@@ -1836,7 +1846,7 @@ def parse_be_epub(data, title, progress=None):
     return dict(title=title,volume_key=normalize_term(title),sections=sections,assets=assets,warnings=warnings)
 
 
-def bible_study_be_commentary(conn,book_id,chapter,verse):
+def bible_study_be_commentary(conn,book_id,chapter,verse,**chapter_options):
     if conn.execute('PRAGMA user_version').fetchone()[0]<8: return dict(available=False,entries=[])
     rows=conn.execute('''SELECT c.*,s.title AS source_title FROM bible_commentary_sections c
         JOIN bible_commentary_versions v ON v.id=c.version_id JOIN bible_sources s ON s.id=v.source_id
@@ -1844,15 +1854,19 @@ def bible_study_be_commentary(conn,book_id,chapter,verse):
         AND EXISTS(SELECT 1 FROM json_each(c.ranges_json) span WHERE json_extract(span.value,'$.book_id')=?
             AND json_extract(span.value,'$.chapter')*200+json_extract(span.value,'$.verse')<=?
             AND json_extract(span.value,'$.end_chapter')*200+json_extract(span.value,'$.end_verse')>=?)''',
-        (book_id,chapter*200+verse,chapter*200+verse)).fetchall()
+        (book_id,chapter*200+(verse if verse is not None else 176),chapter*200+(verse if verse is not None else 1))).fetchall()
     catalogue=[]
     for row in rows:
         spans=json.loads(row['ranges_json'])
-        if not any(s['book_id']==book_id and (s['chapter'],s['verse'])<=(chapter,verse)<=(s['end_chapter'],s['end_verse']) for s in spans): continue
+        if not any(s['book_id']==book_id and (s['chapter'],s['verse'])<=(chapter,verse if verse is not None else 176)
+                   and (s['end_chapter'],s['end_verse'])>=(chapter,verse if verse is not None else 1) for s in spans): continue
         catalogue.append(dict(document_id=row['version_id'],source_title=row['source_title'],author='Warren W. Wiersbe',
             title=row['title'],passage=row['passage'],source_section=row['ordinal'],ranges=spans,
-            text=row['plain_text'],blocks=_be_article_blocks(json.loads(row['content_json']),row['plain_text'])))
-    result=_commentary_entries(catalogue,book_id,chapter,verse)
+            text=row['plain_text']))
+    result=_commentary_entries(catalogue,book_id,chapter,verse,**chapter_options)
+    for entry in result['entries']:
+        row=next(row for row in rows if row['version_id']==entry['document_id'] and row['ordinal']==entry['source_section'])
+        entry['blocks']=_be_article_blocks(json.loads(row['content_json']),row['plain_text'])
     result['available']=bool(conn.execute('SELECT 1 FROM bible_commentary_versions WHERE is_active=1').fetchone())
     return result
 
@@ -4738,23 +4752,46 @@ def _format_exalting_outline(blocks):
     return blocks
 
 
-def _commentary_entries(catalogue, book_id, chapter, verse, *, format_outline=False):
+def _commentary_entries(catalogue, book_id, chapter, verse, *, format_outline=False,
+                        chapter_titles=False, entry_key=None, selected_verse=1):
     matches = []
     for section in catalogue:
         for span in section['ranges']:
-            if (span['book_id'] == book_id and (span['chapter'], span['verse']) <= (chapter, verse)
-                    <= (span['end_chapter'], span['end_verse'])):
+            if (span['book_id'] == book_id and (span['chapter'], span['verse']) <= (chapter, verse if verse is not None else 176)
+                    and (span['end_chapter'], span['end_verse']) >= (chapter, verse if verse is not None else 1)):
                 width = (span['end_chapter']-span['chapter'])*200+span['end_verse']-span['verse']
                 matches.append((width, section))
                 break
-    if format_outline:
+    if format_outline and verse is not None:
         # Prefer the chapter article over the same volume's broad introduction.
         chapter_documents = {section['document_id'] for _, section in matches if any(
             span['book_id']==book_id and span['chapter']==chapter==span['end_chapter'] for span in section['ranges'])}
         matches = [(width, section) for width, section in matches if section['document_id'] not in chapter_documents or any(
             span['book_id']==book_id and span['chapter']==chapter==span['end_chapter'] for span in section['ranges'])]
+    result=dict(available=bool(catalogue))
+    if verse is None:
+        def chapter_order(item):
+            section=item[1]
+            first=min(max(1,span['verse'] if span['chapter']==chapter else 1) for span in section['ranges']
+                      if span['book_id']==book_id and span['chapter']<=chapter<=span['end_chapter'])
+            return first,str(section['document_id']),section['source_section'],section['title']
+        matches.sort(key=chapter_order)
+    else:
+        matches=sorted(matches,key=lambda item:item[0])[:4]
+    if chapter_titles:
+        def theme_id(section):
+            identity=[section[key] for key in ('document_id','source_title','source_section','title','passage')]
+            return hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()[:32]
+        themes=[dict(id=theme_id(section),**{key:section[key] for key in ('title','source_title','passage')}) for _,section in matches]
+        chosen=next((item for item in matches if theme_id(item[1])==entry_key),None) if entry_key else None
+        if not entry_key:
+            covering=[item for item in matches if any(span['book_id']==book_id and
+                (span['chapter'],span['verse'])<=(chapter,selected_verse)<=(span['end_chapter'],span['end_verse']) for span in item[1]['ranges'])]
+            chosen=min(covering,key=lambda item:item[0]) if covering else next(iter(matches),None)
+        result.update(themes=themes,selected_theme=theme_id(chosen[1]) if chosen else None)
+        matches=[chosen] if chosen else []
     entries = []
-    for _, section in sorted(matches, key=lambda item: item[0])[:4]:
+    for _, section in matches:
         blocks = section.get('blocks') or _study_source_blocks(section['text'])
         if not section.get('blocks'):
             for block in blocks:
@@ -4763,10 +4800,10 @@ def _commentary_entries(catalogue, book_id, chapter, verse, *, format_outline=Fa
             _format_exalting_outline(blocks)
         entries.append({key: section[key] for key in ('document_id','source_title','author','title','passage','source_section')}
                        | dict(blocks=blocks))
-    return dict(available=bool(catalogue), entries=entries)
+    return dict(result,entries=entries)
 
 
-def wiersbe_commentary(ai_database, book_id, chapter, verse):
+def wiersbe_commentary(ai_database, book_id, chapter, verse,**chapter_options):
     path = Path(ai_database).resolve()
     if not path.is_file():
         return dict(available=False, entries=[])
@@ -4783,7 +4820,7 @@ def wiersbe_commentary(ai_database, book_id, chapter, verse):
         unique.setdefault(row['title'].split(' (', 1)[0].casefold(), json.dumps(dict(row), sort_keys=True))
     catalogue = _wiersbe_catalogue(str(path), tuple(unique.values()))
     selected=_passage_catalogue(catalogue,book_id,chapter,verse)
-    result=_commentary_entries(selected, book_id, chapter, verse)
+    result=_commentary_entries(selected, book_id, chapter, verse,**chapter_options)
     result['available']=bool(catalogue)
     for entry in result['entries']:
         section=next(item for item in selected if item['document_id']==entry['document_id']
@@ -4902,10 +4939,10 @@ def _exalting_catalogue(path, documents):
     return sections
 
 
-def exalting_commentary(ai_database, book_id, chapter, verse, local_catalogue=()):
+def exalting_commentary(ai_database, book_id, chapter, verse, local_catalogue=(),**chapter_options):
     path = Path(ai_database).resolve()
     if not path.is_file():
-        return _commentary_entries(local_catalogue,book_id,chapter,verse,format_outline=True)
+        return _commentary_entries(local_catalogue,book_id,chapter,verse,format_outline=True,**chapter_options)
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=3)) as conn:
         conn.row_factory = sqlite3.Row
         documents = conn.execute('''SELECT id,title,author,format,checksum,modified_time,indexed_at,chunk_count
@@ -4919,7 +4956,7 @@ def exalting_commentary(ai_database, book_id, chapter, verse, local_catalogue=()
     indexed = _exalting_catalogue(str(path),tuple(unique.values()))
     titles = indexed.source_titles() if isinstance(indexed,_ReaderCatalogue) else {section['source_title'].casefold() for section in indexed}
     combined = list(_passage_catalogue(indexed,book_id,chapter,verse)) + [section for section in local_catalogue if section['source_title'].casefold() not in titles]
-    result=_commentary_entries(combined,book_id,chapter,verse,format_outline=True)
+    result=_commentary_entries(combined,book_id,chapter,verse,format_outline=True,**chapter_options)
     result['available']=bool(indexed) or bool(combined)
     return result
 
@@ -5043,7 +5080,25 @@ def _moody_catalogue(path, documents):
     return sections
 
 
-def moody_commentary(ai_database, book_id, chapter, verse):
+def _continuous_commentary_chapter(result,book_id,chapter,source_sections):
+    """Join chapter paragraphs while retaining their original selection anchors."""
+    if result['entries']:
+        entries=result['entries'];blocks=[];verse_sections=[]
+        ranges={(section['document_id'],section['source_section'],section['title']):section['ranges'] for section in source_sections}
+        for entry in entries:
+            start=len(blocks)
+            blocks.extend(dict(block,source_title=entry['source_title'],title=entry['title']) for block in entry['blocks'])
+            spans=ranges.get((entry['document_id'],entry['source_section'],entry['title']),[])
+            if spans and len(blocks)>start:
+                verse_sections.append(dict(ranges=spans,start_block=start,end_block=len(blocks)))
+        reference=f'{BOOKS[book_id-1][0]} {chapter}'
+        result['entries']=[dict(entries[0],title=reference,passage=reference,blocks=blocks,verse_sections=verse_sections,
+            author='; '.join(dict.fromkeys(entry['author'] for entry in entries if entry['author'])))]
+    result.pop('themes',None);result.pop('selected_theme',None)
+    return result
+
+
+def moody_commentary(ai_database, book_id, chapter, verse,**chapter_options):
     path=Path(ai_database).resolve()
     if not path.is_file():return dict(available=False,entries=[])
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=3)) as conn:
@@ -5056,11 +5111,12 @@ def moody_commentary(ai_database, book_id, chapter, verse):
     encoded=tuple(json.dumps(doc,sort_keys=True) for doc in documents[:1])
     catalogue=_moody_catalogue(str(path),encoded)
     selected=_passage_catalogue(catalogue,book_id,chapter,verse)
-    result=_commentary_entries(selected,book_id,chapter,verse)
+    result=_commentary_entries(selected,book_id,chapter,verse,**chapter_options)
     result['available']=bool(catalogue)
     for entry in result['entries']:
         section=next(item for item in selected if item['title']==entry['title'] and item['source_section']==entry['source_section'])
         entry['blocks']=_rich_source_blocks(path,section)
+    if verse is None:_continuous_commentary_chapter(result,book_id,chapter,selected)
     return result
 
 
@@ -5124,7 +5180,7 @@ def _pulpit_commentary_catalogue(path, documents):
     return sections
 
 
-def pulpit_commentary(ai_database, book_id, chapter, verse, section_kind='exposition'):
+def pulpit_commentary(ai_database, book_id, chapter, verse, section_kind='exposition',**chapter_options):
     path=Path(ai_database).resolve()
     if not path.is_file():return dict(available=False,entries=[])
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as conn:
@@ -5140,19 +5196,26 @@ def pulpit_commentary(ai_database, book_id, chapter, verse, section_kind='exposi
         if volume:unique.setdefault(volume[1],json.dumps(doc,sort_keys=True))
     catalogue=_pulpit_commentary_catalogue(str(path),tuple(unique.values()))
     selected=[section for section in _passage_catalogue(catalogue,book_id,chapter,verse) if section['section_kind']==section_kind]
-    result=_commentary_entries(selected,book_id,chapter,verse)
+    # Older saved reading anchors can still reopen their exact section URL.
+    # Normal chapter reading never sends an entry filter for exposition.
+    whole_chapter=verse is None and section_kind=='exposition' and not chapter_options.get('entry_key')
+    if whole_chapter:chapter_options={}
+    result=_commentary_entries(selected,book_id,chapter,verse,**chapter_options)
     result['available']=bool(catalogue)
     greek=re.compile(r'[\u0370-\u03ff\u1f00-\u1fff][\u0370-\u03ff\u1f00-\u1fff\u0300-\u036f]*(?:[ \t]+[\u0370-\u03ff\u1f00-\u1fff][\u0370-\u03ff\u1f00-\u1fff\u0300-\u036f]*)*')
     for entry in result['entries']:
         section=next(s for s in selected if s['document_id']==entry['document_id'] and
             s['source_section']==entry['source_section'] and s['title']==entry['title'])
         entry['blocks']=_rich_source_blocks(path,section)
+        source_verse=verse if verse is not None else next((span['verse'] if span['chapter']==chapter else 1
+            for span in section['ranges'] if span['book_id']==book_id and span['chapter']<=chapter<=span['end_chapter']),1)
         for block in entry['blocks']:
             block['greek_links']=[dict(start=m.start(),end=m.end()) for m in greek.finditer(block['text'])
                 if any(unicodedata.category(char).startswith('L') for char in m[0])]
             if block['greek_links']:
                 block['greek_source']=dict(source_title=entry['source_title'],passage=entry['passage'],
-                    source_section=entry['source_section'],book_id=book_id,chapter=chapter,verse=verse)
+                    source_section=entry['source_section'],book_id=book_id,chapter=chapter,verse=source_verse)
+    if whole_chapter:_continuous_commentary_chapter(result,book_id,chapter,selected)
     return result
 
 
@@ -6118,6 +6181,49 @@ ILLUSTRATION_SOURCES = {'connect_1001':'1001 Illustrations That Connect',
     'best_2000':'The Best Sermon Illustrations', 'sermonillustrations_web':'SermonIllustrations.com'}
 ILLUSTRATION_APPLICATION_ID = 0x494C4C55
 ILLUSTRATION_IMPORT_VERSION = 2
+# Reviewed equivalents only. In particular RIGHT/RIGHTS, TONGUE/TONGUES,
+# VISION/VISIONS and MAN/MEN remain distinct topics.
+ILLUSTRATION_TOPIC_ALIASES = {
+    'accomplishments':'accomplishment', 'appearances':'appearance', 'arguments':'argument',
+    'assumptions':'assumption', 'attitudes':'attitude', 'babies':'baby', 'beginnings':'beginning',
+    'beliefs':'belief', 'blessings':'blessing', 'challenges':'challenge', 'choices':'choice',
+    'consequences':'consequence', 'convictions':'conviction', 'decisions':'decision', 'desires':'desire',
+    'directions':'direction', 'disciplines':'discipline', 'distractions':'distraction', 'dreams':'dream',
+    'emotions':'emotion', 'expectations':'expectation', 'extremes':'extreme', 'factions':'faction',
+    'fathers':'father', 'funerals':'funeral', 'gifts':'gift', 'girls':'girl', 'grudges':'grudge',
+    'heroes':'hero', 'investments':'investment', 'life spans':'life span', 'memories':'memory',
+    'miracles':'miracle', 'missions':'mission', 'mistakes':'mistake', 'mothers':'mother',
+    'mysteries':'mystery', 'neighbors':'neighbor', 'obstacles':'obstacle', 'prayers':'prayer',
+    'prisons':'prison', 'promises':'promise', 'religions':'religion', 'resolutions':'resolution',
+    'secrets':'secret', 'standards':'standard', 'struggles':'struggle', 'talents':'talent',
+    'threats':'threat', 'traditions':'tradition', 'uncertainties':'uncertainty', 'values':'value',
+    'warnings':'warning', 'wives':'wife', 'women and men':'men and women',
+    'children raising':'child rearing', 'child raising':'child rearing',
+    'selfcontrol':'self control', 'self self controlled':'self control',
+    'self centered ness':'self centeredness', 'self centered':'self centeredness',
+    'self self centered':'self centeredness', 'self centred':'self centeredness',
+    'self centredness':'self centeredness', 'self self pity':'self pity',
+    'self righteous':'self righteousness', 'self self righteous':'self righteousness',
+    'self selfish':'selfishness',
+}
+
+
+def _illustration_topic_key(value):
+    key=normalize_term(value or '')
+    key=re.sub(r"['’]",'',key)
+    key=re.sub(r'[\W_]+',' ',key).strip()
+    return ILLUSTRATION_TOPIC_ALIASES.get(key,key)
+
+
+def _illustration_topic_groups(conn):
+    """Merge navigation labels at read time; original imports and story IDs stay intact."""
+    groups={};lookup={}
+    for row in conn.execute('SELECT topic_key,display_name FROM browse_topics'):
+        label=row['display_name'] or row['topic_key'];key=_illustration_topic_key(label)
+        group=groups.setdefault(key,dict(topic_key=key,display_name=key.upper(),members=[],labels=[]))
+        group['members'].append(row['topic_key']);group['labels'].extend((label.casefold(),row['topic_key'].casefold()))
+        lookup[row['topic_key']]=key
+    return groups,lookup
 # Recreate only approved tables: never run SQL, triggers, or views from a ZIP.
 ILLUSTRATION_TABLES = {
     'illustrations': 'id TEXT PRIMARY KEY,source TEXT NOT NULL,original_number INTEGER,title TEXT NOT NULL,category TEXT,topics_json TEXT NOT NULL,bible_references_json TEXT NOT NULL,body_html TEXT NOT NULL,body_text TEXT NOT NULL,source_credit TEXT,source_file TEXT NOT NULL,review_flags_json TEXT NOT NULL',
@@ -6401,7 +6507,7 @@ class _SermonHTML(_IllustrationHTML):
 
 
 def _illustration_card(row):
-    return dict(id=row['id'],title=row['title'],topic=row['category'],source=row['source'],
+    return dict(id=row['id'],title=row['title'],topic=_illustration_topic_key(row['category']).upper(),source=row['source'],
         source_title=ILLUSTRATION_SOURCES[row['source']],preview=row['preview'],needs_source_review=not row['has_content'])
 
 
@@ -6449,6 +6555,7 @@ def illustration_suggestions(conn,book_id,chapter,verse=None,end_verse=None):
 
 
 def illustration_browse(conn, *, letter='A',query='',topic='',source='',offset=0):
+    groups,lookup=_illustration_topic_groups(conn)
     params=[];where=[];join=''
     if query:
         words=re.findall(r'\w+',query,flags=re.UNICODE)[:12]
@@ -6456,7 +6563,13 @@ def illustration_browse(conn, *, letter='A',query='',topic='',source='',offset=0
         match=' AND '.join('"'+word+'"' for word in words)
         join=' JOIN illustrations_fts f ON f.id=i.id';where.append('illustrations_fts MATCH ?');params.append(match)
     if topic:
-        join+=' JOIN browse_topic_illustrations b ON b.illustration_id=i.id';where.append('b.topic_key=?');params.append(topic)
+        group=groups.get(lookup.get(topic,_illustration_topic_key(topic)))
+        members=group['members'] if group else []
+        # EXISTS counts and pages each illustration once, even when it belongs
+        # to several aliases of the same topic.
+        where.append('EXISTS(SELECT 1 FROM browse_topic_illustrations b WHERE b.illustration_id=i.id AND b.topic_key IN ('+
+                     ','.join('?' for _ in members)+'))' if members else '0')
+        params.extend(members)
     if source:where.append('i.source=?');params.append(source)
     entries=[];next_offset=None
     if query or topic:
@@ -6464,13 +6577,18 @@ def illustration_browse(conn, *, letter='A',query='',topic='',source='',offset=0
         rows=conn.execute('''SELECT i.id,i.title,i.category,i.source,r.preview,r.has_content FROM illustrations i
             JOIN illustration_reading r ON r.id=i.id'''+join+' WHERE '+' AND '.join(where)+' ORDER BY '+ordering+'i.title COLLATE NOCASE,i.id LIMIT 31 OFFSET ?',(*params,offset)).fetchall()
         entries=[_illustration_card(r) for r in rows[:30]];next_offset=offset+30 if len(rows)>30 else None
-    topic_where='t.display_name LIKE ? ESCAPE \'\\\'' if query else 't.initial_letter=?'
-    topic_params=['%'+query.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%' if query else letter]
-    if source:
-        topic_where+=' AND i.source=?';topic_params.append(source)
-    topics=[dict(r) for r in conn.execute('''SELECT t.topic_key,t.display_name,COUNT(*) AS illustration_count FROM browse_topics t
-        JOIN browse_topic_illustrations b ON b.topic_key=t.topic_key JOIN illustrations i ON i.id=b.illustration_id
-        WHERE '''+topic_where+' GROUP BY t.topic_key ORDER BY t.display_name COLLATE NOCASE',topic_params)]
+    eligible=([group for group in groups.values() if query.casefold() in group['topic_key'] or
+               any(query.casefold() in label for label in group['labels'])] if query else
+              [group for group in groups.values() if group['display_name'].startswith(letter)])
+    aliases={member:group['topic_key'] for group in eligible for member in group['members']}
+    topic_params=[json.dumps(aliases)]
+    if source:topic_params.append(source)
+    counts=dict(conn.execute('''WITH aliases AS (SELECT key AS source_key,value AS topic_key FROM json_each(?))
+        SELECT a.topic_key,COUNT(DISTINCT b.illustration_id) FROM aliases a
+        JOIN browse_topic_illustrations b ON b.topic_key=a.source_key JOIN illustrations i ON i.id=b.illustration_id'''+
+        (' WHERE i.source=?' if source else '')+' GROUP BY a.topic_key',topic_params))
+    topics=[dict(topic_key=group['topic_key'],display_name=group['display_name'],illustration_count=counts[group['topic_key']])
+            for group in sorted(eligible,key=lambda group:group['display_name']) if counts.get(group['topic_key'])]
     return dict(entries=entries,topics=topics,next_offset=next_offset)
 
 
@@ -6485,10 +6603,667 @@ def illustration_article(conn,identifier):
     credit=row['source_credit'] or ''
     # Preserve the body; avoid adding a second copy of its final credit.
     credit_in_body=bool(credit and _text(credit).casefold() in _text(row['body_text']).casefold())
-    return dict(_illustration_card(row),blocks=blocks,body_text=row['body_text'],topics=json.loads(row['topics_json']),
+    return dict(_illustration_card(row),blocks=blocks,body_text=row['body_text'],
+        topics=list(dict.fromkeys(_illustration_topic_key(topic).upper() for topic in json.loads(row['topics_json']) if topic.strip())),
         source_credit=credit,credit_in_body=credit_in_body,source_file=row['source_file'],
         original_reference_metadata=json.loads(row['bible_references_json']),references=links,reference_issues=issues,
         review_flags=json.loads(row['review_flags_json']))
+
+
+NOTES_APPLICATION_ID = 0x534E4F54
+NOTES_MAX_BYTES = 512 * 1024
+NOTES_TYPES = {'paragraph', 'main_point', 'subpoint', 'sub_subpoint', 'illustration', 'scripture', 'conclusion', 'heading', 'theme', 'text'}
+NOTES_FONT_FAMILIES = {'Calibri', 'Arial', 'Cambria', 'Times New Roman', 'Georgia', 'Courier New', 'Verdana', 'Tahoma', 'Noto Sans'}
+NOTES_CONVERTER_VERSION = '2'
+_notes_jobs_lock = threading.Lock()
+_notes_jobs = {}
+_notes_pdf_font_lock = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def _sermon_notes_pdf_font():
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    folder=BASE_DIR/'static'/'fonts'
+    files={'SermonNotes':'NotoSans-Regular.ttf','SermonNotes-Bold':'NotoSans-Bold.ttf',
+           'SermonNotes-Italic':'NotoSans-Italic.ttf','SermonNotes-BoldItalic':'NotoSans-BoldItalic.ttf'}
+    if not all((folder/filename).is_file() for filename in files.values()): return 'Helvetica'
+    with _notes_pdf_font_lock:
+        for name,filename in files.items():
+            if name not in pdfmetrics.getRegisteredFontNames(): pdfmetrics.registerFont(TTFont(name,str(folder/filename)))
+        pdfmetrics.registerFontFamily('SermonNotes',normal='SermonNotes',bold='SermonNotes-Bold',
+            italic='SermonNotes-Italic',boldItalic='SermonNotes-BoldItalic')
+    return 'SermonNotes'
+
+
+def sermon_note_reference(text):
+    refs = scripture_references(text)
+    if refs:
+        ref = refs[0]
+        return {key: ref[key] for key in ('book_id', 'chapter', 'verse', 'end_chapter', 'end_verse')}
+    match = re.fullmatch(r'\s*(.+?)\s+(\d{1,3})\s*', text)
+    book = _REF_NAMES.get(re.sub(r'[.\s]+', '', match[1]).casefold()) if match else None
+    if book and 1 <= int(match[2]) <= BOOKS[book-1][1]:
+        return dict(book_id=book, chapter=int(match[2]), verse=1, end_chapter=int(match[2]), end_verse=1)
+    return None
+
+
+def sermon_note_passage_label(text):
+    """Keep the passage label separate from quoted Scripture in a source heading."""
+    refs=scripture_references(text)
+    if not refs:
+        chapter=_DICTIONARY_CHAPTER_REFERENCE.search(text)
+        if chapter and not text[:chapter.start()].strip(' \t:()[]'):
+            return chapter[0].strip()
+        return text.strip()
+    selected=[refs[0]]
+    for ref in refs[1:]:
+        if not re.fullmatch(r'[\s;,/()&]+',text[selected[-1]['end']:ref['start']]): break
+        selected.append(ref)
+    return '; '.join(text[ref['start']:ref['end']].strip() for ref in selected)
+
+
+def sermon_note_document_blocks(theme, text, blocks):
+    existing={};body=[]
+    for block in blocks:
+        if block['type'] in {'theme','text'}:
+            if block['type'] not in existing: existing[block['type']]=block
+            else: body.append(dict(block,type='paragraph'))
+        else: body.append(block)
+    result=[]
+    for kind,label,value,size in (('theme','Theme',theme,16),('text','Text',text,12)):
+        block=copy.deepcopy(existing.get(kind,dict(type=kind,runs=[])))
+        expected=label+': '+value
+        if ''.join(run['text'] for run in block['runs']).strip()!=expected:
+            style={k:v for k,v in (block['runs'][0] if block['runs'] else {}).items() if k!='text'}
+            block['runs']=[dict(font_family='Calibri',font_size=size,bold=True) | style | dict(text=expected)]
+        result.append(block)
+    result.extend(body)
+    return result
+
+
+def sermon_note_type(text):
+    if re.match(r'^\s*[IVXLCDM]+\s*[.\-–—]\s+', text): return 'main_point'
+    if re.match(r'^\s*[A-Z][.)]\s+', text): return 'subpoint'
+    if re.match(r'^\s*(?:\d+|[a-z])[.)]\s+', text): return 'sub_subpoint'
+    if re.match(r'^\s*(?:illustration|example|story)\s*:', text, re.I): return 'illustration'
+    if re.match(r'^\s*(?:conclusion|application)\s*:', text, re.I): return 'conclusion'
+    return 'paragraph'
+
+
+def validate_sermon_note(note):
+    """Only structured text/styles are stored; HTML and executable URLs never render."""
+    if not isinstance(note, dict) or note.get('schema_version') != 1:
+        raise ValueError('Choose a valid sermon document.')
+    theme, text = note.get('theme'), note.get('text')
+    if any(not isinstance(v, str) or not v.strip() or len(v) > 500 for v in (theme, text)):
+        raise ValueError('Enter Text and Theme (up to 500 characters each).')
+    content = note.get('content')
+    blocks = content.get('blocks') if isinstance(content, dict) else None
+    if not isinstance(blocks, list) or len(blocks) > 5000:
+        raise ValueError('This sermon has too many paragraphs.')
+    clean = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get('type', 'paragraph') not in NOTES_TYPES:
+            raise ValueError('Choose a valid paragraph style.')
+        runs = block.get('runs')
+        if not isinstance(runs, list) or len(runs) > 2000:
+            raise ValueError('Choose valid sermon text.')
+        normalized = []
+        for run in runs:
+            if not isinstance(run, dict) or not isinstance(run.get('text'), str) or len(run['text']) > 100000:
+                raise ValueError('Choose valid sermon text.')
+            item = {'text': run['text'].replace('\x00', '').encode('utf-8', 'replace').decode('utf-8')}
+            for key in ('bold', 'italic', 'underline', 'superscript'):
+                if type(run.get(key)) is bool: item[key] = run[key]
+            for key in ('highlight', 'color'):
+                if isinstance(run.get(key), str) and re.fullmatch(r'#[0-9a-fA-F]{6}', run[key]): item[key] = run[key].lower()
+            size = run.get('font_size')
+            if type(size) in (int, float) and math.isfinite(size): item['font_size'] = max(6, min(72, size))
+            if run.get('font_family') in NOTES_FONT_FAMILIES: item['font_family']=run['font_family']
+            normalized.append(item)
+        item = dict(type=block.get('type', 'paragraph'), runs=normalized)
+        for key, maximum in (('indent', 160), ('space_after', 36)):
+            value = block.get(key)
+            if type(value) in (int, float) and math.isfinite(value): item[key] = max(0, min(maximum, value))
+        if block.get('align') in ('left', 'center', 'right', 'justify'): item['align'] = block['align']
+        if block.get('page_break') is True: item['page_break'] = True
+        clean.append(item)
+    theme=theme.strip();text=sermon_note_passage_label(text)
+    result = dict(schema_version=1, theme=theme, text=text,
+                  content=dict(blocks=sermon_note_document_blocks(theme,text,clean)))
+    result['primary_reference'] = sermon_note_reference(result['text'])
+    result['needs_review'] = result['primary_reference'] is None
+    origin = note.get('origin')
+    if isinstance(origin, dict):
+        result['origin'] = {key: value[:1000] for key, value in origin.items()
+                            if key in {'source_id', 'filename', 'original_text', 'original_theme', 'format_note', 'converter_version'} and isinstance(value, str)}
+    if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > NOTES_MAX_BYTES:
+        raise ValueError('This sermon exceeds the 512 KB backup limit. Split it into smaller notes.')
+    return result
+
+
+@contextmanager
+def sermon_notes_storage(app, write=False):
+    path = _database_path(app.config['BIBLE_SERMON_NOTES_DATABASE'], static_folder=app.static_folder,
+        protected_paths=(app.config.get('DATABASE'), app.config.get('AI_DATABASE'), app.config.get('BIBLE_STUDY_DATABASE')))
+    if not write and not path.is_file():
+        yield None
+        return
+    if write: path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path.as_uri() + ('?mode=rwc' if write else '?mode=ro'), uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        application_id = conn.execute('PRAGMA application_id').fetchone()[0]
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        if application_id not in (0, NOTES_APPLICATION_ID) or (tables and application_id != NOTES_APPLICATION_ID):
+            raise ValueError('Sermon Notes requires its own database.')
+        if write:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('''CREATE TABLE IF NOT EXISTS sermon_notes (
+                id TEXT NOT NULL,user_key TEXT NOT NULL,note_json TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,remote_version INTEGER NOT NULL DEFAULT 0,
+                remote_hash TEXT NOT NULL DEFAULT '',dirty INTEGER NOT NULL DEFAULT 1,
+                deleted INTEGER NOT NULL DEFAULT 0,pending_json TEXT,conflict_json TEXT,
+                source_key TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(user_key,id),UNIQUE(user_key,source_key))''')
+            conn.execute(f'PRAGMA application_id={NOTES_APPLICATION_ID}')
+            conn.commit()
+        yield conn
+        if write: conn.commit()
+    except Exception:
+        if write: conn.rollback()
+        raise
+    finally: conn.close()
+
+
+def sermon_note_item(row, full=False):
+    note = validate_sermon_note(json.loads(row['note_json']))
+    result = dict(id=row['id'], version=row['version'], remote_version=row['remote_version'],
+        theme=note['theme'], text=note['text'], primary_reference=note.get('primary_reference'),
+        needs_review=note.get('needs_review', True), dirty=bool(row['dirty']), deleted=bool(row['deleted']),
+        conflict=bool(row['conflict_json']), updated_at=row['updated_at'])
+    if full: result['note'] = note
+    return result
+
+
+def sermon_notes_drive_key(user_key):
+    # Existing role names include spaces ("area overseer"). The deployed bridge
+    # requires a whitespace-free role; encode it without changing the username.
+    role, username = user_key.split(':', 1)
+    return quote(role, safe='').lower() + ':' + username
+
+
+def sermon_notes_remote(app, user_key, action, **payload):
+    url = app.config.get('SERMON_NOTES_DRIVE_SCRIPT_URL', '')
+    token = app.config.get('SERMON_NOTES_DRIVE_API_TOKEN', '')
+    if not re.fullmatch(r'https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec', url) or len(token) < 32:
+        raise ValueError('Configure the Sermon Notes Drive connection before syncing.')
+    try:
+        with requests.post(url, json=dict(token=token, purpose='sermon_notes', action=action,
+                                        user_key=sermon_notes_drive_key(user_key), **payload), timeout=(10, 60), stream=True) as response:
+            response.raise_for_status()
+            chunks, size = [], 0
+            for chunk in response.iter_content(65536):
+                size += len(chunk)
+                if size > 2 * 1024 * 1024: raise ValueError('Drive returned too much data.')
+                chunks.append(chunk)
+            result = json.loads(b''.join(chunks))
+        if not isinstance(result, dict) or type(result.get('ok')) is not bool: raise ValueError()
+        return result
+    except (requests.RequestException, ValueError):
+        raise ValueError('The Drive connection did not respond correctly. Your local notes are saved; retry Sync Notes.') from None
+
+
+def _notes_remote_record(record, summary, user_key):
+    if (not isinstance(record, dict) or record.get('note_id') != summary.get('note_id') or
+            type(record.get('version')) is not int or record['version'] != summary.get('version') or
+            type(record.get('deleted')) is not bool or record.get('deleted') != summary.get('deleted') or
+            record.get('user_key') != sermon_notes_drive_key(user_key)):
+        raise ValueError('Drive returned an invalid sermon revision.')
+    if not record['deleted']: record = dict(record, note=validate_sermon_note(record.get('note')))
+    return record
+
+
+def _notes_pull_record(conn, user_key, record, summary):
+    identifier = record['note_id']
+    local = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (user_key, identifier)).fetchone()
+    now = datetime.now(timezone.utc).isoformat()
+    if local and local['dirty']:
+        pending = json.loads(local['pending_json']) if local['pending_json'] else None
+        if pending and pending['payload']['request_id'] == record.get('request_id'):
+            conn.execute('''UPDATE sermon_notes SET remote_version=?,remote_hash=?,pending_json=NULL,
+                dirty=?,conflict_json=NULL WHERE user_key=? AND id=?''',
+                (record['version'], summary['sha256'], int(local['version'] != pending['local_version']), user_key, identifier))
+        else:
+            conn.execute('UPDATE sermon_notes SET conflict_json=? WHERE user_key=? AND id=?',
+                (json.dumps(dict(record=record, summary=summary)), user_key, identifier))
+        return
+    note = record.get('note') if not record['deleted'] else (
+        json.loads(local['note_json']) if local else dict(schema_version=1, theme=summary.get('theme', 'Removed sermon'),
+        text=summary.get('text', 'For Review'), content=dict(blocks=[]), primary_reference=None, needs_review=True))
+    conn.execute('''INSERT INTO sermon_notes(id,user_key,note_json,version,remote_version,remote_hash,dirty,deleted,updated_at)
+        VALUES(?,?,?,?,?,?,0,?,?) ON CONFLICT(user_key,id) DO UPDATE SET note_json=excluded.note_json,
+        version=excluded.version,remote_version=excluded.remote_version,remote_hash=excluded.remote_hash,
+        dirty=0,deleted=excluded.deleted,pending_json=NULL,conflict_json=NULL,updated_at=excluded.updated_at''',
+        (identifier, user_key, json.dumps(note, ensure_ascii=False), local['version']+1 if local else 1,
+         record['version'], summary['sha256'], int(record['deleted']), now))
+
+
+def sync_sermon_notes(app, user_key, progress):
+    inventory = None
+    for _ in range(3):
+        items, after, index_version = [], '', None
+        while True:
+            data = sermon_notes_remote(app, user_key, 'list', after=after, limit=100,
+                **({'index_version': index_version} if index_version is not None else {}))
+            if data.get('code') == 'CURSOR_EXPIRED': break
+            if not data['ok']: raise ValueError('Drive could not list your notes (' + str(data.get('code', 'unknown'))[:30] + ').')
+            batch = data.get('notes')
+            if not isinstance(batch, list) or type(data.get('index_version')) is not int:
+                raise ValueError('Drive returned an invalid notes list.')
+            for item in batch:
+                if (not isinstance(item, dict) or not re.fullmatch(r'[a-f0-9]{32}', str(item.get('note_id', ''))) or
+                        type(item.get('version')) is not int or item['version'] < 1 or
+                        not re.fullmatch(r'[a-f0-9]{64}', str(item.get('sha256', '')))):
+                    raise ValueError('Drive returned an invalid note summary.')
+            items.extend(batch)
+            if len(items) > 10000: raise ValueError('The Drive library is too large for one sync.')
+            index_version = data['index_version']
+            next_after = data.get('next_after')
+            if not next_after:
+                inventory = items
+                break
+            if not isinstance(next_after, str) or next_after <= after: raise ValueError('Drive pagination did not advance.')
+            after = next_after
+        if inventory is not None: break
+    if inventory is None: raise ValueError('Your Drive library kept changing. Retry Sync Notes.')
+    pulled = pushed = 0
+    for i, summary in enumerate(inventory):
+        with sermon_notes_storage(app) as conn:
+            local = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?',
+                (user_key, summary['note_id'])).fetchone() if conn else None
+        if local and local['remote_version'] == summary['version'] and local['remote_hash'] == summary['sha256']: continue
+        data = sermon_notes_remote(app, user_key, 'get', note_id=summary['note_id'], version=summary['version'])
+        if not data['ok']: raise ValueError('A Drive note changed during sync. Retry Sync Notes.')
+        record = _notes_remote_record(data.get('record'), summary, user_key)
+        with sermon_notes_storage(app, True) as conn:
+            _notes_pull_record(conn, user_key, record, summary)
+        pulled += 1
+        progress(message='Restoring notes from Drive', completed=i+1, total=len(inventory))
+    with sermon_notes_storage(app, True) as conn:
+        dirty = [row['id'] for row in conn.execute('SELECT id FROM sermon_notes WHERE user_key=? AND dirty=1 AND conflict_json IS NULL', (user_key,))]
+    for i, identifier in enumerate(dirty):
+        with sermon_notes_storage(app, True) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (user_key, identifier)).fetchone()
+            if row['conflict_json'] or not row['dirty']: continue
+            if row['deleted'] and not row['remote_version'] and not row['pending_json']:
+                conn.execute('UPDATE sermon_notes SET dirty=0 WHERE user_key=? AND id=?', (user_key, identifier))
+                continue
+            pending = json.loads(row['pending_json']) if row['pending_json'] else dict(local_version=row['version'],
+                action='delete' if row['deleted'] else 'put', payload=dict(note_id=identifier,
+                base_version=row['remote_version'], request_id=secrets.token_hex(16),
+                **({} if row['deleted'] else {'note': json.loads(row['note_json'])})))
+            conn.execute('UPDATE sermon_notes SET pending_json=? WHERE user_key=? AND id=?',
+                         (json.dumps(pending, ensure_ascii=False), user_key, identifier))
+        data = sermon_notes_remote(app, user_key, pending['action'], **pending['payload'])
+        if not data['ok']:
+            if data.get('code') == 'CONFLICT' and data.get('current'):
+                summary = data['current']
+                remote = sermon_notes_remote(app, user_key, 'get', note_id=identifier, version=summary['version'])
+                if not remote['ok']: raise ValueError('A note changed during conflict recovery. Retry sync.')
+                record = _notes_remote_record(remote.get('record'), summary, user_key)
+                with sermon_notes_storage(app, True) as conn: _notes_pull_record(conn, user_key, record, summary)
+                continue
+            raise ValueError('Drive did not confirm the backup (' + str(data.get('code', 'unknown'))[:30] + '). Local changes are safe.')
+        item = data.get('item', {})
+        if (item.get('note_id') != identifier or type(item.get('version')) is not int or
+                item['version'] != pending['payload']['base_version'] + 1 or
+                not re.fullmatch(r'[a-f0-9]{64}', str(item.get('sha256', '')))):
+            raise ValueError('Drive did not confirm the expected revision.')
+        with sermon_notes_storage(app, True) as conn:
+            conn.execute('''UPDATE sermon_notes SET remote_version=?,remote_hash=?,pending_json=NULL,
+                dirty=CASE WHEN version=? THEN 0 ELSE 1 END WHERE user_key=? AND id=?''',
+                (item['version'], item['sha256'], pending['local_version'], user_key, identifier))
+        pushed += 1
+        progress(message='Backing up notes to Drive', completed=i+1, total=len(dirty))
+    with sermon_notes_storage(app) as conn:
+        conflicts = conn.execute('SELECT count(*) FROM sermon_notes WHERE user_key=? AND conflict_json IS NOT NULL', (user_key,)).fetchone()[0]
+        remaining = conn.execute('SELECT count(*) FROM sermon_notes WHERE user_key=? AND dirty=1 AND conflict_json IS NULL', (user_key,)).fetchone()[0]
+    return dict(pulled=pulled, pushed=pushed, conflicts=conflicts, pending=remaining,
+                message=f'Sync complete: {pulled} restored, {pushed} backed up, {conflicts} to resolve.' +
+                        (' Newer local edits are waiting for the next sync.' if remaining else ''))
+
+
+def sermon_notes_pdf(note):
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.lib.pagesizes import A4
+    note=validate_sermon_note(note)
+    output = io.BytesIO()
+    story = []
+    def paragraph(runs, style):
+        parts = []
+        for run in runs:
+            text = escape_html(run['text']).replace('\n', '<br/>')
+            if run.get('bold'): text = '<b>' + text + '</b>'
+            if run.get('italic'): text = '<i>' + text + '</i>'
+            if run.get('underline'): text = '<u>' + text + '</u>'
+            if run.get('superscript'): text = '<super>' + text + '</super>'
+            attrs = (' color="' + run['color'] + '"' if run.get('color') else '')
+            attrs += (' backColor="' + run['highlight'] + '"' if run.get('highlight') else '')
+            attrs += (' size="' + str(run['font_size']) + '"' if run.get('font_size') else '')
+            family=run.get('font_family')
+            if family in {'Times New Roman','Cambria','Georgia','Courier New'} and all(ord(c)<256 for c in run['text']):
+                face='Courier' if family=='Courier New' else 'Times-Roman'
+                attrs+=' face="'+face+'"'
+            parts.append('<font' + attrs + '>' + text + '</font>' if attrs else text)
+        return Paragraph(''.join(parts) or '&#160;', style)
+    base = ParagraphStyle('sermon', fontName=_sermon_notes_pdf_font(), fontSize=11, leading=15, spaceAfter=8,
+                          splitLongWords=True)
+    for block in note['content']['blocks']:
+        if block.get('page_break') and story: story.append(PageBreak())
+        kind = block['type']
+        imported=bool(note.get('origin',{}).get('source_id'))
+        largest=max((run.get('font_size',11) for run in block['runs']),default=11)
+        style = ParagraphStyle('block', parent=base, leading=max(12 if imported else 15,largest*1.3),
+            leftIndent=block.get('indent',
+            {'subpoint':18, 'sub_subpoint':36, 'illustration':18}.get(kind, 0)),
+            spaceAfter=block.get('space_after', 8), keepWithNext=kind in {'main_point', 'subpoint', 'heading','theme','text'},
+            alignment={'left':TA_LEFT,'center':TA_CENTER,'right':TA_RIGHT,'justify':TA_JUSTIFY}.get(block.get('align'), TA_LEFT))
+        runs = [{**({'bold':True} if kind in {'main_point','subpoint','heading','conclusion'} else {}),
+                 **({'italic':True} if kind=='scripture' else {}),**run} for run in block['runs']]
+        story.append(paragraph(runs, style))
+    def page_number(canvas, doc):
+        canvas.saveState(); canvas.setFont('Helvetica', 8)
+        canvas.drawRightString(A4[0]-42, 24, str(doc.page)); canvas.restoreState()
+    SimpleDocTemplate(output, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36,
+                      title=note['theme'], author='').build(story, onFirstPage=page_number, onLaterPages=page_number)
+    return output.getvalue()
+
+
+def _convert_sermon_pdf_legacy(data, source):
+    """Keep line layout, source emphasis, colors and page boundaries as editable runs."""
+    import pypdfium2 as pdfium
+    blocks, first_lines = [], []
+    with _PDFIUM_LOCK, pdfium.PdfDocument(data) as pdf:
+        for page_index in range(len(pdf)):
+            page = pdf[page_index]
+            try:
+                lines, line, baseline = [], [], None
+                for glyph in _thompson_glyphs(page):
+                    if glyph['char'] in '\r\n':
+                        if line: lines.append(line); line=[]; baseline=None
+                        continue
+                    if not glyph['char'].isspace():
+                        # Small superscript verse numbers belong to their surrounding line.
+                        if baseline is not None and abs(glyph['y']-baseline)>max(4, glyph.get('font_size',glyph['size'])*.65):
+                            lines.append(line); line=[]
+                        if baseline is None or glyph.get('font_size',glyph['size'])>=9: baseline=glyph['y']
+                    line.append(glyph)
+                if line: lines.append(line)
+                left = min((g['x'] for line in lines for g in line if not g['char'].isspace()), default=0)
+                previous_y=previous_text=None
+                first_on_page=True
+                for line_index, line in enumerate(lines):
+                    visible = [g for g in line if not g['char'].isspace()]
+                    if not visible: continue
+                    text = ''.join(g['char'] for g in line).strip()
+                    if not text: continue
+                    if page_index == 0: first_lines.append(text)
+                    runs = []
+                    for glyph in line:
+                        char = glyph['char']
+                        if char in '\x00\ufffe\u00ad': continue
+                        if char.isspace() and runs:
+                            runs[-1]['text'] += char
+                            continue
+                        font = glyph['font'].lower()
+                        style = dict(bold='bold' in font or 'semibold' in font,
+                            italic='italic' in font or 'oblique' in font)
+                        size=glyph.get('font_size',glyph['size'])
+                        if size: style['font_size'] = round(max(6, min(30, size)), 1)
+                        if glyph.get('color') and glyph['color']!='#000000': style['color'] = glyph['color']
+                        if runs and {k:v for k,v in runs[-1].items() if k!='text'} == style: runs[-1]['text'] += char
+                        else: runs.append(dict(text=char, **style))
+                    if runs:
+                        runs[0]['text'] = runs[0]['text'].lstrip(); runs[-1]['text'] = runs[-1]['text'].rstrip()
+                    kind=sermon_note_type(text)
+                    # Rejoin long wrapped prose, while keeping short lines (e.g.
+                    # lyrics), list markers, paragraph gaps and page boundaries.
+                    continuation=(not first_on_page and kind=='paragraph' and previous_text and
+                        len(previous_text)>65 and previous_y is not None and
+                        0<previous_y-visible[0]['y']<19 and not re.match(r'^\s*[-•]',text) and
+                        blocks[-1]['type'] not in {'main_point','subpoint','heading','conclusion'})
+                    if continuation:
+                        if blocks[-1]['runs'] and not previous_text.endswith('-'): blocks[-1]['runs'][-1]['text']+=' '
+                        blocks[-1]['runs'].extend(runs)
+                    else:
+                        blocks.append(dict(type=kind,runs=runs,indent=round(max(0,visible[0]['x']-left),1),
+                            space_after=8,page_break=page_index>0 and first_on_page))
+                    previous_y=visible[0]['y'];previous_text=text;first_on_page=False
+            finally: page.close()
+    if not blocks: raise ValueError('No readable text. This PDF needs OCR before conversion.')
+    def labelled(label):
+        for line in first_lines[:30]:
+            match = re.match(r'^\s*'+label+r'\s*:\s*(.*)', line, re.I)
+            if match: return re.sub(r'^Text\s*:\s*', '', match[1], flags=re.I).strip()
+        return ''
+    text = source.get('manual_text') or labelled('Text') or source.get('detected_text') or 'For Review'
+    theme = source.get('manual_theme') or labelled('Theme') or source.get('detected_theme') or Path(source['filename']).stem
+    # Remove only the labelled original metadata, which is shown by the editor above the body.
+    while blocks and re.match(r'^\s*(?:Theme|Text)\s*:', ''.join(r['text'] for r in blocks[0]['runs']), re.I): blocks.pop(0)
+    if not blocks: raise ValueError('No readable sermon body. This PDF needs OCR before conversion.')
+    return validate_sermon_note(dict(schema_version=1, theme=theme[:500], text=text[:500], content=dict(blocks=blocks),
+        origin=dict(source_id=source['drive_file_id'], filename=source['filename'], original_text=text[:1000],
+            original_theme=theme[:1000], format_note='PDF line layout, emphasis, color, size and page boundaries retained where extractable.')))
+
+
+def _sermon_pdf_lines(page):
+    """Group by printed baseline, not PDF text-stream order (which splits superscripts)."""
+    glyphs=list(_thompson_glyphs(page))
+    visible=[g for g in glyphs if not g['char'].isspace() and g['char'] not in '\x00\ufffe\u00ad']
+    if not visible: return []
+    sizes=sorted(g.get('font_size',11) for g in visible)
+    body_size=sizes[len(sizes)//2]
+    lines=[];assigned=set()
+    for glyph in visible:
+        if glyph.get('font_size',11)<body_size*.85: continue
+        line=min(lines,key=lambda line:abs(line['y']-glyph['y']),default=None)
+        if line is None or abs(line['y']-glyph['y'])>1.8:
+            line=dict(y=glyph['y'],glyphs=[]);lines.append(line)
+        line['glyphs'].append(glyph);assigned.add(glyph['index'])
+    for glyph in visible:
+        if glyph['index'] in assigned: continue
+        line=min(lines,key=lambda line:abs(line['y']-glyph['y']),default=None)
+        if line is None or abs(line['y']-glyph['y'])>max(5,body_size*.65):
+            line=dict(y=glyph['y'],glyphs=[]);lines.append(line)
+        line['glyphs'].append(glyph)
+    spaces={g['index'] for g in glyphs if g['char']==' '}
+    result=[]
+    for line in sorted(lines,key=lambda line:-line['y']):
+        ordered=sorted(line['glyphs'],key=lambda g:(g['x'],g['index']))
+        runs=[];previous=None
+        for glyph in ordered:
+            if previous:
+                distance=glyph['index']-previous['index']
+                has_space=(0<distance<10 and any(i in spaces for i in range(previous['index']+1,glyph['index'])))
+                if has_space or (distance!=1 and glyph['x']-previous['right']>max(1.3,body_size*.18)):
+                    if runs: runs[-1]['text']+=' '
+            font=glyph['font'].lower()
+            family=next((name for name in ('Calibri','Cambria','Georgia','Verdana','Tahoma') if name.lower() in font),
+                        'Times New Roman' if 'times' in font else 'Courier New' if 'courier' in font else 'Arial')
+            style=dict(bold='bold' in font or 'semibold' in font,italic='italic' in font or 'oblique' in font,
+                       font_size=round(max(6,min(72,glyph.get('font_size',11))),1),font_family=family)
+            if glyph.get('color') and glyph['color']!='#000000': style['color']=glyph['color']
+            if glyph.get('font_size',11)<body_size*.85 and glyph['y']>line['y']+1: style['superscript']=True
+            char='•' if glyph['char'] in '\uf0b7\uf0a7' else glyph['char']
+            if runs and {k:v for k,v in runs[-1].items() if k!='text'}==style: runs[-1]['text']+=char
+            else: runs.append(dict(text=char,**style))
+            previous=glyph
+        text=''.join(run['text'] for run in runs)
+        if re.fullmatch(r'\d{1,4}',text.strip()) and (line['y']<45 or line['y']>page.get_height()-20): continue
+        result.append(dict(text=text,runs=runs,y=line['y'],x=ordered[0]['x']))
+    return result
+
+
+def _sermon_slice_runs(runs, start):
+    result=[];offset=0
+    for run in runs:
+        end=offset+len(run['text'])
+        if end>start: result.append(dict(run,text=run['text'][max(0,start-offset):]))
+        offset=end
+    while result and not result[0]['text'].strip(): result.pop(0)
+    if result: result[0]['text']=result[0]['text'].lstrip()
+    return result
+
+
+def convert_sermon_pdf(data, source):
+    """Permanent v2 conversion: retain printed styles and inline verse/footnote markers."""
+    import pypdfium2 as pdfium
+    blocks=[];first_lines=[]
+    with _PDFIUM_LOCK,pdfium.PdfDocument(data) as pdf:
+        for page_index in range(len(pdf)):
+            page=pdf[page_index]
+            try:
+                lines=_sermon_pdf_lines(page)
+                left=min((line['x'] for line in lines),default=0)
+                previous=None
+                for i,line in enumerate(lines):
+                    if page_index==0: first_lines.append(line['text'])
+                    kind=sermon_note_type(line['text'])
+                    new_heading=bool(re.match(r'^\s*(?:Theme|Text|Intro(?:duction)?)\s*:',line['text'],re.I))
+                    continuation=(previous is not None and kind=='paragraph' and not new_heading and
+                        len(previous['text'])>65 and 0<previous['y']-line['y']<19 and
+                        not re.match(r'^\s*[-•]',line['text']) and blocks[-1]['type'] not in {'main_point','heading','conclusion'})
+                    if continuation:
+                        if blocks[-1]['runs'] and not previous['text'].endswith('-'): blocks[-1]['runs'][-1]['text']+=' '
+                        blocks[-1]['runs'].extend(line['runs'])
+                    else:
+                        blocks.append(dict(type=kind,runs=line['runs'],indent=round(max(0,line['x']-left),1),
+                                           space_after=8,page_break=page_index>0 and i==0))
+                    previous=line
+            finally: page.close()
+    def labelled(label):
+        for i,line in enumerate(first_lines[:30]):
+            match=re.match(r'^\s*'+label+r'\s*:\s*(.*)',line,re.I)
+            if match:
+                value=re.sub(r'^Text\s*:\s*','',match[1],flags=re.I).strip()
+                if label=='Text' and not sermon_note_reference(sermon_note_passage_label(value)):
+                    for following in first_lines[i+1:i+4]:
+                        if re.match(r'^\s*(?:Theme|Text|Intro(?:duction)?)\s*:',following,re.I): break
+                        value+=' '+following
+                        if scripture_references(value): break
+                return value
+        return ''
+    raw_text=source.get('manual_text') or labelled('Text') or source.get('detected_text') or 'For Review'
+    theme=source.get('manual_theme') or labelled('Theme') or source.get('detected_theme') or Path(source['filename']).stem
+    text=sermon_note_passage_label(raw_text)
+    cleaned=[]
+    for i,block in enumerate(blocks):
+        body=''.join(run['text'] for run in block['runs'])
+        marker=re.match(r'^\s*(Theme|Text)\s*:\s*',body,re.I) if i<15 else None
+        if marker and marker[1].lower()=='theme' and body[marker.end():].strip().casefold()==theme.strip().casefold(): continue
+        if marker and marker[1].lower()=='text':
+            refs=scripture_references(body)
+            if refs:
+                prefix=body[marker.end():refs[0]['start']]
+                start=marker.end() if re.search(r'[A-Za-z]',prefix) else refs[0]['end']
+                while start<len(body) and body[start] in ' \t:;': start+=1
+                rest=_sermon_slice_runs(block['runs'],start)
+                if rest: cleaned.append(dict(block,type='scripture',runs=rest,indent=0))
+                continue
+            chapter=_DICTIONARY_CHAPTER_REFERENCE.search(body,marker.end())
+            start=chapter.end() if chapter and not body[marker.end():chapter.start()].strip(' \t:()[]') else marker.end()
+            while start<len(body) and body[start] in ' \t:-–—': start+=1
+            rest=_sermon_slice_runs(block['runs'],start)
+            if rest: cleaned.append(dict(block,type='scripture',runs=rest,indent=0))
+            continue
+        cleaned.append(block)
+    if not cleaned: raise ValueError('No readable sermon body. This PDF needs OCR before conversion.')
+    return validate_sermon_note(dict(schema_version=1,theme=theme[:500],text=text[:500],content=dict(blocks=cleaned),
+        origin=dict(source_id=source['drive_file_id'],filename=source['filename'],original_text=raw_text[:1000],
+            original_theme=theme[:1000],converter_version=NOTES_CONVERTER_VERSION,
+            format_note='Source paragraph layout, fonts, emphasis, colors and inline verse markers retained.')))
+
+
+def repair_converted_sermon(data, source, current, preserve_edits=True):
+    """Reconvert untouched text and transfer manual styling; never replace authored edits."""
+    repaired=convert_sermon_pdf(data,source)
+    if not preserve_edits: return repaired,'repaired'
+    original=_convert_sermon_pdf_legacy(data,source)
+    def body(note):
+        result=[]
+        for block in note['content']['blocks']:
+            value=''.join(run['text'] for run in block['runs']).strip()
+            if block['type'] in {'theme','text'}: continue
+            if re.match(r'^Theme\s*:',value,re.I) and value.split(':',1)[1].strip() in {
+                    note['theme'],note.get('origin',{}).get('original_theme','')}: continue
+            result.append(block)
+        return result
+    def characters(blocks):
+        result=[]
+        for i,block in enumerate(blocks):
+            for run in block['runs']:
+                for char in run['text']:
+                    if not char.isspace(): result.append((char,{k:v for k,v in run.items() if k!='text'},i))
+        return result
+    old_blocks=body(original);current_blocks=body(current);new_blocks=body(repaired)
+    before=characters(old_blocks);edited=characters(current_blocks);after=characters(new_blocks)
+    if ''.join(c[0] for c in before)!=''.join(c[0] for c in edited):
+        # Source repairs cannot decide which changed words were intentional.
+        kept=validate_sermon_note(current)
+        kept.setdefault('origin',{})['converter_version']=NOTES_CONVERTER_VERSION
+        kept['origin']['format_note']='Your edited text was kept. Compare its layout with the original PDF if needed.'
+        return kept,'edited_text_kept'
+    defaults=dict(bold=False,italic=False,underline=False,superscript=False,color='#000000',highlight=None,
+                  font_size=11,font_family='Calibri')
+    overrides={}
+    for i,(_,style,_) in enumerate(before):
+        changed={}
+        for key,default in defaults.items():
+            a,b=style.get(key,default),edited[i][1].get(key,default)
+            same=abs(a-b)<.15 if key=='font_size' else a==b
+            if not same: changed[key]=edited[i][1].get(key)
+        if changed: overrides[i]=changed
+    mapped={};type_overrides={}
+    type_changes={i:current_blocks[edited[i][2]]['type'] for i,(_,_,j) in enumerate(before)
+                  if old_blocks[j]['type']!=current_blocks[edited[i][2]]['type']}
+    matches=difflib.SequenceMatcher(None,''.join(c[0] for c in before),''.join(c[0] for c in after),autojunk=False).get_matching_blocks()
+    for match in matches:
+        for offset in range(match.size):
+            old_index,new_index=match.a+offset,match.b+offset
+            if old_index in overrides: mapped[new_index]=overrides[old_index]
+            if old_index in type_changes: type_overrides[after[new_index][2]]=type_changes[old_index]
+    position=0
+    for i,block in enumerate(new_blocks):
+        runs=[]
+        for run in block['runs']:
+            for char in run['text']:
+                style={k:v for k,v in run.items() if k!='text'}
+                if not char.isspace():
+                    for key,value in mapped.get(position,{}).items():
+                        if value is None: style.pop(key,None)
+                        else: style[key]=value
+                    position+=1
+                if runs and {k:v for k,v in runs[-1].items() if k!='text'}==style: runs[-1]['text']+=char
+                else: runs.append(dict(text=char,**style))
+        block['runs']=runs
+        if i in type_overrides: block['type']=type_overrides[i]
+    repaired['content']['blocks']=sermon_note_document_blocks(current['theme'],sermon_note_passage_label(current['text']),new_blocks)
+    repaired['theme']=current['theme'];repaired['text']=current['text']
+    return validate_sermon_note(repaired),'repaired'
+
+
+def backup_sermon_notes(app):
+    path=Path(app.config['BIBLE_SERMON_NOTES_DATABASE']).resolve()
+    folder=path.parent/'backups';folder.mkdir(parents=True,exist_ok=True)
+    target=folder/('sermon_notes_before_v2_'+str(time.time_ns())+'.db')
+    with sermon_notes_storage(app) as source,closing(sqlite3.connect(target)) as destination:
+        if source is None: raise ValueError('Sermon Notes storage is unavailable for backup.')
+        source.backup(destination)
+    return target.name
 
 
 def register_bible_study_routes(app):
@@ -6496,6 +7271,10 @@ def register_bible_study_routes(app):
     app.config.setdefault('BIBLE_ILLUSTRATIONS_DATABASE',os.getenv('BIBLE_ILLUSTRATIONS_DATABASE',''))
     app.config.setdefault('AI_DATABASE', os.getenv('AI_DATABASE', str(BASE_DIR / 'ai_index.db')))
     app.config.setdefault('BIBLE_STUDY_TRANSLATION_FOLDER_ID', resources.BIBLE_TRANSLATIONS_DRIVE_FOLDER_ID)
+    app.config.setdefault('BIBLE_SERMON_NOTES_DATABASE', os.getenv('BIBLE_SERMON_NOTES_DATABASE') or
+                          str(Path(app.config['BIBLE_STUDY_DATABASE']).with_name('sermon_notes.db')))
+    app.config.setdefault('SERMON_NOTES_DRIVE_SCRIPT_URL', os.getenv('SERMON_NOTES_DRIVE_SCRIPT_URL', ''))
+    app.config.setdefault('SERMON_NOTES_DRIVE_API_TOKEN', os.getenv('SERMON_NOTES_DRIVE_API_TOKEN', ''))
     blueprint = Blueprint('bible_study', __name__, url_prefix='/pastor-resources/bible-study')
 
     def available():
@@ -6577,7 +7356,8 @@ def register_bible_study_routes(app):
             if (not expected or not supplied or len(supplied) > 256
                     or not hmac.compare_digest(str(expected).encode('utf-8'), supplied.encode('utf-8'))):
                 return jsonify(ok=False, error='This session expired. Reload Bible Study and try again.'), 400
-            limit = 131072 if request.endpoint == 'bible_study.study_save_create' else MAX_JSON_BYTES
+            limit = (NOTES_MAX_BYTES + 16384 if request.endpoint in {'bible_study.notes_create', 'bible_study.notes_item'}
+                     else 131072 if request.endpoint == 'bible_study.study_save_create' else MAX_JSON_BYTES)
             if request.content_length is None or request.content_length > limit:
                 return jsonify(ok=False, error='The request is too large.'), 413
             if request.mimetype != 'application/json':
@@ -6642,6 +7422,188 @@ def register_bible_study_routes(app):
                                bible_reference_books={alias:BOOKS[index-1][0] for alias,index in _REF_NAMES.items()},
                                bible_study_admin=sync_admin(), bible_translations=READER_TRANSLATIONS,
                                bible_preference_key=hashlib.sha256(_account_key().encode()).hexdigest()[:20])
+
+    @blueprint.errorhandler(sqlite3.DatabaseError)
+    def notes_database_error(error):
+        if request.path.startswith(blueprint.url_prefix + '/api/notes'):
+            return jsonify(ok=False, error='Sermon Notes storage is temporarily unavailable. Retry saving.'), 503
+        raise error
+
+    @blueprint.errorhandler(ValueError)
+    def notes_configuration_error(error):
+        if request.path.startswith(blueprint.url_prefix + '/api/notes'):
+            return jsonify(ok=False,error='Sermon Notes storage needs configuration. Your existing files have been kept.'),503
+        raise error
+
+    @blueprint.get('/api/notes')
+    def notes_list():
+        try:
+            with sermon_notes_storage(app) as conn:
+                rows = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND (deleted=0 OR conflict_json IS NOT NULL)',
+                                    (_account_key(),)).fetchall() if conn else []
+            query=request.args.get('q','')[:200].casefold()
+            items=[]
+            for row in rows:
+                if query:
+                    note=json.loads(row['note_json'])
+                    searchable='\n'.join([note['theme'],note['text'],
+                        *(''.join(run['text'] for run in block['runs']) for block in note['content']['blocks'])])
+                    if query not in searchable.casefold(): continue
+                items.append(sermon_note_item(row))
+            items.sort(key=lambda x: (x['needs_review'], *((x['primary_reference'] or {}).get(k, 999) for k in ('book_id','chapter','verse')), x['theme'].casefold()))
+            return jsonify(ok=True, notes=items, drive_configured=bool(app.config.get('SERMON_NOTES_DRIVE_SCRIPT_URL') and
+                app.config.get('SERMON_NOTES_DRIVE_API_TOKEN')), can_convert=sync_admin())
+        except ValueError as error: return jsonify(ok=False, error=str(error)), 503
+
+    @blueprint.post('/api/notes')
+    def notes_create():
+        data = request.get_json(silent=True)
+        try: note = validate_sermon_note(data.get('note') if isinstance(data, dict) else None)
+        except ValueError as error: return jsonify(ok=False, error=str(error)), 400
+        identifier, now = secrets.token_hex(16), datetime.now(timezone.utc).isoformat()
+        with sermon_notes_storage(app, True) as conn:
+            conn.execute('INSERT INTO sermon_notes(id,user_key,note_json,updated_at) VALUES(?,?,?,?)',
+                         (identifier, _account_key(), json.dumps(note, ensure_ascii=False), now))
+            row = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (_account_key(),identifier)).fetchone()
+        return jsonify(ok=True, item=sermon_note_item(row, True)), 201
+
+    @blueprint.route('/api/notes/<identifier>', methods=['GET','PATCH','DELETE'])
+    def notes_item(identifier):
+        if not re.fullmatch(r'[a-f0-9]{32}', identifier): return jsonify(ok=False, error='Note not found.'), 404
+        with sermon_notes_storage(app, request.method!='GET') as conn:
+            if request.method!='GET': conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (_account_key(),identifier)).fetchone() if conn else None
+            if not row or (row['deleted'] and not row['conflict_json']): return jsonify(ok=False, error='Note not found.'), 404
+            if request.method=='GET': return jsonify(ok=True, item=sermon_note_item(row, True))
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict) or type(data.get('version')) is not int: return jsonify(ok=False, error='A saved note version is required.'), 400
+            if data['version']!=row['version']: return jsonify(ok=False, error='This sermon changed in another tab. Keep your draft and reopen the saved version.'), 409
+            if request.method=='PATCH':
+                try: note = validate_sermon_note(data.get('note'))
+                except ValueError as error: return jsonify(ok=False, error=str(error)), 400
+                conn.execute('UPDATE sermon_notes SET note_json=?,version=version+1,dirty=1,updated_at=? WHERE user_key=? AND id=?',
+                    (json.dumps(note, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), _account_key(), identifier))
+            else:
+                conn.execute('UPDATE sermon_notes SET deleted=1,dirty=1,version=version+1,updated_at=? WHERE user_key=? AND id=?',
+                    (datetime.now(timezone.utc).isoformat(), _account_key(), identifier))
+            row = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (_account_key(),identifier)).fetchone()
+        return jsonify(ok=True, item=sermon_note_item(row, True))
+
+    @blueprint.post('/api/notes/<identifier>/resolve')
+    def notes_resolve(identifier):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or data.get('choice') not in ('copy','remote') or type(data.get('version')) is not int:
+            return jsonify(ok=False,error='Choose how to resolve this sermon.'),400
+        with sermon_notes_storage(app, True) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (_account_key(),identifier)).fetchone()
+            if not row or not row['conflict_json']: return jsonify(ok=False,error='Conflict not found.'),404
+            if row['version']!=data['version']: return jsonify(ok=False,error='This sermon changed. Reopen it before resolving.'),409
+            conflict = json.loads(row['conflict_json'])
+            copy_id = None
+            if data['choice']=='copy':
+                copy_id=secrets.token_hex(16)
+                note=json.loads(row['note_json']); note['theme']=(note['theme']+' (local copy)')[:500]
+                conn.execute('INSERT INTO sermon_notes(id,user_key,note_json,updated_at) VALUES(?,?,?,?)',
+                    (copy_id,_account_key(),json.dumps(note,ensure_ascii=False),datetime.now(timezone.utc).isoformat()))
+            conn.execute('UPDATE sermon_notes SET dirty=0 WHERE user_key=? AND id=?', (_account_key(),identifier))
+            _notes_pull_record(conn,_account_key(),conflict['record'],conflict['summary'])
+        return jsonify(ok=True, copy_id=copy_id)
+
+    @blueprint.get('/api/notes/<identifier>/pdf')
+    def notes_pdf(identifier):
+        with sermon_notes_storage(app) as conn:
+            row=conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=? AND deleted=0',
+                (_account_key(),identifier)).fetchone() if conn else None
+        if not row: return jsonify(ok=False,error='Note not found.'),404
+        note=validate_sermon_note(json.loads(row['note_json']))
+        filename=re.sub(r'[^A-Za-z0-9._-]+','-',note['theme']).strip('-')[:90] or 'sermon-notes'
+        return Response(sermon_notes_pdf(note),mimetype='application/pdf',
+            headers={'Content-Disposition':f'attachment; filename="{filename}.pdf"'})
+
+    def notes_job_key(user_key): return (str(app.config['BIBLE_SERMON_NOTES_DATABASE']), user_key)
+
+    def notes_job_state(user_key):
+        with _notes_jobs_lock: return dict(_notes_jobs.get(notes_job_key(user_key), dict(running=False, message='')))
+
+    def start_notes_job(kind, task):
+        user_key = _account_key()
+        key = notes_job_key(user_key)
+        with _notes_jobs_lock:
+            current = _notes_jobs.get(key, {})
+            if current.get('running'): return jsonify(ok=True, job=dict(current))
+            _notes_jobs[key] = dict(running=True, kind=kind, message='Starting '+kind+'…', completed=0, total=0)
+        def progress(**values):
+            with _notes_jobs_lock: _notes_jobs[key].update(values)
+        def run():
+            try:
+                with app.app_context(): result = task(user_key, progress)
+                progress(running=False, **result)
+            except Exception as error:
+                message = str(error) if isinstance(error, ValueError) else 'The operation stopped. Your saved notes are safe; retry.'
+                progress(running=False, error=message, message=message)
+        if app.config.get('SERMON_NOTES_JOBS_INLINE'): run()
+        else: threading.Thread(target=run, daemon=True, name='sermon-notes-'+kind).start()
+        return jsonify(ok=True, job=notes_job_state(user_key))
+
+    @blueprint.get('/api/notes/job')
+    def notes_job(): return jsonify(ok=True, job=notes_job_state(_account_key()))
+
+    @blueprint.post('/api/notes/sync')
+    def notes_sync():
+        return start_notes_job('sync', lambda key, progress: sync_sermon_notes(app, key, progress))
+
+    @blueprint.post('/api/notes/convert')
+    def notes_convert():
+        if not sync_admin(): return jsonify(ok=False,error='Developer access required.'),403
+        def convert(user_key, progress):
+            from sermon_ebooks import download_drive_file_bytes, get_drive_session
+            library_path = Path(app.config.get('BIBLE_STUDY_LIBRARY_DATABASE') or app.config.get('DATABASE') or BASE_DIR/'app_v2.db').resolve()
+            if not library_path.is_file(): raise ValueError('Sync your Sermon eBooks library first, then use Convert.')
+            with closing(sqlite3.connect(library_path.as_uri()+'?mode=ro',uri=True)) as library:
+                library.row_factory=sqlite3.Row
+                if not library.execute("SELECT 1 FROM sqlite_master WHERE name='sermon_library_files'").fetchone():
+                    raise ValueError('Sync your Sermon eBooks library first, then use Convert.')
+                sources=[dict(row) for row in library.execute('SELECT * FROM sermon_library_files WHERE is_active=1 ORDER BY id')]
+            converted=skipped=repaired=preserved_edits=0; errors=[]
+            drive = None;backup_name=None
+            for i, source in enumerate(sources):
+                source_key='sermon-pdf:'+source['drive_file_id']
+                with sermon_notes_storage(app) as conn:
+                    existing=conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND source_key=?', (user_key,source_key)).fetchone() if conn else None
+                current=json.loads(existing['note_json']) if existing else None
+                if existing and (existing['deleted'] or existing['conflict_json'] or
+                        current.get('origin',{}).get('converter_version')==NOTES_CONVERTER_VERSION): skipped+=1
+                else:
+                    try:
+                        if drive is None: drive=get_drive_session()
+                        data=download_drive_file_bytes(drive,source['drive_file_id'])
+                        if existing:
+                            if backup_name is None: backup_name=backup_sermon_notes(app)
+                            note,mode=repair_converted_sermon(data,source,current,preserve_edits=existing['version']>1)
+                            with sermon_notes_storage(app,True) as conn:
+                                changed=conn.execute('''UPDATE sermon_notes SET note_json=?,version=version+1,dirty=1,updated_at=?
+                                    WHERE user_key=? AND id=? AND version=? AND deleted=0 AND conflict_json IS NULL''',
+                                    (json.dumps(note,ensure_ascii=False),datetime.now(timezone.utc).isoformat(),user_key,existing['id'],existing['version'])).rowcount
+                            if not changed: raise ValueError('This note changed during repair. Its new edits were kept; retry Convert.')
+                            repaired+=1
+                            if mode=='edited_text_kept': preserved_edits+=1
+                        else:
+                            note=convert_sermon_pdf(data,source)
+                            with sermon_notes_storage(app,True) as conn:
+                                conn.execute('INSERT OR IGNORE INTO sermon_notes(id,user_key,note_json,source_key,updated_at) VALUES(?,?,?,?,?)',
+                                    (hashlib.sha256((user_key+'|'+source_key).encode()).hexdigest()[:32],user_key,
+                                     json.dumps(note,ensure_ascii=False),source_key,datetime.now(timezone.utc).isoformat()))
+                            converted+=1
+                    except Exception as error:
+                        errors.append(dict(filename=source['filename'], error=str(error) if isinstance(error,ValueError)
+                            else 'Could not read this PDF. Check its source and retry.'))
+                progress(completed=i+1,total=len(sources),message='Converting / repairing '+source['filename'],converted=converted,repaired=repaired,skipped=skipped,errors=errors)
+            if drive is not None: drive.close()
+            return dict(converted=converted,repaired=repaired,preserved_edits=preserved_edits,backup=backup_name,skipped=skipped,errors=errors,
+                message=f'Conversion complete: {converted} created, {repaired} repaired, {skipped} already current, {len(errors)} need attention. '
+                        + (f'{preserved_edits} edited texts were kept intact. ' if preserved_edits else '')+'Use Sync Notes to back them up.')
+        return start_notes_job('conversion',convert)
 
     @blueprint.get('/api/status')
     def status_api():
@@ -6944,10 +7906,15 @@ def register_bible_study_routes(app):
     def commentary_api():
         book = BOOK_BY_NAME.get(request.args.get('book','').strip().casefold())
         series = request.args.get('series','wiersbe')
+        scope=request.args.get('scope','verse');entry_key=request.args.get('entry')
+        section_kind=request.args.get('section','exposition')
+        continuous=series=='moody' or (series=='pulpit' and section_kind=='exposition')
         providers = {'wiersbe':wiersbe_commentary,'exalting-jesus':exalting_commentary,'moody':moody_commentary,'pulpit':pulpit_commentary}
         if series not in providers:
             return jsonify(ok=False,error='Choose an available commentary series.'),400
-        section_kind=request.args.get('section','exposition')
+        if scope not in ('verse','chapter') or (entry_key is not None and
+                (scope!='chapter' or series=='moody' or not re.fullmatch(r'[a-f0-9]{32}',entry_key))):
+            return jsonify(ok=False,error='Choose an available chapter commentary theme.'),400
         if series=='pulpit' and section_kind not in ('exposition','homiletics'):
             return jsonify(ok=False,error='Choose Exposition or Homiletics.'),400
         try:
@@ -6956,22 +7923,28 @@ def register_bible_study_routes(app):
             return jsonify(ok=False,error='Choose a valid Bible passage.'),400
         if not book or not 1 <= chapter <= book[2] or not 1 <= verse <= 176:
             return jsonify(ok=False,error='Choose a valid Bible passage.'),400
+        source_verse=None if scope=='chapter' else verse
+        chapter_options=(dict(chapter_titles=True,entry_key=entry_key,selected_verse=verse)
+                         if scope=='chapter' and (not continuous or entry_key is not None) else {})
         try:
             if series=='wiersbe':
                 with database() as conn:
-                    data=bible_study_be_commentary(conn,book[0],chapter,verse)
-                return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
-            arguments=(app.config.get('AI_DATABASE') or BASE_DIR / 'ai_index.db',book[0],chapter,verse)
-            if series=='exalting-jesus':
-                try:
-                    with database() as conn:
-                        local = local_exalting_catalogue(conn)
-                except StorageUnavailable:
-                    local = []
-                data = exalting_commentary(*arguments,local_catalogue=local)
+                    data=bible_study_be_commentary(conn,book[0],chapter,source_verse,**chapter_options)
             else:
-                data = providers[series](*arguments,section_kind) if series=='pulpit' else providers[series](*arguments)
-            return jsonify(ok=True,series=series,reference=f'{book[1]} {chapter}:{verse}',**data)
+                arguments=(app.config.get('AI_DATABASE') or BASE_DIR / 'ai_index.db',book[0],chapter,source_verse)
+                if series=='exalting-jesus':
+                    try:
+                        with database() as conn:
+                            local = local_exalting_catalogue(conn)
+                    except StorageUnavailable:
+                        local = []
+                    data = exalting_commentary(*arguments,local_catalogue=local,**chapter_options)
+                else:
+                    data = providers[series](*arguments,section_kind,**chapter_options) if series=='pulpit' else providers[series](*arguments)
+            if entry_key and data.get('selected_theme')!=entry_key:
+                return jsonify(ok=False,error='This chapter section changed. Choose its theme again.'),404
+            reference=f'{book[1]} {chapter}'+(f':{verse}' if scope=='verse' else '')
+            return jsonify(ok=True,series=series,scope=scope,reference=reference,**data)
         except (OSError, sqlite3.DatabaseError, StorageUnavailable):
             logging.getLogger(__name__).warning('Commentary index unavailable (%s)',series,exc_info=True)
             return jsonify(ok=False,error='Commentary is temporarily unavailable. Please try again.'),503
@@ -7307,7 +8280,7 @@ def register_bible_study_routes(app):
         if (kind not in ('highlight','underline','note','bookmark') or not isinstance(note,str) or len(note)>8000
                 or (kind=='note' and not note.strip()) or not isinstance(spans,list) or not 1<=len(spans)<=100
                 or (kind=='bookmark' and len(spans)!=1)
-                or not isinstance(color,(str,type(None))) or color not in (None,'#ffe66d','#9ee6b8','#9ed3ff','#ffd2df','#e5962d')):
+                or not isinstance(color,(str,type(None))) or color not in ANNOTATION_COLORS | {None}):
             return jsonify(ok=False,error='Choose a valid annotation and selected text.'),400
         checked=[]
         try:
@@ -7390,11 +8363,10 @@ def register_bible_study_routes(app):
         if not isinstance(data, dict) or set(data) - {'kind', 'color', 'note', 'ranges'}:
             return jsonify(ok=False, error='Invalid annotation.'), 400
         kind, note, ranges = data.get('kind'), data.get('note', ''), data.get('ranges')
-        colors = {'#ffe66d', '#9ee6b8', '#9ed3ff', '#ffd2df', '#e5962d'}
         if (kind not in ('highlight', 'underline', 'note') or not isinstance(note, str) or len(note) > 8000
                 or not isinstance(ranges, list) or not 1 <= len(ranges) <= 100
                 or not isinstance(data.get('color'), (str, type(None)))
-                or data.get('color') not in colors | {None} or (kind == 'note' and not note.strip())):
+                or data.get('color') not in ANNOTATION_COLORS | {None} or (kind == 'note' and not note.strip())):
             return jsonify(ok=False, error='Choose text, an annotation type, and a valid note or color.'), 400
         try:
             with database(write=True) as conn:

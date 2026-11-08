@@ -79,6 +79,8 @@ reference. Fill in:
 - `CCM_DRIVE_SCRIPT_URL` and `CCM_DRIVE_API_TOKEN`: if you use CCM Google backups.
   Use the same deployed upload connection as your local `.env`; see
   [CCM setup](deployment/CCM_SETUP.md) for the local-first account and backup workflow.
+- `SERMON_NOTES_DRIVE_SCRIPT_URL` and `SERMON_NOTES_DRIVE_API_TOKEN`: personal
+  sermon-note backup and two-way sync. See [Sermon Notes setup](deployment/SERMON_NOTES_SETUP.md).
 - `TEMP_EDIT_USER_TOKEN` and `TEMP_EDIT_ADMIN_TOKEN`: set private values if you use
   temporary editing. Blank values disable access to the corresponding routes.
 
@@ -135,6 +137,12 @@ Pending CCM accounts live in `app_v2.db`; their portraits and ID
 images stay in `ccm_assets/` until verified Google backup. These local records
 and files are runtime data and are not included in a published image. New images
 reuse this volume. Docker documents this [volume lifecycle](https://docs.docker.com/engine/storage/volumes/).
+
+Personal Sermon Notes live in `/data/bible_study_data/sermon_notes.db`, separate
+from indexed Bible content. Keep this file and its SQLite sidecars in local
+backups. **Sync Notes** also restores and backs up each account's notes through
+its private Drive folder. The developer's **Convert my sermons** imports existing
+Sermon eBooks without changing the source PDFs; it does not run automatically.
 
 For each update, publish the new image, change `IMAGE_TAG` if necessary, then:
 
