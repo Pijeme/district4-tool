@@ -2183,6 +2183,95 @@ class SermonNotesEditorTests(unittest.TestCase):
     run_browser = LibraryBrowserTests.run_browser
     render_preview = BibleStudyBrowserTests.render_preview
 
+    def test_mobile_options_run_sync_conversion_and_export_after_native_taps(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('Optional Playwright is required for native mobile taps')
+        setup = BibleStudyBrowserTests.setup_api(self, True) + r'''
+            const originalFetch=window.fetch;
+            window.notesJobWrites=[];window.pdfRequests=0;
+            window.fixtureNote={id:'1'.repeat(32),version:1,dirty:false,note:{schema_version:1,
+                theme:'Mobile sermon',text:'John 3:16',content:{blocks:[{type:'paragraph',runs:[{text:'Saved sermon body.'}]}]}}};
+            let job={running:false,message:''};
+            const json=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];
+                if(!path.includes('/api/notes'))return originalFetch(url,options);
+                if(path.endsWith('/pdf')){pdfRequests++;return new Response('%PDF-fixture',{headers:{'Content-Type':'application/pdf'}});}
+                if(path.endsWith('/notes'))return json({notes:[{id:fixtureNote.id,theme:fixtureNote.note.theme,
+                    text:fixtureNote.note.text}],drive_configured:true,can_convert:true});
+                if(options.method==='POST'){
+                    if(options.headers['X-CSRF-Token']!=='test-csrf')throw Error('Missing CSRF token');
+                    notesJobWrites.push(path);
+                    job={running:false,message:path.endsWith('/sync')?'Sync complete: restored and backed up.':'Conversion complete.'};
+                }
+                return path.endsWith('/job')||options.method==='POST'?json({job}):json({item:fixtureNote});
+            };
+        '''
+        html = self.render_preview(admin=True)
+        with sync_playwright() as playwright:
+            chromium = playwright.chromium.launch(executable_path=BROWSER, headless=True)
+            try:
+                try:
+                    webkit = playwright.webkit.launch(headless=True)
+                except Exception:
+                    webkit = None
+                try:
+                    for name, browser in [('chromium', chromium), ('webkit', webkit)]:
+                        if browser is None:
+                            continue
+                        with self.subTest(browser=name):
+                            context = browser.new_context(viewport=dict(width=414, height=896), is_mobile=True, has_touch=True)
+                            try:
+                                context.add_init_script(setup)
+                                page = context.new_page()
+                                errors = []
+                                page.on('pageerror', lambda error: errors.append(str(error)))
+                                def route(request):
+                                    path = request.request.url.split('?', 1)[0]
+                                    if path == 'https://district.test/':
+                                        request.fulfill(body=html, content_type='text/html; charset=utf-8')
+                                    elif path.startswith('https://district.test/static/'):
+                                        file = ROOT / path.removeprefix('https://district.test/')
+                                        if file.is_file(): request.fulfill(path=str(file))
+                                        else: request.abort()
+                                    else: request.abort()
+                                page.route('**/*', route)
+                                page.goto('https://district.test/')
+                                page.locator('#bsNotesTab').tap()
+                                page.wait_for_function('!document.getElementById("bsNotesSync").disabled')
+                                page.locator('#bsNotesActionsToggle').tap()
+                                menu = page.locator('#bsNotesActionsMenu')
+                                bounds = menu.bounding_box()
+                                self.assertLessEqual(bounds['height'], 180, 'Options stretch over the reading screen')
+                                self.assertGreaterEqual(bounds['y'], 0)
+                                self.assertLessEqual(bounds['y'] + bounds['height'], 896)
+                                page.locator('#bsNotesSync').tap()
+                                page.wait_for_function('notesJobWrites.length===1')
+                                page.wait_for_function('document.getElementById("bsNotesJobMessage").textContent.includes("backed up")')
+                                self.assertTrue(menu.is_hidden())
+                                page.locator('#bsNotesActionsToggle').tap()
+                                page.locator('#bsNotesConvert').tap()
+                                page.wait_for_function('document.getElementById("bsNotesConfirmDialog").open')
+                                page.locator('#bsNotesConfirmYes').tap()
+                                page.wait_for_function('notesJobWrites.length===2')
+                                page.wait_for_function('document.getElementById("bsNotesJobMessage").textContent==="Conversion complete."')
+                                page.locator('#bsNotesList button').tap()
+                                page.locator('#bsNotesWorkspace').wait_for(state='visible')
+                                page.locator('#bsNotesActionsToggle').tap()
+                                page.locator('#bsNotesExport').tap()
+                                page.wait_for_function('pdfRequests===1&&!document.getElementById("bsNotesDownload").disabled')
+                                self.assertTrue(page.locator('#bsNotesExportDialog').evaluate('element=>element.open'))
+                                self.assertEqual([path.rsplit('/', 1)[-1] for path in page.evaluate('notesJobWrites')], ['sync', 'convert'])
+                                self.assertEqual(errors, [])
+                            finally:
+                                context.close()
+                finally:
+                    if webkit: webkit.close()
+            finally:
+                chromium.close()
+
     def test_inline_edit_references_preserve_format_selection_and_undo(self):
         try:
             from playwright.sync_api import sync_playwright

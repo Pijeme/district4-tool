@@ -134,9 +134,18 @@ owner's authorization and storage. Keep tokens and credentials out of screenshot
 - Editing preserves the original ID number, issue date and verification link.
   Its next backup updates the same Google row. Stale local edits and conflicting
   Google revisions are rejected. Older Drive versions remain as history.
-- Delete removes the account and invalidates its QR immediately on this host.
-  Its next backup marks the Google row `Deleted`; its sheet record and Drive
-  files remain as ID history. Pending deletions are included in the backup count.
+- If a Google row is missing, **Backup to Google** restores that pending account
+  with its original record key and ID number. Existing Drive images are verified
+  before restoring the row; readable images in Drive's trash are verified and
+  backed up again through the owner upload connection. Duplicate ID numbers are
+  rejected. Local data is cleared only after Google confirms the full restored row.
+  Pending deletions write a `Deleted` history row without restoring trashed images
+  or reactivating the account.
+- Delete immediately removes the local profile cache and local photo/ID PNGs,
+  and invalidates the QR on this host. Only a small deletion marker stays pending
+  until Google confirms it. The next backup marks the Google row `Deleted` and
+  removes that marker; existing sheet history and Drive references are preserved.
+  Pending deletions are included in the backup count.
 - QR verification uses pending local changes first. For backed-up records it
   checks Google and never attests validity from a stale cached record.
 

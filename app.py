@@ -6896,12 +6896,24 @@ def ccm_pending():
 def ccm_cache_write(records, read_started=None):
     ccm_tables()
     db = get_db()
-    current = db.execute('SELECT payload,updated FROM ccm_directory_cache WHERE id=1').fetchone()
-    if read_started is not None and current and current['updated'] > read_started:
-        return json.loads(current['payload'])
-    db.execute("INSERT OR REPLACE INTO ccm_directory_cache VALUES (1,?,?)", (json.dumps(records), time.time()))
-    db.commit()
-    return records
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        current = db.execute('SELECT payload,updated FROM ccm_directory_cache WHERE id=1').fetchone()
+        if read_started is not None and current and current['updated'] > read_started:
+            db.rollback()
+            return json.loads(current['payload'])
+        # Neither a Google refresh nor an older in-flight backup may put a
+        # locally deleted profile back into the device's directory cache.
+        deleted = {row['key'] for row in db.execute('SELECT key,payload FROM ccm_pending_workers')
+                   if json.loads(row['payload']).get('Status') == 'Deleted'}
+        records = [record for record in records
+                   if record.get('Status') != 'Deleted' and record['Record Key'] not in deleted]
+        db.execute("INSERT OR REPLACE INTO ccm_directory_cache VALUES (1,?,?)", (json.dumps(records), time.time()))
+        db.commit()
+        return records
+    except Exception:
+        db.rollback()
+        raise
 
 
 def ccm_sheet_records(values):
@@ -7068,6 +7080,14 @@ def ccm_write_local_assets(row, images):
                 temporary.unlink(missing_ok=True)
         references[side] = name
     row['_local_assets'] = references
+
+
+def ccm_remove_local_assets(key):
+    root = ccm_asset_path(key, 'photo').parent.resolve()
+    for path in root.glob(key + '-*.png'):
+        if path.resolve().parent != root:
+            raise CCMStorageError('Local cleanup stopped because an image path was outside the image folder.')
+        path.unlink(missing_ok=True)
 
 
 def ccm_upload(key, side, data, *, filename=None, event_key=None):
@@ -7421,8 +7441,21 @@ def ccm_store_local(row, images=None, expected_revision=None):
             row.pop('_revision', None)
             if images is not None:
                 ccm_write_local_assets(row, images)
+            deleting = row['Status'] == 'Deleted'
+            if deleting:
+                row = {field: row[field] for field in
+                       ('Record Key', 'ID Number', 'Created At', 'Status', 'Updated At', '_cloud_revision') if field in row}
+                if cached:
+                    records = [record for record in json.loads(cached['payload']) if record['Record Key'] != key]
+                    db.execute('UPDATE ccm_directory_cache SET payload=?,updated=? WHERE id=1',
+                               (json.dumps(records), time.time()))
             db.execute("INSERT OR REPLACE INTO ccm_pending_workers (key,payload,error) VALUES (?,?,'')", (key, json.dumps(row)))
             db.commit()
+            if deleting:
+                try:
+                    ccm_remove_local_assets(key)
+                except OSError:
+                    raise CCMStorageError('Account removed. Some local images are still in use; retry Backup to Google to finish cleanup.') from None
             return row
         except Exception:
             db.rollback()
@@ -7462,12 +7495,13 @@ def ccm_saved(key):
     return response
 
 
-def ccm_verify_upload(file_id, body):
+def ccm_verify_upload(file_id, body, *, allow_trashed=False):
     import hashlib
     info = ccm_drive('GET', 'drive/v3/files/' + file_id,
         params={'fields': 'id,size,md5Checksum,trashed', 'supportsAllDrives': 'true'}).json()
-    if info.get('trashed') or str(info.get('size')) != str(len(body)) or info.get('md5Checksum') != hashlib.md5(body).hexdigest():
+    if (info.get('trashed') and not allow_trashed) or str(info.get('size')) != str(len(body)) or info.get('md5Checksum') != hashlib.md5(body).hexdigest():
         raise CCMStorageError('Google Drive has not confirmed a complete image backup. Local files were kept.')
+    return info
 
 
 def ccm_backup_worker(key):
@@ -7495,7 +7529,7 @@ def ccm_backup_worker(key):
     revision = snapshot['Updated At']
     try:
         # Immutable files let admins create/edit accounts while this snapshot uploads.
-        bodies = {} if snapshot.get('_backup_confirmed_revision') == revision else {
+        bodies = {} if snapshot['Status'] == 'Deleted' or snapshot.get('_backup_confirmed_revision') == revision else {
             side: ccm_asset(snapshot, side) for side in snapshot.get('_local_assets', {})}
         cloud = {h: snapshot.get(h, '') for h in CCM_HEADERS}
 
@@ -7519,12 +7553,33 @@ def ccm_backup_worker(key):
                 number, previous = matching[0]
                 if previous['Updated At'] not in (snapshot.get('_cloud_revision', ''), revision):
                     raise CCMStorageError('This account changed in Google since the local edit. Local files were kept for review.')
+                if snapshot['Status'] == 'Deleted':
+                    # The local deletion marker carries no profile or images;
+                    # preserve existing cloud history when recording deletion.
+                    cloud = {header: previous.get(header, '') for header in CCM_HEADERS}
+                    cloud.update(Status='Deleted', **{'Updated At': revision})
                 sheet.update(range_name=f'A{number}:R{number}', values=[[cloud[h] for h in CCM_HEADERS]], value_input_option='RAW')
             else:
-                if snapshot.get('_cloud_revision'):
-                    raise CCMStorageError('The original Google account is missing. Local files were kept for review.')
                 if any(r['ID Number'] == cloud['ID Number'] for r in ccm_sheet_records(values)):
                     raise CCMStorageError('This ID number already exists in Google. Local files were kept for review.')
+                if snapshot.get('_cloud_revision') and snapshot['Status'] != 'Deleted':
+                    # Backup is also recovery when a Sheets row was removed.
+                    # Retained Drive references must still resolve to verified
+                    # images before recreating the same account and ID number.
+                    for side in ('photo', 'front', 'back'):
+                        if side not in bodies:
+                            file_id = cloud[side.title() + ' File ID']
+                            if not file_id:
+                                raise CCMStorageError('An original image backup is missing. Local files were kept for review.')
+                            body = ccm_asset(snapshot, side)
+                            info = ccm_verify_upload(file_id, body, allow_trashed=True)
+                            if info.get('trashed'):
+                                # A shared service account cannot untrash the
+                                # owner's file. Back up its verified bytes again
+                                # through the existing owner upload connection.
+                                file_id = ccm_upload(key, side, body)
+                                ccm_verify_upload(file_id, body)
+                                cloud[side.title() + ' File ID'] = file_id
                 sheet.append_row([cloud[h] for h in CCM_HEADERS], value_input_option='RAW')
             confirmed = ccm_sheet_records(sheet.get_all_values())
             saved = [r for r in confirmed if r['Record Key'] == key]
@@ -7539,16 +7594,16 @@ def ccm_backup_worker(key):
             if latest and latest['Updated At'] == revision:
                 # Persist verified Drive references before cleanup. If a file is
                 # locked, retry can finish cleanup without losing an image source.
-                latest.update(cloud)
+                if latest['Status'] == 'Deleted':
+                    latest = {field: latest[field] for field in
+                              ('Record Key', 'ID Number', 'Created At', 'Status', 'Updated At') if field in latest}
+                else:
+                    latest.update(cloud)
                 latest['_cloud_revision'] = revision
                 latest['_backup_confirmed_revision'] = revision
                 db.execute('UPDATE ccm_pending_workers SET payload=? WHERE key=?', (json.dumps(latest), key))
                 db.commit()
-                root = ccm_asset_path(key, 'photo').parent.resolve()
-                for path in root.glob(key + '-*.png'):
-                    if path.resolve().parent != root:
-                        raise CCMStorageError('Local cleanup stopped because an image path was outside the image folder.')
-                    path.unlink(missing_ok=True)
+                ccm_remove_local_assets(key)
                 db.execute('DELETE FROM ccm_pending_workers WHERE key=?', (key,))
                 db.commit()
                 cleaned = True
@@ -7610,7 +7665,7 @@ def ccm_delete(key):
         revision = record['Updated At']
         record.update({'Status': 'Deleted', 'Updated At': utc_now_iso()})
         ccm_store_local(record, expected_revision=revision)
-        flash('Account removed and QR invalidated. Back Up to Google will save the deletion to its history.', 'success')
+        flash('Account removed from this device and QR invalidated. Back Up to Google will save the deletion to its history.', 'success')
     except (CCMStorageError, CacheSyncError) as exc:
         flash(str(exc), 'error')
     except Exception as exc:

@@ -1721,7 +1721,7 @@
     const notesEditor=element("NotesEditor"),notesDraftKey=preferenceKey+"-sermon-draft-";
     const notesFonts=[...element("NotesFont").options].map(option=>option.value);
     const notesActions=element("NotesActionsMenu"),notesActionsToggle=element("NotesActionsToggle");
-    let notesActionsOpen=false;
+    let notesActionsOpen=false,notesActionsPointerUntil=0;
     if(typeof notesActions.showPopover==="function")notesActions.setAttribute("popover","auto");
     function notesPositionActions(){
         if(!notesActionsOpen)return;
@@ -1733,7 +1733,7 @@
         notesActions.style.setProperty("--bs-notes-options-left",x+"px");notesActions.style.setProperty("--bs-notes-options-top",y+"px");
     }
     function notesCloseActions(focusToggle=false){
-        notesActionsOpen=false;notesActionsToggle.setAttribute("aria-expanded","false");
+        notesActionsOpen=false;notesActionsPointerUntil=0;notesActionsToggle.setAttribute("aria-expanded","false");
         if(notesActions.hasAttribute("popover")&&notesActions.matches(":popover-open"))notesActions.hidePopover();
         notesActions.hidden=true;
         if(focusToggle&&notesActionsToggle.getClientRects().length)notesActionsToggle.focus();
@@ -1745,15 +1745,19 @@
         notesPositionActions();notesActions.querySelector("button:not([disabled]):not([hidden])")?.focus({preventScroll:true});
     });
     notesActions.addEventListener("toggle",event=>{if(event.newState==="closed")notesCloseActions();});
+    // Safari moves focus back to the reading pane during a touch-generated
+    // mousedown. Keep the menu alive until the tapped button receives its click.
+    notesActions.addEventListener("pointerdown",()=>{notesActionsPointerUntil=performance.now()+800;},{passive:true});
     notesActions.addEventListener("click",event=>{if(event.target.closest("button:not([disabled])"))notesCloseActions();});
     document.addEventListener("pointerdown",event=>{
         if(notesActionsOpen&&!notesActions.contains(event.target)&&!notesActionsToggle.contains(event.target))notesCloseActions();
     },true);
     document.addEventListener("keydown",event=>{
+        if(event.key==="Tab")notesActionsPointerUntil=0;
         if(event.key==="Escape"&&notesActionsOpen){event.preventDefault();event.stopPropagation();notesCloseActions(true);}
     },true);
     notesActions.addEventListener("focusout",event=>{
-        if(event.relatedTarget&&!notesActions.contains(event.relatedTarget)&&event.relatedTarget!==notesActionsToggle)notesCloseActions();
+        if(performance.now()>=notesActionsPointerUntil&&event.relatedTarget&&!notesActions.contains(event.relatedTarget)&&event.relatedTarget!==notesActionsToggle)notesCloseActions();
     });
     element("Bible").addEventListener("scroll",()=>{if(notesActionsOpen)notesCloseActions();},{passive:true});
     window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);

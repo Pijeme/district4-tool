@@ -36,6 +36,9 @@ cursor position, without replacing an earlier text selection. Undo removes it.
 
 **Export Notes** first prepares a PDF, then offers Download PDF or Share PDF.
 Browsers without file sharing download the PDF instead, like Pastor's Tool.
+The options menu uses content-sized rows on phones. Native touch activation
+keeps the menu open through Safari's focus change until the chosen Export,
+Sync or Convert action runs; outside taps and keyboard dismissal still close it.
 PDFs embed bundled Noto Sans fonts for Latin and Greek text, including bold and
 italic. The unmodified fonts and SIL Open Font License are under `static/fonts`,
 from [notofonts/noto-fonts, commit ffebf8c1ee449e544955a7e813c54f9b73848eac](https://github.com/notofonts/noto-fonts/tree/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans).
@@ -278,6 +281,10 @@ servers can use that one endpoint.
   following the existing Pastor's Tool report flow.
 - **Sync Notes** pulls and pushes, including restoration for a new device.
   Automatic Drive folders belong to each logged-in user's personal library.
+  If Drive's index or an entry was removed externally, sync backs up the current
+  local sermons again after Drive confirms the missing entry. Unsynced newer
+  edits are preserved, and local deletions never recreate missing sermons.
+  Different existing Drive revisions still require conflict review.
 - Selection and whole-entry insertion from Bible, commentary, illustrations,
   outlines and saved notes use **Current notes** as the checkbox label. Checked
   means the sermon currently open; unchecked opens Create New / Add to Existing.

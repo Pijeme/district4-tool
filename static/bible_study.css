@@ -401,9 +401,10 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-notes-actions{padding:0 0 8px;margin:0;border-bottom:0}
 .bs-root #bsNotesActionsToggle{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;width:38px;min-height:38px;padding:7px;flex-shrink:0}
 #bsNotesActionsToggle .ui-icon{width:20px;height:20px}
-.bs-root #bsNotesActionsMenu{position:fixed;inset:auto;margin:0;left:var(--bs-notes-options-left,8px);top:var(--bs-notes-options-top,100px);z-index:40025;display:grid;gap:5px;width:min(220px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:var(--bs-notes-options-height,75dvh);overflow:auto;overscroll-behavior:contain;padding:8px;border:1px solid var(--bs-line);border-radius:10px;background:var(--bs-paper);color:var(--bs-ink);box-shadow:0 8px 30px #18243140}
+.bs-root #bsNotesActionsMenu{position:fixed;inset:auto;margin:0;left:var(--bs-notes-options-left,8px);top:var(--bs-notes-options-top,100px);z-index:40025;display:block;width:min(220px,calc(100vw - 16px));max-width:calc(100vw - 16px);height:auto;min-height:0;max-height:min(320px,var(--bs-notes-options-height,75dvh));overflow:auto;overscroll-behavior:contain;padding:8px;border:1px solid var(--bs-line);border-radius:10px;background:var(--bs-paper);color:var(--bs-ink);box-shadow:0 8px 30px #18243140;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .bs-root #bsNotesActionsMenu[popover]:not(:popover-open){display:none}
-.bs-root #bsNotesActionsMenu button{width:100%;text-align:left;min-height:42px;padding:9px 12px;font:13px/1.4 Arial,sans-serif}
+.bs-root #bsNotesActionsMenu button{display:block;width:100%;height:auto;min-height:44px;max-height:none;margin:0;text-align:left;padding:9px 12px;font:13px/1.4 Arial,sans-serif;white-space:normal}
+.bs-root #bsNotesActionsMenu button+button{margin-top:5px}
 .bs-notes-edit-controls{display:none;padding-top:6px;border-top:1px solid var(--bs-line)}
 .bs-notes-panel:has(#bsNotesWorkspace:not([hidden])) .bs-notes-edit-controls{display:block}
 .bs-notes-dock .bs-notes-meta-actions{display:none;margin:0}.bs-notes-dock .bs-notes-format{margin-bottom:0}

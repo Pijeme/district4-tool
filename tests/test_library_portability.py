@@ -4710,6 +4710,59 @@ class SermonNotesIntegrationTests(unittest.TestCase):
             self.assertEqual(records[user_key][another['id']]['version'],1)
             self.assertFalse(self.client.get(self.notes+'/'+another['id']).json['item']['dirty'])
 
+    def test_sync_rebuilds_a_missing_drive_index_without_losing_notes_or_new_edits(self):
+        first = self.create(theme='First sermon')
+        second = self.create(theme='Second sermon')
+        records, endpoint = self.remote()
+        with patch.object(self.bible, 'sermon_notes_remote', side_effect=endpoint):
+            job = self.client.post(self.notes+'/sync', json={}, headers=self.headers).json['job']
+            self.assertFalse(job.get('error'), job)
+            user_key = next(iter(records))
+            records[user_key].clear()
+            local = self.client.get(self.notes+'/'+first['id']).json['item']
+            edited = copy.deepcopy(local['note'])
+            edited['theme'] = 'Local revision'
+            self.assertEqual(self.client.patch(self.notes+'/'+first['id'], json={'version': local['version'], 'note': edited}, headers=self.headers).status_code, 200)
+            changed = []
+            def edit_during_conflict(app, key, action, **payload):
+                result = endpoint(app, key, action, **payload)
+                if action == 'put' and payload['note_id'] == first['id'] and result.get('code') == 'CONFLICT' and not changed:
+                    changed.append(True)
+                    with self.bible.sermon_notes_storage(app, True) as conn:
+                        current = conn.execute('SELECT note_json FROM sermon_notes WHERE user_key=? AND id=?', (key, first['id'])).fetchone()
+                        newest = json.loads(current['note_json'])
+                        newest['theme'] = 'Newest edit during recovery'
+                        conn.execute('UPDATE sermon_notes SET note_json=?,version=version+1,dirty=1 WHERE user_key=? AND id=?',
+                                     (json.dumps(newest), key, first['id']))
+                return result
+            with patch.object(self.bible, 'sermon_notes_remote', side_effect=edit_during_conflict):
+                recovered = self.client.post(self.notes+'/sync', json={}, headers=self.headers).json['job']
+            self.assertFalse(recovered.get('error'), recovered)
+            self.assertEqual(recovered['pushed'], 2, 'The previously clean missing sermon was not backed up again')
+            self.assertEqual(recovered['pending'], 0)
+            self.assertEqual(set(records[user_key]), {first['id'], second['id']})
+            self.assertEqual(records[user_key][first['id']]['note']['theme'], 'Newest edit during recovery')
+            self.assertEqual(records[user_key][second['id']]['note']['theme'], 'Second sermon')
+            self.assertFalse(self.client.get(self.notes+'/'+first['id']).json['item']['dirty'])
+            repeated = self.client.post(self.notes+'/sync', json={}, headers=self.headers).json['job']
+            self.assertFalse(repeated.get('error'), repeated)
+            self.assertEqual(repeated['pushed'], 0, 'A repeated recovery uploaded duplicate revisions')
+
+    def test_missing_drive_entry_confirms_local_deletion_without_recreating_the_sermon(self):
+        item = self.create()
+        records, endpoint = self.remote()
+        with patch.object(self.bible, 'sermon_notes_remote', side_effect=endpoint):
+            self.client.post(self.notes+'/sync', json={}, headers=self.headers)
+            user_key = next(iter(records))
+            current = self.client.get(self.notes+'/'+item['id']).json['item']
+            self.assertEqual(self.client.delete(self.notes+'/'+item['id'], json={'version': current['version']}, headers=self.headers).status_code, 200)
+            records[user_key].clear()
+            job = self.client.post(self.notes+'/sync', json={}, headers=self.headers).json['job']
+            self.assertFalse(job.get('error'), job)
+            self.assertEqual(job['pending'], 0)
+            self.assertEqual(records[user_key], {}, 'A deleted sermon was recreated during recovery')
+            self.assertEqual(self.client.get(self.notes+'/'+item['id']).status_code, 404)
+
     def test_edits_during_upload_remain_pending_and_unsynced_deletion_stays_local(self):
         item=self.create();records,endpoint=self.remote();edited=[False]
         def concurrent(app,key,action,**payload):

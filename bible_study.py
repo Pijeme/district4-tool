@@ -6891,6 +6891,15 @@ def sync_sermon_notes(app, user_key, progress):
         pulled += 1
         progress(message='Restoring notes from Drive', completed=i+1, total=len(inventory))
     with sermon_notes_storage(app, True) as conn:
+        remote_ids = {summary['note_id'] for summary in inventory}
+        # An externally removed Drive index must not leave clean local notes
+        # falsely marked as backed up. Reconcile them through the same guarded
+        # upload path as local edits, preserving each note's stable ID.
+        missing = [row['id'] for row in conn.execute('''SELECT id FROM sermon_notes
+            WHERE user_key=? AND deleted=0 AND dirty=0 AND remote_version>0 AND conflict_json IS NULL''', (user_key,))
+            if row['id'] not in remote_ids]
+        conn.executemany('UPDATE sermon_notes SET dirty=1 WHERE user_key=? AND id=?',
+                         ((user_key, identifier) for identifier in missing))
         dirty = [row['id'] for row in conn.execute('SELECT id FROM sermon_notes WHERE user_key=? AND dirty=1 AND conflict_json IS NULL', (user_key,))]
     for i, identifier in enumerate(dirty):
         with sermon_notes_storage(app, True) as conn:
@@ -6907,6 +6916,25 @@ def sync_sermon_notes(app, user_key, progress):
             conn.execute('UPDATE sermon_notes SET pending_json=? WHERE user_key=? AND id=?',
                          (json.dumps(pending, ensure_ascii=False), user_key, identifier))
         data = sermon_notes_remote(app, user_key, pending['action'], **pending['payload'])
+        if not data['ok'] and data.get('code') == 'CONFLICT' and 'current' in data and data['current'] is None:
+            # Drive explicitly confirms that this ID no longer has a revision.
+            # Rebase the current local document, not an older saved retry, and
+            # keep the replacement request on disk if its acknowledgement is lost.
+            with sermon_notes_storage(app, True) as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                latest = conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND id=?', (user_key, identifier)).fetchone()
+                if (not latest or latest['conflict_json'] or not latest['pending_json'] or
+                        json.loads(latest['pending_json']) != pending):
+                    continue
+                if latest['deleted']:
+                    conn.execute('''UPDATE sermon_notes SET remote_version=0,remote_hash='',pending_json=NULL,dirty=0
+                        WHERE user_key=? AND id=?''', (user_key, identifier))
+                    continue
+                pending = dict(local_version=latest['version'], action='put', payload=dict(
+                    note_id=identifier, base_version=0, request_id=secrets.token_hex(16), note=json.loads(latest['note_json'])))
+                conn.execute('''UPDATE sermon_notes SET remote_version=0,remote_hash='',pending_json=?
+                    WHERE user_key=? AND id=?''', (json.dumps(pending, ensure_ascii=False), user_key, identifier))
+            data = sermon_notes_remote(app, user_key, pending['action'], **pending['payload'])
         if not data['ok']:
             if data.get('code') == 'CONFLICT' and data.get('current'):
                 summary = data['current']

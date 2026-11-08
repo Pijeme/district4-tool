@@ -232,7 +232,7 @@ class CCMWorkflowTests(unittest.TestCase):
             return file_id
         self.store_image = store_image
         self.upload = Mock(side_effect=store_image)
-        self.verify = Mock()
+        self.verify = Mock(return_value={})
         for replacement in (
             patch.object(appmod, 'DATABASE', str(self.directory / 'app.db')),
             patch.object(appmod, 'data_path', side_effect=lambda name: str(self.directory / name)),
@@ -369,9 +369,42 @@ class CCMWorkflowTests(unittest.TestCase):
         response = self.client.post('/ccm/admin/delete/' + worker['Record Key'], data={'csrf_token': csrf})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.pending()[worker['Record Key']]['Status'], 'Deleted')
+        self.assertEqual(self.local_images(worker), [])
+        for field in ('Name', 'Phone', 'Email', 'Photo File ID', 'Front File ID', 'Back File ID', '_local_assets'):
+            self.assertNotIn(field, self.pending()[worker['Record Key']])
         self.assertNotIn(b'Test CCM Worker', self.client.get('/ccm?tab=workers').data)
         self.assertEqual(self.client.get('/ccm/verify/' + worker['Record Key']).status_code, 404)
         self.assertEqual(self.client.get('/ccm/image/' + worker['Record Key'] + '/photo.png').status_code, 404)
+
+    def test_delete_purges_local_profile_and_images_while_google_is_offline(self):
+        self.login()
+        worker = self.create()
+        self.assertEqual(self.backup(worker).status_code, 200)
+        cloud = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        self.assertEqual(self.client.post('/ccm/admin/save', data=self.payload(editing=cloud, name='Local Edit', photo=False)).status_code, 200)
+        self.assertEqual(len(self.local_images(worker)), 3)
+        self.mod.ccm_sheet.side_effect = self.mod.CCMStorageError('Google is offline')
+        with self.client.session_transaction() as session:
+            csrf = session['ccm_csrf']
+        self.assertEqual(self.client.post('/ccm/admin/delete/' + worker['Record Key'], data={'csrf_token': csrf}).status_code, 302)
+        self.assertEqual(self.local_images(worker), [])
+        marker = self.pending()[worker['Record Key']]
+        self.assertNotIn('Name', marker)
+        self.assertNotIn('_local_assets', marker)
+        with self.mod.app.app_context():
+            cached = self.mod.get_db().execute('SELECT payload FROM ccm_directory_cache WHERE id=1').fetchone()
+            self.assertNotIn(worker['Record Key'], cached['payload'])
+        self.assertEqual(self.backup(worker).status_code, 503)
+        self.assertEqual(self.pending()[worker['Record Key']], marker)
+        self.mod.ccm_sheet.side_effect = None
+        self.assertEqual(self.backup(worker).status_code, 200)
+        saved = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        self.assertEqual(saved['Status'], 'Deleted')
+        self.assertEqual(saved['Name'], cloud['Name'], 'Deleting erased existing Google history')
+        self.assertNotIn(worker['Record Key'], self.pending())
+        with self.mod.app.app_context():
+            cached = self.mod.get_db().execute('SELECT payload FROM ccm_directory_cache WHERE id=1').fetchone()
+            self.assertNotIn(worker['Record Key'], cached['payload'])
 
     def test_google_outage_does_not_block_local_registration(self):
         self.login()
@@ -450,7 +483,9 @@ class CCMWorkflowTests(unittest.TestCase):
         worker = self.create()
         rendered = self.mod.ccm_render_id(worker, self.photo)
         allowed = {'front': [(332,566,718,954),(120,975,936,1069),(170,1095,920,1143),(378,1174,926,1307)],
-                   'back': [(80,1140,315,1380),(375,1202,930,1322)]}
+                   # The authorized overseer signatures and captions are also
+                   # deliberate overlays; the surrounding artwork stays intact.
+                   'back': [(80,780,986,1004),(80,1140,315,1380),(375,1202,930,1322)]}
         for side in ('front', 'back'):
             original = Image.open(root / ('id-' + side + '-template.jpg')).convert('RGB')
             result = Image.open(io.BytesIO(rendered[side])).convert('RGB')
@@ -584,6 +619,33 @@ class CCMWorkflowTests(unittest.TestCase):
         self.assertEqual(self.rows[-1][2], 'Newer Local Edit')
         self.assertEqual(self.local_images(worker), [])
 
+    def test_delete_during_backup_cannot_restore_the_local_profile_or_images(self):
+        self.login()
+        worker = self.create()
+        deleted = []
+        def upload_while_deleting(key, side, body):
+            if side == 'photo' and not deleted:
+                deleted.append(True)
+                with self.mod.app.app_context():
+                    self.mod.ccm_store_local(
+                        dict(worker, Status='Deleted', **{'Updated At': '2099-01-01T00:00:00+00:00'}),
+                        expected_revision=worker['Updated At'])
+            return self.store_image(key, side, body)
+        self.upload.side_effect = upload_while_deleting
+        response = self.backup(worker)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.get_json()['cleaned'])
+        marker = self.pending()[worker['Record Key']]
+        self.assertEqual(marker['Status'], 'Deleted')
+        self.assertNotIn('Name', marker)
+        self.assertEqual(self.local_images(worker), [])
+        with self.mod.app.app_context():
+            cached = self.mod.get_db().execute('SELECT payload FROM ccm_directory_cache WHERE id=1').fetchone()
+            self.assertNotIn(worker['Record Key'], cached['payload'])
+        self.assertEqual(self.backup(marker).status_code, 200)
+        self.assertEqual(dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))['Status'], 'Deleted')
+        self.assertNotIn(worker['Record Key'], self.pending())
+
     def test_external_google_edit_is_not_overwritten_by_a_local_backup(self):
         self.login()
         worker = self.create()
@@ -605,6 +667,113 @@ class CCMWorkflowTests(unittest.TestCase):
         response = self.client.get('/ccm/verify/' + worker['Record Key'])
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'Active worker ID', response.data)
+
+    def test_backup_restores_missing_google_row_with_verified_existing_images(self):
+        self.login()
+        worker = self.create()
+        self.assertEqual(self.backup(worker).status_code, 200)
+        cloud = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        with self.mod.app.app_context():
+            pending = self.mod.ccm_store_local(
+                dict(cloud, Status='Inactive', **{'Updated At': '2099-01-01T00:00:00+00:00'}),
+                expected_revision=cloud['Updated At'])
+        self.rows[:] = [self.rows[0]]
+        self.verify.reset_mock()
+        response = self.backup(pending)
+        self.assertEqual(response.status_code, 200, response.data)
+        restored = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        self.assertEqual(restored['Record Key'], cloud['Record Key'])
+        self.assertEqual(restored['ID Number'], cloud['ID Number'])
+        self.assertEqual(restored['Created At'], cloud['Created At'])
+        self.assertEqual(restored['Status'], 'Inactive')
+        self.assertEqual(self.upload.call_count, 3, 'Existing verified images were uploaded again')
+        self.assertCountEqual([call.args[0] for call in self.verify.call_args_list],
+                              [cloud[side + ' File ID'] for side in ('Photo', 'Front', 'Back')])
+        self.assertNotIn(worker['Record Key'], self.pending())
+        self.assertEqual(self.backup(pending).status_code, 200)
+        self.assertEqual(len(self.rows), 2, 'Retry duplicated the restored account')
+
+    def test_missing_google_row_saves_deletion_without_restoring_deleted_images(self):
+        self.login()
+        worker = self.create()
+        self.assertEqual(self.backup(worker).status_code, 200)
+        with self.client.session_transaction() as session:
+            csrf = session['ccm_csrf']
+        self.assertEqual(self.client.post('/ccm/admin/delete/' + worker['Record Key'],
+                                         data={'csrf_token': csrf}).status_code, 302)
+        self.rows[:] = [self.rows[0]]
+        self.cloud_files.clear()
+        self.upload.reset_mock()
+        self.verify.reset_mock()
+        response = self.backup(worker)
+        self.assertEqual(response.status_code, 200, response.data)
+        tombstone = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        self.assertEqual(tombstone['Record Key'], worker['Record Key'])
+        self.assertEqual(tombstone['Status'], 'Deleted')
+        self.upload.assert_not_called()
+        self.verify.assert_not_called()
+        self.assertNotIn(worker['Record Key'], self.pending())
+
+    def test_missing_google_row_recovers_trashed_images_before_restoring_account(self):
+        self.login()
+        worker = self.create()
+        self.assertEqual(self.backup(worker).status_code, 200)
+        cloud = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        with self.mod.app.app_context():
+            pending = self.mod.ccm_store_local(
+                dict(cloud, Status='Inactive', **{'Updated At': '2099-01-01T00:00:00+00:00'}),
+                expected_revision=cloud['Updated At'])
+        self.rows[:] = [self.rows[0]]
+        trashed = {cloud[side + ' File ID'] for side in ('Photo', 'Front', 'Back')}
+        checked = []
+        def verify(file_id, body, *, allow_trashed=False):
+            self.assertEqual(body, self.cloud_files[file_id])
+            if file_id in trashed:
+                self.assertTrue(allow_trashed)
+                checked.append(file_id)
+                return {'trashed': True}
+            self.assertFalse(allow_trashed, 'Newly uploaded images must be active')
+            return {'trashed': False}
+        def upload(key, side, body):
+            file_id = 'restored_' + side
+            self.cloud_files[file_id] = body
+            return file_id
+        self.verify.side_effect = verify
+        self.upload.side_effect = upload
+        response = self.backup(pending)
+        self.assertEqual(response.status_code, 200, response.data)
+        restored = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        self.assertEqual(restored['ID Number'], cloud['ID Number'])
+        self.assertCountEqual(checked, trashed)
+        self.assertEqual([restored[side.title() + ' File ID'] for side in ('photo', 'front', 'back')],
+                         ['restored_photo', 'restored_front', 'restored_back'])
+        self.assertNotIn(worker['Record Key'], self.pending())
+
+    def test_missing_google_row_cannot_restore_unverified_images_or_duplicate_an_id(self):
+        self.login()
+        worker = self.create()
+        self.assertEqual(self.backup(worker).status_code, 200)
+        cloud = dict(zip(self.mod.CCM_HEADERS, self.rows[-1]))
+        response = self.client.post('/ccm/admin/save', data=self.payload(editing=cloud, name='Local Edit', photo=False))
+        self.assertEqual(response.status_code, 200)
+        self.rows[:] = [self.rows[0], [cloud[h] for h in self.mod.CCM_HEADERS]]
+        self.rows[1][0] = 'f' * 32
+        self.assertEqual(self.backup(worker).status_code, 503)
+        self.assertEqual(len(self.rows), 2, 'A duplicate ID number was restored')
+        self.rows[:] = [self.rows[0]]
+        # Simulate an older pending record whose image references only live in Drive.
+        with self.mod.app.app_context():
+            db = self.mod.get_db()
+            pending = self.mod.ccm_pending()[worker['Record Key']]
+            pending.pop('_local_assets', None)
+            db.execute('UPDATE ccm_pending_workers SET payload=? WHERE key=?', (json.dumps(pending), worker['Record Key']))
+            db.commit()
+        with patch.object(self.mod, 'ccm_asset', side_effect=lambda record, side: self.cloud_files[cloud[side.title() + ' File ID']]):
+            self.verify.side_effect = self.mod.CCMStorageError('Image verification failed')
+            self.assertEqual(self.backup(worker).status_code, 503)
+        self.assertEqual(len(self.rows), 1, 'A row was restored before images were verified')
+        self.assertIn(worker['Record Key'], self.pending())
+        self.assertEqual(len(self.local_images(worker)), 3, 'Failed recovery removed local images')
 
     def test_backup_updates_correct_google_row_when_blank_rows_exist(self):
         self.login()
