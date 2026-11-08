@@ -5,6 +5,46 @@ and sharing, two-way Sync Notes, and the developer's private PDF converter.
 
 ## Using Sermon Notes
 
+### Offline Android app login and backup
+
+The website includes `/api/v1/bible-mobile` for IOWO D4 Bible Study. Publish the
+updated website image, then update the running server with its existing Compose
+project and data volume:
+
+If the deployment's `.env` pins `IMAGE_TAG`, set it to the new release tag first
+(or `latest` to follow published updates). Pulling a pinned older tag keeps the
+older website code.
+
+```powershell
+docker compose pull district4
+docker compose up -d --no-deps district4
+```
+
+The first app login uses the existing Sheets-backed account cache. Subsequent
+requests use a revocable device token; server storage retains its SHA-256 hash,
+not the raw token. The phone never receives the shared Apps Script API token.
+Each token can access only that account's sermon notes. Account-role prefixes
+match the website, including AO/DO aliases; developer conversion remains private.
+Password changes/account removal invalidate online access after the account
+cache refreshes. Offline access previously granted on a phone remains available.
+
+Authorization records are stored in `mobile_devices.db` beside the configured
+sermon-note database, under the existing private Docker data volume. Do not delete
+or replace that volume during an update. Existing notes need no migration and
+the existing sermon-notes Apps Script needs no redeployment for this connection.
+
+Device synchronization reuses an active website backup, exchanges the device's
+notes with Drive, then refreshes the website again. Finish bulk backups before
+updating/restarting the server. Requests without a token are rejected before
+Sheets synchronization or browser visit logging.
+
+After the server update, a JSON POST with an empty object to
+`/api/v1/bible-mobile/login` should return HTTP 400 with a username/password
+validation message. HTTP 404 means the running website still lacks this update.
+This check sends no account credentials and does not start a backup.
+
+### Website editor
+
 Open **Bible Study > Sermon Notes**. **Create Notes** first asks for Text and
 Theme. Edits save locally after a short pause; use **Save** before leaving if
 you want immediate confirmation. A device recovery draft also protects unsaved

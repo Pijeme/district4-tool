@@ -52,6 +52,7 @@ from thanksgiving_pledges import register_thanksgiving_pledges
 from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
 from bible_study import daily_maxwell_insight, get_indexed_niv_passage, register_bible_study_routes
+from mobile_bible_api import register_mobile_bible_routes
 from sermon_ebooks import register_sermon_ebooks_routes
 from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
 from ai_assistant import register_ai_assistant
@@ -3145,6 +3146,7 @@ register_temp_edit_routes(app)
 register_church_finder_routes(app)
 register_pastor_resources_routes(app)
 register_bible_study_routes(app)
+register_mobile_bible_routes(app)
 register_sermon_ebooks_routes(app)
 register_ai_assistant(app)
 register_developer_routes(app)
@@ -3276,7 +3278,7 @@ def website_activity_context():
 
 @app.after_request
 def collect_website_activity(response):
-    if request.path.startswith("/ai/") or request.endpoint == "healthz":
+    if request.path.startswith("/ai/") or request.endpoint == "healthz" or request.blueprint == 'bible_mobile':
         return response
     actor = website_actor()
     old_actor = getattr(g, "website_actor", actor)
@@ -3609,6 +3611,11 @@ def _insert_pastor_login_event(row):
 @app.before_request
 def before_request():
     if request.endpoint == "healthz":
+        return
+    if request.blueprint == 'bible_mobile':
+        # Bearer-token calls authenticate in their blueprint. Only mobile login
+        # refreshes the account mirror; note polling must not trigger Sheets sync
+        # or browser-session visit logging before the device is authenticated.
         return
     if request.path == "/api/v2/meal-scanner" or request.path.startswith("/api/v2/meal-scanner/"):
         # Scanner downloads must not trigger Google synchronization or visit logging.

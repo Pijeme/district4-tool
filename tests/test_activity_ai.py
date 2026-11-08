@@ -1,5 +1,6 @@
 """Activity access/retention and concurrent chat behavior, without live services."""
 import json
+import hashlib
 import sqlite3
 import tempfile
 import threading
@@ -10,7 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from flask import Response, flash, jsonify
+from flask import Flask, Response, flash, jsonify
+from mobile_bible_api import register_mobile_bible_routes
 
 import app as appmod
 import ai_assistant as ai
@@ -21,6 +23,15 @@ import developer
 
 
 class ActivityTests(unittest.TestCase):
+    def test_mobile_login_and_token_checks_do_not_trigger_browser_sync_or_visit_logging(self):
+        with patch.object(appmod, 'sync_from_sheets_if_needed', side_effect=AssertionError('Unexpected Sheets sync')), \
+             patch.object(appmod, '_log_visit_if_needed', side_effect=AssertionError('Unexpected browser visit')):
+            response = self.client.post('/api/v1/bible-mobile/login', json={})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('username', response.get_json()['error'])
+            response = self.client.post('/api/v1/bible-mobile/drive', json={'action':'list'})
+            self.assertEqual(response.status_code, 401)
+
     def test_bible_reader_omits_developer_area_banner(self):
         self.login()
         with self.client.session_transaction() as state:
@@ -769,6 +780,74 @@ class PijTests(unittest.TestCase):
                         self.assertEqual(rows[0]['sermon_id'], 1)
                 finally:
                     conn.rollback()
+
+
+class WebsiteMobileAPITests(unittest.TestCase):
+    def setUp(self):
+        self.accounts = sqlite3.connect(':memory:'); self.accounts.row_factory = sqlite3.Row
+        self.accounts.execute('CREATE TABLE sheet_accounts_cache(username,password,position,name)')
+        self.accounts.executemany('INSERT INTO sheet_accounts_cache VALUES (?,?,?,?)', [
+            ('offline-test','correct','Pastor','Test'),('pijeme','correct','Area Overseer','Developer')])
+        self.accounts.commit()
+        self.calls = []
+        self.jobs = {}
+        study = SimpleNamespace(_notes_jobs=self.jobs, _notes_jobs_lock=threading.RLock(),
+            sermon_notes_remote=lambda app, user, action, **payload: (self.calls.append((user,action,payload)) or dict(ok=True)),
+            sync_sermon_notes=lambda app, user, progress: dict(message='Done'))
+        owner = SimpleNamespace(get_db=lambda: self.accounts, sync_from_sheets_if_needed=lambda: None)
+        app = Flask('website-tests'); app.secret_key = 'isolated-test-key'
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.auth_db = root / 'mobile_devices.db'
+        with closing(sqlite3.connect(self.auth_db)) as db:
+            db.executescript('DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS login_attempts;')
+        app.config.update(BIBLE_MOBILE_AUTH_DATABASE=str(self.auth_db), BIBLE_SERMON_NOTES_DATABASE=str(root/'notes.db'), BIBLE_MOBILE_JOBS_INLINE=True)
+        register_mobile_bible_routes(app, owner, study)
+        self.client = app.test_client(); self.app = app
+
+    def tearDown(self): self.accounts.close()
+
+    def login(self, username='offline-test', password='correct'):
+        return self.client.post('/api/v1/bible-mobile/login', json=dict(username=username,password=password))
+
+    def test_tokens_are_hashed_scoped_and_revoked(self):
+        response = self.login(); self.assertEqual(response.status_code, 200)
+        profile = response.get_json()['profile']; token = profile['token']
+        with closing(sqlite3.connect(self.auth_db)) as db:
+            row = db.execute('SELECT token_hash,credential_hash FROM devices').fetchone()
+            self.assertEqual(row[0], hashlib.sha256(token.encode()).hexdigest())
+            self.assertNotEqual(row[1], 'correct')
+        headers = {'Authorization':'Bearer '+token}
+        endpoint = '/api/v1/bible-mobile/'
+        self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list','user_key':'pastor:other'},headers=headers).status_code,400)
+        self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list'},headers=headers).status_code,200)
+        self.assertEqual(self.calls[0][0], 'pastor:offline-test')
+        self.assertEqual(self.client.post(endpoint+'conversion/start',json={},headers=headers).status_code,403)
+        self.assertEqual(self.client.post(endpoint+'logout',json={},headers=headers).status_code,200)
+        self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list'},headers=headers).status_code,401)
+
+    def test_password_change_revokes_online_access_and_login_throttles(self):
+        token = self.login().get_json()['profile']['token']
+        self.accounts.execute("UPDATE sheet_accounts_cache SET password='changed' WHERE username='offline-test'"); self.accounts.commit()
+        self.assertEqual(self.client.post('/api/v1/bible-mobile/drive',json={'action':'list'},headers={'Authorization':'Bearer '+token}).status_code,401)
+        for _ in range(8): self.assertEqual(self.login(password='wrong').status_code,401)
+        self.assertEqual(self.login(password='wrong').status_code,429)
+
+    def test_existing_website_backup_is_reused(self):
+        token = self.login().get_json()['profile']['token']
+        key = (self.app.config['BIBLE_SERMON_NOTES_DATABASE'], 'pastor:offline-test')
+        self.jobs[key] = dict(running=True,kind='sync',message='Existing backup')
+        result = self.client.post('/api/v1/bible-mobile/website-sync/start',json={},headers={'Authorization':'Bearer '+token})
+        self.assertEqual(result.get_json()['job']['message'],'Existing backup')
+
+    def test_role_prefix_matches_every_existing_website_account_type(self):
+        for role in ('Pastor','Member','Area Overseer','AO','Sub Area Overseer','District Overseer','DO'):
+            self.accounts.execute('UPDATE sheet_accounts_cache SET position=? WHERE username=?',(role,'offline-test'))
+            self.accounts.commit()
+            result = self.login().get_json()['profile']
+            self.assertEqual(result['user_key'],role.lower()+':offline-test')
+            self.assertFalse(result['can_convert'])
 
 
 if __name__ == '__main__':
