@@ -3,8 +3,8 @@
 {% block title %}Bible Study — IOWO D4{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='notes-font-row-25') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study_theme.css', v='notes-font-row-25') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='notes-paper-tools-28') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study_theme.css', v='notes-paper-tools-28') }}">
 
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
   <h1 class="bs-visually-hidden">Bible Study</h1>
@@ -115,40 +115,41 @@
           <button type="button" id="bsNotesExport" disabled>Export Notes</button>
           <button type="button" id="bsNotesSync">Sync Notes</button>
         </div>
-          <div class="bs-notes-edit-controls bs-selection-toolbar" id="bsNotesTools" role="toolbar" aria-label="Selected sermon text actions" hidden>
-          <span class="bs-notes-selection-reference">Sermon Notes</span>
-          <div class="bs-selection-colors" role="group" aria-label="Underline and highlight sermon text">
-            <button type="button" data-notes-selection-command="underline" aria-label="Underline" title="Underline"><span aria-hidden="true">U</span></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#ddf0ff" style="--bs-swatch:#ddf0ff" aria-label="Blue highlight" title="Blue highlight"></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#fffeb3" style="--bs-swatch:#fffeb3" aria-label="Yellow highlight" title="Yellow highlight"></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#ffdef3" style="--bs-swatch:#ffdef3" aria-label="Pink highlight" title="Pink highlight"></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#e7fcc3" style="--bs-swatch:#e7fcc3" aria-label="Green highlight" title="Green highlight"></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#bafeff" style="--bs-swatch:#bafeff" aria-label="Cyan highlight" title="Cyan highlight"></button>
-            <button type="button" data-notes-selection-command="hiliteColor" data-color="#ecdcff" style="--bs-swatch:#ecdcff" aria-label="Purple highlight" title="Purple highlight"></button>
-          </div>
-          <div class="bs-selection-actions bs-notes-selection-actions">
-            <button type="button" id="bsNotesCopySelection">{{ icon('copy') }}<span>Copy</span></button>
-          </div>
-          <button type="button" id="bsNotesDismissSelection" aria-label="Dismiss selected text actions">&times;</button>
-
-          <details class="bs-notes-more-formatting"><summary>More formatting</summary>
-          <div id="bsNotesFormat" class="bs-notes-format" role="toolbar" aria-label="Format sermon notes">
-            <div class="bs-notes-font-row">
-              <label class="bs-visually-hidden" for="bsNotesFont">Font family</label><select id="bsNotesFont" aria-label="Font family"><option>Calibri</option><option>Arial</option><option>Cambria</option><option>Times New Roman</option><option>Georgia</option><option>Courier New</option><option>Verdana</option><option>Tahoma</option><option>Noto Sans</option></select>
-              <label class="bs-visually-hidden" for="bsNotesFontSize">Font size</label><input id="bsNotesFontSize" type="number" min="6" max="72" step="1" value="12" aria-label="Font size in points" title="Font size in points">
-              <button type="button" id="bsNotesGrow" aria-label="Increase selected text size" title="Grow font">A+</button><button type="button" id="bsNotesShrink" aria-label="Decrease selected text size" title="Shrink font">A−</button>
+          <div class="bs-notes-edit-controls bs-selection-toolbar" id="bsNotesTools" role="toolbar" aria-label="Selected sermon text actions" tabindex="-1" hidden>
+            <div id="bsNotesFormat" class="bs-notes-format" role="group" aria-label="Format sermon notes">
+              <div class="bs-notes-font-row">
+                <label class="bs-visually-hidden" for="bsNotesFont">Font family</label><select id="bsNotesFont" aria-label="Font family"><option>Calibri</option><option>Arial</option><option>Cambria</option><option>Times New Roman</option><option>Georgia</option><option>Courier New</option><option>Verdana</option><option>Tahoma</option><option>Noto Sans</option></select>
+                <label class="bs-visually-hidden" for="bsNotesFontSize">Font size</label><select id="bsNotesFontSize" aria-label="Font size in points" title="Font size in points">{% for size in range(6, 73) %}<option value="{{ size }}"{% if size == 12 %} selected{% endif %}>{{ size }}</option>{% endfor %}</select>
+                <button type="button" id="bsNotesGrow" aria-label="Increase selected text size" title="Grow font">A+</button><button type="button" id="bsNotesShrink" aria-label="Decrease selected text size" title="Shrink font">A&minus;</button>
+                <label class="bs-visually-hidden" for="bsNotesCase">Change case</label><select id="bsNotesCase" aria-label="Change case"><option value="">Aa</option><option value="sentence">Sentence case</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option><option value="title">Title Case</option></select>
+              </div>
+              <div class="bs-notes-command-row">
+                <div class="bs-notes-basic-format" role="group" aria-label="Text emphasis">
+                  <button type="button" data-notes-selection-command="underline" aria-label="Underline" title="Underline"><u>U</u></button>
+                  <button type="button" data-notes-command="bold" aria-label="Bold" title="Bold"><strong>B</strong></button>
+                  <button type="button" data-notes-command="italic" aria-label="Italic" title="Italic"><em>I</em></button>
+                </div>
+                <div class="bs-selection-colors" role="group" aria-label="Highlight sermon text">
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#ddf0ff" style="--bs-swatch:#ddf0ff" aria-label="Blue highlight" title="Blue highlight"></button>
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#fffeb3" style="--bs-swatch:#fffeb3" aria-label="Yellow highlight" title="Yellow highlight"></button>
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#ffdef3" style="--bs-swatch:#ffdef3" aria-label="Pink highlight" title="Pink highlight"></button>
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#e7fcc3" style="--bs-swatch:#e7fcc3" aria-label="Green highlight" title="Green highlight"></button>
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#bafeff" style="--bs-swatch:#bafeff" aria-label="Cyan highlight" title="Cyan highlight"></button>
+                  <button type="button" data-notes-selection-command="hiliteColor" data-color="#ecdcff" style="--bs-swatch:#ecdcff" aria-label="Purple highlight" title="Purple highlight"></button>
+                </div>
+                <div class="bs-notes-text-color" role="group" aria-label="Text colour">
+                  <input type="hidden" id="bsNotesHighlightColor" value="#ffe66d">
+                  <button type="button" data-notes-command="foreColor" aria-label="Text color" title="Text color"><span class="bs-notes-color-letter">A</span></button><input type="color" id="bsNotesTextColor" value="#202124" aria-label="Text color selection" title="Text color selection">
+                </div>
+                <div class="bs-notes-document-actions" role="group" aria-label="Selected text commands">
+                  <button type="button" id="bsNotesClearFormat" class="bs-notes-icon-action" data-notes-command="removeFormat" aria-label="Clear Format" title="Clear Format">{{ icon('clear-format') }}<span>Clear<br>Format</span></button>
+                  <button type="button" id="bsNotesCopySelection" class="bs-notes-icon-action" aria-label="Copy selected text" title="Copy selected text">{{ icon('copy') }}<span>Copy</span></button>
+                  <button type="button" id="bsNotesUndo" class="bs-notes-icon-action" data-notes-command="undo" aria-label="Undo" title="Undo">{{ icon('undo') }}<span>Undo</span></button>
+                  <button type="button" id="bsNotesErase" class="bs-notes-icon-action" aria-label="Erase selected words" title="Erase selected words">{{ icon('erase') }}<span>Erase</span></button>
+                </div>
+              </div>
             </div>
-            <div class="bs-notes-font-row">
-              <label class="bs-visually-hidden" for="bsNotesCase">Change case</label><select id="bsNotesCase" aria-label="Change case"><option value="">Aa</option><option value="sentence">Sentence case</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option><option value="title">Title Case</option></select>
-            <button type="button" data-notes-command="bold" aria-label="Bold"><strong>B</strong></button>
-            <button type="button" data-notes-command="italic" aria-label="Italic"><em>I</em></button>
-            <input type="hidden" id="bsNotesHighlightColor" value="#ffe66d">
-            <button type="button" data-notes-command="foreColor" aria-label="Text color" title="Text color"><span class="bs-notes-color-letter">A</span></button><input type="color" id="bsNotesTextColor" value="#202124" aria-label="Text color selection" title="Text color selection">
-            <button type="button" data-notes-command="removeFormat" aria-label="Clear formatting" title="Clear formatting">Clear<span class="bs-notes-clear-long"> format</span></button>
-            <button type="button" data-notes-command="undo">Undo</button>
-            </div>
-          </div>
-          </details>
+            <button type="button" id="bsNotesDismissSelection" aria-label="Dismiss selected text actions">&times;</button>
           </div>
         </div>
         <p id="bsNotesStatus" class="bs-notes-status" role="status">Create a sermon or open All Notes.</p>
@@ -346,5 +347,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'startupPreload': bible_startup_preload|default(false), 'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='notes-font-row-25') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='notes-paper-tools-28') }}" defer></script>
 {% endblock %}

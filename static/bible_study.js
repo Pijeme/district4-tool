@@ -60,6 +60,30 @@
     window.addEventListener("pageshow",sizeWorkspace);
     sizeWorkspace();
     const readerTabs=root.querySelector(".bs-reader-tabs"),studyTabs=element("Study").querySelector(".bs-study-tabs");
+    // The desktop/tablet control row is independent of the draggable panes.
+    const notesDock=element("NotesTools").closest(".bs-notes-dock"),notesDockHome=element("NotesPanel");
+    const fixedTools=node("div",undefined,"bs-fixed-workspace-tools");fixedTools.id="bsFixedTools";
+    const fixedReader=node("div",undefined,"bs-fixed-reader-tools"),fixedStudy=node("div",undefined,"bs-fixed-study-heading");
+    fixedTools.append(fixedReader,fixedStudy);fixedTools.hidden=true;root.insertBefore(fixedTools,element("Layout"));
+    const headingHomes=["Word","Concordance","Commentary","Sermon","Illustrations"].map(prefix=>({
+        kind:prefix.toLowerCase(),home:element(prefix+"Panel"),heading:element(prefix+"Panel").querySelector(":scope > .bs-study-header")
+    }));
+    function positionWorkspaceTools(){
+        const pinned=!mobile.matches&&readerTab==="notes"&&root.dataset.mode!=="study";
+        fixedTools.hidden=!pinned;root.dataset.fixedNotesTools=String(pinned);
+        fixedReader.dataset.hasDocument=String(!element("NotesWorkspace").hidden);
+        notesDock.style.setProperty("--tool-y","28.571429%");
+        if(pinned){if(notesDock.parentElement!==fixedReader)fixedReader.append(notesDock);}
+        else if(notesDock.parentElement!==notesDockHome)notesDockHome.prepend(notesDock);
+        fixedStudy.hidden=root.dataset.mode==="bible";
+        for(const item of headingHomes){
+            if(pinned&&!fixedStudy.hidden&&item.kind===studyTab){
+                item.heading.style.setProperty("--tool-y",getComputedStyle(item.home).getPropertyValue("--tool-y")||"0%");
+                item.heading.style.setProperty("--bs-tool-tint",getComputedStyle(item.home).getPropertyValue("--bs-tool-tint")||"#c4a052");
+                if(item.heading.parentElement!==fixedStudy)fixedStudy.append(item.heading);
+            }else if(item.heading.parentElement!==item.home)item.home.prepend(item.heading);
+        }
+    }
     function positionTabs() {
         if(mobile.matches) {
             element("WideTabs").append(readerTabs,element("LayoutControl"));element("Study").prepend(studyTabs);
@@ -68,6 +92,7 @@
         }
         root.style.setProperty("--bs-reader-tab-height",(element("Bible").contains(readerTabs)?readerTabs.offsetHeight:0)+"px");
         root.style.setProperty("--bs-study-tab-height",(mobile.matches?studyTabs.offsetHeight:0)+"px");
+        positionWorkspaceTools();
     }
     positionTabs();
     const readerTabsHeight = () => element("Bible").contains(readerTabs)?readerTabs.getBoundingClientRect().height:0;
@@ -509,7 +534,7 @@
             try { await navigator.clipboard.writeText(text); toast(kind+" copied with its reference."); return; } catch (_error) {}
         }
         // Local Wi-Fi HTTP does not expose the Clipboard API on mobile browsers.
-        const fallback = document.createElement("textarea"); fallback.value = text;
+        const fallback = document.createElement("textarea"); fallback.value = text;fallback.readOnly=true;fallback.inputMode="none";
         fallback.style.cssText = "position:fixed;left:0;top:0;opacity:0;font-size:16px"; root.append(fallback);
         fallback.focus(); fallback.select(); fallback.setSelectionRange(0, text.length);
         let copied = false;
@@ -1266,6 +1291,7 @@
             element(prefix + "Tab").tabIndex = active ? 0 : -1;
             element(prefix + "Panel").hidden = !active;
         }
+        positionWorkspaceTools();
         if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon",illustrations:"Illustrations"})[name]+"Tab").focus();
         if (name === "illustrations") {loadIllustrations();return;}
         if (name === "sermon") { loadSermons(); return; }
@@ -1848,10 +1874,38 @@
     let notesMenuOpen=false,notesToolbarPointerUntil=0;
     root.dataset.notesMenu="selection";
     const notesMainActions=notesTools.closest(".bs-notes-dock").querySelector(".bs-notes-actions");
+    const notesOriginalInputMode=notesEditor.getAttribute("inputmode");
+    function notesFormattingKeyboard(active){
+        if(active){notesEditor.setAttribute("inputmode","none");notesEditor.setAttribute("virtualkeyboardpolicy","manual");}
+        else {if(notesOriginalInputMode===null)notesEditor.removeAttribute("inputmode");else notesEditor.setAttribute("inputmode",notesOriginalInputMode);notesEditor.removeAttribute("virtualkeyboardpolicy");}
+        try {if(active)navigator.virtualKeyboard?.hide();window.IOWOAndroid?.setNotesFormatting?.(active);}catch(_){}
+    }
+    function notesPaintFormattingSelection(){
+        if(!window.CSS?.highlights||typeof window.Highlight!=="function")return;
+        if(notesMenuOpen&&notesRange&&!notesRange.collapsed&&notesEditor.contains(notesRange.commonAncestorContainer))CSS.highlights.set("sermon-format-selection",new Highlight(notesRange));
+        else CSS.highlights.delete("sermon-format-selection");
+    }
+    function notesParkFormattingFocus(preferred){
+        if(!notesMenuOpen)return;
+        const selection=window.getSelection();
+        if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))notesRange=selection.getRangeAt(0).cloneRange();
+        notesPaintFormattingSelection();
+        if(!iosViewport&&!navigator.maxTouchPoints&&!window.matchMedia("(any-pointer: coarse)").matches&&!window.IOWOAndroid)return;
+        if(notesEditor===document.activeElement||!notesTools.contains(document.activeElement)){
+            const target=preferred&&notesTools.contains(preferred)?preferred:notesTools;
+            target.focus({preventScroll:true});
+        }
+        notesEditor.blur();try {navigator.virtualKeyboard?.hide();}catch(_){}
+    }
+    function notesDisplaySize(value){
+        const control=element("NotesFontSize"),key=String(value);
+        if(![...control.options].some(option=>option.value===key))control.add(new Option(key,key));
+        control.value=key;
+    }
     function notesCloseMenu(){
         notesMenuOpen=false;notesTools.removeAttribute("data-open");
         notesTools.hidden=true;notesMainActions.hidden=false;
-        notesTools.querySelector("details")?.removeAttribute("open");
+        notesFormattingKeyboard(false);notesPaintFormattingSelection();
     }
     function notesShowSelectionTools(){
         if(notesReadMode||element("NotesPanel").hidden||element("NotesWorkspace").hidden)return notesCloseMenu();
@@ -1860,6 +1914,7 @@
         notesRange=selection.getRangeAt(0).cloneRange();notesCloseActions();
         if(!notesMenuOpen){
             notesMenuOpen=true;notesMainActions.hidden=true;notesTools.hidden=false;notesTools.dataset.open="true";
+            notesFormattingKeyboard(true);notesParkFormattingFocus();
         }
     }
     notesTools.addEventListener("pointerdown",()=>{notesToolbarPointerUntil=performance.now()+1000;},{passive:true});
@@ -1873,8 +1928,14 @@
     });
     element("NotesCopySelection").addEventListener("click",async()=>{
         const text=notesRange?.toString();if(text)await copyScripture(text,"Sermon Notes");
+        notesParkFormattingFocus(element("NotesCopySelection"));
     });
     element("NotesDismissSelection").addEventListener("click",notesCloseMenu);
+    element("NotesErase").addEventListener("click",()=>{
+        if(!notesActive||notesReadMode||!notesRange||notesRange.collapsed||!notesEditor.contains(notesRange.commonAncestorContainer))return;
+        notesFormat("delete");
+    });
+    notesEditor.addEventListener("pointerdown",()=>{if(notesMenuOpen)notesCloseMenu();},true);
     document.addEventListener("pointerdown",event=>{
         if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
@@ -1882,6 +1943,7 @@
     const notesMenuVisibility=new MutationObserver(()=>{
         if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)notesCloseMenu();
         if(element("NotesPanel").hidden)notesCloseActions();
+        positionWorkspaceTools();
         if(!element("NotesLibrary").hidden)element("NotesAll").setAttribute("aria-current","page");
         else element("NotesAll").removeAttribute("aria-current");
     });
@@ -2229,11 +2291,12 @@
     }
     document.addEventListener("selectionchange",()=>{
         const selection=window.getSelection();if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode)){
+            if(notesMenuOpen&&selection.isCollapsed&&notesTools.contains(document.activeElement))return;
             notesRange=selection.getRangeAt(0).cloneRange();
             const parent=selection.anchorNode.nodeType===Node.ELEMENT_NODE?selection.anchorNode:selection.anchorNode.parentElement;
             if(parent){const css=getComputedStyle(parent),family=css.fontFamily.split(",")[0].replace(/^["']|["']$/g,"");
                 if(notesFonts.includes(family))element("NotesFont").value=family;
-                element("NotesFontSize").value=Math.round(parseFloat(css.fontSize)*.75*10)/10;}
+                notesDisplaySize(Math.round(parseFloat(css.fontSize)*.75*10)/10);}
             if(!selection.isCollapsed)notesShowSelectionTools();
             else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
         }else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
@@ -2257,10 +2320,10 @@
     notesEditor.addEventListener("paste",event=>{event.preventDefault();document.execCommand("insertText",false,event.clipboardData?.getData("text/plain")||"");notesMarkChanged();});
     element("NotesFormat").addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
     function notesRestoreSelection(){
-        notesEditor.focus();if(notesRange&&notesEditor.contains(notesRange.commonAncestorContainer)){const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);}
+        notesEditor.focus({preventScroll:true});if(notesRange&&notesEditor.contains(notesRange.commonAncestorContainer)){const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);}
     }
     function notesFormat(command,value){
-        if(!notesActive)return;notesRestoreSelection();document.execCommand(command,false,value);notesMarkChanged();
+        if(!notesActive||notesReadMode)return;const focus=document.activeElement;notesRestoreSelection();document.execCommand(command,false,value);notesMarkChanged();notesParkFormattingFocus(focus);
     }
     element("NotesFormat").addEventListener("click",event=>{
         const command=event.target.closest("[data-notes-command]")?.dataset.notesCommand;if(!command)return;
@@ -2269,8 +2332,8 @@
     element("NotesFont").addEventListener("change",()=>notesFormat("fontName",element("NotesFont").value));
     function notesApplySize(value){
         if(!notesActive)return;const size=Math.max(6,Math.min(72,Number(value)||12));
-        element("NotesFontSize").value=size;notesRestoreSelection();document.execCommand("styleWithCSS",false,false);document.execCommand("fontSize",false,"7");
-        notesNormalizeFontSizes();notesMarkChanged();
+        const focus=document.activeElement;notesDisplaySize(size);notesRestoreSelection();document.execCommand("styleWithCSS",false,false);document.execCommand("fontSize",false,"7");
+        notesNormalizeFontSizes();notesMarkChanged();notesParkFormattingFocus(focus);
     }
     element("NotesFontSize").addEventListener("change",()=>notesApplySize(element("NotesFontSize").value));
     const notesSizeSteps=[6,8,9,10,11,12,14,16,18,20,22,24,26,28,36,48,72];
@@ -2292,9 +2355,10 @@
             let value=mode==="upper"?source.toLocaleUpperCase():source.toLocaleLowerCase();
             if(mode==="title")value=Array.from(value).map(char=>{const result=wordStart?char.toLocaleUpperCase():char;wordStart=!/\p{L}/u.test(char);return result;}).join("");
             if(mode==="sentence")value=Array.from(value).map(char=>{let result=char;if(sentenceStart&&/\p{L}/u.test(char)){result=char.toLocaleUpperCase();sentenceStart=false;}if(/[.!?]/.test(char))sentenceStart=true;return result;}).join("");
-            piece.node.textContent=piece.node.textContent.slice(0,piece.start)+value+piece.node.textContent.slice(piece.end);
+            piece.node.textContent=piece.node.textContent.slice(0,piece.start)+value+piece.node.textContent.slice(piece.end);piece.newEnd=piece.start+value.length;
         }
-        notesUpdateHeader(notesDocument());notesMarkChanged();
+        if(pieces.length){const selected=document.createRange();selected.setStart(pieces[0].node,pieces[0].start);selected.setEnd(pieces.at(-1).node,pieces.at(-1).newEnd);notesRange=selected;const selection=window.getSelection();selection.removeAllRanges();selection.addRange(selected);}
+        notesUpdateHeader(notesDocument());notesMarkChanged();notesParkFormattingFocus(element("NotesCase"));
     });
     function notesOpenMeta(edit=false,blocks=[],field="text"){
         notesEditingMeta=edit;notesPendingBlocks=blocks;
@@ -2470,6 +2534,7 @@
             const target = element("Verse" + state.verse);
             if (target && state.verse > 1) element("Bible").scrollTop += target.getBoundingClientRect().top - element("Bible").getBoundingClientRect().top - readerChromeHeight() - 20;
         }
+        positionWorkspaceTools();
         if (name === "book") loadBookStudy();
         if (name === "notes" && !notesLoaded) loadSermonNotes().catch(error=>notesStatus(error.message,true));
         if (focus) element(({bible:"ReaderTab",book:"BookStudyTab",notes:"NotesTab"})[name]).focus();
@@ -2783,7 +2848,7 @@
             previousFocus = document.activeElement;
             element(mode === "bible" ? "Bible" : "Study").focus();
         }
-        sizeWorkspace();
+        positionWorkspaceTools();sizeWorkspace();
         if (userAction) savePreferences();
     }
 

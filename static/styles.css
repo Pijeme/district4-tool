@@ -605,3 +605,12 @@ html.district-page-loading #globalLoadingOverlay { display: flex; }
 .verse-study-shortcut{display:inline-flex;flex-shrink:0;width:190px;height:38px;overflow:hidden;border-radius:9px;background:#fff5d8;text-decoration:none}
 .verse-study-shortcut img{display:block;width:190px;height:38px;object-fit:cover;object-position:center}
 .verse-study-shortcut:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+
+/* Keep loading information above, with a separate area for the artwork. */
+.global-loading-card{display:flex;flex-direction:column;overflow:hidden}
+.global-loading-copy{order:0}
+.global-loading-visual{order:1;flex-shrink:0;height:220px;border-radius:0 0 20px 20px;border-top:1px solid #dceafe;border-bottom:0;align-items:center}
+.global-loading-pij{width:195px;height:195px;transform:none}
+.global-loading-visual::after{display:none}
+@media(max-width:600px){.global-loading-visual{height:190px}.global-loading-pij{width:175px;height:175px;transform:none}}
+@media(max-height:520px){.global-loading-visual{height:120px}.global-loading-pij{width:110px;height:110px}.global-loading-copy{padding:12px 18px}}

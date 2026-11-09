@@ -412,7 +412,6 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 .bs-root .bs-notes-meta-actions button:hover{background:#d7e5f6;border-color:#7797c1}
 .bs-root .bs-notes-meta-actions #bsNotesDelete{background:#f8e9e9;border-color:#d6aaaa;color:#963b40}
 /* Formatting opens automatically for a selected editor range. */
-.bs-root[data-notes-menu=selection] #bsNotesTools{position:relative;inset:auto;margin:0;transform:none;z-index:auto;display:grid;grid-template-columns:40px minmax(0,252px) 1fr 24px;align-items:center;gap:2px 4px;width:100%;max-width:none;max-height:none;overflow:visible;padding:3px 5px;border:0;border-radius:6px;box-shadow:none;font:400 12px/1.2 Arial,Helvetica,sans-serif}
 .bs-root .bs-notes-actions{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
 .bs-root .bs-notes-actions .bs-notes-meta-actions{margin:0;gap:5px}
 .bs-root .bs-notes-edit-heading{display:flex;align-items:baseline;gap:7px;width:100%;min-height:26px;margin:1px 0;padding:2px 0;border:0;background:transparent;color:var(--bs-muted);text-align:left;font:400 12px/1.45 Arial,sans-serif;overflow-wrap:anywhere}
@@ -455,42 +454,46 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 #bsNotesJob progress{width:100%}#bsNotesJobErrors{font-size:12px;max-height:150px;overflow:auto;overflow-wrap:anywhere}
 .bs-root .bs-notes-panel [hidden],.bs-root .bs-notes-format[hidden]{display:none!important}
 @media(max-width:700px){.bs-notes-panel{padding:10px}.bs-notes-editor,.bs-notes-preview{padding:14px 10px;font-size:16px}.bs-notes-actions{gap:4px}.bs-root .bs-notes-actions button{font-size:11px;padding:6px}.bs-root .bs-reader-tabs button{flex:1 0 94px}}
-/* Compact touch controls keep the document visible behind a three-row menu. */
-.bs-root[data-notes-menu=selection] .bs-notes-panel{padding:2px 8px 8px}
-.bs-root[data-notes-menu=selection] .bs-notes-dock{padding:2px 0 3px}
-.bs-root[data-notes-menu=selection] .bs-notes-actions{padding:0;gap:4px;flex-wrap:nowrap}
-.bs-root[data-notes-menu=selection] .bs-notes-status{margin:6px 0}
-.bs-root[data-notes-menu=selection] .bs-notes-heading{margin:6px 0}
-.bs-root[data-notes-menu=selection] .bs-notes-format{padding:5px}
-.bs-root[data-notes-menu=selection] .bs-notes-meta-actions{gap:4px}
-.bs-root[data-notes-menu=selection] .bs-notes-meta-actions button{padding:5px 7px;font-size:11px}
-.bs-root[data-notes-menu=selection] .bs-notes-font-row{gap:3px}
-.bs-root[data-notes-menu=selection] .bs-notes-font-row:first-child{display:grid;grid-template-columns:minmax(0,50%) 44px 30px 30px minmax(0,1fr);gap:4px}
-.bs-root[data-notes-menu=selection] .bs-notes-font-row+.bs-notes-font-row{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;margin-top:5px;padding-top:5px}
-.bs-root[data-notes-menu=selection] .bs-notes-format button{flex:0 0 auto;min-width:28px;min-height:34px;padding:4px;font-size:11px}
-.bs-root[data-notes-menu=selection] #bsNotesFont,.bs-root[data-notes-menu=selection] #bsNotesCase{width:100%;max-width:100%;min-width:0;min-height:34px;padding:4px;font-size:13px}
-.bs-root[data-notes-menu=selection] #bsNotesFontSize{width:100%;min-height:34px;padding:4px;font-size:16px;appearance:textfield;-moz-appearance:textfield}
-.bs-root[data-notes-menu=selection] #bsNotesFontSize::-webkit-inner-spin-button,.bs-root[data-notes-menu=selection] #bsNotesFontSize::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
-.bs-root[data-notes-menu=selection] .bs-notes-format input[type=color]{flex:0 0 24px;width:24px;height:32px;padding:2px}
-.bs-root[data-notes-menu=selection] .bs-notes-clear-long{display:none}
+/* Always-visible selection ribbon. Font-size choices avoid a touch keyboard. */
+.bs-root[data-notes-menu=selection] #bsNotesTools{position:relative;display:block;inset:auto;width:100%;max-width:none;max-height:none;margin:0;padding:5px 6px;border:0;border-radius:5px;background:#f3f6fc;color:#263b50;box-shadow:none;transform:none;overflow:visible;font:12px/1.2 Arial,sans-serif}
+.bs-root #bsNotesTools:focus{outline:none}
+.bs-root #bsNotesTools #bsNotesFormat{display:block;margin:0;padding:0;border:0;border-radius:0;background:transparent}
+.bs-root #bsNotesTools .bs-notes-font-row{display:grid;grid-template-columns:minmax(65px,min(50%,280px)) 54px 30px 30px 80px;align-items:center;gap:4px;margin:0 28px 5px 0;padding:0;border:0}
+.bs-root #bsNotesTools .bs-notes-command-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px}
+.bs-root #bsNotesTools .bs-notes-basic-format,.bs-root #bsNotesTools .bs-selection-colors,.bs-root #bsNotesTools .bs-notes-text-color,.bs-root #bsNotesTools .bs-notes-document-actions{display:flex;align-items:center;gap:3px;flex:0 0 auto;margin:0}
+.bs-root #bsNotesTools .bs-notes-document-actions{border-left:1px solid #cad4df;padding-left:6px}
+.bs-root #bsNotesTools button{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-width:28px;min-height:32px;height:32px;margin:0;padding:4px;font:12px/1.1 Arial,sans-serif;border:1px solid transparent;border-radius:5px;background:transparent;color:inherit;white-space:normal}
+.bs-root #bsNotesTools button:hover{background:#e2ebf6;border-color:#b5c6d8}
+.bs-root #bsNotesTools button:focus-visible,.bs-root #bsNotesTools select:focus-visible{outline:2px solid #458096;outline-offset:1px}
+.bs-root #bsNotesTools [data-notes-selection-command=underline]{font-size:20px;text-underline-offset:3px}
+.bs-root #bsNotesTools [data-notes-command=bold]{font-size:18px}
+.bs-root #bsNotesTools [data-notes-command=italic]{font-size:18px}
+.bs-root #bsNotesTools .bs-selection-colors button{width:26px;height:26px;min-width:26px;min-height:26px;padding:0;border:1px solid #00000010;border-radius:50%;background:var(--bs-swatch)}
+.bs-root #bsNotesTools #bsNotesFont,.bs-root #bsNotesTools #bsNotesFontSize,.bs-root #bsNotesTools #bsNotesCase{width:100%;max-width:100%;min-width:0;min-height:32px;height:32px;padding:4px;border:1px solid #becbda;border-radius:5px;background:#fff;color:#263b50;font:12px Arial,sans-serif}
+.bs-root #bsNotesTools .bs-notes-text-color input{width:25px;height:30px;padding:2px;margin:0;border:1px solid #becbda;border-radius:4px;background:#fff}
+.bs-root #bsNotesTools .bs-notes-icon-action{display:flex;flex-direction:column;gap:1px;width:43px;min-width:43px;min-height:45px;height:45px;padding:1px 3px;font-size:10px;line-height:11px}
+.bs-root #bsNotesTools .bs-notes-icon-action .ui-icon{display:block;flex:0 0 18px;width:18px;height:18px;color:#346879}
+.bs-root #bsNotesTools #bsNotesDismissSelection{position:absolute;top:5px;right:4px;width:24px;min-width:24px;min-height:28px;height:28px;padding:0;font-size:21px}
+@media(max-width:700px){.bs-root #bsNotesTools .bs-notes-font-row{grid-template-columns:minmax(60px,1fr) 48px 26px 26px 65px;gap:3px}.bs-root #bsNotesTools .bs-notes-command-row{gap:3px 5px}.bs-root #bsNotesTools .bs-notes-basic-format{gap:0}.bs-root #bsNotesTools .bs-selection-colors{gap:2px}.bs-root #bsNotesTools .bs-selection-colors button{width:24px;height:24px;min-width:24px;min-height:24px}.bs-root #bsNotesTools .bs-notes-document-actions{border-left:0;padding-left:0}}
+/* A full-width white writing surface with a small left inset in both views. */
+.bs-root .bs-notes-panel{max-width:none;margin:0;padding:0}
+.bs-root #bsNotesWorkspace{margin:0;padding:0;background:#fff}
+.bs-root #bsNotesWorkspace .bs-notes-heading,.bs-root #bsNotesReferences,.bs-root #bsNotesOrigin{max-width:none;margin-left:0;margin-right:0}
+.bs-root #bsNotesWorkspace .bs-notes-edit-heading{color:#596573}
+.bs-root .bs-notes-editor,.bs-root .bs-notes-preview{width:100%;max-width:none;min-height:1056px;margin:0;padding:0 0 0 8px;border:0;border-radius:0;outline:none;background:#fff;color:#202124;box-shadow:none;font:12pt/1.65 Calibri,Arial,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;caret-color:#202124}
+.bs-root .bs-notes-editor:focus{outline:none}
+.bs-root .bs-notes-editor:focus-visible{outline:2px solid #6b98a4;outline-offset:-2px}
 
-/* Selection controls replace the normal actions in the sticky sermon dock. */
-.bs-root #bsNotesTools .bs-notes-selection-reference{display:none}
-.bs-root #bsNotesTools .bs-selection-colors{grid-column:2;grid-row:1;gap:2px;order:0}
-.bs-root #bsNotesTools .bs-selection-colors button{width:30px;height:30px;min-height:30px;padding:0}
-.bs-root #bsNotesTools .bs-selection-colors button[data-notes-selection-command=hiliteColor]{width:28px;height:28px;min-height:28px;border-radius:50%;background:var(--bs-swatch);box-shadow:inset 0 0 0 1px #00000008}
-.bs-root #bsNotesTools .bs-selection-colors button[data-notes-selection-command=underline]{background:#e6e9ee;font-size:21px;text-decoration:underline;text-underline-offset:3px;color:#454b50}
-.bs-root #bsNotesTools .bs-notes-selection-actions{grid-column:1;grid-row:1;display:block;order:0}
-.bs-root #bsNotesTools .bs-notes-selection-actions button{min-height:34px;padding:0;gap:0;font-size:10px;line-height:12px}
-.bs-root #bsNotesTools .bs-notes-selection-actions .ui-icon{width:18px;height:18px}
-.bs-root #bsNotesDismissSelection{position:static;grid-column:4;grid-row:1;width:24px;min-height:30px;padding:0;font-size:20px;line-height:24px}
-.bs-root #bsNotesTools .bs-notes-more-formatting{grid-column:1/-1;min-width:0}
-.bs-root #bsNotesTools .bs-notes-more-formatting>summary{width:max-content;margin:0;padding:2px 4px;cursor:pointer;font:400 11px/14px Arial,Helvetica,sans-serif}
-.bs-root #bsNotesTools .bs-notes-format{margin-top:3px;padding:4px 0 0;border:0;border-top:1px solid #dce4ed;border-radius:0;background:transparent}
-.bs-root #bsNotesTools .bs-notes-format button,.bs-root #bsNotesTools .bs-notes-format select,.bs-root #bsNotesTools .bs-notes-format input{color:inherit}
-@media(max-width:400px){.bs-root[data-notes-menu=selection] #bsNotesTools{grid-template-columns:36px minmax(0,1fr) 22px;gap:2px;padding:3px}.bs-root #bsNotesDismissSelection{grid-column:3;width:22px}.bs-root #bsNotesTools .bs-selection-colors{gap:0}.bs-root #bsNotesTools .bs-selection-colors button{width:26px;height:28px;min-height:28px}.bs-root #bsNotesTools .bs-selection-colors button[data-notes-selection-command=hiliteColor]{width:24px;height:24px;min-height:24px}}
+@media(max-width:700px){.bs-root .bs-notes-editor,.bs-root .bs-notes-preview{min-height:620px;font-size:16px}}
+/* These headers stay in a separate row while only the content panes resize. */
+.bs-fixed-workspace-tools{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:12px;padding:3px 7px 6px;background:var(--bs-paper);border-bottom:1px solid var(--bs-line)}
+.bs-root[data-mode=bible] .bs-fixed-workspace-tools{grid-template-columns:minmax(0,1fr)}
+.bs-fixed-reader-tools,.bs-fixed-study-heading{min-width:0}
+.bs-root .bs-fixed-reader-tools .bs-notes-dock{position:static;top:auto;margin:0;width:100%}
+.bs-root .bs-fixed-reader-tools[data-has-document=true] .bs-notes-meta-actions{display:flex}
+.bs-root .bs-fixed-reader-tools[data-has-document=false] .bs-notes-meta-actions{display:none}
+.bs-root .bs-fixed-study-heading .bs-study-header.bs-banner{margin:0;width:100%}
+.bs-fixed-workspace-tools[hidden]{display:none!important}
 
-.bs-root #bsNotesTools #bsNotesFontSize{flex:0 0 44px;width:44px}
-.bs-root #bsNotesTools #bsNotesCase{flex:0 0 70px;width:70px}
-
-@media(max-width:480px){.bs-root[data-notes-menu=selection] .bs-notes-font-row:first-child{grid-template-columns:minmax(0,50%) 42px 28px 28px minmax(0,1fr);gap:3px}}
+::highlight(sermon-format-selection){background:#3d6fbd;color:white}
+.bs-root #bsNotesTools #bsNotesFontSize{appearance:none;padding-right:13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='m1 1 3 3 3-3' fill='none' stroke='%23263b50' stroke-width='1.4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center}
