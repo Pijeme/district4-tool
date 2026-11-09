@@ -292,7 +292,7 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 }
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
-.bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,1fr);gap:4px}
+.bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,50%) 44px 30px 30px minmax(0,1fr);gap:4px}
 .bs-root[data-compact-reader=true] .bs-chain-margin{display:flex;flex-wrap:wrap;gap:5px 10px;border-left:0;border-top:1px solid var(--bs-line);padding:4px 0 0;font-size:10px}
 .bs-root[data-compact-reader=true] .bs-chain-margin button{width:auto;max-width:100%;margin:0}
 .bs-root[data-compact-reader=true] .bs-chain-key{display:inline;margin-right:4px}
@@ -465,7 +465,7 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 .bs-root[data-notes-menu=selection] .bs-notes-meta-actions{gap:4px}
 .bs-root[data-notes-menu=selection] .bs-notes-meta-actions button{padding:5px 7px;font-size:11px}
 .bs-root[data-notes-menu=selection] .bs-notes-font-row{gap:3px}
-.bs-root[data-notes-menu=selection] .bs-notes-font-row:first-child{display:grid;grid-template-columns:minmax(0,1fr);gap:4px}
+.bs-root[data-notes-menu=selection] .bs-notes-font-row:first-child{display:grid;grid-template-columns:minmax(0,50%) 44px 30px 30px minmax(0,1fr);gap:4px}
 .bs-root[data-notes-menu=selection] .bs-notes-font-row+.bs-notes-font-row{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;margin-top:5px;padding-top:5px}
 .bs-root[data-notes-menu=selection] .bs-notes-format button{flex:0 0 auto;min-width:28px;min-height:34px;padding:4px;font-size:11px}
 .bs-root[data-notes-menu=selection] #bsNotesFont,.bs-root[data-notes-menu=selection] #bsNotesCase{width:100%;max-width:100%;min-width:0;min-height:34px;padding:4px;font-size:13px}
@@ -492,3 +492,5 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 
 .bs-root #bsNotesTools #bsNotesFontSize{flex:0 0 44px;width:44px}
 .bs-root #bsNotesTools #bsNotesCase{flex:0 0 70px;width:70px}
+
+@media(max-width:480px){.bs-root[data-notes-menu=selection] .bs-notes-font-row:first-child{grid-template-columns:minmax(0,50%) 42px 28px 28px minmax(0,1fr);gap:3px}}

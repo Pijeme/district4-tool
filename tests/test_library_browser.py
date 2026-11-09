@@ -2637,7 +2637,7 @@ class SermonNotesEditorTests(unittest.TestCase):
             check(!tools.querySelector('details').open,'Extra formatting should start collapsed');
             check(tools.querySelectorAll('[data-notes-selection-command="hiliteColor"]').length===6,'Bible highlight palette is missing');
             check(!el('NotesFormat').querySelector('[data-notes-command="underline"],[data-notes-command="hiliteColor"]'),'Redundant formatting commands remain');
-            check(el('NotesFontSize').parentElement===el('NotesFormat').querySelector('[data-notes-command="bold"]').parentElement,'Font controls should precede bold in the lower row');
+            check(el('NotesFont').parentElement===el('NotesFontSize').parentElement&&el('NotesGrow').parentElement===el('NotesFont').parentElement,'Font size controls should sit beside the font family');
             let copied='';const originalCopy=document.execCommand;
             Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{copied=text;}}});
             document.execCommand=function(command,...args){if(command==='copy'){copied=document.querySelector('textarea[style*="opacity: 0"]')?.value||getSelection().toString();return true;}return originalCopy.call(this,command,...args);};

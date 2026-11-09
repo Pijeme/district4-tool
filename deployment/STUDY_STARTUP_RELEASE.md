@@ -20,8 +20,8 @@ writes still validate content. A desktop check of 514 backed-up notes measured
 about 1.0 seconds cold and 0.06 seconds warm; phone timings are separate.
 
 Both readers keep the primary underline/highlight palette. More formatting has
-font family above a row ordered as size/grow/shrink/case, Bold, Italic, text
-colour, Clear and Undo. Duplicate underline/highlight controls were removed.
+a half-width font-family control beside size/grow/shrink, followed by a second
+row with case, Bold, Italic, text colour, Clear and Undo. Duplicate underline/highlight controls were removed.
 
 ## Android source
 
@@ -36,3 +36,9 @@ open Bible at the left, warm ivory parchment, an antique-gold border and large
 navy text exactly "Open in Bible Study"; clean subtle texture, no extra words
 or watermark. The generated raster was resized and compressed as WebP; display
 framing removes unused margins.
+
+The Android app reuses the website About Developer support card after startup
+is ready, at most once per 72 hours, including warm resumes. Its cadence is
+stored in private app settings across upgrades. The website reminder behaviour
+is unchanged. A first-open guided tutorial is under discussion and has not
+been implemented.
