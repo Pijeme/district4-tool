@@ -2233,7 +2233,7 @@ class SermonNotesEditorTests(unittest.TestCase):
     run_browser = LibraryBrowserTests.run_browser
     render_preview = BibleStudyBrowserTests.render_preview
 
-    def test_mobile_options_run_sync_conversion_and_export_after_native_taps(self):
+    def test_mobile_options_run_sync_and_export_without_retired_conversion(self):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -2301,19 +2301,14 @@ class SermonNotesEditorTests(unittest.TestCase):
                                 page.wait_for_function('notesJobWrites.length===1')
                                 page.wait_for_function('document.getElementById("bsNotesJobMessage").textContent.includes("backed up")')
                                 self.assertTrue(menu.is_hidden())
-                                page.locator('#bsNotesActionsToggle').tap()
-                                page.locator('#bsNotesConvert').tap()
-                                page.wait_for_function('document.getElementById("bsNotesConfirmDialog").open')
-                                page.locator('#bsNotesConfirmYes').tap()
-                                page.wait_for_function('notesJobWrites.length===2')
-                                page.wait_for_function('document.getElementById("bsNotesJobMessage").textContent==="Conversion complete."')
+                                self.assertEqual(page.locator('#bsNotesConvert').count(),0)
                                 page.locator('#bsNotesList button').tap()
                                 page.locator('#bsNotesWorkspace').wait_for(state='visible')
                                 page.locator('#bsNotesActionsToggle').tap()
                                 page.locator('#bsNotesExport').tap()
                                 page.wait_for_function('pdfRequests===1&&!document.getElementById("bsNotesDownload").disabled')
                                 self.assertTrue(page.locator('#bsNotesExportDialog').evaluate('element=>element.open'))
-                                self.assertEqual([path.rsplit('/', 1)[-1] for path in page.evaluate('notesJobWrites')], ['sync', 'convert'])
+                                self.assertEqual([path.rsplit('/', 1)[-1] for path in page.evaluate('notesJobWrites')], ['sync'])
                                 self.assertEqual(errors, [])
                             finally:
                                 context.close()
@@ -2501,7 +2496,7 @@ class SermonNotesEditorTests(unittest.TestCase):
             check(!row.contains(el('NotesExport'))&&!row.contains(el('NotesSync')),'Old action buttons remain in toolbar');
             check(Math.abs(toggle.getBoundingClientRect().right-row.getBoundingClientRect().right)<2,'Gear is not at the far right');
             check(el('NotesExport').disabled&&!isOpen(),'Export should start disabled and the menu closed');
-            check(Boolean(el('NotesConvert'))===fixtureAdmin,'Developer converter access changed');
+            check(!el('NotesConvert'),'Retired converter must be absent for every account');
             toggle.click();await wait();check(isOpen(),'Gear did not open options');
             const bounds=menu.getBoundingClientRect();check(bounds.left>=0&&bounds.right<=innerWidth&&bounds.top>=0&&bounds.bottom<=innerHeight,'Options menu overflows screen');
             check(document.activeElement===el('NotesSync'),'Gear did not focus first available action');
@@ -2513,11 +2508,6 @@ class SermonNotesEditorTests(unittest.TestCase):
             toggle.click();await wait();el('NotesSync').click();await wait();
             check(!isOpen()&&notesJobWrites.length===1&&notesJobWrites[0].endsWith('/sync'),'Sync action did not work or dismiss menu');
             check(el('NotesJobMessage').textContent==='Sync complete','Sync result missing');
-            if(fixtureAdmin){
-                toggle.click();await wait();check(!el('NotesConvert').hidden,'Developer conversion is unavailable');
-                el('NotesConvert').click();await wait();check(!isOpen()&&el('NotesConfirmDialog').open,'Convert did not keep its confirmation');
-                el('NotesConfirmCancel').click();await wait();check(notesJobWrites.length===1,'Cancelling conversion started a job');
-            }
             toggle.click();await wait();el('ReaderTab').click();await wait();check(!isOpen(),'Options stayed open after leaving Sermon Notes');
             el('NotesTab').click();await wait();toggle.click();await wait();el('NotesAll').focus();await wait();check(!isOpen(),'Keyboard focus leaving options did not dismiss');
             check(document.documentElement.scrollWidth<=innerWidth,'Options gear causes horizontal overflow');

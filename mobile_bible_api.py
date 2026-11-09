@@ -1,7 +1,7 @@
 """Optional IOWO website bridge. Install only after current backups finish.
 
 No server credentials are included in the Android app. Device tokens authorize
-only this account's Bible Study notes and the existing developer conversion.
+only this account's Bible Study notes and backup operations.
 """
 from contextlib import closing
 import hashlib
@@ -65,7 +65,7 @@ def register_mobile_bible_routes(app, owner=None, study=None):
             password = str(row.get('password') or '').strip()
             if not password: return None
             return dict(username=canonical, role=role, user_key=role+':'+canonical, name=name, password=password,
-                        can_convert=canonical == 'pijeme' and role == 'area overseer')
+                        can_convert=False)
         return None
 
     def credential_hash(profile):
@@ -161,7 +161,7 @@ def register_mobile_bible_routes(app, owner=None, study=None):
             current = study._notes_jobs.get(key, {})
             if current.get('running'):
                 if current.get('kind') != 'sync':
-                    return jsonify(ok=False, error='The website is converting sermons. Let it finish before starting another backup.'), 409
+                    return jsonify(ok=False, error='Another notes operation is running. Let it finish before starting another backup.'), 409
                 return jsonify(ok=True, job=dict(current))
             study._notes_jobs[key] = dict(running=True, kind='sync', message='Preparing website notes', completed=0, total=0)
         def progress(**values):
@@ -178,22 +178,7 @@ def register_mobile_bible_routes(app, owner=None, study=None):
         return jsonify(ok=True, job=job_state(key))
 
     @api.post('/website-sync/status')
-    @api.post('/conversion/status')
     def sync_status():
         return jsonify(ok=True, job=job_state(job_key()))
-
-    @api.post('/conversion/start')
-    def convert():
-        if not g.mobile_profile['can_convert']: return jsonify(ok=False, error='Developer access required.'), 403
-        current = job_state(job_key())
-        if current.get('running') and current.get('kind') != 'conversion':
-            return jsonify(ok=False, error='Let the current backup finish before converting sermons.'), 409
-        csrf = secrets.token_urlsafe(32)
-        with app.test_client() as client:
-            with client.session_transaction() as identity:
-                identity.update(ao_logged_in=True, ao_username=g.mobile_profile['username'], ao_role=g.mobile_profile['role'],
-                                bible_study_csrf=csrf)
-            response = client.post('/pastor-resources/bible-study/api/notes/convert', json={}, headers={'X-CSRF-Token': csrf})
-            return jsonify(response.get_json() or dict(ok=False, error='Conversion is not available.')), response.status_code
 
     app.register_blueprint(api)

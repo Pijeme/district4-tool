@@ -2045,7 +2045,6 @@
         const data=await api(apiBase+"/notes?"+new URLSearchParams({q:query}));notesItems=data.notes||[];notesLoaded=true;
         element("NotesSync").disabled=!data.drive_configured;
         element("NotesSync").title=data.drive_configured?"Back up and restore your notes":"Drive connection is not configured";
-        if(element("NotesConvert"))element("NotesConvert").hidden=data.can_convert!==true;
         renderSermonNotesList();
         if(element("NotesStatus").dataset.error==="true")notesStatus("");
         if(!notesActive){element("NotesLibrary").hidden=false;notesStatus("Create a sermon or select a saved note. Sync Notes restores your Drive library.");}
@@ -2418,20 +2417,19 @@
                 try{await openSermonNote(notesActive.id);}
                 catch(error){if(error.status!==404)throw error;notesActive=null;element("NotesWorkspace").hidden=true;element("NotesLibrary").hidden=false;element("NotesExport").disabled=true;}
             }
-        }catch(error){notesStatus(error.message,true);element("NotesSync").disabled=false;if(element("NotesConvert"))element("NotesConvert").disabled=false;}
+        }catch(error){notesStatus(error.message,true);element("NotesSync").disabled=false;}
     }
     function notesRenderJob(job){
         element("NotesJob").hidden=false;element("NotesJobMessage").textContent=job.message||"";
         const progress=element("NotesProgress");progress.hidden=!job.running;if(job.total)progress.value=job.completed/job.total*100;else progress.removeAttribute("value");
         element("NotesJobErrors").replaceChildren(...(job.errors||[]).map(e=>node("li",e.filename+": "+e.error)));
-        element("NotesSync").disabled=job.running;if(element("NotesConvert"))element("NotesConvert").disabled=job.running;
+        element("NotesSync").disabled=job.running;
     }
     async function notesStartJob(action){
         try{await saveSermonNotes();clearTimeout(notesJobTimer);const data=await api(apiBase+"/notes/"+action,jsonWrite("POST",{}));notesRenderJob(data.job);await notesPollJob();}
         catch(error){notesStatus(error.message,true);}
     }
     element("NotesSync").addEventListener("click",()=>notesStartJob("sync"));
-    element("NotesConvert")?.addEventListener("click",()=>notesConfirm("Convert your Sermon eBooks and repair older imports? A backup is made before repairs. Your text edits are kept, and current conversions are skipped.",()=>notesStartJob("convert")));
     element("NotesExport").addEventListener("click",async()=>{
         try{
             await saveSermonNotes();if(!notesActive)return;

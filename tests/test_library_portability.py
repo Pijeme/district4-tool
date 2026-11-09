@@ -4556,7 +4556,7 @@ class SermonNotesIntegrationTests(unittest.TestCase):
         for suffix in ('','/pdf'):
             self.assertEqual(self.client.get(self.notes+'/'+identifier+suffix).status_code,404)
         self.assertEqual(self.client.delete(self.notes+'/'+identifier,json={'version':2},headers=other_headers).status_code,404)
-        self.assertEqual(self.client.post(self.notes+'/convert',json={},headers=other_headers).status_code,403)
+        self.assertEqual(self.client.post(self.notes+'/convert',json={},headers=other_headers).status_code,405)
         with self.client.session_transaction() as account: account.clear()
         self.assertEqual(self.client.get(self.notes).status_code,401)
 
@@ -4635,28 +4635,16 @@ class SermonNotesIntegrationTests(unittest.TestCase):
         self.assertEqual(mode,'edited_text_kept')
         self.assertIn('My handwritten addition.',json.dumps(kept))
 
-    def test_convert_repairs_old_imports_with_backup_and_is_repeatable(self):
+    def test_retired_conversion_preserves_existing_import_and_never_downloads(self):
         source=dict(filename='Vision.pdf',drive_file_id='fixture-vision')
         old=self.bible._convert_sermon_pdf_legacy(self.superscript_pdf(),source)
         item=self.client.post(self.notes,json={'note':old},headers=self.headers).json['item']
-        with self.bible.sermon_notes_storage(self.app,True) as conn:
-            conn.execute('UPDATE sermon_notes SET source_key=? WHERE id=?',('sermon-pdf:fixture-vision',item['id']))
-        main=Path(self.directory.name)/'repair-catalog.db';self.app.config['BIBLE_STUDY_LIBRARY_DATABASE']=str(main)
-        with closing(sqlite3.connect(main)) as db,db:
-            db.execute('CREATE TABLE sermon_library_files(id INTEGER,drive_file_id TEXT,filename TEXT,is_active INTEGER)')
-            db.execute('INSERT INTO sermon_library_files VALUES(1,?,?,1)',('fixture-vision','Vision.pdf'))
-        with patch('sermon_ebooks.get_drive_session',return_value=Mock()),patch('sermon_ebooks.download_drive_file_bytes',return_value=self.superscript_pdf()) as download:
-            job=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
-            self.assertEqual(job['repaired'],1,job)
-            backup=Path(self.app.config['BIBLE_SERMON_NOTES_DATABASE']).parent/'backups'/job['backup']
-            self.assertTrue(backup.is_file())
-            repaired=self.client.get(self.notes+'/'+item['id']).json['item']
-            self.assertEqual(repaired['version'],item['version']+1)
-            self.assertEqual(repaired['note']['origin']['converter_version'],'2')
-            again=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
-            self.assertEqual(again['skipped'],1,again)
-            self.assertEqual(download.call_count,1)
-            self.assertEqual(len(self.client.get(self.notes).json['notes']),1)
+        before=self.client.get(self.notes+'/'+item['id']).json['item']
+        with patch('sermon_ebooks.download_drive_file_bytes') as download:
+            self.assertEqual(self.client.post(self.notes+'/convert',json={},headers=self.headers).status_code,405)
+            download.assert_not_called()
+        self.assertEqual(self.client.get(self.notes+'/'+item['id']).json['item'],before)
+        self.assertFalse(self.client.get(self.notes).json['can_convert'])
 
     def test_two_way_restore_conflicts_deletions_and_retry(self):
         item=self.create();identifier=item['id']
@@ -4785,7 +4773,7 @@ class SermonNotesIntegrationTests(unittest.TestCase):
         with patch.object(self.bible,'sermon_notes_remote',side_effect=endpoint):self.client.post(self.notes+'/sync',json={},headers=self.headers)
         self.assertFalse(any(unsynced['id'] in user for user in records.values()))
 
-    def test_pdf_conversion_retains_styles_page_boundaries_and_repeat_import_keeps_edits(self):
+    def test_existing_pdf_import_styles_and_edits_survive_retired_conversion(self):
         from reportlab.pdfgen import canvas
         output=io.BytesIO();c=canvas.Canvas(output)
         c.setFont('Helvetica-Bold',11);c.drawString(42,790,'Theme: A VISION')
@@ -4800,19 +4788,12 @@ class SermonNotesIntegrationTests(unittest.TestCase):
         self.assertTrue(any(r.get('bold') and r.get('font_size')==13 for b in blocks for r in b['runs']))
         self.assertTrue(any(r.get('italic') for b in blocks for r in b['runs']))
         self.assertTrue(any(b.get('page_break') for b in blocks))
-        main=Path(self.directory.name)/'library.db';self.app.config['BIBLE_STUDY_LIBRARY_DATABASE']=str(main)
-        with closing(sqlite3.connect(main)) as conn, conn:
-            conn.execute('CREATE TABLE sermon_library_files (id INTEGER,drive_file_id TEXT,filename TEXT,is_active INTEGER)')
-            conn.execute('INSERT INTO sermon_library_files VALUES(1,?,?,1)',('pdf-vision','Vision.pdf'))
-        with patch('sermon_ebooks.get_drive_session',return_value=Mock()),patch('sermon_ebooks.download_drive_file_bytes',return_value=data):
-            result=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
-            self.assertEqual(result['converted'],1,result)
-            item=self.client.get(self.notes).json['notes'][0]
-            doc=self.client.get(self.notes+'/'+item['id']).json['item']['note'];doc['theme']='My manual correction'
-            self.client.patch(self.notes+'/'+item['id'],json={'version':item['version'],'note':doc},headers=self.headers)
-            repeated=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
-            self.assertEqual(repeated['skipped'],1,repeated)
-            self.assertEqual(self.client.get(self.notes+'/'+item['id']).json['item']['note']['theme'],'My manual correction')
+        item=self.client.post(self.notes,json={'note':note},headers=self.headers).json['item']
+        doc=item['note'];doc['theme']='My manual correction'
+        saved=self.client.patch(self.notes+'/'+item['id'],json={'version':item['version'],'note':doc},headers=self.headers)
+        self.assertEqual(saved.status_code,200)
+        self.assertEqual(self.client.post(self.notes+'/convert',json={},headers=self.headers).status_code,405)
+        self.assertEqual(self.client.get(self.notes+'/'+item['id']).json['item']['note']['theme'],'My manual correction')
 
 
 

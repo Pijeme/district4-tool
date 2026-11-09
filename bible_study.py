@@ -7500,7 +7500,7 @@ def register_bible_study_routes(app):
                 items.append(sermon_note_item(row))
             items.sort(key=lambda x: (x['needs_review'], *((x['primary_reference'] or {}).get(k, 999) for k in ('book_id','chapter','verse')), x['theme'].casefold()))
             return jsonify(ok=True, notes=items, drive_configured=bool(app.config.get('SERMON_NOTES_DRIVE_SCRIPT_URL') and
-                app.config.get('SERMON_NOTES_DRIVE_API_TOKEN')), can_convert=sync_admin())
+                app.config.get('SERMON_NOTES_DRIVE_API_TOKEN')), can_convert=False)
         except ValueError as error: return jsonify(ok=False, error=str(error)), 503
 
     @blueprint.post('/api/notes')
@@ -7600,58 +7600,6 @@ def register_bible_study_routes(app):
     @blueprint.post('/api/notes/sync')
     def notes_sync():
         return start_notes_job('sync', lambda key, progress: sync_sermon_notes(app, key, progress))
-
-    @blueprint.post('/api/notes/convert')
-    def notes_convert():
-        if not sync_admin(): return jsonify(ok=False,error='Developer access required.'),403
-        def convert(user_key, progress):
-            from sermon_ebooks import download_drive_file_bytes, get_drive_session
-            library_path = Path(app.config.get('BIBLE_STUDY_LIBRARY_DATABASE') or app.config.get('DATABASE') or BASE_DIR/'app_v2.db').resolve()
-            if not library_path.is_file(): raise ValueError('Sync your Sermon eBooks library first, then use Convert.')
-            with closing(sqlite3.connect(library_path.as_uri()+'?mode=ro',uri=True)) as library:
-                library.row_factory=sqlite3.Row
-                if not library.execute("SELECT 1 FROM sqlite_master WHERE name='sermon_library_files'").fetchone():
-                    raise ValueError('Sync your Sermon eBooks library first, then use Convert.')
-                sources=[dict(row) for row in library.execute('SELECT * FROM sermon_library_files WHERE is_active=1 ORDER BY id')]
-            converted=skipped=repaired=preserved_edits=0; errors=[]
-            drive = None;backup_name=None
-            for i, source in enumerate(sources):
-                source_key='sermon-pdf:'+source['drive_file_id']
-                with sermon_notes_storage(app) as conn:
-                    existing=conn.execute('SELECT * FROM sermon_notes WHERE user_key=? AND source_key=?', (user_key,source_key)).fetchone() if conn else None
-                current=json.loads(existing['note_json']) if existing else None
-                if existing and (existing['deleted'] or existing['conflict_json'] or
-                        current.get('origin',{}).get('converter_version')==NOTES_CONVERTER_VERSION): skipped+=1
-                else:
-                    try:
-                        if drive is None: drive=get_drive_session()
-                        data=download_drive_file_bytes(drive,source['drive_file_id'])
-                        if existing:
-                            if backup_name is None: backup_name=backup_sermon_notes(app)
-                            note,mode=repair_converted_sermon(data,source,current,preserve_edits=existing['version']>1)
-                            with sermon_notes_storage(app,True) as conn:
-                                changed=conn.execute('''UPDATE sermon_notes SET note_json=?,version=version+1,dirty=1,updated_at=?
-                                    WHERE user_key=? AND id=? AND version=? AND deleted=0 AND conflict_json IS NULL''',
-                                    (json.dumps(note,ensure_ascii=False),datetime.now(timezone.utc).isoformat(),user_key,existing['id'],existing['version'])).rowcount
-                            if not changed: raise ValueError('This note changed during repair. Its new edits were kept; retry Convert.')
-                            repaired+=1
-                            if mode=='edited_text_kept': preserved_edits+=1
-                        else:
-                            note=convert_sermon_pdf(data,source)
-                            with sermon_notes_storage(app,True) as conn:
-                                conn.execute('INSERT OR IGNORE INTO sermon_notes(id,user_key,note_json,source_key,updated_at) VALUES(?,?,?,?,?)',
-                                    (hashlib.sha256((user_key+'|'+source_key).encode()).hexdigest()[:32],user_key,
-                                     json.dumps(note,ensure_ascii=False),source_key,datetime.now(timezone.utc).isoformat()))
-                            converted+=1
-                    except Exception as error:
-                        errors.append(dict(filename=source['filename'], error=str(error) if isinstance(error,ValueError)
-                            else 'Could not read this PDF. Check its source and retry.'))
-                progress(completed=i+1,total=len(sources),message='Converting / repairing '+source['filename'],converted=converted,repaired=repaired,skipped=skipped,errors=errors)
-            if drive is not None: drive.close()
-            return dict(converted=converted,repaired=repaired,preserved_edits=preserved_edits,backup=backup_name,skipped=skipped,errors=errors,
-                message=f'Conversion complete: {converted} created, {repaired} repaired, {skipped} already current, {len(errors)} need attention. '
-                        + (f'{preserved_edits} edited texts were kept intact. ' if preserved_edits else '')+'Use Sync Notes to back them up.')
-        return start_notes_job('conversion',convert)
 
     @blueprint.get('/api/status')
     def status_api():

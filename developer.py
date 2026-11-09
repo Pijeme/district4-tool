@@ -484,6 +484,26 @@ def developer_page():
     )
 
 
+BIBLE_PRIVACY_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IOWO D4 Bible Study - Privacy</title><style>body{font:17px/1.7 system-ui,sans-serif;max-width:800px;margin:40px auto;padding:0 22px;color:#18314c;background:#fffdf7}h1,h2{line-height:1.3}a{color:#17666c}</style></head><body>
+<h1>IOWO D4 Bible Study privacy information</h1><p>Effective 9 November 2026. Publisher: Pijeme Franco Walawala, IOWO District 4.</p>
+<p>This information covers the IOWO D4 Bible Study Android app and its account and sermon-note backup connection to the District 4 website.</p>
+<h2>Information used</h2><p>Signing in sends your website username and password over HTTPS to verify your existing account. The app remembers a revocable device token protected with Android Keystore; it does not save your password. The service uses your account name, username and role to associate your private notes with your account.</p>
+<p>Bible marks, bookmarks, reading preferences and sermon notes are stored in the app's private device storage. When you choose Sync Notes, sermon content and note identifiers/versions travel through the website to the configured Google Drive backup and may be restored from that backup. Notes can contain whatever personal information you choose to enter. Operational website logs may record connection details such as IP addresses and request times.</p>
+<h2>Purpose and recipients</h2><p>Information is used for sign-in, account protection, saving, restoring and synchronising your notes, and operating the service. Google Drive processes the optional backup as a service provider. Exporting or sharing a PDF sends the chosen file to the destination you select. This app has no advertising or analytics SDK and does not sell your personal information or use it for advertising.</p>
+<h2>Your controls</h2><p>You can read the prepared Bible and study library offline. Online sign-in and Sync Notes require a connection. You can edit or delete sermon notes, export a PDF, sign out, or ask the publisher to revoke device access. A local save and an online backup are separate operations; check the sync result before relying on a backup.</p>
+<h2>Retention and deletion</h2><p>Local data remains until deleted in the app, app storage is cleared, or the app is uninstalled. Signing out alone keeps local notes associated with their account. Online notes remain in the configured service until deleted through synchronisation or removed by the operator. Deletion tombstones, previous backup copies and operational logs may remain until separately removed by the operator. For account or backup deletion, email the publisher with your account username and the data you want removed; do not send your password. The publisher will verify the request before removing protected account data.</p>
+<h2>Security and support</h2><p>Online account and backup requests use HTTPS. Device tokens are protected using Android Keystore. Personal note files remain in app-private storage; exporting or sharing creates copies outside that storage under your control.</p>
+<p>Questions, access or deletion requests: <a href="mailto:pijeme.walawala@gmail.com">pijeme.walawala@gmail.com</a>. Account access is arranged through your Area Overseer. The optional support card does not require payment to use the app.</p></body></html>"""
+
+@developer_bp.get('/bible-study/privacy')
+def bible_privacy():
+    return render_template_string(BIBLE_PRIVACY_HTML)
+
+@developer_bp.get('/bible-study/delete-data')
+def bible_delete_data():
+    return render_template_string(BIBLE_PRIVACY_HTML)
+
+
 def register_developer_routes(app):
     """Register the About Developer blueprint with the main Flask app."""
     app.register_blueprint(developer_bp)

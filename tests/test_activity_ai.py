@@ -864,7 +864,7 @@ class WebsiteMobileAPITests(unittest.TestCase):
         self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list','user_key':'pastor:other'},headers=headers).status_code,400)
         self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list'},headers=headers).status_code,200)
         self.assertEqual(self.calls[0][0], 'pastor:offline-test')
-        self.assertEqual(self.client.post(endpoint+'conversion/start',json={},headers=headers).status_code,403)
+        self.assertEqual(self.client.post(endpoint+'conversion/start',json={},headers=headers).status_code,404)
         self.assertEqual(self.client.post(endpoint+'logout',json={},headers=headers).status_code,200)
         self.assertEqual(self.client.post(endpoint+'drive',json={'action':'list'},headers=headers).status_code,401)
 
