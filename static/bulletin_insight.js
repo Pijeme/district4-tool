@@ -149,11 +149,12 @@
                     insight = data.insight;
                     const details = document.createElement("details");
                     details.append(node("summary", "Read more"), node("div", insight.content, "maxwell-source-content"));
-                    card.replaceChildren(node("h3", "Daily Devotional"), node("p", "From the Maxwell Leadership Bible", "muted small"),
+                    card.replaceChildren(node("h3", "Daily Devotional"), node("p", insight.source_title || "Maxwell Leadership Bible", "muted small"),
                         node("strong", insight.title), node("p", insight.passage, "muted small"), node("p", insight.excerpt), details);
                     wireDetails(); card.hidden = false; card.style.removeProperty("display");
                     if (actions) { actions.hidden = false; refresh(); }
-                } else if (data.pending && attempt < 40) setTimeout(() => poll(attempt + 1), 2000);
+                }
+                if (data.pending && attempt < 40) setTimeout(() => poll(attempt + 1), 2000);
             } catch (_error) {}
         }
         if (config.pending) poll();

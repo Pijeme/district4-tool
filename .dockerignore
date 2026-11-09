@@ -51,3 +51,6 @@ bible_study_private/
 bible_study_backups/
 bible_study*.db*
 *.epub
+deployment/*.zip
+.cache_optimization_work/
+.visual_upgrade/

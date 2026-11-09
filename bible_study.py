@@ -8,6 +8,7 @@ import argparse
 import copy
 import ctypes
 import difflib
+from collections import OrderedDict
 from collections.abc import Sequence
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -6776,11 +6777,30 @@ def sermon_notes_storage(app, write=False):
     finally: conn.close()
 
 
+_SERMON_NOTE_SUMMARIES = OrderedDict()
+_SERMON_NOTE_SUMMARIES_LOCK = threading.RLock()
+
+
 def sermon_note_item(row, full=False):
-    note = validate_sermon_note(json.loads(row['note_json']))
+    # Lists need metadata, not repeated validation of every paragraph in every
+    # sermon. Keep only small summaries; changed text and owners have new keys.
+    key = (row['user_key'], row['id'], hashlib.sha256(row['note_json'].encode()).digest())
+    with _SERMON_NOTE_SUMMARIES_LOCK:
+        metadata = _SERMON_NOTE_SUMMARIES.get(key) if not full else None
+        if metadata is not None:
+            _SERMON_NOTE_SUMMARIES.move_to_end(key)
+    note = None
+    if metadata is None:
+        note = validate_sermon_note(json.loads(row['note_json']))
+        metadata = dict(theme=note['theme'], text=note['text'],
+                        primary_reference=note.get('primary_reference'), needs_review=note.get('needs_review', True))
+        with _SERMON_NOTE_SUMMARIES_LOCK:
+            _SERMON_NOTE_SUMMARIES[key] = metadata
+            _SERMON_NOTE_SUMMARIES.move_to_end(key)
+            while len(_SERMON_NOTE_SUMMARIES) > 1024:
+                _SERMON_NOTE_SUMMARIES.popitem(last=False)
     result = dict(id=row['id'], version=row['version'], remote_version=row['remote_version'],
-        theme=note['theme'], text=note['text'], primary_reference=note.get('primary_reference'),
-        needs_review=note.get('needs_review', True), dirty=bool(row['dirty']), deleted=bool(row['deleted']),
+        **copy.deepcopy(metadata), dirty=bool(row['dirty']), deleted=bool(row['deleted']),
         conflict=bool(row['conflict_json']), updated_at=row['updated_at'])
     if full: result['note'] = note
     return result

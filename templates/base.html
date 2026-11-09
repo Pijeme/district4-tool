@@ -964,7 +964,7 @@
 <script id="pastorReminderConfig" type="application/json">{{ {'url': url_for('pastor_report_reminder'), 'csrf': district_interaction_csrf}|tojson }}</script>
 {% endif %}
 {% if pastor_reminder_enabled or request.endpoint == 'bulletin' %}
-<script src="{{ url_for('static',filename='bulletin_insight.js',v='6') }}" defer></script>
+<script src="{{ url_for('static',filename='bulletin_insight.js',v='7') }}" defer></script>
 {% endif %}
 </body>
 </html>

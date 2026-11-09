@@ -473,6 +473,13 @@ class CacheSafetyTests(unittest.TestCase):
         self.assertTrue(response.cache_control.public)
         response.close()
 
+    def test_public_study_font_is_cached_without_affecting_private_responses(self):
+        response=self.client.get('/static/bible-study/fonts/Rye-Regular.woff')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.cache_control.max_age,864000)
+        self.assertTrue(response.cache_control.public)
+        response.close()
+
     def test_private_selfie_is_no_store(self):
         with appmod.app.app_context():
             temp_edit._ensure_temp_edit_tables()

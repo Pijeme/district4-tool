@@ -22,10 +22,13 @@
     let readerPassageChanged = false;
     let commentaryRequest = 0, commentarySeries = "wiersbe", pulpitSection = "exposition", greekRequest = 0;
     let commentaryTheme="",commentaryThemeOwner="",commentaryScrollToTheme="";
+    let commentarySections=[],commentarySelectedSection="",commentarySectionsOwner="";
     let commentaryVerseTarget=null,commentaryVerseParts=[];
     let illustrationMode="suggested",illustrationRequest=0,illustrationPassage=null,illustrationSuggestionKey="";
     let illustrationLetter="A",illustrationTopic="",illustrationQuery="",illustrationSource="",illustrationArticle=null,illustrationListScroll=0;
     const commentaryNames = {wiersbe: "Wiersbe · Be Series", "exalting-jesus": "Exalting Jesus", moody: "The Moody Bible Commentary", pulpit: "The Pulpit Commentary"};
+    const iosViewport=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+    root.dataset.iosViewport=String(iosViewport);
     function sizeWorkspace() {
         if(document.body.classList.contains("bible-study-page")) {
             // Size the app shell, rather than measuring a root whose position
@@ -33,6 +36,12 @@
             const viewport=window.visualViewport;
             if(!viewport || Math.abs(viewport.scale-1)<.01) {
                 document.body.style.setProperty("--bs-viewport-height",Math.round(viewport?.height || window.innerHeight)+"px");
+                if(iosViewport){
+                    const active=document.activeElement,editing=Boolean(active?.matches("input:not([type=button]):not([type=checkbox]),textarea,[contenteditable=true]"));
+                    const keyboard=editing&&window.innerHeight-(viewport?.height||window.innerHeight)>120;
+                    document.body.classList.toggle("bs-ios-keyboard",keyboard);
+                    document.body.style.setProperty("--bs-viewport-offset-top",keyboard?Math.max(0,viewport?.offsetTop||0)+"px":"0px");
+                }
             }
             return;
         }
@@ -42,6 +51,11 @@
     }
     window.addEventListener("resize", sizeWorkspace);
     window.visualViewport?.addEventListener("resize", sizeWorkspace);
+    if(iosViewport){
+        window.visualViewport?.addEventListener("scroll",sizeWorkspace);
+        document.addEventListener("focusin",sizeWorkspace);
+        document.addEventListener("focusout",()=>{requestAnimationFrame(sizeWorkspace);setTimeout(sizeWorkspace,350);});
+    }
     if (document.querySelector(".app-header")) new ResizeObserver(sizeWorkspace).observe(document.querySelector(".app-header"));
     window.addEventListener("pageshow",sizeWorkspace);
     sizeWorkspace();
@@ -130,9 +144,25 @@
         return item;
     }
 
+    function loadingNotice(title, description) {
+        const notice = node("div", undefined, "bs-loading-notice");
+        notice.setAttribute("role", "status");
+        const bar = node("progress", undefined, "bs-loading-progress");
+        bar.setAttribute("aria-label", title);
+        notice.append(node("h3", title), node("p", description), bar);
+        return notice;
+    }
+    function readerNotice(title, description, busy = false) {
+        element("Empty").hidden = false;
+        element("LoadingTitle").textContent = title;
+        element("LoadingDescription").textContent = description;
+        element("LoadingProgress").hidden = !busy;
+        element("Scripture").setAttribute("aria-busy", String(busy));
+    }
+
     async function api(url, options = {}) {
         const key=String(url), cacheable=(!options.method || options.method==="GET") &&
-            /\/(?:commentary\?|sermons(?:\?|\/)|word\/|concordance\?|dictionaries\/(?:entry\/|search\?))/.test(key);
+            /\/(?:commentary\?|sermons(?:\?|\/)|book-study\?|illustrations\/(?:suggested|browse)\?|word\/|concordance\?|dictionaries\/(?:entry\/|search\?))/.test(key);
         const cached=cacheable?sourceResponses.get(key):null;
         let data;
         if(cached && Date.now()-cached.at<sourceCacheLifetime)data=cached.data;
@@ -259,8 +289,11 @@
         element("Verses").replaceChildren();
         element("WordResults").replaceChildren();
         element("ConcordanceResults").replaceChildren(node("p", "Select a Bible word or search the concordance."));
-        element("Empty").hidden = false;
-        if (!contentAvailable || !config.chapterUrl) return;
+        readerNotice("Preparing Bible…", "Opening " + state.book + " " + state.chapter + " for a moment in the Word.", true);
+        if (!contentAvailable || !config.chapterUrl) {
+            readerNotice("Bible content is unavailable", "Reopen Bible Study to check library availability.");
+            return;
+        }
         try {
             const query = new URLSearchParams({book: state.book, chapter: state.chapter, translation: state.translation});
             const data = await api(config.chapterUrl + "?" + query);
@@ -271,6 +304,8 @@
                 element("BibleAttribution").textContent = verses[0].attribution || "";
             }
             element("Empty").hidden = verses.length > 0;
+            element("Scripture").setAttribute("aria-busy", "false");
+            if (!verses.length) readerNotice("This passage is unavailable", "Try another chapter or Bible translation.");
             let lastHeading = "";
             for (const verse of verses) {
                 verseData.set(verse.id, verse);
@@ -365,6 +400,7 @@
             }
         } catch (error) {
             if (requestId === chapterRequest) {
+                readerNotice("Could not prepare this passage", "Try opening this chapter again.");
                 element("Status").textContent = error.message;
                 element("ReaderError").textContent = error.message;
                 element("ReaderError").hidden = false;
@@ -705,7 +741,7 @@
     async function fetchWord(verseId, tokenIndex, part="auto") {
         const requestId = ++wordRequest;
         const results = element("WordResults");
-        results.replaceChildren(node("p", "Looking up this word…"));
+        results.replaceChildren(loadingNotice("Uncovering meaning…", "Exploring this word in your study library."));
         try {
             const data = await api(apiBase + "/word/" + verseId + "/" + tokenIndex + (part!=="auto" ? "?part="+part : ""));
             if (requestId !== wordRequest) return;
@@ -812,7 +848,7 @@
         element("DictionaryTitle").textContent=link.headword;
         element("DictionaryBack").disabled=true;
         element("DictionaryBack").hidden=!dictionaryHistory.length&&!previous;
-        element("DictionaryContent").replaceChildren(node("p","Loading dictionary article…"));
+        element("DictionaryContent").replaceChildren(loadingNotice("Uncovering meaning…", "Opening your dictionary article."));
         if(!dialog.open)dialog.showModal();
         try{
             const entries=await Promise.all(ids.map(async id=>(await api(apiBase+"/dictionaries/entry/"+id)).entry));
@@ -1025,7 +1061,7 @@
             panel.hidden=false;panel.setAttribute("aria-busy","true");
             const dismiss=node("button","Close","bs-translation-close");dismiss.type="button";
             dismiss.setAttribute("aria-label","Close "+translation.label+" definition");dismiss.addEventListener("click",close);
-            const content=node("div",undefined,"bs-source-content");content.append(node("p","Loading definition…"));
+            const content=node("div",undefined,"bs-source-content");content.append(loadingNotice("Uncovering meaning…", "Preparing this definition."));
             panel.replaceChildren(dismiss,node("h4",entry.headword),content);
             try{
                 let sources=cache.get(key);
@@ -1086,7 +1122,7 @@
         let englishRequest=0;const englishButtons=[];
         async function lookupEnglish(choice,part=choice.part || "all"){
             const revision=++englishRequest,finish=beginStudyLoad();
-            englishArea.hidden=false;englishResults.replaceChildren(node("p","Looking up “"+choice.word+"”…"));
+            englishArea.hidden=false;englishResults.replaceChildren(loadingNotice("Uncovering meaning…", "Exploring “"+choice.word+"” in your dictionaries."));
             for(const item of englishButtons)item.button.setAttribute("aria-pressed",String(item.choice===choice));
             try{
                 const page=await api(apiBase+"/dictionaries/search?"+new URLSearchParams({q:choice.word,part}));
@@ -1205,7 +1241,7 @@
         selectedWord = {word: query,part,nativeOrigin}; element("ConcordanceSearch").value = query;
         ++concordanceRequest;
         const requestId = ++wordRequest;
-        element("WordResults").replaceChildren(node("p", "Searching dictionaries…"));
+        element("WordResults").replaceChildren(loadingNotice("Uncovering meaning…", "Exploring your dictionaries for “" + query + "”."));
         try {
             const data = await api(apiBase + "/dictionaries/search?" + new URLSearchParams({q: query,part,translation:state.translation}));
             if (requestId === wordRequest) {
@@ -1263,7 +1299,7 @@
         const requestId=++sermonRequest;
         element("SermonReference").textContent=chapter;
         element("SermonReader").hidden=true;element("SermonResults").hidden=false;
-        element("SermonResults").replaceChildren(node("p","Finding indexed sermons for this chapter…"));
+        element("SermonResults").replaceChildren(loadingNotice("Shaping the message…", "Finding sermon outlines for " + chapter + "."));
         try {
             await chapterLoadPromise;
             if(requestId!==sermonRequest || studyTab!=="sermon")return;
@@ -1282,7 +1318,8 @@
         const requestId=++sermonRequest;
         sermonListScroll=element("Study").scrollTop;
         element("SermonResults").hidden=true;element("SermonReader").hidden=false;
-        element("SermonTitle").textContent="Loading sermon…";element("SermonMetadata").textContent="";element("SermonContent").replaceChildren();
+        element("SermonTitle").textContent="Preparing your sermon…";element("SermonMetadata").textContent="";
+        element("SermonContent").replaceChildren(loadingNotice("Shaping the message…", "Opening your selected sermon outline."));
         try {
             const data=await api(apiBase+"/sermons/"+encodeURIComponent(id));
             if(requestId!==sermonRequest)return;
@@ -1301,7 +1338,7 @@
             element("SermonContent").replaceChildren();appendSourceBlocks(element("SermonContent"),sermon.blocks);
             notesWholeButton(element("SermonReader"),()=>[...notesPlainBlocks(sermon.title,"heading"),...notesSourceBlocks(sermon.blocks)]);
             element("Study").scrollTop=0;
-        } catch(error){if(requestId===sermonRequest)element("SermonTitle").textContent=error.message;}
+        } catch(error){if(requestId===sermonRequest){element("SermonTitle").textContent=error.message;element("SermonContent").replaceChildren();}}
     }
     element("SermonBack").addEventListener("click",()=>{
         ++sermonRequest;element("SermonReader").hidden=true;element("SermonResults").hidden=false;element("Study").scrollTop=sermonListScroll;
@@ -1335,7 +1372,7 @@
         const key=params.toString();
         if(illustrationSuggestionKey===key){illustrationReaderClosed();return;}
         const requestId=++illustrationRequest,results=element("IllustrationsSuggestions");
-        illustrationReaderClosed();results.replaceChildren(node("p","Finding illustrations for this passage…"));
+        illustrationReaderClosed();results.replaceChildren(loadingNotice("Bringing the message to life…", "Finding illustrations connected to your passage."));
         element("IllustrationsReference").textContent=state.book+" "+state.chapter+(illustrationPassage?":"+illustrationPassage.verse+(illustrationPassage.end_verse!==illustrationPassage.verse?"–"+illustrationPassage.end_verse:""):"");
         try{
             const data=await api(apiBase+"/illustrations/suggested?"+params);
@@ -1356,7 +1393,7 @@
         const requestId=++illustrationRequest,results=element("IllustrationsBrowseResults"),topics=element("IllustrationsTopics");
         illustrationReaderClosed();
         const params=new URLSearchParams({letter:illustrationLetter,q:illustrationQuery,topic:illustrationTopic,source:illustrationSource,offset});
-        if(!offset){results.replaceChildren(node("p","Loading illustrations…"));topics.replaceChildren();}
+        if(!offset){results.replaceChildren(loadingNotice("Bringing the message to life…", "Opening stories and illustrations from your library."));topics.replaceChildren();}
         try{
             const data=await api(apiBase+"/illustrations/browse?"+params);
             if(requestId!==illustrationRequest || studyTab!=="illustrations" || illustrationMode!=="browse")return;
@@ -1382,13 +1419,14 @@
     async function openIllustration(id){
         const requestId=++illustrationRequest;illustrationListScroll=element("Study").scrollTop;
         element("IllustrationsDiscovery").hidden=true;element("IllustrationsReader").hidden=false;
-        element("IllustrationsTitle").textContent="Loading illustration…";element("IllustrationsMetadata").textContent="";
-        element("IllustrationsContent").replaceChildren();element("IllustrationsReferences").replaceChildren();element("IllustrationsCredit").textContent="";element("IllustrationsCopy").disabled=true;
+        element("IllustrationsTitle").textContent="Preparing your illustration…";element("IllustrationsMetadata").textContent="";
+        element("IllustrationsContent").replaceChildren(loadingNotice("Bringing the message to life…", "Opening your selected illustration."));element("IllustrationsReferences").replaceChildren();element("IllustrationsCredit").textContent="";element("IllustrationsCopy").disabled=true;
         illustrationArticle=null;
         try{
             const data=await visibleStudy(()=>api(apiBase+"/illustrations/entry/"+encodeURIComponent(id)));
             if(requestId!==illustrationRequest || studyTab!=="illustrations")return;
             const article=illustrationArticle=data.illustration,content=element("IllustrationsContent");
+            content.replaceChildren();
             element("IllustrationsTitle").textContent=article.title;
             element("IllustrationsMetadata").textContent=[article.source_title,...(article.topics.length?article.topics:[article.topic]).map(topic=>topic?.toLocaleUpperCase())].filter(Boolean).join(" · ");
             appendSourceBlocks(content,article.blocks);
@@ -1419,7 +1457,7 @@
             if(article.reference_issues.length){const note=node("details");note.append(node("summary","Source references needing review"));for(const issue of article.reference_issues)note.append(node("p",issue.display_reference+" · "+issue.reason));references.append(note);}
             element("IllustrationsCopy").disabled=article.needs_source_review;
             element("IllustrationsTitle").focus({preventScroll:true});element("Study").scrollTop=Math.max(0,element("Study").scrollTop+element("IllustrationsReader").getBoundingClientRect().top-element("Study").getBoundingClientRect().top-60);
-        }catch(error){if(requestId===illustrationRequest)element("IllustrationsTitle").textContent=error.message;}
+        }catch(error){if(requestId===illustrationRequest){element("IllustrationsTitle").textContent=error.message;element("IllustrationsContent").replaceChildren();}}
     }
     element("IllustrationsBack").addEventListener("click",()=>{++illustrationRequest;illustrationReaderClosed();element("Study").scrollTop=illustrationListScroll;});
     element("IllustrationsCopy").addEventListener("click",()=>{if(illustrationArticle){const a=illustrationArticle;copyScripture([a.title,a.body_text,a.credit_in_body?"":a.source_credit,a.source_title,a.source_file].filter(Boolean).join("\n\n"),"Illustration");}});
@@ -1473,23 +1511,63 @@
     }
     element("CommentaryPanel").addEventListener("click",clearCommentaryVerseFocus,true);
     element("CommentaryTab").addEventListener("click",clearCommentaryVerseFocus);
+    function selectCommentarySection(id){
+        if(studyTab!=="commentary"||commentarySectionsOwner!==commentaryThemeOwner||!commentarySections.some(theme=>theme.id===id))return;
+        element("CommentarySectionsDialog").close();
+        if(id===commentarySelectedSection&&commentaryRenderedKey)return;
+        commentaryTheme=id;commentaryScrollToTheme=id;loadCommentary();
+    }
+    function commentaryNavigationBusy(busy){
+        const index=commentarySections.findIndex(theme=>theme.id===commentarySelectedSection);
+        element("CommentaryPrevious").disabled=busy||index<=0;
+        element("CommentaryNext").disabled=busy||index<0||index>=commentarySections.length-1;
+    }
+    element("CommentaryViewAll").addEventListener("click",()=>{
+        if(commentarySectionsOwner!==commentaryThemeOwner||commentarySections.length<2)return;
+        const dialog=element("CommentarySectionsDialog");dialog.showModal();
+        element("CommentarySectionsList").querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
+    });
+    element("CloseCommentarySections").addEventListener("click",()=>element("CommentarySectionsDialog").close());
+    element("CommentarySectionsDialog").addEventListener("click",event=>{
+        if(event.target!==event.currentTarget)return;
+        const bounds=event.currentTarget.getBoundingClientRect();
+        if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom)event.currentTarget.close();
+    });
+    for(const [name,step] of [["CommentaryPrevious",-1],["CommentaryNext",1]])element(name).addEventListener("click",()=>{
+        const index=commentarySections.findIndex(theme=>theme.id===commentarySelectedSection),next=commentarySections[index+step];
+        if(index>=0&&next)selectCommentarySection(next.id);
+    });
     function renderCommentaryThemes(data,owner){
         const box=element("CommentaryThemes"),list=element("CommentaryThemeList"),themes=data.themes||[];
         const scroll=list.scrollLeft,focused=list.contains(document.activeElement);list.replaceChildren();box.dataset.owner=owner;
         const fullChapter=commentaryFullChapter(),hasChoices=!fullChapter&&themes.length>1;
+        commentarySections=fullChapter?[]:themes;commentarySelectedSection=data.selected_theme||"";commentarySectionsOwner=owner;
         box.hidden=!hasChoices;
-        element("CommentaryGuide").hidden=!fullChapter&&!hasChoices;
-        element("CommentaryGuide").textContent=fullChapter?"Full chapter commentary.":"Choose a chapter theme to read its commentary.";
-        for(const theme of themes){
+        element("CommentaryGuide").hidden=!fullChapter;
+        element("CommentaryGuide").textContent="Full chapter commentary.";
+        element("CommentaryThemesTitle").textContent=themes.length+" commentary sections in this chapter";
+        element("CommentaryViewAll").textContent="View all ("+themes.length+")";
+        const selectedIndex=themes.findIndex(theme=>theme.id===data.selected_theme);
+        element("CommentarySectionNav").hidden=!hasChoices||selectedIndex<0;
+        element("CommentarySectionPosition").textContent=selectedIndex>=0?"Section "+(selectedIndex+1)+" of "+themes.length:"";
+        commentaryNavigationBusy(false);
+        element("CommentarySectionsReference").textContent=commentaryNames[commentarySeries]+" · "+state.book+" "+state.chapter;
+        const all=element("CommentarySectionsList");all.replaceChildren();
+        for(const [index,theme] of themes.entries()){
             const button=node("button",undefined,"bs-commentary-theme");button.type="button";button.dataset.commentaryTheme=theme.id;
             button.setAttribute("aria-pressed",String(theme.id===data.selected_theme));button.title=[theme.title,theme.passage,theme.source_title].filter(Boolean).join(" · ");
-            button.append(node("span",theme.title),node("small",theme.passage));
-            button.addEventListener("click",()=>{
-                if(button.getAttribute("aria-pressed")==="true"&&commentaryRenderedKey)return;
-                commentaryTheme=theme.id;commentaryScrollToTheme=theme.id;loadCommentary();
-            });list.append(button);
+            button.append(node("span",(index+1)+". "+theme.title),node("small",theme.passage));
+            button.addEventListener("click",()=>selectCommentarySection(theme.id));list.append(button);
+            const choice=node("button",undefined,"bs-commentary-section-choice");choice.type="button";
+            choice.dataset.commentaryTheme=theme.id;choice.setAttribute("aria-pressed",String(theme.id===data.selected_theme));
+            const number=node("span",index+1,"bs-commentary-section-number");number.setAttribute("aria-hidden","true");
+            const label=node("span",undefined,"bs-commentary-section-label");label.append(node("strong",theme.title),node("small",theme.passage));
+            const check=node("span",theme.id===data.selected_theme?"✓":"","bs-commentary-section-check");check.setAttribute("aria-hidden","true");
+            choice.append(number,label,check);choice.addEventListener("click",()=>selectCommentarySection(theme.id));all.append(choice);
         }
         list.scrollLeft=scroll;
+        const active=list.querySelector('[aria-pressed="true"]');
+        if(active){const bounds=active.getBoundingClientRect(),viewport=list.getBoundingClientRect();if(bounds.left<viewport.left||bounds.right>viewport.right)list.scrollLeft+=bounds.left-viewport.left;}
         if(focused)list.querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
     }
     async function fetchCommentary() {
@@ -1499,8 +1577,13 @@
         const requestId = ++commentaryRequest;
         const results = element("CommentaryResults");
         commentaryVerseParts=[];
-        if(element("CommentaryThemes").dataset.owner!==owner){element("CommentaryThemes").hidden=true;element("CommentaryThemeList").replaceChildren();}
-        results.replaceChildren(node("p", "Loading chapter commentary…"));
+        commentaryNavigationBusy(true);
+        if(element("CommentaryThemes").dataset.owner!==owner){
+            commentarySections=[];commentarySelectedSection="";commentarySectionsOwner="";
+            element("CommentaryThemes").hidden=true;element("CommentaryThemeList").replaceChildren();
+            element("CommentarySectionNav").hidden=true;element("CommentarySectionsList").replaceChildren();element("CommentarySectionsDialog").close();
+        }
+        results.replaceChildren(loadingNotice("Gathering wisdom…", "Preparing " + commentaryNames[commentarySeries] + " for " + state.book + " " + state.chapter + "."));
         try {
             await chapterLoadPromise;
             if(requestId!==commentaryRequest || studyTab!=="commentary")return;
@@ -1544,7 +1627,7 @@
                 commentaryScrollToTheme="";
             }
         } catch (error) {
-            if (requestId === commentaryRequest) results.replaceChildren(node("p", error.message));
+            if (requestId === commentaryRequest){results.replaceChildren(node("p", error.message));commentaryNavigationBusy(false);}
         }
     }
 
@@ -1567,7 +1650,7 @@
     async function fetchConcordance(query, offset = 0, ownerRequest = null) {
         const requestId = offset === 0 ? ++concordanceRequest : ownerRequest;
         const results = element("ConcordanceResults");
-        if (offset === 0) results.replaceChildren(node("p", state.translation === "NIV" ? "Searching Thompson concordance…" : "Searching word matches…"));
+        if (offset === 0) results.replaceChildren(loadingNotice("Connecting the Scriptures…", "Finding passages and word matches for “" + query + "”."));
         try {
             const data = await api(apiBase + "/concordance?" + new URLSearchParams({q: query, offset, translation: state.translation}));
             if (requestId !== concordanceRequest) return;
@@ -1689,7 +1772,7 @@
         if (bookStudyBook === state.book) return;
         const requestId = ++bookStudyRequest, book = state.book;
         element("BookStudyTitle").textContent = book;
-        element("BookStudyResults").replaceChildren(node("p", "Loading Thompson book study…"));
+        element("BookStudyResults").replaceChildren(loadingNotice("Discovering the bigger picture…", "Preparing your introduction to " + book + "."));
         try {
             await chapterLoadPromise;
             if(requestId!==bookStudyRequest || state.book!==book)return;
@@ -1761,51 +1844,41 @@
     });
     element("Bible").addEventListener("scroll",()=>{if(notesActionsOpen)notesCloseActions();},{passive:true});
     window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);
-    const notesTools=element("NotesTools"),notesToolsToggle=element("NotesToolsToggle");
-    const notesMenuMedia=window.matchMedia("(max-width: 700px), (any-pointer: coarse)");
-    let notesMenuOpen=false;
-    function notesPositionMenu(){
-        if(!notesMenuOpen)return;
-        const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
-        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight,anchor=notesToolsToggle.getBoundingClientRect();
-        notesTools.style.setProperty("--bs-notes-menu-height",Math.max(100,height-16)+"px");
-        const bounds=notesTools.getBoundingClientRect(),x=Math.max(left+8,Math.min(anchor.left,left+width-bounds.width-8));
-        const below=anchor.bottom+6,y=below+bounds.height<=top+height-8?below:Math.max(top+8,anchor.top-bounds.height-6);
-        notesTools.style.setProperty("--bs-notes-menu-left",x+"px");notesTools.style.setProperty("--bs-notes-menu-top",y+"px");
+    const notesTools=element("NotesTools");
+    let notesMenuOpen=false,notesToolbarPointerUntil=0;
+    root.dataset.notesMenu="selection";
+    const notesMainActions=notesTools.closest(".bs-notes-dock").querySelector(".bs-notes-actions");
+    function notesCloseMenu(){
+        notesMenuOpen=false;notesTools.removeAttribute("data-open");
+        notesTools.hidden=true;notesMainActions.hidden=false;
+        notesTools.querySelector("details")?.removeAttribute("open");
     }
-    function notesCloseMenu(focusToggle=false){
-        notesMenuOpen=false;notesTools.removeAttribute("data-open");notesToolsToggle.setAttribute("aria-expanded","false");
-        if(notesTools.hasAttribute("popover")&&notesTools.matches(":popover-open"))notesTools.hidePopover();
-        if(focusToggle&&notesToolsToggle.getClientRects().length)notesToolsToggle.focus();
+    function notesShowSelectionTools(){
+        if(notesReadMode||element("NotesPanel").hidden||element("NotesWorkspace").hidden)return notesCloseMenu();
+        const selection=window.getSelection();
+        if(!selection?.rangeCount||selection.isCollapsed||!selection.toString().trim()||!notesEditor.contains(selection.anchorNode)||!notesEditor.contains(selection.focusNode))return;
+        notesRange=selection.getRangeAt(0).cloneRange();notesCloseActions();
+        if(!notesMenuOpen){
+            notesMenuOpen=true;notesMainActions.hidden=true;notesTools.hidden=false;notesTools.dataset.open="true";
+        }
     }
-    function notesMenuMode(){
-        notesCloseMenu();const compact=notesMenuMedia.matches||navigator.maxTouchPoints>0;
-        root.dataset.notesMenu=compact?"compact":"inline";
-        if(compact){notesTools.prepend(element("NotesMetaActions"));notesActionsToggle.before(element("NotesToolsLauncher"));}
-        else{notesActionsToggle.before(element("NotesMetaActions"));notesTools.before(element("NotesToolsLauncher"));}
-        if(compact&&typeof notesTools.showPopover==="function")notesTools.setAttribute("popover","auto");
-        else notesTools.removeAttribute("popover");
-    }
-    notesMenuMode();notesMenuMedia.addEventListener("change",notesMenuMode);
-    notesToolsToggle.addEventListener("click",()=>{
-        if(notesMenuOpen){notesCloseMenu();return;}
-        notesCloseActions();
-        notesMenuOpen=true;notesTools.dataset.open="true";notesToolsToggle.setAttribute("aria-expanded","true");
-        if(notesTools.hasAttribute("popover"))notesTools.showPopover();
-        notesPositionMenu();
+    notesTools.addEventListener("pointerdown",()=>{notesToolbarPointerUntil=performance.now()+1000;},{passive:true});
+    // Keep the editor's native range and formatting/save functions.
+    notesTools.addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
+    notesTools.addEventListener("click",event=>{
+        const button=event.target.closest("[data-notes-selection-command]");if(!button)return;
+        const command=button.dataset.notesSelectionCommand;
+        if(command==="hiliteColor")element("NotesHighlightColor").value=button.dataset.color;
+        notesFormat(command,button.dataset.color);
     });
-    notesTools.addEventListener("toggle",event=>{if(event.newState==="closed")notesCloseMenu();});
-    // Delegated handlers run after the existing font/edit handlers have used
-    // the saved editor selection. Merely opening a selector does not dismiss it.
-    notesTools.addEventListener("click",event=>{if(event.target.closest("button"))notesCloseMenu();});
-    notesTools.addEventListener("change",event=>{if(event.target.matches("select,input"))notesCloseMenu();});
+    element("NotesCopySelection").addEventListener("click",async()=>{
+        const text=notesRange?.toString();if(text)await copyScripture(text,"Sermon Notes");
+    });
+    element("NotesDismissSelection").addEventListener("click",notesCloseMenu);
     document.addEventListener("pointerdown",event=>{
-        if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesToolsToggle.contains(event.target))notesCloseMenu();
+        if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
-    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesCloseMenu(true);}},true);
-    element("Bible").addEventListener("scroll",()=>{if(notesMenuOpen)notesCloseMenu();},{passive:true});
-    window.addEventListener("resize",()=>{if(notesMenuOpen)notesPositionMenu();});
-    window.visualViewport?.addEventListener("resize",()=>{if(notesMenuOpen)notesPositionMenu();});
+    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesCloseMenu();}},true);
     const notesMenuVisibility=new MutationObserver(()=>{
         if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)notesCloseMenu();
         if(element("NotesPanel").hidden)notesCloseActions();
@@ -2139,7 +2212,7 @@
     });
     element("Bible").addEventListener("scroll",()=>clearTimeout(notesReferenceTimer),{passive:true});
     function notesSetReadMode(read){
-        notesReadMode=read;element("NotesRead").textContent=read?"Edit Notes":"Read Notes";element("NotesRead").setAttribute("aria-pressed",String(read));
+        notesCloseMenu();notesReadMode=read;element("NotesRead").textContent=read?"Edit Notes":"Read Notes";element("NotesRead").setAttribute("aria-pressed",String(read));
         element("NotesFormat").hidden=read;notesEditor.hidden=read;element("NotesPreview").hidden=!read;
         if(read){
             const preview=element("NotesPreview");preview.replaceChildren();
@@ -2162,7 +2235,9 @@
             if(parent){const css=getComputedStyle(parent),family=css.fontFamily.split(",")[0].replace(/^["']|["']$/g,"");
                 if(notesFonts.includes(family))element("NotesFont").value=family;
                 element("NotesFontSize").value=Math.round(parseFloat(css.fontSize)*.75*10)/10;}
-        }
+            if(!selection.isCollapsed)notesShowSelectionTools();
+            else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
+        }else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
     });
     function notesNormalizeFontSizes(){
         const size=Math.max(6,Math.min(72,Number(element("NotesFontSize").value)||12));
@@ -2222,14 +2297,14 @@
         }
         notesUpdateHeader(notesDocument());notesMarkChanged();
     });
-    function notesOpenMeta(edit=false,blocks=[]){
+    function notesOpenMeta(edit=false,blocks=[],field="text"){
         notesEditingMeta=edit;notesPendingBlocks=blocks;
         element("NotesMetaTitle").textContent=element("NotesMetaSubmit").textContent=edit?"Save Text & Theme":"Create Notes";
         element("NotesMetaText").value=edit?notesActive.note.text:"";element("NotesMetaTheme").value=edit?notesActive.note.theme:"";element("NotesMetaError").textContent="";
-        element("NotesMetaDialog").showModal();element("NotesMetaText").focus();
+        notesCloseMenu();element("NotesMetaDialog").showModal();element(field==="theme"?"NotesMetaTheme":"NotesMetaText").focus();
     }
     element("NotesCreate").addEventListener("click",()=>notesOpenMeta());
-    element("NotesEditMeta").addEventListener("click",()=>notesOpenMeta(true));
+    root.querySelectorAll("[data-notes-edit-meta]").forEach(button=>button.addEventListener("click",()=>notesOpenMeta(true,[],button.dataset.notesEditMeta)));
     element("NotesMetaForm").addEventListener("submit",async event=>{
         event.preventDefault();const button=element("NotesMetaSubmit");button.disabled=true;
         try{
@@ -2988,6 +3063,18 @@
         if(element("Sync") && config.syncUrl && new URLSearchParams(location.search).get("sync")==="1"){
             element("SyncDialog").showModal();pollSync();
         }
+        const startup= config.startupPreload===true;
+        const startupAt=performance.now();
+        function progress(value,message){
+            if(!startup)return;
+            window.iowoStartupProgress={value,message};
+            window.IOWOAndroid?.studyProgress?.(value,message);
+            window.dispatchEvent(new CustomEvent("iowo-study-progress",{detail:{value,message}}));
+        }
+        progress(48,"Opening your Bible and saved reading position");
+        const notesReady=startup?loadSermonNotes(""):Promise.resolve();
+        // Attach rejection handling immediately while the Bible opens in parallel.
+        const preparedNotes=notesReady.then(()=>({ok:true}),error=>({ok:false,error}));
         try {
             const [status, preferences] = await Promise.all([api(config.statusUrl), api(config.stateUrl)]);
             storageAvailable = status.schema_ready && preferences.storage_available;
@@ -3002,6 +3089,13 @@
             element("SaveStatus").textContent = "Reading preferences have not been saved.";
         }
         const query = new URLSearchParams(location.search);
+        const linkedBook=books.find(book=>book.name===query.get("book"));
+        const linkedChapter=Number(query.get("chapter")),linkedVerse=Number(query.get("verse"));
+        if(linkedBook && Number.isInteger(linkedChapter) && linkedChapter>=1 && linkedChapter<=linkedBook.chapters
+                && Number.isInteger(linkedVerse) && linkedVerse>=1 && linkedVerse<=176){
+            state.book=linkedBook.name;state.chapter=linkedChapter;state.verse=linkedVerse;
+            state.translation="NIV";state.layout_mode="split";
+        }
         const kind = query.has("annotation") ? "annotations" : query.has("bookmark") ? "bookmarks" : null;
         if (kind) {
             try {
@@ -3011,12 +3105,48 @@
                 if (state.layout_mode === "study") state.layout_mode = "split";
             } catch (error) { toast(error.message); }
         }
+        progress(58,"Preparing Bible translations");
         applyTranslation(); await refreshTranslations();
         updateChapter(); applyAppearance(); setRatio(mobile.matches ? (localSettings.mobileRatio || 50) : state.split_ratio); setMode(state.layout_mode);
         if(kind || state.verse>1)setIllustrationPassage(state.verse,state.verse);
         if(query.has("study")) {
             try { const saved=await api(apiBase+"/study-saves/"+encodeURIComponent(query.get("study")));await openSavedStudy(saved.item); }
             catch(error){toast(error.message);}
+        }
+        if(startup){
+            try{
+                await chapterLoadPromise;
+                progress(70,"Bible ready; preparing your sermon notes");
+                const notes=await preparedNotes;
+                if(!notes.ok)throw notes.error;
+                if(!contentAvailable || !verseData.size)throw Error("The Bible passage could not be prepared. Please reopen the app.");
+                progress(80,"Preparing study tools for your current chapter");
+                const chapter=new URLSearchParams({book:state.book,chapter:state.chapter});
+                const warmups=[
+                    ["Book Study",()=>loadBookStudy()],
+                    ["Commentary",()=>api(commentaryUrl())],
+                    ["Sermon outlines",()=>api(sermonListUrl())],
+                    ["Illustrations",()=>api(apiBase+"/illustrations/suggested?"+chapter)],
+                    ["Personal marks",()=>loadPersonal()]
+                ];
+                let completed=0;
+                // Independent tools prepare concurrently; failures remain visible
+                // in their own panels and cannot hide a healthy Bible/notes library.
+                const results=await Promise.allSettled(warmups.map(async([name,run])=>{
+                    try{return await run();}finally{progress(80+Math.round(++completed/warmups.length*17),name+" prepared");}
+                }));
+                window.iowoStartupWarnings=results.flatMap((result,index)=>result.status==="rejected"?[warmups[index][0]]:[]);
+                if(document.fonts?.ready)await document.fonts.ready;
+                window.iowoStudyReady=true;
+                window.iowoStartupDurationMs=Math.round(performance.now()-startupAt);
+                progress(100,"Your Bible and sermon notes are ready");
+                window.IOWOAndroid?.studyReady?.();
+                window.dispatchEvent(new Event("iowo-study-ready"));
+            }catch(error){
+                window.iowoStartupError=error.message;
+                window.IOWOAndroid?.studyFailed?.(error.message);
+                element("Status").textContent=error.message;
+            }
         }
         if (element("Sync") && config.syncUrl) pollSync();
     })();

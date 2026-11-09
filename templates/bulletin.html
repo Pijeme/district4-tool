@@ -30,7 +30,11 @@
           <span class="verse-date">{{ today_str }}</span>
         </div>
         <p class="verse-text">{{ verse_text }}</p>
-        <p class="verse-ref">{{ verse_reference }} (NIV)</p>
+        <div class="verse-reference-row">
+          <p class="verse-ref">{{ verse_reference }} (NIV)</p>
+          <a class="verse-study-shortcut" href="{{ bible_study_link|default(url_for('bible_study.page')) }}"><img src="{{ url_for('static', filename='bible-study/open-in-bible-study-v1.webp') }}" width="190" height="38" alt="Open in Bible Study" decoding="async"></a>
+        </div>
+        {% if devotion_plan %}<p class="muted small">Two-year leadership journey &middot; Year {{ devotion_plan.year }} &middot; {% if devotion_plan.week %}Week {{ devotion_plan.week }}{% else %}{{ devotion_plan.theme }}{% endif %}</p>{% endif %}
       </div>
 
       <p class="muted small">
@@ -40,7 +44,7 @@
       <section id="maxwellInsight" class="maxwell-insight" {% if not leadership_insight %}hidden{% endif %}>
         {% if leadership_insight %}
         <h3>Daily Devotional</h3>
-        <p class="muted small">From the Maxwell Leadership Bible</p>
+        <p class="muted small">{{ leadership_insight.source_title|default("Maxwell Leadership Bible") }}</p>
         <strong>{{ leadership_insight.title }}</strong>
         <p class="muted small">{{ leadership_insight.passage }}</p>
         <p>{{ leadership_insight.excerpt }}</p>

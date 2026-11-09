@@ -2503,7 +2503,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.bible.get_indexed_niv_passage('Genesis 1:1', foreign_path))
         self.assertEqual(foreign_path.read_bytes(), before)
 
-    def test_bulletin_daily_verse_keeps_rotation_uses_local_date_and_bypasses_old_kjv_cache(self):
+    def test_bulletin_daily_verse_uses_two_year_plan_local_date_and_bypasses_old_cache(self):
         # Execute the actual function AST without importing app.py, whose startup
         # hooks touch website databases and external services.
         import ast
@@ -2511,21 +2511,20 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         from zoneinfo import ZoneInfo
         tree = ast.parse((Path(resources.__file__).parent / 'app.py').read_text(encoding='utf-8-sig'))
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'get_verse_of_the_day')
-        references = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == 'VERSE_REFERENCES' for target in node.targets))
+        from daily_devotional import get_daily_entry
         zone = ZoneInfo('Asia/Manila')
         local_midnight = datetime(2026, 10, 21, 0, 1, tzinfo=zone)
         clock = Mock()
         clock.now.return_value = local_midnight
         fetch = Mock(return_value='Synthetic NIV daily text.')
         legacy = Mock(side_effect=AssertionError('Do not read or update the old KJV cache'))
-        namespace = dict(datetime=clock, PH_TZ=zone, VERSE_REFERENCES=references, app=self.app,
+        namespace = dict(datetime=clock, PH_TZ=zone, get_daily_entry=get_daily_entry, app=self.app,
                          DATABASE=str(Path(self.directory.name) / 'app_v2.db'), AI_DATABASE=str(Path(self.directory.name) / 'ai_index.db'),
                          get_indexed_niv_passage=fetch, get_db=legacy,
                          requests=Mock(get=Mock(side_effect=AssertionError('No third-party verse requests'))))
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'app.py', 'exec'), namespace)
         get_daily = namespace['get_verse_of_the_day']
-        expected = references[local_midnight.date().toordinal() % len(references)]
+        expected = get_daily_entry(local_midnight.date())["reference"]
         self.assertEqual(get_daily(), (expected, 'Synthetic NIV daily text.'))
         clock.now.assert_called_once_with(zone)
         self.assertEqual(fetch.call_args.args, (expected, str(self.path)))
@@ -4464,8 +4463,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         tree=ast.parse((Path(resources.__file__).parent/'app.py').read_text(encoding='utf-8-sig'))
         function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='bulletin_leadership_insight')
         daily=Mock(return_value=(None,False))
-        namespace=dict(app=self.app,jsonify=jsonify,session=session,datetime=datetime,PH_TZ=ZoneInfo('Asia/Manila'),
-                       _save_daily_devotion=lambda day,ref,verse,insight:insight,
+        from daily_devotional import get_daily_entry, compose_devotional
+        namespace=dict(get_daily_entry=get_daily_entry, compose_devotional=compose_devotional, app=self.app,jsonify=jsonify,session=session,datetime=datetime,PH_TZ=ZoneInfo('Asia/Manila'),
+                       _save_daily_devotion=lambda day,ref,verse,insight,**kwargs:insight,
                        AI_DATABASE=str(Path(self.directory.name)/'ai_index.db'),get_verse_of_the_day=Mock(return_value=('Genesis 1:1','Synthetic verse.')),
                        daily_maxwell_insight=daily,any_user_logged_in=lambda:session.get('pastor_logged_in') is True or session.get('ao_logged_in') is True)
         exec(compile(ast.Module(body=[function],type_ignores=[]),'app.py','exec'),namespace)
@@ -4474,7 +4474,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.login('Pastor',pastor=True)
         response=self.client.get('/bulletin/leadership-insight?reference=John3:16')
         self.assertEqual(response.status_code,200)
-        self.assertIsNone(response.json['insight'])
+        self.assertIn('Prayer', response.json['insight']['content'])
         self.assertEqual(daily.call_args.args[2:4],('Genesis 1:1','Synthetic verse.'))
         self.assertEqual(response.headers['Cache-Control'],'private, no-store')
 
@@ -4813,6 +4813,71 @@ class SermonNotesIntegrationTests(unittest.TestCase):
             repeated=self.client.post(self.notes+'/convert',json={},headers=self.headers).json['job']
             self.assertEqual(repeated['skipped'],1,repeated)
             self.assertEqual(self.client.get(self.notes+'/'+item['id']).json['item']['note']['theme'],'My manual correction')
+
+
+
+
+class DailyDevotionalPlanTests(unittest.TestCase):
+    def test_every_day_has_a_complete_entry_across_years_and_leap_day(self):
+        from datetime import date, timedelta
+        from daily_devotional import TWO_YEAR_PLAN, get_daily_entry
+        self.assertEqual(len(TWO_YEAR_PLAN), 730)
+        self.assertEqual(len({entry['key'] for entry in TWO_YEAR_PLAN}), 730)
+        self.assertEqual(len({entry['content'] for entry in TWO_YEAR_PLAN}), 730)
+        day = date(2026, 1, 1)
+        while day < date(2032, 1, 1):
+            entry = get_daily_entry(day)
+            for key in ('title', 'reference', 'content', 'source_title', 'key'):
+                self.assertTrue(entry[key], (day, key))
+            self.assertIn('Prayer', entry['content'])
+            self.assertIn('Practise', entry['content'])
+            self.assertIn('Reflect', entry['content'])
+            self.assertIn('Original', entry['source_title'])
+            day += timedelta(days=1)
+        for month, day in ((1, 1), (2, 28), (3, 1), (12, 31)):
+            self.assertEqual(get_daily_entry(date(2026, month, day)), get_daily_entry(date(2028, month, day)))
+        self.assertNotEqual(get_daily_entry(date(2028, 2, 29))['key'], get_daily_entry(date(2028, 3, 1))['key'])
+        self.assertNotEqual(get_daily_entry(date(2026, 1, 1))['content'], get_daily_entry(date(2027, 1, 1))['content'])
+        entry = get_daily_entry(date(2026, 1, 1))
+        entry['title'] = 'caller mutation'
+        self.assertNotEqual(get_daily_entry(date(2026, 1, 1))['title'], 'caller mutation')
+
+    def test_source_enrichment_retains_original_daily_exercises_and_honest_attribution(self):
+        from datetime import date
+        from daily_devotional import compose_devotional, get_daily_entry, bible_study_passage
+        entry = get_daily_entry(date(2026, 1, 1))
+        fallback = compose_devotional(entry)
+        self.assertIn('Original', fallback['source_title'])
+        source = dict(title='Synthetic source heading', passage=entry['reference'],
+                      content='Original indexed text.\nSecond paragraph.', source_title='NIV Maxwell Leadership Bible')
+        enriched = compose_devotional(entry, source)
+        self.assertIn(source['content'], enriched['content'])
+        self.assertIn(entry['content'], enriched['content'])
+        self.assertIn('Original daily reflection', enriched['content'])
+        self.assertEqual(enriched['source_title'], source['source_title'])
+        self.assertEqual(bible_study_passage('1 Samuel 17:32'),
+                         dict(book='1 Samuel', chapter=17, verse=32, translation='NIV'))
+        self.assertEqual(bible_study_passage('Psalm 23:1-3')['book'], 'Psalms')
+
+
+class SermonSummaryCacheTests(unittest.TestCase):
+    def test_cache_reuses_only_same_owner_and_content_and_returns_copies(self):
+        import bible_study as bible
+        note=dict(schema_version=1,theme='Cache test',text='John 3:16',content=dict(blocks=[]))
+        row=dict(id='a'*32,user_key='pastor:one',note_json=json.dumps(note),version=1,remote_version=0,dirty=1,deleted=0,conflict_json=None,updated_at='now')
+        bible._SERMON_NOTE_SUMMARIES.clear()
+        with patch.object(bible,'validate_sermon_note',wraps=bible.validate_sermon_note) as validate:
+            one=bible.sermon_note_item(row)
+            one['primary_reference']['book_id']=1
+            self.assertEqual(bible.sermon_note_item(row)['primary_reference']['book_id'],43)
+            self.assertEqual(validate.call_count,1)
+            bible.sermon_note_item(dict(row,user_key='pastor:two'))
+            self.assertEqual(validate.call_count,2)
+            changed=dict(note,theme='Changed')
+            self.assertEqual(bible.sermon_note_item(dict(row,note_json=json.dumps(changed)))['theme'],'Changed')
+            self.assertEqual(validate.call_count,3)
+            self.assertIn('note',bible.sermon_note_item(row,full=True))
+            self.assertEqual(validate.call_count,4)
 
 
 if __name__ == '__main__':

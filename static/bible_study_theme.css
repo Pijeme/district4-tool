@@ -1,0 +1,83 @@
+@font-face{font-family:Lora;src:url("bible-study/fonts/Lora-Variable.woff") format("woff");font-weight:400 700;font-style:normal;font-display:swap}
+@font-face{font-family:Lora;src:url("bible-study/fonts/Lora-Italic-Variable.woff") format("woff");font-weight:400 700;font-style:italic;font-display:swap}
+@font-face{font-family:"Space Grotesk";src:url("bible-study/fonts/SpaceGrotesk-Variable.woff") format("woff");font-weight:300 700;font-style:normal;font-display:swap}
+@font-face{font-family:Rye;src:url("bible-study/fonts/Rye-Regular.woff") format("woff");font-weight:400;font-display:swap}
+@font-face{font-family:Bitter;src:url("bible-study/fonts/Bitter-Variable.woff") format("woff");font-weight:100 900;font-display:swap}
+body.bible-study-page{--app-ui:"Space Grotesk","Noto Sans",sans-serif;--app-reading:Lora,"Noto Sans",serif;--app-tab:Bitter,Georgia,serif;--app-sign:Rye,Georgia,serif}
+body.bible-study-page .bs-root{font-family:var(--app-ui)}
+body.bible-study-page .bs-root :is(button,input,select,textarea){font-family:var(--app-ui)}
+body.bible-study-page .bs-scripture{font-family:var(--app-reading);line-height:1.85}
+body.bible-study-page .bs-scripture .bs-word{font-family:inherit!important}
+body.bible-study-page .bs-source-content:not(.bs-notes-preview){font-family:var(--app-reading);line-height:1.8}
+/* Eight local illustrated wood scenes, one per tool, in a single sprite atlas. */
+body.bible-study-page #bsCommentaryControls{padding:3px 0}
+body.bible-study-page #bsCommentaryChoices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
+body.bible-study-page #bsCommentaryChoices button{height:30px;min-height:30px;padding:2px 4px;font-size:11px;line-height:12px;border-radius:6px;white-space:normal}
+body.bible-study-page #bsCommentaryThemes{padding:4px 5px;margin-top:3px}
+.bs-commentary-theme-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:3px}
+.bs-commentary-theme-heading strong{font:500 10px/1.3 var(--app-ui);min-width:0}
+.bs-root #bsCommentaryViewAll{flex-shrink:0;min-height:26px;padding:3px 7px;border-color:#267479;color:#165e64;background:var(--bs-panel);font-size:10px;line-height:16px;border-radius:6px}
+body.bible-study-page .bs-root .bs-commentary-theme{flex:0 0 165px;height:32px;min-height:32px;padding:2px 6px;font-size:11px;line-height:12px;border-radius:6px}
+body.bible-study-page .bs-commentary-theme span{display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;line-height:13px}
+body.bible-study-page .bs-commentary-theme small{margin:0;line-height:11px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.bs-commentary-section-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:18px 0 8px;padding-top:10px;border-top:1px solid var(--bs-line)}
+.bs-commentary-section-nav span{font:500 12px/1.5 var(--app-ui);text-align:center}
+.bs-root .bs-commentary-section-nav button{min-height:32px;padding:5px 9px;font-size:12px}
+.bs-root #bsCommentaryNext{background:#176a70;border-color:#176a70;color:#fff}
+.bs-root .bs-commentary-sections-dialog{width:min(94vw,580px);max-height:80dvh;padding:18px;background:var(--bs-panel);color:var(--bs-ink);border:1px solid var(--bs-line);border-radius:16px;overflow-y:auto}
+.bs-commentary-sections-dialog .bs-dialog-head{padding:0 0 9px}
+.bs-commentary-sections-dialog::backdrop{background:#141d2e70}
+#bsCommentarySectionsTitle{font:600 22px/1.3 var(--app-reading)}
+#bsCommentarySectionsReference{margin:2px 0 14px;color:var(--bs-muted);font:400 13px/1.5 var(--app-ui)}
+.bs-commentary-sections-list{display:grid;gap:8px}
+.bs-root .bs-commentary-section-choice{display:flex;align-items:center;gap:10px;min-height:58px;padding:9px 10px;width:100%;text-align:left;white-space:normal;background:var(--bs-paper)}
+.bs-root .bs-commentary-section-choice[aria-pressed=true]{border-color:#267479;box-shadow:inset 3px 0 #267479}
+.bs-commentary-section-number{display:grid;place-items:center;flex:0 0 28px;height:30px;border-radius:5px;background:#d8b77c;color:#352713;font:600 16px/1 var(--app-ui)}
+.bs-commentary-section-label{flex:1;min-width:0;overflow-wrap:anywhere}
+.bs-commentary-section-label strong{display:block;font:600 16px/1.4 var(--app-reading)}
+.bs-commentary-section-label small{display:block;color:var(--bs-muted);font:400 12px/1.4 var(--app-ui)}
+.bs-commentary-section-check{flex:0 0 20px;color:#267479;font-size:23px}
+.bs-root[data-theme=dark] #bsCommentaryViewAll,.bs-root[data-theme=dark] .bs-commentary-section-check{color:#9bdde0}
+@media(max-width:700px){.bs-root .bs-commentary-sections-dialog{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:100%;max-height:78dvh;border-radius:18px 18px 0 0;padding:14px 16px max(16px,env(safe-area-inset-bottom));overscroll-behavior:contain}.bs-commentary-sections-dialog::before{content:'';display:block;width:36px;height:4px;border-radius:4px;background:var(--bs-line);margin:0 auto 10px}}
+.bs-loading-notice{margin:18px 0;padding:20px 16px;border:1px solid var(--bs-line);border-radius:12px;background:var(--bs-panel);text-align:center}
+.bs-loading-notice h3{margin:0 0 8px;font:600 18px/1.5 var(--app-tab);color:var(--bs-ink)}
+.bs-loading-notice p{margin:0 auto;max-width:420px;font:400 13px/1.7 var(--app-ui);color:var(--bs-muted)}
+.bs-loading-progress{display:block;width:min(290px,100%);height:6px;margin:16px auto 0;border:0;border-radius:99px;overflow:hidden;appearance:none;background:var(--bs-line);color:var(--bs-accent)}
+.bs-loading-progress:indeterminate{background:linear-gradient(90deg,var(--bs-line),var(--bs-accent),var(--bs-line));background-size:220% 100%;animation:bs-preparing 1.8s ease-in-out infinite}
+.bs-loading-progress::-webkit-progress-bar{background:transparent}
+.bs-loading-progress::-webkit-progress-value{background:var(--bs-accent)}
+.bs-loading-progress:indeterminate::-moz-progress-bar{background:transparent}
+.bs-loading-progress[hidden]{display:none}
+@keyframes bs-preparing{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media(prefers-reduced-motion:reduce){.bs-loading-progress:indeterminate{animation:none}}
+body.bible-study-page #bibleStudyRoot{--tool-art:url("bible-study/study-wood-atlas-v1.webp");--tool-y:0%}
+#bsReaderTab,#bsReaderPanel{--tool-y:0%}
+#bsBookStudyTab,#bsBookStudyPanel{--tool-y:14.285714%}
+#bsNotesTab,#bsNotesPanel{--tool-y:28.571429%}
+#bsWordTab,#bsWordPanel{--tool-y:42.857143%}
+#bsConcordanceTab,#bsConcordancePanel{--tool-y:57.142857%}
+#bsCommentaryTab,#bsCommentaryPanel{--tool-y:71.428571%}
+#bsSermonTab,#bsSermonPanel{--tool-y:85.714286%}
+#bsIllustrationsTab,#bsIllustrationsPanel{--tool-y:100%}
+body.bible-study-page #bibleStudyRoot .bs-wide-tabs{height:34px;min-height:34px;flex-basis:34px;background:#c7ad87;border-bottom:1px solid #9e7549;box-shadow:inset 0 1px 0 #f9e9d2}
+body.bible-study-page #bibleStudyRoot .bs-study-tabs{height:34px;min-height:34px;padding:2px 3px 0;gap:2px;background:#c7ad87;align-items:stretch}
+body.bible-study-page #bibleStudyRoot .bs-study-tabs button{height:31px;min-height:31px;padding:3px 5px;border:1px solid #ad8756;border-bottom:0;border-radius:6px 6px 0 0;background-color:#ead8b7;background-image:linear-gradient(#fff0d8dd,#f5dfbddb),var(--tool-art);background-size:100% 100%,300% 800%;background-position:center,right var(--tool-y);font-family:var(--app-tab)!important;font-size:11.5px;font-weight:600;line-height:12px;color:#402a18;letter-spacing:-.025em;text-shadow:0 1px #fff8;box-shadow:inset 0 1px 0 #fff8;white-space:normal}
+body.bible-study-page #bibleStudyRoot .bs-study-tabs button[aria-selected=true]{background-image:linear-gradient(#25170b69,#22150b85),var(--tool-art);border-color:#b68a49;color:#fff4d9;text-shadow:0 1px 2px #000;box-shadow:inset 0 2px 0 #e7be76,inset 0 -1px 0 #bd8d46}
+body.bible-study-page #bibleStudyRoot .bs-study-tabs button[aria-selected=true]::after{left:6px;right:6px;height:2px;bottom:0;background:#dcb576;border-radius:1px}
+body.bible-study-page #bibleStudyRoot .bs-layout-control{padding:2px 4px}
+body.bible-study-page #bibleStudyRoot #bsLayoutMode{min-height:28px;height:28px;padding:3px 5px;font-size:11px;border-radius:6px;background:#fff9eb;color:#493821;border-color:#b18d60}
+body.bible-study-page #bibleStudyRoot .bs-study-header.bs-banner{position:relative;isolation:isolate;overflow:hidden;min-height:54px;height:54px;margin:4px 7px 0;padding:9px 16px;justify-content:flex-start;border:1px solid #9c7544;border-radius:9px;background:#4d321e;box-shadow:inset 0 1px 0 #f0c88d50,0 2px 5px #49321c20}
+body.bible-study-page #bibleStudyRoot .bs-banner::before{content:'';display:block;inset:0;z-index:-2;background-image:var(--tool-art);background-size:100% 800%;background-position:right var(--tool-y);opacity:1;filter:saturate(.85)}
+body.bible-study-page #bibleStudyRoot .bs-banner::after{content:'';display:block;inset:0;z-index:-1;background:linear-gradient(90deg,#28180de8 0%,#382415a6 54%,#25190d05 100%);mask:none;-webkit-mask:none;opacity:1;mix-blend-mode:normal}
+body.bible-study-page #bibleStudyRoot .bs-banner h2{font-family:var(--app-sign)!important;font-size:clamp(19px,2.4vw,26px);font-weight:400;font-style:normal;line-height:1.2;letter-spacing:0;color:#fff0cc;text-align:left;text-shadow:0 2px 2px #160d05,0 -1px #f4d99f30}
+body.bible-study-page #bibleStudyRoot #bsBookHeading{margin:12px 0 0;padding:12px 17px;min-height:52px;border:1px solid #9c7544;border-radius:9px;background-color:#4d321e;background-image:linear-gradient(90deg,#28180de8 0%,#382415a6 54%,#25190d05 100%),var(--tool-art);background-size:100% 100%,100% 800%;background-position:center,right var(--tool-y);font:400 clamp(23px,2.6vw,31px)/1.15 var(--app-sign);color:#fff0cc;text-shadow:0 2px 2px #160d05;letter-spacing:0}
+body.bible-study-page #bibleStudyRoot .bs-chapter-heading{margin:8px 0 18px;font-size:.95em}
+body.bible-study-page #bibleStudyRoot .bs-notes-dock{padding:4px;border:1px solid #a37e4b;border-radius:9px;background-color:#5b3e27;background-image:linear-gradient(90deg,#27180b75,#38271820),var(--tool-art);background-size:100% 100%,100% 800%;background-position:center,right var(--tool-y);box-shadow:inset 0 1px 0 #f0d2a040}
+body.bible-study-page #bibleStudyRoot .bs-notes-actions{background:transparent}
+@media(max-width:700px){
+ body.bible-study-page #bibleStudyRoot .bs-wide-tabs>.bs-reader-tabs{height:34px;min-height:34px;padding-top:2px}
+ body.bible-study-page #bibleStudyRoot .bs-study>.bs-study-tabs{height:34px;min-height:34px;padding-top:2px}
+ body.bible-study-page #bibleStudyRoot .bs-study-tabs button{height:31px;min-height:31px;font-size:10.8px;padding:3px 2px;line-height:11.5px}
+ body.bible-study-page #bibleStudyRoot .bs-study-header.bs-banner{min-height:49px;height:49px;margin:4px 6px 0;padding:8px 13px}
+ body.bible-study-page #bibleStudyRoot .bs-banner h2{font-size:21px}
+}

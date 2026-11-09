@@ -33,3 +33,6 @@ bible_study_private/
 bible_study_backups/
 bible_study*.db*
 *.epub
+
+# Standalone Android source packages stay local.
+deployment/android-source-*.zip

@@ -218,6 +218,47 @@ class ActivityTests(unittest.TestCase):
         self.client.post(path, json={'action':'like','liked':True}, headers=headers)
         self.assertEqual(len(self.rows()), 2, 'Developer engagement must not notify the developer')
 
+    def test_prepared_daily_devotion_replaces_old_schedule_and_preserves_conversation(self):
+        from daily_devotional import get_daily_entry, compose_devotional
+        today = appmod.datetime.now(appmod.PH_TZ).date()
+        day = today.isoformat()
+        entry = get_daily_entry(today)
+        with appmod.app.app_context():
+            appmod._save_daily_devotion(day, 'Old reference', 'Old verse',
+                dict(title='Old rotation', content='Old message', source_title='Old source'))
+            db = appmod.get_db()
+            db.execute("INSERT INTO daily_devotion_comments(day,actor_key,actor_name,church_name,content,created_at) VALUES(?,?,?,?,?,?)",
+                       (day, 'reader', 'Reader', 'Church', 'Keep this conversation', day))
+            db.commit()
+        with patch.object(appmod, 'daily_maxwell_insight', return_value=(None, True)), \
+             patch.object(appmod, 'get_verse_of_the_day', return_value=(entry['reference'], 'Prepared verse.')), \
+             patch.object(appmod, 'build_bulletin_board_posts', return_value=([], '')):
+            response = self.client.get('/bulletin')
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn('Open in Bible Study', html)
+            self.assertIn('Two-year leadership journey', html)
+            self.assertIn(entry['title'], html)
+            self.assertIn('Prayer', html)
+            payload = self.client.get('/bulletin/leadership-insight').get_json()
+            self.assertTrue(payload['pending'])
+            self.assertTrue(payload['insight']['content'])
+        with appmod.app.app_context():
+            db = appmod.get_db()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM daily_devotion_comments WHERE day=?', (day,)).fetchone()[0], 1)
+            stored = db.execute('SELECT * FROM daily_devotion_posts WHERE day=?', (day,)).fetchone()
+            self.assertEqual(stored['plan_key'], entry['key'])
+            self.assertEqual(stored['verse_reference'], entry['reference'])
+            source = dict(title='Indexed note', content='Actual indexed source body.', passage=entry['reference'], source_title='Maxwell Leadership Bible')
+            enriched = compose_devotional(entry, source)
+            appmod._save_daily_devotion(day, entry['reference'], 'Prepared verse.', enriched, plan_key=entry['key'])
+            kept = appmod._save_daily_devotion(day, entry['reference'], 'Prepared verse.', compose_devotional(entry), plan_key=entry['key'])
+            self.assertIn(source['content'], kept['content'])
+            appmod._save_daily_devotion('2020-01-01', 'Old reference', 'Old verse',
+                dict(title='Archive', content='Archived body.', source_title='Old source'))
+            kept_archive = appmod._save_daily_devotion('2020-01-01', entry['reference'], 'New verse', enriched, plan_key=entry['key'])
+            self.assertEqual(kept_archive['title'], 'Archive')
+
     def test_bulletin_integrates_controls_and_reminder_once_for_each_role(self):
         insight = dict(title='Synthetic devotion',content='Full original message.',source_title='Synthetic source')
         with patch.object(appmod,'get_verse_of_the_day',return_value=('Psalm 119:105','Synthetic verse.')), \
