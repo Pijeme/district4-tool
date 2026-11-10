@@ -33,6 +33,38 @@ function doPost(event) {
     for (let i=0; i<expected.length; i++) difference |= expected[i] ^ supplied[i];
     if (difference) return reply({ok:false, code:'AUTH'});
     if (data.purpose !== 'event') return reply({ok:false, code:'EVENT_ONLY'});
+    if (data.action === 'delete') {
+      if (typeof data.record_key !== 'string' || !/^[a-f0-9]{32}$/.test(data.record_key) ||
+          typeof data.event_key !== 'string' || !/^[a-f0-9]{32}$/.test(data.event_key)) {
+        return reply({ok:false, code:'INPUT'});
+      }
+      lock = LockService.getScriptLock();
+      lock.waitLock(25000);
+      // A timed-out older upload must not recreate a deleted registration later.
+      PropertiesService.getScriptProperties().setProperty('deleted:' + data.event_key + ':' + data.record_key, '1');
+      const folder = DriveApp.getFolderById(EVENT_DRIVE_FOLDER);
+      const prefix = 'Event:' + data.event_key + ':' + data.record_key + ':';
+      const files = folder.getFiles();
+      const pattern = /^(photo|id):[a-f0-9]{64}$/;
+      while (files.hasNext()) {
+        const file = files.next();
+        const description = file.getDescription();
+        if (description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
+          file.setTrashed(true);
+        }
+      }
+      // Confirm all versions are gone from the active event folder, including a retry.
+      const remaining = folder.getFiles();
+      while (remaining.hasNext()) {
+        const description = remaining.next().getDescription();
+        if (description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
+          return reply({ok:false, code:'DRIVE'});
+        }
+      }
+      return reply({ok:true, deleted:true, purpose:'event', event_key:data.event_key,
+                    record_key:data.record_key, folder_id:EVENT_DRIVE_FOLDER});
+    }
+    if (data.action && data.action !== 'upload') return reply({ok:false, code:'INPUT'});
     if (typeof data.record_key !== 'string' || !/^[a-f0-9]{32}$/.test(data.record_key) ||
         typeof data.event_key !== 'string' || !/^[a-f0-9]{32}$/.test(data.event_key) ||
         !['photo','id'].includes(data.side) || typeof data.filename !== 'string' ||
@@ -55,6 +87,9 @@ function doPost(event) {
     const identity = 'Event:' + data.event_key + ':' + data.record_key + ':' + data.side + ':' + digest;
     lock = LockService.getScriptLock();
     lock.waitLock(25000);
+    if (PropertiesService.getScriptProperties().getProperty('deleted:' + data.event_key + ':' + data.record_key)) {
+      return reply({ok:false, code:'DELETED'});
+    }
     const folder = DriveApp.getFolderById(EVENT_DRIVE_FOLDER);
     const files = folder.getFilesByName(data.filename);
     let file;

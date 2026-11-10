@@ -2900,7 +2900,8 @@ def website_activity_context():
 
 @app.after_request
 def collect_website_activity(response):
-    if request.path.startswith("/ai/") or request.endpoint == "healthz" or request.blueprint == 'bible_mobile':
+    if (response.direct_passthrough or request.path.startswith("/ai/")
+            or request.endpoint in {'healthz','event_progress'} or request.blueprint == 'bible_mobile'):
         return response
     actor = website_actor()
     old_actor = getattr(g, "website_actor", actor)
@@ -3233,6 +3234,9 @@ def _insert_pastor_login_event(row):
 @app.before_request
 def before_request():
     if request.endpoint == "healthz":
+        return
+    if request.endpoint == 'event_progress':
+        # Frequent version checks are read-only and never log visits or sync Google.
         return
     if request.blueprint == 'bible_mobile':
         # Bearer-token calls authenticate in their blueprint. Only mobile login
@@ -6779,6 +6783,7 @@ def ccm_upload(key, side, data, *, filename=None, event_key=None):
                     'DRIVE': "The upload script could not save to Drive. Check its Apps Script Executions log, folder access and storage, and that the web app executes as the folder owner.",
                     'CCM_ONLY': 'This is the CCM-only upload endpoint. Set EVENT_DRIVE_SCRIPT_URL to the separate Event script deployment.',
                     'EVENT_ONLY': 'This is the Event-only upload endpoint. Check the separate CCM and Event script URLs in the server configuration.',
+                    'DELETED': 'This Event registration was deleted. Its ID cannot be uploaded again.',
                 }
                 if result.get('code') in errors:
                     raise CCMStorageError(errors[result['code']])
@@ -7425,7 +7430,62 @@ def event_tables():
             except sqlite3.OperationalError:
                 if column not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
                     raise
+    if 'physical_printed' not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
+        try:
+            # Legacy printed marks also meant downloaded; require explicit confirmation.
+            db.execute('ALTER TABLE event_attendees ADD COLUMN physical_printed INTEGER NOT NULL DEFAULT 0')
+        except sqlite3.OperationalError:
+            if 'physical_printed' not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
+                raise
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS event_deletion_queue (
+            key TEXT PRIMARY KEY, event_id INTEGER NOT NULL, payload TEXT NOT NULL,
+            backup_error TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS event_roster_versions (event_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS event_attendee_roster ON event_attendees(event_id,complete,deleted_at,number);
+        CREATE TRIGGER IF NOT EXISTS event_roster_insert AFTER INSERT ON event_attendees BEGIN
+            INSERT INTO event_roster_versions VALUES (NEW.event_id,1)
+            ON CONFLICT(event_id) DO UPDATE SET version=version+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS event_roster_update AFTER UPDATE OF
+            name,number,area,church,address,photo,complete,paid,printed,physical_printed,released,revision,deleted_at
+            ON event_attendees BEGIN
+            INSERT INTO event_roster_versions VALUES (NEW.event_id,1)
+            ON CONFLICT(event_id) DO UPDATE SET version=version+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS event_roster_delete AFTER DELETE ON event_attendees BEGIN
+            INSERT INTO event_roster_versions VALUES (OLD.event_id,1)
+            ON CONFLICT(event_id) DO UPDATE SET version=version+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS event_roster_event AFTER UPDATE ON registration_events BEGIN
+            INSERT INTO event_roster_versions VALUES (NEW.id,1)
+            ON CONFLICT(event_id) DO UPDATE SET version=version+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS event_roster_cleanup AFTER DELETE ON event_deletion_queue BEGIN
+            INSERT INTO event_roster_versions VALUES (OLD.event_id,1)
+            ON CONFLICT(event_id) DO UPDATE SET version=version+1;
+        END;
+    ''')
     db.commit()
+
+
+def event_pending_deletions():
+    return get_db().execute('''SELECT (SELECT COUNT(*) FROM event_deletion_queue)
+        + (SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>'')''').fetchone()[0]
+
+
+def event_queue_deletion(attendee):
+    """Keep only cloud cleanup identifiers, then remove the local registration."""
+    fields = ('key','event_id','number','created_at','sheet_row','cloud_snapshot',
+              'id_drive_id','photo_drive_id','revision','deleted_at')
+    payload = {field:attendee[field] for field in fields}
+    if payload['cloud_snapshot']:
+        previous = json.loads(payload['cloud_snapshot'])
+        payload['cloud_snapshot'] = json.dumps({field:previous.get(field,'') for field in ('Name','Bday','Event')})
+    payload['deleted_at'] = payload['deleted_at'] or utc_now_iso()
+    get_db().execute('INSERT OR IGNORE INTO event_deletion_queue(key,event_id,payload) VALUES (?,?,?)',
+                     (attendee['key'],attendee['event_id'],json.dumps(payload)))
+    get_db().execute('DELETE FROM event_attendees WHERE key=?',(attendee['key'],))
 
 
 def event_admin():
@@ -7600,8 +7660,8 @@ def event_meal_api_sets(event_key):
             name = event_meal_text(item.get('name'),'meal set name',150)
             revision = item.get('revision')
             sessions = item.get('sessions')
-            if type(revision) is not int or revision<1 or not isinstance(sessions,list) or len(sessions)>100:
-                raise ValueError('Meal sets need a positive revision and at most 100 sessions.')
+            if type(revision) is not int or revision<1 or not isinstance(sessions,list) or len(sessions)>1100:
+                raise ValueError('Meal sets need a positive revision and at most 1100 sessions.')
             digest = event_meal_hash(item)
             old = get_db().execute('SELECT * FROM event_meal_sets WHERE event_id=? AND key=?',(event['id'],key)).fetchone()
             if old and (old['master_id']!=g.event_master_id or revision<old['revision'] or revision==old['revision'] and digest!=old['definition_hash']):
@@ -7662,7 +7722,9 @@ def event_meal_api_claims(event_key):
             meal = get_db().execute('SELECT * FROM event_meal_sessions WHERE event_id=? AND key=?',(event['id'],meal_key)).fetchone()
             person = get_db().execute("SELECT * FROM event_attendees WHERE event_id=? AND key=? AND complete=1 AND deleted_at=''",(event['id'],ticket)).fetchone()
             duplicate = get_db().execute("SELECT key FROM event_meal_claims WHERE event_id=? AND meal_key=? AND ticket_key=? AND status='accepted'",(event['id'],meal_key,ticket)).fetchone()
-            status = 'invalid_session' if not meal or not meal['enabled'] else 'invalid_ticket' if not person else 'unpaid' if not person['paid'] else 'duplicate' if duplicate else 'accepted'
+            # Enrolled scanner uploads describe meals already served offline;
+            # disabling a meal afterward must not invalidate its scan history.
+            status = 'invalid_session' if not meal or (not meal['enabled'] and not getattr(g, 'scanner_historical_upload', False)) else 'invalid_ticket' if not person else 'unpaid' if not person['paid'] else 'duplicate' if duplicate else 'accepted'
             get_db().execute('INSERT INTO event_meal_claims VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (key,event['id'],meal_key,ticket,served,scanner,g.event_master_id,utc_now_iso(),status,digest,
                  person['name'] if person else '',person['area'] if person else '',person['church'] if person else '',
@@ -7723,7 +7785,7 @@ def event_delegate_details(key):
     event_tables()
     event_meal_tables()
     person = event_attendee(key,admin=True)
-    fields = ('key','number','name','birthday','contact','area','church','address','pastor','created_at','paid','printed','released')
+    fields = ('key','number','name','birthday','contact','area','church','address','pastor','created_at','paid','printed','physical_printed','released')
     meals = [dict(row) for row in get_db().execute('''SELECT key AS claim_id,meal_name,service_date,served_at,scanner_id,status,received_at
         FROM event_meal_claims WHERE event_id=? AND ticket_key=? ORDER BY served_at DESC''',(person['event_id'],key))]
     audits = [dict(row) for row in get_db().execute('''SELECT a.key AS audit_id,a.claim_key AS claim_id,a.action,a.reason,a.occurred_at
@@ -7867,7 +7929,7 @@ def event_attendee(key, admin=False, include_deleted=False):
     return dict(row)
 
 
-def event_render_id(event, attendee=None, photo=None, background=None):
+def event_render_id(event, attendee=None, photo=None, background=None, temporary=False):
     """Render a translucent frosted header/theme panel and glowing attendee text."""
     from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
     from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
@@ -7998,6 +8060,12 @@ def event_render_id(event, attendee=None, photo=None, background=None):
             if dark:
                 qdraw.rectangle(((x+4)*scale,(y+4)*scale,(x+5)*scale-1,(y+5)*scale-1),fill='black')
     card.paste(qr_image,((width-qr_image.width)//2,1290+(200-qr_image.height)//2))
+    if temporary:
+        # Keep the portrait, name and QR unobstructed. Printable originals never use this banner.
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((40,760,280,900),radius=12,fill='#fff0c4',outline='#9a5700',width=3)
+        draw.multiline_text((160,830),'TEMPORARY\nID',font=ImageFont.truetype(font_path,34),
+                            anchor='mm',align='center',fill='#773c00')
     buffer = io.BytesIO()
     card.convert('RGB').save(buffer,'PNG',dpi=(363,363),compress_level=3)
     return buffer.getvalue()
@@ -8062,7 +8130,9 @@ def event_registration_name(name, area, church, minister=False):
 @app.get('/event-registration')
 def event_registration():
     event_tables()
-    tab = 'admin' if request.args.get('tab') == 'admin' else 'registration'
+    tab = request.args.get('tab','registration')
+    if tab not in ('registration','attendees','admin'):
+        tab = 'registration'
     developer, admin = is_cache_developer(), event_admin()
     active = event_current()
     events = [dict(r) for r in get_db().execute("SELECT * FROM registration_events WHERE deleted_at='' ORDER BY id DESC")] if admin or developer else []
@@ -8072,7 +8142,9 @@ def event_registration():
     if tab == 'admin' and admin and request.args.get('event', type=int):
         chosen = next((e for e in events if e['id'] == request.args.get('event', type=int)), None)
     attendees = [dict(r) for r in get_db().execute("SELECT * FROM event_attendees WHERE event_id=? AND complete=1 AND deleted_at='' ORDER BY number",
-                 (chosen['id'],))] if tab == 'admin' and admin and chosen else []
+                 (chosen['id'],))] if chosen and (tab=='attendees' or tab=='admin' and admin) else []
+    registered_count = get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE event_id=? AND complete=1 AND deleted_at=''",
+                                      (chosen['id'],)).fetchone()[0] if chosen else 0
     meal_sessions, meal_totals = [], []
     if tab=='admin' and admin:
         event_meal_tables()
@@ -8108,8 +8180,48 @@ def event_registration():
         csrf=event_csrf(), churches=churches, areas=areas, draft=draft, form_key=session['event_form_key'],
         today=utc_now().astimezone(PH_TZ or timezone(timedelta(hours=8))).date().isoformat(), event_types=EVENT_TYPES,
         meal_sessions=meal_sessions,meal_totals=meal_totals,
-        completed_count=sum(bool(p['paid'] and p['printed'] and p['released']) for p in attendees),
-        pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0] if admin else 0)
+        registered_count=registered_count,
+        completed_count=sum(bool(p['paid'] and p['physical_printed'] and p['released']) for p in attendees),
+        pending_deletions=event_pending_deletions() if admin else 0)
+
+
+@app.get('/event-registration/progress')
+def event_progress():
+    """O(1) version check; roster data is returned only after a change."""
+    admin = request.args.get('admin') == '1'
+    if admin and not event_admin():
+        return jsonify(ok=False,error='Unlock Admin again to resume updates.'),403
+    db = get_db()
+    # One SQLite read snapshot ties the version to the exact returned roster.
+    db.execute('BEGIN')
+    try:
+        event = db.execute("SELECT id,key FROM registration_events WHERE id=? AND deleted_at=''",
+                           (request.args.get('event',type=int),)).fetchone() if admin else event_current()
+        event_id = event['id'] if event else None
+        version = db.execute('SELECT version FROM event_roster_versions WHERE event_id=?',(event_id,)).fetchone()
+        cursor = (event['key'] if event else 'none')+':'+str(version[0] if version else 0)
+        changed = request.args.get('cursor') != cursor
+        result = dict(ok=True,changed=changed,cursor=cursor,event_id=event_id)
+        if changed:
+            fields = 'key,number,name,area,church,address,photo,paid,printed,physical_printed,released,revision' if admin else 'number,name,area,church'
+            people = [dict(row) for row in db.execute(f'''SELECT {fields} FROM event_attendees
+                WHERE event_id=? AND complete=1 AND deleted_at='' ORDER BY number''',(event_id,))]
+            result.update(count=len(people))
+            if admin:
+                for person in people:
+                    person.update(status_url=url_for('event_status',key=person['key']),
+                        delete_url=url_for('event_delete_attendee',key=person['key']),
+                        details_url=url_for('event_delegate_details',key=person['key']),
+                        photo_url=url_for('event_image',key=person['key'],side='photo'),
+                        print_url=url_for('event_print',key=person['key']),
+                        release_url=url_for('event_release',key=person['key']))
+                    person.pop('photo')
+                result['pending_deletions'] = event_pending_deletions()
+            if request.args.get('list') == '1' or admin:
+                result['attendees'] = people
+        return jsonify(result)
+    finally:
+        db.rollback()
 
 
 
@@ -8347,15 +8459,15 @@ def event_upload_id(attendee, event):
 @app.get('/event-registration/image/<key>/<side>.png')
 def event_image(key,side):
     event_tables()
-    attendee = event_attendee(key,admin=side=='id')
+    attendee = event_attendee(key,admin=side in ('id','shared'))
     if not attendee['complete']:
         abort(404)
     photo = event_asset_path(attendee['photo']).read_bytes()
     if side=='photo':
         body = photo
-    elif side=='id':
+    elif side in ('id','shared'):
         event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
-        body = event_render_id(event,attendee,photo)
+        body = event_render_id(event,attendee,photo,temporary=side=='shared' and not attendee['physical_printed'])
     else:
         abort(404)
     return send_file(io.BytesIO(body),mimetype='image/png',as_attachment=request.args.get('download')=='1',
@@ -8366,17 +8478,30 @@ def event_image(key,side):
 def event_status(key):
     event_guard(admin=True)
     event_tables()
-    attendee = event_attendee(key,admin=True)
     field = request.form.get('field')
-    if field not in ('paid','released','printed') or request.form.get('value') not in ('0','1') or not attendee['complete']:
+    if field not in ('paid','released','physical_printed') or request.form.get('value') not in ('0','1'):
+        abort(400)
+    db = get_db()
+    db.execute('BEGIN IMMEDIATE')
+    attendee = event_attendee(key,admin=True)
+    if not attendee['complete']:
         abort(400)
     value = int(request.form['value'])
-    if field in ('paid','released') and attendee[field] and not value and request.form.get('confirm')!='yes':
+    if attendee[field] and not value and request.form.get('confirm')!='yes':
         return jsonify(ok=False,error='Confirm before changing this status back.'),400
+    if field=='released' and value and not (attendee['paid'] and attendee['physical_printed']):
+        return jsonify(ok=False,error='Confirm payment and physical ID printing before releasing this ID.'),400
+    if field=='released' and value and request.form.get('confirm')!='yes':
+        return jsonify(ok=False,error='Confirm that you handed the physical ID to the attendee.'),400
+    if field=='physical_printed' and value and request.form.get('physical_confirmed')!='yes':
+        return jsonify(ok=False,error='Confirm that the physical ID was printed. Downloading alone does not qualify.'),400
+    if field in ('paid','physical_printed') and not value and attendee['released']:
+        return jsonify(ok=False,error='Undo the physical ID release before clearing payment or printing.'),400
     revision = request.form.get('revision',type=int)
-    cursor = get_db().execute(f"UPDATE event_attendees SET {field}=?,revision=revision+1,updated_at=? WHERE key=? AND revision=? AND deleted_at=''",
+    extra = ',printed='+str(value) if field=='physical_printed' else ''
+    cursor = db.execute(f"UPDATE event_attendees SET {field}=?{extra},revision=revision+1,updated_at=? WHERE key=? AND revision=? AND deleted_at=''",
                              (value,utc_now_iso(),key,revision))
-    get_db().commit()
+    db.commit()
     if not cursor.rowcount:
         return jsonify(ok=False,error='This attendee was updated in another window. Reload before changing their status.'),409
     return jsonify(ok=True,revision=revision+1,**{field:value})
@@ -8386,17 +8511,23 @@ def event_status(key):
 def event_delete_attendee(key):
     event_guard(admin=True)
     event_tables()
-    attendee = event_attendee(key,admin=True,include_deleted=True)
+    if not re.fullmatch(r'[a-f0-9]{32}',key):
+        abort(404)
     if request.form.get('confirm')!='yes':
         return jsonify(ok=False,error='Confirm before deleting this registration.'),400
-    if not attendee['deleted_at']:
-        now = utc_now_iso()
-        changed = get_db().execute("""UPDATE event_attendees SET deleted_at=?,updated_at=?,revision=revision+1
-            WHERE key=? AND revision=? AND deleted_at=''""",(now,now,key,request.form.get('revision',type=int)))
-        get_db().commit()
-        if not changed.rowcount:
-            return jsonify(ok=False,error='This registration changed in another window. Reload before deleting it.'),409
-    return jsonify(ok=True,pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0])
+    from sheet_cache import _locked_sync
+    # Wait for any upload of this attendee before capturing its cloud identifiers.
+    with _locked_sync(data_path('event-record-backup-'+key)):
+        db = get_db()
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute('SELECT 1 FROM event_deletion_queue WHERE key=?',(key,)).fetchone():
+            attendee = event_attendee(key,admin=True,include_deleted=True)
+            if attendee['revision']!=request.form.get('revision',type=int):
+                db.rollback()
+                return jsonify(ok=False,error='This registration changed in another window. Refresh before deleting it.'),409
+            event_queue_deletion(attendee)
+        db.commit()
+    return jsonify(ok=True,pending_deletions=event_pending_deletions())
 
 
 @app.post('/event-registration/admin/event/<int:event_id>/delete')
@@ -8426,8 +8557,9 @@ def event_delete_event(event_id):
                           WHERE event_id=? AND deleted_at=''""",(now,now,event_id))
             db.execute('''DELETE FROM registration_events WHERE id=?
                 AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)
+                AND NOT EXISTS (SELECT 1 FROM event_deletion_queue WHERE event_id=?)
                 AND NOT EXISTS (SELECT 1 FROM event_meal_sets WHERE event_id=?)
-                AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)''',(event_id,)*4)
+                AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)''',(event_id,)*5)
         db.commit()
     except Exception:
         db.rollback()
@@ -8445,6 +8577,19 @@ def event_print(key):
         abort(404)
     event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
     return render_template('event_registration.html',view='print',attendee=attendee,event=event,
+                           admin=True,developer=False,csrf=event_csrf(),tab='admin')
+
+
+@app.get('/event-registration/release/<key>')
+def event_release(key):
+    if not event_admin():
+        return redirect(url_for('event_registration',tab='admin'))
+    event_tables()
+    attendee = event_attendee(key,admin=True)
+    if not attendee['complete']:
+        abort(404)
+    event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+    return render_template('event_registration.html',view='release',attendee=attendee,event=event,
                            admin=True,developer=False,csrf=event_csrf(),tab='admin')
 
 
@@ -8479,11 +8624,35 @@ def event_sheet():
     return sheet,headers
 
 
+def event_remove_drive_registration(attendee, event):
+    """Owner-executed cleanup also finds older rendered versions and orphaned retries."""
+    script_url = os.getenv('EVENT_DRIVE_SCRIPT_URL','').strip()
+    token = os.getenv('EVENT_DRIVE_API_TOKEN','').strip()
+    if not script_url and not any(attendee.get(field) for field in ('id_drive_id','photo_drive_id','cloud_snapshot','sheet_row')):
+        return  # Never backed up and no configured endpoint could have uploaded it.
+    if not re.fullmatch(r'https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec',script_url) or len(token)<32:
+        raise CCMStorageError('Configure EVENT_DRIVE_SCRIPT_URL and EVENT_DRIVE_API_TOKEN to finish deleted ID cleanup.')
+    try:
+        response = requests.post(script_url,json=dict(token=token,purpose='event',action='delete',
+            event_key=event['key'],record_key=attendee['key']),timeout=(10,60))
+        response.raise_for_status()
+        result = response.json()
+        if not (result.get('ok') and result.get('deleted') is True and result.get('purpose')=='event'
+                and result.get('record_key')==attendee['key'] and result.get('event_key')==event['key']
+                and result.get('folder_id')==EVENT_FOLDER_ID):
+            raise CCMStorageError('Drive deletion was not confirmed. Deploy the updated deployment/event_drive.gs web app, then retry Backup Data. The cleanup remains queued.')
+    except (requests.RequestException,ValueError,AttributeError):
+        raise CCMStorageError('Drive deletion was not confirmed. The cleanup remains queued for the next Backup Data retry.') from None
+
+
 def event_remove_sheet_registration(attendee):
-    """Remove a queued deletion from Google before purging its local registration."""
+    """Confirm both cloud removals before clearing the durable cleanup record."""
     from sheet_cache import _locked_sync
     event_meal_tables()
     event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
+    if not event:
+        raise CCMStorageError('The deleted registration event is missing. Cleanup remains queued for review.')
+    event_remove_drive_registration(attendee,event)
     event_name = event['kind']+' '+str(date.fromisoformat(event['start_date']).year)
 
     def matching_rows(values, headers):
@@ -8514,13 +8683,22 @@ def event_remove_sheet_registration(attendee):
             if matching_rows(sheet.get_all_values(),headers):
                 raise CCMStorageError('Google has not confirmed registration removal. The local deletion remains queued.')
             get_db().execute('UPDATE event_attendees SET sheet_row=sheet_row-1 WHERE sheet_row>?',(number,))
+            # A deleted registration may have been queued before this row shifted.
+            for queued in get_db().execute('SELECT key,payload FROM event_deletion_queue').fetchall():
+                payload = json.loads(queued['payload'])
+                if payload.get('sheet_row') and payload['sheet_row']>number:
+                    payload['sheet_row'] -= 1
+                    get_db().execute('UPDATE event_deletion_queue SET payload=? WHERE key=?',
+                                     (json.dumps(payload),queued['key']))
         # The per-record backup lock ensures an older upload cannot recreate a purged record.
         get_db().execute("DELETE FROM event_attendees WHERE key=? AND deleted_at<>'' AND revision=?",
                          (attendee['key'],attendee['revision']))
+        get_db().execute('DELETE FROM event_deletion_queue WHERE key=?',(attendee['key'],))
         get_db().execute("""DELETE FROM registration_events WHERE id=? AND deleted_at<>''
             AND NOT EXISTS (SELECT 1 FROM event_attendees WHERE event_id=?)
+            AND NOT EXISTS (SELECT 1 FROM event_deletion_queue WHERE event_id=?)
             AND NOT EXISTS (SELECT 1 FROM event_meal_sets WHERE event_id=?)
-            AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)""",(attendee['event_id'],)*4)
+            AND NOT EXISTS (SELECT 1 FROM event_meal_claims WHERE event_id=?)""",(attendee['event_id'],)*5)
         get_db().commit()
     return {'clean':True,'removed':True}
 
@@ -8529,16 +8707,19 @@ def event_backup_attendee(key):
     from sheet_cache import _locked_sync
     # Serialize the entire per-record snapshot, including upload, across retrying admins.
     with _locked_sync(data_path('event-record-backup-'+key)):
+        queued = get_db().execute('SELECT payload FROM event_deletion_queue WHERE key=?',(key,)).fetchone()
+        if queued:
+            return event_remove_sheet_registration(json.loads(queued['payload']))
         attendee = dict(get_db().execute("SELECT * FROM event_attendees WHERE key=? AND (complete=1 OR deleted_at<>'')",(key,)).fetchone() or {})
         if not attendee:
-            abort(404)
+            return {'clean':True,'removed':True}  # Safe retry after an acknowledged deletion.
         if attendee['deleted_at']:
             return event_remove_sheet_registration(attendee)
         event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
         event_upload_id(attendee,event)
         cloud = dict(zip(EVENT_HEADERS,[attendee['name'],attendee['birthday'],attendee['contact'],attendee['area'],attendee['church'],
             attendee['address'],attendee['pastor'],attendee['created_at'],'Paid' if attendee['paid'] else '',
-            'Printed' if attendee['printed'] else '','Released' if attendee['released'] else '',event['name']]))
+            'Printed' if attendee['physical_printed'] else '','Released' if attendee['released'] else '',event['name']]))
         with _locked_sync(data_path('event-google-backup')):
             sheet,headers = event_sheet()
             values = sheet.get_all_values()
@@ -8582,6 +8763,7 @@ def event_backup_queue():
     # Explicit submission rechecks all local rows so remote changes never become authoritative.
     keys = [r[0] for r in get_db().execute("""SELECT key FROM event_attendees WHERE
         (event_id=? AND complete=1 AND deleted_at='') OR deleted_at<>'' ORDER BY (deleted_at=''),event_id,number""",(event_id,))]
+    keys = [r[0] for r in get_db().execute('SELECT key FROM event_deletion_queue ORDER BY event_id,key')] + keys
     return jsonify(ok=True,keys=keys)
 
 
@@ -8589,14 +8771,16 @@ def event_backup_queue():
 def event_backup_one(key):
     event_guard(admin=True)
     event_tables()
-    event_attendee(key,admin=True,include_deleted=True)
+    if not re.fullmatch(r'[a-f0-9]{32}',key):
+        abort(404)
     try:
         result = event_backup_attendee(key)
-        return jsonify(ok=True,**result,pending_deletions=get_db().execute("SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>''").fetchone()[0])
+        return jsonify(ok=True,**result,pending_deletions=event_pending_deletions())
     except Exception as exc:
         app.logger.warning('Event backup not confirmed: %s',type(exc).__name__)
         message = str(exc) if isinstance(exc,(CCMStorageError,CacheSyncError)) else 'Google backup could not be confirmed. Local details and photo are safe; retry backup.'
         get_db().execute('UPDATE event_attendees SET backup_error=? WHERE key=?',(message[:500],key))
+        get_db().execute('UPDATE event_deletion_queue SET backup_error=? WHERE key=?',(message[:500],key))
         get_db().commit()
         return jsonify(ok=False,error=message),503
 
@@ -8659,12 +8843,20 @@ def _delete_account_row_in_sheet(username: str):
 
 from meal_scanner_readonly import register_meal_scanner_api
 register_meal_scanner_api(app, get_db, event_tables,
-                          event_password_matches, event_limit)
+                          event_password_matches, event_limit,
+                          meal_tables=event_meal_tables,
+                          meal_views={
+                              'meal-sets': event_meal_api_sets.__wrapped__,
+                              'claims': event_meal_api_claims.__wrapped__,
+                              'audit': event_meal_api_audit.__wrapped__,
+                              'sync-status': event_meal_api_status.__wrapped__,
+                          })
 
 # Gunicorn imports app:app and never enters __main__. Complete the additive
 # application schema setup here, before accepting any requests, on both servers.
 with app.app_context():
     init_db()
+    event_tables()
 
 if __name__ == "__main__":
     print("Database initialized")

@@ -1,7 +1,7 @@
-"""IOWO offline scanner: website -> master ONLY for event/paid-roster downloads.
+"""IOWO scanner API: device enrollment, incremental paid roster and meal sync.
 
-No Google Sheets calls, no server-side meal sessions, claims, disputes, or audits.
-The Android Master owns those records in its on-device SQLite database.
+Uploads reuse the website's existing meal handlers and tables. Scanner requests
+never trigger Google Sheets synchronization. The Android master approves offline.
 
 Integration, placed after event_password_matches and event_limit are defined:
     from meal_scanner_readonly import register_meal_scanner_api
@@ -18,20 +18,22 @@ import hmac
 import json
 import re
 import secrets
-from datetime import datetime, timezone
+import sqlite3
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 from werkzeug.exceptions import HTTPException
 
 PREFIX = '/api/v2/meal-scanner'
 UUID32 = re.compile(r'^[0-9a-f]{32}$')
 DEVICE_ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 TOKEN = re.compile(r'^[0-9a-f]{64}$')
-MAX_REQUEST_BYTES = 16 * 1024
+MAX_REQUEST_BYTES = 512 * 1024
 
 
-def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, rate_limit):
+def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, rate_limit,
+                            meal_tables=None, meal_views=None):
     """Register API on an existing Flask app; `rate_limit` must fail at its limit."""
     if rate_limit is None:
         raise ValueError('meal scanner requires website event_limit rate limiter')
@@ -61,6 +63,13 @@ def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, r
             last_seen TEXT NOT NULL,
             revoked_at TEXT NOT NULL DEFAULT ''
         )''')
+        if 'authorized_at' not in {r['name'] for r in db.execute(
+                'PRAGMA table_info(meal_scanner_download_devices)')}:
+            db.execute("ALTER TABLE meal_scanner_download_devices ADD COLUMN authorized_at TEXT NOT NULL DEFAULT ''")
+        db.execute('''CREATE TABLE IF NOT EXISTS meal_scanner_roster_snapshots (
+            device_id TEXT NOT NULL, event_key TEXT NOT NULL, cursor TEXT NOT NULL,
+            hashes_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(device_id,event_key,cursor))''')
         db.commit()
         return db
 
@@ -84,14 +93,32 @@ def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, r
 
     @api.errorhandler(HTTPException)
     def blueprint_http_error(exc):
+        get_db().rollback()
         return respond(exc.code or 500, ok=False, code='HTTP_ERROR',
                        error=exc.description if (exc.code or 500) < 500 else 'Server error')
 
     @api.errorhandler(Exception)
     def blueprint_unexpected_error(exc):
         # Do not leak database errors or stack traces to the Android client.
+        get_db().rollback()
         app.logger.exception('meal_scanner_api_failed: %s', type(exc).__name__)
         return respond(500, ok=False, code='INTERNAL_ERROR', error='Scanner API temporarily unavailable')
+
+    @api.errorhandler(ValueError)
+    def invalid_request(exc):
+        get_db().rollback()
+        return respond(400, ok=False, code='INVALID_REQUEST', error=str(exc))
+
+    @api.errorhandler(sqlite3.IntegrityError)
+    def conflicting_request(exc):
+        get_db().rollback()
+        return respond(409, ok=False, code='CONFLICT', error='A conflicting meal record already exists')
+
+    @api.errorhandler(sqlite3.OperationalError)
+    def busy_request(exc):
+        get_db().rollback()
+        app.logger.exception('meal_scanner_database_busy')
+        return respond(503, ok=False, code='RETRY', error='Website database is busy. Please retry.')
 
     def protected(view):
         @wraps(view)
@@ -107,13 +134,24 @@ def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, r
                                error='Invalid device credentials')
 
             db = ensure_tables()
-            row = db.execute('''SELECT secret_hash,revoked_at
+            row = db.execute('''SELECT secret_hash,revoked_at,authorized_at
                                 FROM meal_scanner_download_devices
                                 WHERE device_id=?''', (device_id,)).fetchone()
             digest = hashlib.sha256(token.encode('ascii')).hexdigest()
             if not row or row['revoked_at'] or not hmac.compare_digest(digest, row['secret_hash']):
                 return respond(401, ok=False, code='REVOKED_OR_EXPIRED',
                                error='Master device authorization expired or revoked')
+
+            try:
+                authorized_at = datetime.fromisoformat(row['authorized_at'])
+                valid = (timedelta(0) <= datetime.now(timezone.utc) - authorized_at < timedelta(days=5))
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                return respond(401, ok=False, code='LOGIN_EXPIRED',
+                               error='Five-day login expired. Log in with both passwords again.')
+            g.event_master_id = device_id
+            g.meal_scanner_device_id = device_id
 
             db.execute('''UPDATE meal_scanner_download_devices
                           SET last_seen=? WHERE device_id=?''', (now_utc(), device_id))
@@ -149,22 +187,23 @@ def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, r
         timestamp = now_utc()
         token = secrets.token_hex(32)
         db.execute('''INSERT INTO meal_scanner_download_devices
-            (device_id,label,secret_hash,created_at,last_seen,revoked_at)
-            VALUES(?,?,?,?,?,'')
+            (device_id,label,secret_hash,created_at,last_seen,revoked_at,authorized_at)
+            VALUES(?,?,?,?,?,'',?)
             ON CONFLICT(device_id) DO UPDATE SET
             label=excluded.label,secret_hash=excluded.secret_hash,
-            last_seen=excluded.last_seen,revoked_at='' ''',
+            last_seen=excluded.last_seen,revoked_at='',authorized_at=excluded.authorized_at ''',
             (device_id, label.strip(), hashlib.sha256(token.encode('ascii')).hexdigest(),
-             timestamp, timestamp))
+             timestamp, timestamp, timestamp))
         db.commit()
         return respond(ok=True, device_id=device_id, access_token=token,
-                       message='Master authorized; store token securely on Android')
+                       expires_at=(datetime.now(timezone.utc)+timedelta(days=5)).isoformat(),
+                       message='Master authorized for five days; store token securely on Android')
 
     @api.get('/events')
     @protected
     def events():
         db = get_db()
-        available = db.execute('''SELECT key,name,kind,start_date,end_date,active,updated_at
+        available = db.execute('''SELECT key,name,kind,start_date,end_date,active,updated_at,theme,scripture
                                   FROM registration_events WHERE deleted_at=''
                                   ORDER BY id DESC''').fetchall()
         deleted = db.execute('''SELECT key FROM registration_events
@@ -196,13 +235,44 @@ def register_meal_scanner_api(app, get_db, event_tables, check_admin_password, r
         people = [dict(r) for r in rows]
         snapshot = hashlib.sha256(json.dumps(people, sort_keys=True, separators=(',', ':'),
                                              ensure_ascii=False).encode('utf-8')).hexdigest()
-        if request.args.get('cursor', '') == snapshot:
-            return respond(ok=True, changed=False, cursor=snapshot,
-                           event_key=event_key, total=len(people), attendees=[],
-                           server_time=now_utc())
-        return respond(ok=True, changed=True, cursor=snapshot,
-                       event_key=event_key, total=len(people), attendees=people,
-                       server_time=now_utc())
+        current_hashes = {p['key']: hashlib.sha256(json.dumps(p, sort_keys=True,
+            separators=(',', ':'), ensure_ascii=False).encode()).hexdigest() for p in people}
+        cursor = request.args.get('cursor', '')
+        baseline = db.execute('''SELECT hashes_json FROM meal_scanner_roster_snapshots
+            WHERE device_id=? AND event_key=? AND cursor=?''',
+            (g.meal_scanner_device_id, event_key, cursor)).fetchone() if cursor else None
+        old_hashes = json.loads(baseline['hashes_json']) if baseline else {}
+        mode = 'delta' if baseline or cursor == snapshot else 'full'
+        changed_people = [] if cursor == snapshot else [p for p in people
+            if mode == 'full' or old_hashes.get(p['key']) != current_hashes[p['key']]]
+        removed = sorted(set(old_hashes) - set(current_hashes)) if mode == 'delta' else []
+        db.execute('''INSERT INTO meal_scanner_roster_snapshots VALUES(?,?,?,?,?)
+            ON CONFLICT(device_id,event_key,cursor) DO UPDATE SET
+            hashes_json=excluded.hashes_json,created_at=excluded.created_at''',
+            (g.meal_scanner_device_id, event_key, snapshot, json.dumps(current_hashes), now_utc()))
+        # Retain the two previous baselines so a response lost in transit is retryable.
+        db.execute('''DELETE FROM meal_scanner_roster_snapshots WHERE device_id=? AND event_key=?
+            AND cursor NOT IN (SELECT cursor FROM meal_scanner_roster_snapshots
+                WHERE device_id=? AND event_key=? ORDER BY created_at DESC LIMIT 3)''',
+            (g.meal_scanner_device_id,event_key,g.meal_scanner_device_id,event_key))
+        db.commit()
+        return respond(ok=True, changed=cursor != snapshot, cursor=snapshot, mode=mode,
+                       event_key=event_key, total=len(people), attendees=changed_people,
+                       removed_keys=removed, server_time=now_utc())
+
+    # Both APIs use the SAME event_meal_* tables and business rules. The scanner
+    # authenticates with its enrolled per-device token rather than a shared token.
+    for suffix, view in (meal_views or {}).items():
+        def register_upload(suffix=suffix, view=view):
+            @protected
+            def upload(event_key):
+                meal_tables()
+                g.scanner_historical_upload = True
+                return view(event_key)
+            api.add_url_rule('/events/<event_key>/' + suffix,
+                endpoint='sync_' + suffix.replace('-', '_'), view_func=upload,
+                methods=['GET'] if suffix == 'sync-status' else ['POST'])
+        register_upload()
 
     @api.post('/revoke')
     def revoke():

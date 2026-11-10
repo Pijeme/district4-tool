@@ -51,9 +51,23 @@ details save, including when the camera step finishes on another day. Internal
 opaque keys protect private photos and support stable QR links; these are not
 shown as registration numbers on IDs.
 
+The **Registered Attendees** public tab shows only registration number, name,
+area and church for completed registrations in the active event. It supports
+search, sorting and an area filter without renumbering attendees. The banner
+shows the live registered count beside the dates. Neither the list nor the count
+includes unfinished camera steps or deleted registrations.
+
+Public and admin pages check `/event-registration/progress` every seven seconds
+while visible. SQLite triggers maintain an event version, so unchanged checks
+return a small cursor response without reading or sending the roster. Checks
+never sync Google, write schema or log visits. Changes update the existing list
+without a page reload; search, area, sort and processing stage are preserved.
+Refresh checks immediately. Admin access is checked on every private poll.
+
 ## Local storage and Google submission
 
-`registration_events`, `event_attendees` and `event_request_limits` are additive
+`registration_events`, `event_attendees`, `event_deletion_queue`,
+`event_roster_versions` and `event_request_limits` are additive
 tables in the existing app database. Pictures are immutable PNGs under
 `DATA_DIR/event_assets`. Keep that directory together with the database during
 server moves and backups. Local data and images remain after successful cloud
@@ -83,7 +97,8 @@ identical uploads by event, registration, side and content identity, including
 when separate events restart attendee numbering at 1. Backup Data uploads only
 the actual printable ID, then verifies its Drive size/checksum
 before writing the attendee's Sheets row. Portraits stay local for generating and
-printing IDs; previously uploaded portraits are not deleted by this change.
+printing IDs. Deleting an attendee also queues any previously uploaded Event
+portraits for removal with their generated IDs.
 The additive local `id_drive_id` and
 `id_backup_hash` columns record a confirmed ID upload. Unchanged images are reused
 on retry; a changed ID rendering (for example after a theme/background edit) is
@@ -115,17 +130,29 @@ Event and Google-copy fields are kept in local storage and the Sheets export
 and are not rendered as table cells or hidden search data. The list searches
 the visible attendee details, sorts by
 registration order, area, church or name, and filters by area. Paid and Release
-start red and turn green on a click. Changing back requires Yes, change status
-or Cancel in a dialog. Revision checks prevent stale windows from overwriting
+have separate actions. Each admin can choose Payment only, Print only, Release
+only or All actions; the choice is saved on that browser. Focused views show the
+number, name, area, church and selected action. Phones show compact portrait cards
+without horizontal scrolling. Event selection and backup settings are collapsible.
+Revision checks prevent stale windows from overwriting
 newer local changes. Admin mutations require CSRF protection.
 
-Delete registration requires confirmation and a current revision. It hides
-the attendee and revokes their QR, photo and print access immediately; existing
+Delete registration requires confirmation and a current revision. It removes
+the local attendee row and revokes their QR, photo and print access immediately; existing
 attendee numbers never change or get reused. A queued deletion is retained
-locally until the next Backup Data action removes and verifies the
-corresponding remote row. Only then is that local registration purged. Deleted
-registrations are never uploaded again. Private picture files remain as upload
-history; deletion of a registration does not trash the shared Drive folder.
+in `event_deletion_queue` until Backup Data confirms both the Google Sheets row
+removal and Google Drive cleanup. The queue keeps the identifiers needed to retry,
+not the full local registration or its photo. The Event script moves only files
+whose descriptions match that exact event and attendee identity to Drive Trash,
+including old generated versions and legacy portraits. Other attendees' files
+and the folder are preserved. Partial failures retain the queue for retry, and
+deleted registrations are never uploaded again. Local immutable image files
+remain on disk; they are no longer accessible through the deleted registration.
+
+**Existing installations must redeploy the updated `deployment/event_drive.gs`
+as a new version of the existing Event web app.** Keep its URL and token. The new
+authenticated `action: delete` operation is required to confirm Drive cleanup;
+an older deployment leaves deletions queued instead of reporting false success.
 
 Only the developer can see or invoke Delete event. Each deletion requires entering
 the current event admin password, including when Admin is already unlocked. The
@@ -141,14 +168,28 @@ is empty. Previously published QR links for a deleted event stop working.
 
 Print is available regardless of payment/release. It opens a dedicated page
 with the actual ID, printer-dialog and PNG-download actions. A separate
-checkbox records successful printing or downloading; opening/cancelling the
-printer dialog and downloading alone never mark completion automatically.
+checkbox explicitly confirms successful physical printing; opening/cancelling
+the printer dialog and downloading never mark physical printing complete.
+The additive `physical_printed` field starts unconfirmed for legacy records,
+because the old `printed` field also allowed download confirmations. Existing
+data is preserved; admins must confirm physical printing before a new release.
 The saved completion mark makes the attendee-list Print button green. The Print
 ID button on the print page also turns green immediately after a successful
 checkbox save; clearing the checkbox restores the normal button color.
 Browser printing uses the user's printer dialog, not unattended direct printing.
 The default physical size is 70 × 105 mm, adjustable by width at a fixed ratio.
 Only the ID is included in the print document.
+
+Release / Share opens a new browser tab with an ID preview, **Release ID** and
+**Share Temporary ID**. The server permits Release ID only after payment and
+physical printing are confirmed and staff confirm the physical handover. Only
+that action turns Release green. Undo release requires confirmation; payment
+or physical printing cannot be cleared while the ID remains released.
+Sharing uses the device's file share menu, or downloads the PNG where file sharing
+is unavailable, without changing any payment, print or release status. Shared
+pictures carry a TEMPORARY ID label until physical printing is confirmed, then
+the action becomes Share ID and shares the clean picture. Printable and backed-up
+originals never carry the temporary label. The portrait, name and QR stay visible.
 
 The 1000 × 1500 ID uses the uploaded blank background, the existing District 4
 logo beside the organization name at the same height and a close, measured gap.

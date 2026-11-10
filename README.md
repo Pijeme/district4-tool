@@ -523,3 +523,28 @@ Use Task Manager's CPU column for the Python process while repeating the same
 browsing actions before/after. Request timings and local measurements help
 identify expensive operations; they do not establish the cause of a historical
 hosting-server spike without matching server metrics.
+
+## Android meal scanner — local integration (10 November 2026)
+
+The `/api/v2/meal-scanner/` API now supports five-day per-device enrollment,
+incremental paid-registration downloads, and uploads to the existing event meal
+tables. It uses the existing event administrator password; no shared server
+token is embedded in the Android APK. Scanner requests bypass browser visit
+logging and automatic Google Sheets synchronization.
+
+`meal_scanner_readonly.py` retains its original import name but now also wraps
+the website's existing meal-set, claim, correction and sync-status handlers.
+Disabled meal sessions still accept authenticated historical scanner uploads;
+their previous scans must survive a later meal-plan edit. Server results and
+duplicate/conflict statuses remain visible to the Android master.
+
+Integration tests (temporary databases, no external services):
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_scanner_sync.py -v
+```
+
+The Android project contains `tools/Start-LocalWebsite.ps1`, local USB/LAN setup,
+generated artwork, migration checks and the current APK. The local website runs
+on port 5055 for that build. Port 5056 is used only by the disposable Android
+integration-test sandbox. No production deployment is included in these changes.
