@@ -1,0 +1,47 @@
+
+name: Deploy District 4 Tool to Contabo
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: contabo-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.CONTABO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 84.247.158.139 >> ~/.ssh/known_hosts
+
+      - name: Update Contabo website
+        run: |
+          ssh -o BatchMode=yes developer@84.247.158.139 << 'EOF'
+            set -e
+            cd /home/developer/district4-tool-main
+
+            git fetch origin main
+
+            if [ -n "$(git diff --name-only HEAD origin/main -- app_v2.db pastor_resource_sync_state.db)" ]; then
+              echo "Deployment stopped: tracked database files changed."
+              exit 1
+            fi
+
+            git pull --ff-only origin main
+
+            .venv/bin/python -m pip install -r requirements.txt
+
+            sudo -n systemctl restart district4-tool
+            sudo -n systemctl is-active --quiet district4-tool
+          EOF
