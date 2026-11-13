@@ -548,3 +548,28 @@ The Android project contains `tools/Start-LocalWebsite.ps1`, local USB/LAN setup
 generated artwork, migration checks and the current APK. The local website runs
 on port 5055 for that build. Port 5056 is used only by the disposable Android
 integration-test sandbox. No production deployment is included in these changes.
+
+### Local ebook thumbnails
+
+Ebook covers are generated automatically when their thumbnail is first requested.
+PDFs use a locally rendered first page; EPUBs use their embedded cover. Generated
+images are stored in `DATA_DIR/book_thumbnail_cache` (Docker:
+`/data/book_thumbnail_cache`). To use another persistent hosting folder, set
+`BOOK_THUMBNAIL_DIR` to its absolute path as seen by the application and ensure
+the application user can write there. For Docker, a custom path must also be
+mounted into the container; the default `/data` volume already persists covers.
+
+Files are named `Ebook-Title--<source-and-revision-key>.jpg` (or the embedded
+image's extension). The key separates duplicate titles and prevents database ID
+changes from assigning one ebook's cover to another. Unchanged syncs retain
+covers. Changed source files receive a new key. Copy this entire folder alongside
+the database when migrating hosting.
+
+Old numeric covers such as `42.jpg` are left untouched but are not reused because
+their ebook association cannot be verified. Covers regenerate on the first visit;
+the app still needs its configured Google Drive access to retrieve the original
+ebook on that first request. Later requests use the local image. If local
+extraction is unavailable, the existing Drive thumbnail fallback is saved locally
+as well. Temporary placeholder covers are not cached by the browser, allowing a
+later request to retry. This feature does not copy the original ebooks into local
+storage. New code must be deployed and the application restarted to take effect.

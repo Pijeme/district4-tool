@@ -494,7 +494,7 @@ class CacheSafetyTests(unittest.TestCase):
         self.assertNotIn('public',response.headers['Cache-Control'])
         response.close()
 
-    def test_pastor_thumbnail_ten_day_cache(self):
+    def test_pastor_thumbnail_revalidates_local_cover(self):
         self.login(pastor=True)
         thumbnail=Path(self.directory.name)/'cover.png'
         thumbnail.write_bytes(b'fake-thumbnail')
@@ -502,7 +502,7 @@ class CacheSafetyTests(unittest.TestCase):
              patch.object(pastor_resources,'get_cached_thumbnail',return_value=(str(thumbnail),'image/png')):
             response=self.client.get('/pastor-resources/thumbnail/1')
         self.assertEqual(response.status_code,200)
-        self.assertEqual(response.cache_control.max_age,864000)
+        self.assertEqual(response.cache_control.max_age,0)
         response.close()
 
     def test_stale_account_row_is_rejected_before_update_and_queued_for_refresh(self):

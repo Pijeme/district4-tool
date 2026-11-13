@@ -1,4 +1,8 @@
 import io
+import hashlib
+import logging
+import tempfile
+import unicodedata
 import json
 import math
 import mimetypes
@@ -11,6 +15,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import closing
 from xml.etree import ElementTree as ET
 
 from flask import (
@@ -70,7 +75,9 @@ GOOGLE_DRIVE_FOLDER_MIME = (
     "application/vnd.google-apps.folder"
 )
 
-THUMBNAIL_CACHE_DIR = data_path("book_thumbnail_cache")
+THUMBNAIL_CACHE_DIR = str(Path(
+    os.getenv("BOOK_THUMBNAIL_DIR") or data_path("book_thumbnail_cache")
+).resolve())
 
 # Keep live sync progress in a tiny separate SQLite file. The main library
 # sync intentionally uses one long transaction in app_v2.db; storing live
@@ -1636,31 +1643,21 @@ def get_thumbnail_lock(book_id):
 
 
 def thumbnail_cache_candidates(book_id):
-    ensure_thumbnail_cache_dir()
-
-    base = os.path.join(
-        THUMBNAIL_CACHE_DIR,
-        str(int(book_id)),
-    )
-
-    return [
-        (
-            base + ".jpg",
-            "image/jpeg",
-        ),
-        (
-            base + ".png",
-            "image/png",
-        ),
-        (
-            base + ".webp",
-            "image/webp",
-        ),
-        (
-            base + ".gif",
-            "image/gif",
-        ),
-    ]
+    # A database row ID can change during migration or a library rebuild.
+    # Never reuse unverified legacy files such as 42.jpg for a different book.
+    source = get_thumbnail_source_for_book(book_id)
+    if not source or not source["drive_file_id"]:
+        return []
+    title = unicodedata.normalize("NFKC", source["title"])
+    title = re.sub(r"[^\w-]+", "-", title, flags=re.UNICODE).strip("-_")
+    # Bound UTF-8 bytes as well as characters for filesystem filename limits.
+    title = title.encode("utf-8")[:120].decode("utf-8", errors="ignore") or "ebook"
+    identity = json.dumps([source["drive_file_id"], source.get("cover_revision", "")])
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    base = os.path.join(THUMBNAIL_CACHE_DIR, title + "--" + key)
+    return [(base + ext, mime) for ext, mime in (
+        (".jpg", "image/jpeg"), (".png", "image/png"),
+        (".webp", "image/webp"), (".gif", "image/gif"))]
 
 
 def get_cached_thumbnail(book_id):
@@ -1756,29 +1753,20 @@ def save_thumbnail_bytes(
         )
     )
 
-    target = os.path.join(
-        THUMBNAIL_CACHE_DIR,
-        str(int(book_id))
-        + extension,
-    )
-
-    temporary = (
-        target
-        + ".tmp"
-    )
-
-    with open(
-        temporary,
-        "wb",
-    ) as handle:
-        handle.write(
-            data
-        )
-
-    os.replace(
-        temporary,
-        target,
-    )
+    candidates = thumbnail_cache_candidates(book_id)
+    target = next((path for path, _ in candidates if path.endswith(extension)), None)
+    if not target:
+        return None, None
+    # Unique temporary files also protect concurrent Gunicorn workers.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=THUMBNAIL_CACHE_DIR, suffix=".tmp", delete=False) as handle:
+            temporary = handle.name
+            handle.write(data)
+        os.replace(temporary, target)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
     return target, mime_type
 
@@ -2204,8 +2192,8 @@ def sync_library_to_database(progress_callback=None, cancel_callback=None):
                     ),
                 )
 
-                if book_id:
-                    invalidate_thumbnail_cache(book_id)
+                # Source revisions in cover filenames invalidate changed files
+                # automatically. Preserve local covers during unchanged syncs.
 
             progress(
                 stage="syncing",
@@ -3024,6 +3012,7 @@ def get_thumbnail_source_for_book(
                 drive_file_id,
                 format,
                 mime_type,
+                md5_checksum, sha256_checksum, modified_time,
                 name
 
             FROM pastor_library_files
@@ -3053,6 +3042,7 @@ def get_thumbnail_source_for_book(
             return None
 
         return {
+            "cover_revision": str(file_row["sha256_checksum"] or file_row["md5_checksum"] or file_row["modified_time"] or ""),
             "book_id":
                 int(book["id"]),
 
@@ -3574,9 +3564,30 @@ def build_thumbnail_for_book(
                 pass
 
         # -------------------------------------------------
-        # PDF first-page thumbnail / EPUB fallback:
-        # ask Google Drive for its generated thumbnail.
+        # Render PDF first pages locally. If extraction/rendering
+        # fails, retain the Drive thumbnail fallback.
         # -------------------------------------------------
+
+        if source["format"] == "PDF":
+            try:
+                import pypdfium2 as pdfium
+                pdf_bytes = download_drive_file_bytes(drive_session, source["drive_file_id"])
+                with pdfium.PdfDocument(pdf_bytes) as document:
+                    with closing(document[0]) as page:
+                        bitmap = page.render(scale=min(1.5, 500 / max(page.get_width(), 1)))
+                        try:
+                            image = bitmap.to_pil().convert("RGB")
+                            try:
+                                output = io.BytesIO()
+                                image.save(output, format="JPEG", quality=85)
+                            finally:
+                                image.close()
+                        finally:
+                            bitmap.close()
+                return save_thumbnail_bytes(book_id, output.getvalue(), "image/jpeg")
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Local PDF cover generation failed for book %s", book_id, exc_info=True)
 
         try:
             data, content_type = (
@@ -5798,6 +5809,7 @@ def register_pastor_resources_routes(
                     "thumbnail_url"
                 ] = url_for(
                     "pastor_resources_thumbnail",
+                    v="local-covers-2",
                     book_id=
                         book["id"],
                 )
@@ -16945,6 +16957,7 @@ def decorate_book_payload(book):
     ] = url_for(
         "pastor_resources_thumbnail",
         book_id=book_id,
+        v="local-covers-2",
     )
 
     item[
@@ -18971,7 +18984,7 @@ def register_pastor_resources_routes(app):
             return send_file(
                 cached_path,
                 mimetype=cached_mime,
-                max_age=864000,
+                max_age=0,
                 conditional=True,
             )
 
@@ -18986,12 +18999,12 @@ def register_pastor_resources_routes(app):
                 return send_file(
                     path,
                     mimetype=mime_type,
-                    max_age=864000,
+                    max_age=0,
                     conditional=True,
                 )
 
         except Exception:
-            pass
+            app.logger.warning("Thumbnail unavailable for book %s", book_id, exc_info=True)
 
         return Response(
             make_default_cover_svg(
@@ -19000,7 +19013,7 @@ def register_pastor_resources_routes(app):
             mimetype="image/svg+xml",
             headers={
                 "Cache-Control":
-                    "private, max-age=864000",
+                    "private, no-store",
             },
         )
 

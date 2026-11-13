@@ -138,6 +138,12 @@ class LibraryPortabilityTests(unittest.TestCase):
             db.close()
         return next(row for row in knowledge._public_files_to_index() if row['drive_file_id'] == drive_id)
 
+    def test_thumbnail_source_has_revision_for_cache_identity(self):
+        self.catalog()
+        source = resources.get_thumbnail_source_for_book(42)
+        self.assertEqual(source['drive_file_id'], 'drive-A')
+        self.assertEqual(source['cover_revision'], 'a' * 64)
+
     def document(self, row, source_id=125, book_id=7, text='Prayer strengthens faith and ministry.'):
         db = knowledge._db()
         try:
@@ -4859,6 +4865,102 @@ class SermonSummaryCacheTests(unittest.TestCase):
             self.assertEqual(validate.call_count,3)
             self.assertIn('note',bible.sermon_note_item(row,full=True))
             self.assertEqual(validate.call_count,4)
+
+
+class LocalThumbnailTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.source = dict(title='Prayer Guide', drive_file_id='drive-A',
+                           cover_revision='rev-1', format='PDF')
+        for item in (patch.object(resources, 'THUMBNAIL_CACHE_DIR', str(self.directory)),
+                     patch.object(resources, 'get_thumbnail_source_for_book', side_effect=lambda _: dict(self.source))):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_saved_cover_is_title_named_and_survives_book_id_changes(self):
+        path, mime = resources.save_thumbnail_bytes(42, b'cover', 'image/png')
+        self.assertTrue(Path(path).name.startswith('Prayer-Guide--'))
+        self.assertEqual(mime, 'image/png')
+        self.assertEqual(resources.get_cached_thumbnail(999), (path, mime))
+        self.assertEqual(Path(path).read_bytes(), b'cover')
+        self.assertFalse(list(self.directory.glob('*.tmp')))
+
+    def test_other_source_or_revision_cannot_reuse_a_cover(self):
+        resources.save_thumbnail_bytes(42, b'cover', 'image/png')
+        self.source['drive_file_id'] = 'different-ebook'
+        self.assertEqual(resources.get_cached_thumbnail(42), (None, None))
+        self.source['drive_file_id'] = 'drive-A'
+        self.source['cover_revision'] = 'rev-2'
+        self.assertEqual(resources.get_cached_thumbnail(42), (None, None))
+
+    def test_legacy_numeric_files_are_preserved_but_not_trusted(self):
+        legacy = self.directory / '42.jpg'
+        legacy.write_bytes(b'wrong cover')
+        self.assertEqual(resources.get_cached_thumbnail(42), (None, None))
+        self.assertEqual(legacy.read_bytes(), b'wrong cover')
+
+    def test_title_cannot_escape_storage_and_same_title_does_not_collide(self):
+        self.source['title'] = '../../' + '書' * 200 + '/Guide'
+        first, _ = resources.save_thumbnail_bytes(42, b'one', 'image/png')
+        self.assertEqual(Path(first).parent, self.directory)
+        self.assertLess(len(Path(first).name.encode('utf-8')), 255)
+        self.source['drive_file_id'] = 'drive-B'
+        second, _ = resources.save_thumbnail_bytes(43, b'two', 'image/png')
+        self.assertNotEqual(first, second)
+        self.assertEqual(Path(first).read_bytes(), b'one')
+
+    def test_pdf_first_page_is_rendered_locally_and_reused_without_drive(self):
+        from reportlab.pdfgen.canvas import Canvas
+        from PIL import Image
+        pdf = io.BytesIO()
+        canvas = Canvas(pdf, pagesize=(300, 400))
+        canvas.setFillColorRGB(1, 0, 0)
+        canvas.rect(0, 0, 300, 400, fill=1, stroke=0)
+        canvas.showPage()
+        canvas.setFillColorRGB(0, 0, 1)
+        canvas.rect(0, 0, 300, 400, fill=1, stroke=0)
+        canvas.save()
+        with (patch.object(resources, 'get_drive_session') as session,
+              patch.object(resources, 'download_drive_file_bytes', return_value=pdf.getvalue()) as download,
+              patch.object(resources, 'get_drive_generated_thumbnail', side_effect=AssertionError('Should render locally'))):
+            path, mime = resources.build_thumbnail_for_book(42)
+            self.assertEqual(mime, 'image/jpeg')
+            with Image.open(path) as image:
+                red, green, blue = image.getpixel((20, 20))
+                self.assertGreater(red, 240)
+                self.assertLess(blue, 20)
+            self.assertEqual(resources.build_thumbnail_for_book(42), (path, mime))
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(session.call_count, 1)
+
+    def test_epub_embedded_cover_is_saved_locally(self):
+        self.source['format'] = 'EPUB'
+        epub = io.BytesIO()
+        with zipfile.ZipFile(epub, 'w') as archive:
+            archive.writestr('META-INF/container.xml', '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>')
+            archive.writestr('book.opf', '<package><metadata><meta name="cover" content="cover"/></metadata><manifest><item id="cover" href="cover.png" media-type="image/png"/></manifest></package>')
+            archive.writestr('cover.png', b'\x89PNG\r\n\x1a\ncover')
+        with (patch.object(resources, 'get_drive_session'),
+              patch.object(resources, 'download_drive_file_bytes', return_value=epub.getvalue()),
+              patch.object(resources, 'get_drive_generated_thumbnail', side_effect=AssertionError('Should extract locally'))):
+            path, mime = resources.build_thumbnail_for_book(42)
+        self.assertEqual(mime, 'image/png')
+        self.assertEqual(Path(path).read_bytes(), b'\x89PNG\r\n\x1a\ncover')
+
+    def test_fallback_is_not_cached_so_missing_covers_can_retry(self):
+        app = Flask(__name__)
+        with patch.object(resources, "ensure_v3_tables"):
+            resources.register_pastor_resources_routes(app)
+        with (patch.object(resources, "_database_maintenance_active", return_value=False),
+              patch.object(resources, 'any_user_logged_in', return_value=True),
+              patch.object(resources, 'is_resource_admin', return_value=False),
+              patch.object(resources, 'get_effective_book', return_value={'title': 'Guide'}),
+              patch.object(resources, 'build_thumbnail_for_book', return_value=(None, None))):
+            response = app.test_client().get('/pastor-resources/thumbnail/42')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.cache_control.no_store)
 
 
 if __name__ == '__main__':
