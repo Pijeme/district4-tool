@@ -21,96 +21,50 @@ jobs:
           ssh -o BatchMode=yes developer@84.247.158.139 << 'REMOTE'
           set -e
           cd /home/developer/district4-tool-main
-          .venv/bin/python - <<'PY'
-          import os, sqlite3, subprocess, sys
+          timeout 120 .venv/bin/python - <<'PY'
+          import os, subprocess, time
           from pathlib import Path
-          
-          def report(key, value):
-              print(key + '=' + str(value), flush=True)
-          
-          pid = subprocess.check_output(['systemctl', 'show', 'district4-tool', '-p', 'MainPID', '--value'], text=True).strip()
-          report('service_running', pid.isdigit() and pid != '0')
+          from types import SimpleNamespace
+          pid=subprocess.check_output(['systemctl','show','district4-tool','-p','MainPID','--value'],text=True).strip()
           try:
-              raw = Path('/proc/' + pid + '/environ').read_bytes()
-              variables = dict(pair.decode().split('=', 1) for pair in raw.split(b'\0') if b'=' in pair)
-              os.environ.update(variables)
-              report('service_environment_loaded', True)
-          except (OSError, UnicodeError):
-              report('service_environment_loaded', False)
-          report('service_uses_checkout', Path('/proc/' + pid + '/cwd').resolve() == Path.cwd())
-          from runtime_config import data_path, google_credentials, BASE_DIR
+              raw=Path('/proc/'+pid+'/environ').read_bytes()
+              os.environ.update(dict(part.decode().split('=',1) for part in raw.split(b'\0') if b'=' in part))
+          except OSError:
+              print('service_environment_loaded=False',flush=True)
+              raise SystemExit(1)
+          from flask import Flask
+          from runtime_config import data_path
           import pastor_resources as resources
-          report('thumbnail_fix_present', 'local-covers-2' in Path('pastor_resources.py').read_text())
-          report('local_cover_directory', resources.THUMBNAIL_CACHE_DIR)
-          cover = Path(resources.THUMBNAIL_CACHE_DIR)
-          report('cover_directory_exists', cover.is_dir())
-          report('cover_directory_writable', os.access(cover if cover.exists() else cover.parent, os.W_OK))
-          for module in ('pypdfium2', 'PIL'):
-              try:
-                  __import__(module)
-                  report(module + '_available', True)
-              except ImportError:
-                  report(module + '_available', False)
-          
-          try:
-              session = resources.get_drive_session()
-              report('google_credentials_load', 'ok')
-          except Exception as error:
-              report('google_credentials_load', type(error).__name__)
-              report('credentials_env_present', any(os.getenv(key, '').strip() for key in ('GOOGLE_SERVICE_ACCOUNT_JSON', 'GOOGLE_SERVICE_ACCOUNT_BASE64')))
-              candidate = Path(os.getenv('GOOGLE_SERVICE_ACCOUNT_FILE') or resources.GOOGLE_SERVICE_ACCOUNT_FILE)
-              if not candidate.is_absolute():
-                  candidate = BASE_DIR / candidate
-              report('credential_file_exists', candidate.is_file())
-              report('credential_file_readable', os.access(candidate, os.R_OK))
-              sys.exit(0)
-          
-          known_reasons = {'notFound', 'forbidden', 'insufficientPermissions', 'accessNotConfigured', 'serviceDisabled', 'rateLimitExceeded', 'dailyLimitExceeded', 'downloadQuotaExceeded', 'storageQuotaExceeded', 'fileNotDownloadable', 'cannotDownloadFile', 'authError', 'userRateLimitExceeded', 'invalid', 'backendError'}
-          def check_response(label, response):
-              report(label + '_http', response.status_code)
-              if not response.ok:
-                  try:
-                      error = response.json().get('error', {})
-                      report(label + '_reasons', [row.get('reason') if row.get('reason') in known_reasons else 'other' for row in error.get('errors', [])])
-                  except Exception:
-                      report(label + '_reasons', 'not_json')
-              return response.ok
-          
-          try:
-              response = session.get('https://www.googleapis.com/drive/v3/files/' + resources.PASTOR_RESOURCES_DRIVE_FOLDER_ID, params={'fields': 'id', 'supportsAllDrives': 'true'}, timeout=20)
-              check_response('library_folder', response)
-              response.close()
-          except Exception as error:
-              report('drive_connection_exception', type(error).__name__)
-              # Credential refresh errors may contain private details: classify, never echo.
-              message = str(error).lower()
-              for marker in ('invalid_grant', 'invalid jwt signature', 'invalid jwt', 'invalid_client', 'disabled', 'expired', 'name resolution', 'certificate'):
-                  if marker in message:
-                      report('drive_exception_category', marker)
-              sys.exit(0)
-          
-          path = Path(data_path('app_v2.db'))
-          if not path.is_file():
-              report('database_present', False)
-              sys.exit(0)
-          with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
-              report('active_ebook_count', db.execute('SELECT COUNT(*) FROM pastor_library_files WHERE is_active=1 AND is_duplicate=0').fetchone()[0])
-              samples = []
-              for fmt in ('PDF', 'EPUB'):
-                  row = db.execute('SELECT drive_file_id FROM pastor_library_files WHERE format=? AND is_active=1 AND is_duplicate=0 ORDER BY id LIMIT 1', (fmt,)).fetchone()
-                  if row:
-                      samples.append((fmt, row[0]))
-          for fmt, file_id in samples:
-              try:
-                  with session.get('https://www.googleapis.com/drive/v3/files/' + str(file_id), params={'fields': 'id,trashed,capabilities(canDownload)', 'supportsAllDrives': 'true'}, timeout=20) as response:
-                      if check_response(fmt + '_metadata', response):
-                          metadata = response.json()
-                          report(fmt + '_trashed', metadata.get('trashed', False))
-                          report(fmt + '_can_download', metadata.get('capabilities', {}).get('canDownload'))
-                  with session.get('https://www.googleapis.com/drive/v3/files/' + str(file_id), params={'alt': 'media', 'supportsAllDrives': 'true'}, headers={'Range': 'bytes=0-15'}, stream=True, timeout=20) as response:
-                      if check_response(fmt + '_download', response):
-                          report(fmt + '_received_bytes', len(next(response.iter_content(chunk_size=16), b'')))
-              except Exception as error:
-                  report(fmt + '_access_exception', type(error).__name__)
+          import bible_study as study
+          import pij_library_knowledge as knowledge
+          app=Flask(__name__,static_folder=str(Path.cwd()/'static'))
+          app.config.update(DATABASE=data_path('app_v2.db'),
+              AI_DATABASE=os.getenv('AI_DATABASE') or data_path('ai_index.db'),
+              BIBLE_STUDY_DATABASE=os.getenv('BIBLE_STUDY_DATABASE') or data_path('bible_study_data/bible_study.db'),
+              BIBLE_ILLUSTRATIONS_DATABASE=os.getenv('BIBLE_ILLUSTRATIONS_DATABASE',''))
+          app.config['BIBLE_SERMON_NOTES_DATABASE']=os.getenv('BIBLE_SERMON_NOTES_DATABASE') or str(Path(app.config['BIBLE_STUDY_DATABASE']).with_name('sermon_notes.db'))
+          resources._appmod=lambda:SimpleNamespace(DATABASE=app.config['DATABASE'],AI_DATABASE=app.config['AI_DATABASE'])
+          def forbidden(*args,**kwargs):raise AssertionError('Personal sermon access must never occur')
+          knowledge._private_sermon_search=forbidden
+          study.sermon_notes_storage=forbidden
+          queries=[('outlines','Create a sermon about faith'),
+                   ('illustrations','Find a sermon illustration about prayer'),
+                   ('submitted_outline','Analyze my outline and recommend illustrations:\nI. Trust God\nII. Pray faithfully')]
+          with app.test_request_context():
+              for label,query in queries:
+                  started=time.monotonic()
+                  result=knowledge.library_context_for_gemini(query)
+                  sources=getattr(result,'approved_sources',())
+                  print(label+'_source_count='+str(len(sources)),flush=True)
+                  print(label+'_seconds='+str(round(time.monotonic()-started,3)),flush=True)
+                  print(label+'_context_chars='+str(len(result)),flush=True)
+                  assert all(row['url'].startswith('/pastor-resources/bible-study?') for row in sources)
+                  assert not any('/sermon-ebooks/' in row['url'] for row in sources)
+                  if label=='outlines':print('outline_only_notice='+str(result.outline_only_notice),flush=True)
+                  if label=='submitted_outline':
+                      points=getattr(result,'sermon_point_matches',())
+                      print('submitted_main_points='+str(len(points)),flush=True)
+                      print('points_with_illustrations='+str(sum(bool(point['source']) for point in points)),flush=True)
+          print('private_sermon_access_occurred=False',flush=True)
           PY
           REMOTE
