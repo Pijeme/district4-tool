@@ -66,5 +66,19 @@ jobs:
                       print('submitted_main_points='+str(len(points)),flush=True)
                       print('points_with_illustrations='+str(sum(bool(point['source']) for point in points)),flush=True)
           print('private_sermon_access_occurred=False',flush=True)
+          import ai_assistant as ai
+          with app.test_request_context():
+              shared_context=knowledge.library_context_for_gemini('Give me a sermon about faith')
+              try:
+                  answer,model=ai.ask_pij(ai.build_pij_input('Give me a sermon about faith',[],str(shared_context)))
+                  checked=knowledge.validate_library_answer(answer,shared_context)
+                  print('live_pij_model='+model,flush=True)
+                  print('live_pij_response_nonempty='+str(bool(checked.strip())),flush=True)
+                  print('live_pij_verified_shared_link='+str(any(source['url'] in checked for source in shared_context.approved_sources)),flush=True)
+              except Exception as error:
+                  print('live_pij_provider_error_type='+type(error).__name__,flush=True)
+                  kind,_,_=ai._chat_error(error)
+                  print('live_pij_provider_error_category='+kind,flush=True)
+                  raise SystemExit(1)
           PY
           REMOTE
