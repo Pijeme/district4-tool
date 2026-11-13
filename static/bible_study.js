@@ -3211,6 +3211,16 @@
                 element("Status").textContent=error.message;
             }
         }
+        // Pij links open only shared resource readers, never personal Sermon Notes.
+        const linkedSermon=query.get("sermon"),linkedIllustration=query.get("illustration");
+        const sharedId=/^[A-Za-z0-9_-]{1,120}$/;
+        if(linkedSermon && sharedId.test(linkedSermon)) {
+            await chapterLoadPromise;
+            setMode("split");selectStudyTab("sermon");await openSermon(linkedSermon);
+        } else if(linkedIllustration && sharedId.test(linkedIllustration)) {
+            await chapterLoadPromise;
+            setMode("split");selectStudyTab("illustrations");await openIllustration(linkedIllustration);
+        }
         if (element("Sync") && config.syncUrl) pollSync();
     })();
 })();

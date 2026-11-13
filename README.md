@@ -573,3 +573,32 @@ extraction is unavailable, the existing Drive thumbnail fallback is saved locall
 as well. Temporary placeholder covers are not cached by the browser, allowing a
 later request to retry. This feature does not copy the original ebooks into local
 storage. New code must be deployed and the application restarted to take effect.
+
+### Pij sermon outlines and illustrations
+
+Pij searches Bible Study's shared imported sermon outlines, publicly indexed
+sermon resources, and the imported Sermon Illustrations library. Requests such
+as “Create a sermon on faith” recommend existing outlines only, with their
+printed points and links that open the selected Bible Study reader. Pij does
+not generate a new sermon manuscript or preaching outline. Personal Sermon Notes
+and private Sermon eBooks are excluded for every account, including the owner.
+Previous assistant chat messages are not sent with this sermon workflow.
+
+Users can paste an outline with numbered, Roman numeral, or bulleted main points
+and ask for analysis. Pij reviews the submitted structure and recommends one
+existing illustration per main point, preserving order and avoiding duplicate
+stories. Unmatched points remain visible with an explicit no-match message.
+Send up to 12 main points per message; longer outlines receive a request to split
+the input. For example:
+
+```text
+Analyze my outline and recommend an illustration per main point:
+I. Trust God
+II. Pray faithfully
+III. Serve others
+```
+
+This reads the same local shared sources as Bible Study. It does not copy or
+index personal sermons. If shared sources have not yet been imported, use the
+existing Bible Study sync and ebook indexing tools; Pij reports unavailable
+sources instead of inventing matches.

@@ -6611,6 +6611,98 @@ def illustration_article(conn,identifier):
         review_flags=json.loads(row['review_flags_json']))
 
 
+def search_shared_sermon_outlines(study_database, ai_database, terms=(), reference='', limit=3):
+    """Search only the same imported/public outlines exposed by Bible Study.
+
+    Personal Sermon Notes and the private Sermon eBooks tables are never opened.
+    Existing reader catalogues are reused; this does not index personal content.
+    """
+    import heapq
+    terms = tuple(dict.fromkeys(str(term).casefold() for term in terms if term))[:10]
+    references = scripture_references(reference)
+
+    def score(item):
+        title = item['title'].casefold()
+        body = item.get('text', '').casefold()
+        value = sum(10 * bool(re.search(r'\b' + re.escape(term) + r'\w*', title))
+                    + 2 * bool(re.search(r'\b' + re.escape(term) + r'\w*', body)) for term in terms)
+        for ref in references:
+            if any(span['book_id'] == ref['book_id'] and span['chapter'] <= ref['chapter'] <= span['end_chapter']
+                   for span in item.get('ranges', [])):
+                value += 30
+        return value
+
+    def candidates():
+        path = Path(study_database).resolve()
+        if path.is_file():
+            try:
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    if (conn.execute('PRAGMA application_id').fetchone()[0] == APPLICATION_ID
+                            and conn.execute('PRAGMA user_version').fetchone()[0] >= 9):
+                        for row in conn.execute('SELECT * FROM bible_sermon_outlines'):
+                            yield dict(id=row['id'], title=row['title'], text=row['plain_text'],
+                                       ranges=json.loads(row['ranges_json']), blocks=json.loads(row['content_json']),
+                                       author='Pastor Alan Carr', source_title='Bible Study sermon outlines')
+            except sqlite3.DatabaseError:
+                logging.getLogger(__name__).warning('Shared imported outlines unavailable for Pij')
+        try:
+            yield from sermon_catalogue(ai_database)
+        except (sqlite3.DatabaseError, OSError):
+            logging.getLogger(__name__).warning('Shared public sermon catalogue unavailable for Pij')
+
+    def ranked():
+        for item in candidates():
+            value = score(item)
+            if value or not (terms or references):
+                yield value, item
+
+    results = []
+    for _, item in heapq.nlargest(limit, ranked(), key=lambda pair: pair[0]):
+        # Prefer printed headings/subpoints to a full sermon manuscript.
+        blocks = item.get('blocks') or []
+        headings = [b['text'] for b in blocks if b.get('type') == 'heading'
+                    or b.get('role') in ('sermon_heading', 'sermon_subpoint', 'sermon_reference')]
+        evidence = '\n'.join(headings) if headings else item.get('text', '')
+        results.append(dict(id=item['id'], title=item['title'], author=item.get('author', ''),
+                            source_title=item.get('source_title', ''), text=evidence[:7000]))
+    return results
+
+
+def search_shared_illustrations(database_path, terms=(), reference='', limit=3, exclude=()):
+    """Read complete, imported illustration stories; omit empty/review-only records."""
+    terms = tuple(dict.fromkeys(str(term).casefold() for term in terms if term))[:10]
+    with illustration_connection(database_path) as conn:
+        rows = []
+        for ref in scripture_references(reference):
+            for card in illustration_suggestions(conn, ref['book_id'], ref['chapter'], ref['verse'], ref['end_verse']):
+                rows.append(card['id'])
+        if terms:
+            match = ' OR '.join('"' + term.replace('"', '""') + '"*' for term in terms)
+            rows.extend(row[0] for row in conn.execute('''SELECT i.id FROM illustrations_fts f
+                JOIN illustrations i ON i.id=f.id JOIN illustration_reading r ON r.id=i.id
+                WHERE illustrations_fts MATCH ? AND r.has_content=1
+                ORDER BY bm25(illustrations_fts,0,8,5,5,1),i.id LIMIT 40''', (match,)))
+        elif not rows:
+            rows.extend(row[0] for row in conn.execute('SELECT id FROM illustration_reading WHERE has_content=1 ORDER BY id LIMIT 20'))
+        results, seen_hashes = [], set()
+        for identifier in dict.fromkeys(rows):
+            if identifier in exclude:
+                continue
+            row = conn.execute('''SELECT i.id,i.title,i.body_text,i.source,i.source_credit,r.body_hash
+                FROM illustrations i JOIN illustration_reading r ON r.id=i.id
+                WHERE i.id=? AND r.has_content=1''', (identifier,)).fetchone()
+            if not row or row['body_hash'] in seen_hashes or row['body_hash'] in exclude or not row['body_text'].strip():
+                continue
+            seen_hashes.add(row['body_hash'])
+            results.append(dict(id=row['id'], title=row['title'], text=row['body_text'][:5500],
+                                source_title=ILLUSTRATION_SOURCES.get(row['source'], row['source']),
+                                credit=row['source_credit'] or '', body_hash=row['body_hash']))
+            if len(results) >= limit:
+                break
+        return results
+
+
 NOTES_APPLICATION_ID = 0x534E4F54
 NOTES_MAX_BYTES = 512 * 1024
 NOTES_TYPES = {'paragraph', 'main_point', 'subpoint', 'sub_subpoint', 'illustration', 'scripture', 'conclusion', 'heading', 'theme', 'text'}

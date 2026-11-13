@@ -841,6 +841,33 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!el('Verses').querySelector('mark'),'Navigation created a permanent highlight');
         ''',setup,window_size=(390,844))
 
+    def test_pij_outline_link_opens_shared_outline_reader(self):
+        setup="history.replaceState(null,'','?sermon=outline-fixture');"+self.personal_setup().replace(
+            "else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/sermons?'))data.sermons=[];
+            else if(path.includes('/sermons/'))data.sermon={id:'outline-fixture',title:'Living Faith',ranges:[],blocks:[{type:'heading',text:'I. Trust God'}]};
+            else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            await new Promise(resolve=>setTimeout(resolve,200));
+            check(document.getElementById('bsSermonTab').getAttribute('aria-selected')==='true','Sermon tab not selected');
+            check(!document.getElementById('bsSermonReader').hidden,'Linked outline reader is hidden');
+            check(document.getElementById('bsSermonTitle').textContent==='Living Faith','Wrong outline opened');
+            check(document.getElementById('bsSermonContent').textContent.includes('Trust God'),'Linked source text missing');
+        ''',setup)
+
+    def test_pij_illustration_link_opens_shared_illustration_reader(self):
+        setup="history.replaceState(null,'','?illustration=story-fixture');"+self.personal_setup().replace(
+            "else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/illustrations/suggested'))data={ok:true,available:true,entries:[]};
+            else if(path.includes('/illustrations/entry/'))data.illustration={id:'story-fixture',title:'Trust Through the Storm',source_title:'Shared Collection',topics:['Faith'],blocks:[{type:'paragraph',text:'A shared story about faith.'}],references:[],reference_issues:[],source_credit:'',source_file:''};
+            else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            await new Promise(resolve=>setTimeout(resolve,200));
+            check(document.getElementById('bsIllustrationsTab').getAttribute('aria-selected')==='true','Illustrations tab not selected');
+            check(!document.getElementById('bsIllustrationsReader').hidden,'Linked illustration reader is hidden');
+            check(document.getElementById('bsIllustrationsTitle').textContent==='Trust Through the Storm','Wrong illustration opened');
+        ''',setup,window_size=(390,844))
+
     def test_imported_sermon_uses_existing_outline_layout_with_pastor_attribution(self):
         setup=self.personal_setup().replace("else if(path.endsWith('/history'))data.history=[];",'''
             else if(path.includes('/sermons?'))data.sermons=[{id:'outline-fixture',title:"THE LORD'S FAITHFULNESS - part II"}];

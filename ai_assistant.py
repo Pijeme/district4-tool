@@ -21,6 +21,7 @@ from pij_library_knowledge import (
 
     library_context_for_gemini,
     validate_library_answer,
+    sermon_outline_notice,
 
     register_pij_library_routes,
 
@@ -125,7 +126,11 @@ SERMONS AND STUDY
 
 - Public sermon ebooks in Pastor's Resources are normal library sources for authorized users.
 
-- A separate private created-sermon collection may appear only when Flask authorizes the logged-in account. Never mention or expose that private collection unless its material is explicitly supplied in CURRENT PASTOR'S RESOURCES CONTEXT.
+- Personal Sermon Notes and private Sermon eBooks are NEVER sources for Pij, including for the owner or administrators. Do not retrieve or disclose them, or reuse private material from earlier conversation turns.
+
+- When asked to give, create, or write a sermon, recommend existing sermon OUTLINES ONLY from the shared Bible Study sources supplied by Flask. Present their existing printed points with their exact source links; never generate a new sermon, manuscript, outline, or extra preaching points. If no matching shared outline is supplied, ask for a topic or Scripture instead of inventing one.
+
+- A user may paste their OWN outline for analysis. Discuss clarity, Scripture alignment and transitions without replacing their outline. For each supplied main point, recommend exactly one existing shared illustration supplied for that point, cite its exact link, and explain its fit. Keep the original order; do not reuse a story or invent an illustration. If a point has no supplied match, state that clearly.
 
 - You may freely help with Scripture study: context, meaning, Greek/Hebrew, theology, themes, cross-references, people, places, events, study questions, and comparison of retrieved resources.
 
@@ -662,12 +667,25 @@ def ai_chat():
             if entry.get("cancelled"):
                 return jsonify(ok=False, error="This conversation was closed.", cancelled=True), 409
         stage = "provider"
-        answer, model_used = ask_pij(build_pij_input(message, history, context+"\n\n"+library_context),
-                                    allow_web_fallback="WEB_FALLBACK_ALLOWED: YES" in library_context,
-                                    deadline=started+AI_TOTAL_SECONDS)
+        if getattr(library_context, "sermon_input_error", ""):
+            answer = library_context.sermon_input_error
+            model_used = "local-sermon-search"
+        elif (getattr(library_context, "sermon_workflow", False)
+                and not getattr(library_context, "approved_sources", ())
+                and not getattr(library_context, "has_submitted_outline", False)):
+            answer = "No matching shared sermon outline or illustration was found. Please specify a topic or Scripture."
+            model_used = "local-sermon-search"
+        else:
+            answer, model_used = ask_pij(build_pij_input(message, [] if getattr(library_context, "sermon_workflow", False) else history, context+"\n\n"+library_context),
+                                        allow_web_fallback="WEB_FALLBACK_ALLOWED: YES" in library_context,
+                                        deadline=started+AI_TOTAL_SECONDS)
         answer = validate_library_answer(
             answer, library_context, language=detect_response_language(message),
             include_explanations=not re.search(r'\b(?:titles? only|names? only|no explanations?|without explanations?)\b', message, re.I))
+        if getattr(library_context, "outline_only_notice", False):
+            notice = sermon_outline_notice(detect_response_language(message))
+            if not answer.startswith(notice):
+                answer = notice + "\n\n" + answer
         # Clearing and storing share one lock order, so a late answer can never
         # repopulate a conversation closed while Google was responding.
         with pending_lock:

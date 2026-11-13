@@ -391,6 +391,29 @@ class PijTests(unittest.TestCase):
             session.update(member_logged_in=True, username=username)
         return client
 
+    def test_sermon_creation_notice_is_enforced_and_private_history_is_not_sent(self):
+        source=dict(title='Living Faith',url='/pastor-resources/bible-study?sermon=outline-faith')
+        context=library.LibraryContext('Shared sermon outlines only',[source])
+        context.sermon_workflow=True;context.outline_only_notice=True
+        ai.save_conversation_message('member:reader','assistant','PRIVATE-HISTORY-CANARY')
+        with patch.object(ai,'library_context_for_gemini',return_value=context), \
+             patch.object(ai,'ask_pij',return_value=('[Living Faith]('+source['url']+')\nI. Trust God','test-model')) as ask:
+            result=self.client().post('/ai/chat',json={'message':'Create a sermon on faith'})
+        self.assertEqual(result.status_code,200)
+        self.assertTrue(result.json['answer'].startswith(ai.sermon_outline_notice('English')))
+        self.assertNotIn('PRIVATE-HISTORY-CANARY',ask.call_args.args[0])
+        self.assertIn('Personal Sermon Notes and private Sermon eBooks are NEVER',ask.call_args.args[0])
+
+    def test_missing_shared_sermon_sources_never_asks_provider_to_invent_one(self):
+        context=library.LibraryContext('No matching shared outlines')
+        context.sermon_workflow=True;context.outline_only_notice=True
+        with patch.object(ai,'library_context_for_gemini',return_value=context),patch.object(ai,'ask_pij') as ask:
+            result=self.client().post('/ai/chat',json={'message':'Give me a sermon'})
+        self.assertEqual(result.status_code,200)
+        self.assertIn('No matching shared',result.json['answer'])
+        self.assertTrue(result.json['answer'].startswith(ai.sermon_outline_notice('English')))
+        ask.assert_not_called()
+
     def test_chat_skips_schema_writes_and_sheet_sync(self):
         with patch.object(ai, 'ask_pij', return_value=('Hello', 'test-model')), \
              patch.object(appmod, 'init_db', side_effect=AssertionError('schema write')), \

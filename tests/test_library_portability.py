@@ -4963,5 +4963,119 @@ class LocalThumbnailTests(unittest.TestCase):
         self.assertTrue(response.cache_control.no_store)
 
 
+class PijSharedSermonTests(unittest.TestCase):
+    def setUp(self):
+        import bible_study as study
+        self.study = study
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root = Path(self.directory.name)
+        self.bible = root / 'bible.db'
+        self.illustrations = root / 'sermon_illustrations.db'
+        self.app = Flask(__name__, static_folder=str(root / 'static'))
+        self.app.config.update(BIBLE_STUDY_DATABASE=str(self.bible), AI_DATABASE=str(root/'ai.db'),
+                               DATABASE=str(root/'app.db'), BIBLE_SERMON_NOTES_DATABASE=str(root/'private-notes.db'))
+        with sqlite3.connect(self.bible) as db:
+            db.execute('PRAGMA application_id=' + str(study.APPLICATION_ID))
+            db.execute('PRAGMA user_version=9')
+            db.executescript(study.SERMON_OUTLINE_SCHEMA_SQL)
+            db.execute('INSERT INTO bible_sermon_outlines VALUES(?,?,?,?,?)',
+                ('outline-faith', 'Living Faith', '[{"book_id":43,"chapter":3,"end_chapter":3}]',
+                 json.dumps([dict(type='heading',text='I. Trust God'),dict(role='sermon_subpoint',text='A. Pray faithfully')]),
+                 'Faith trusts God. Prayer expresses faith. I. Trust God. II. Pray faithfully.'))
+            # Deliberate private traps in the same database: only the shared table may be read.
+            db.executescript("CREATE TABLE sermon_notes(secret TEXT); INSERT INTO sermon_notes VALUES('PRIVATE-NOTES-CANARY');"
+                             "CREATE TABLE sermon_library_pages(page_text TEXT); INSERT INTO sermon_library_pages VALUES('PRIVATE-SERMON-CANARY');")
+        with sqlite3.connect(self.illustrations) as db:
+            db.execute('PRAGMA application_id=' + str(study.ILLUSTRATION_APPLICATION_ID))
+            db.executescript('''CREATE TABLE illustrations(id TEXT,title TEXT,body_text TEXT,source TEXT,source_credit TEXT);
+                CREATE TABLE illustration_reading(id TEXT,body_hash TEXT,preview TEXT,has_content INTEGER);
+                CREATE VIRTUAL TABLE illustrations_fts USING fts5(id UNINDEXED,title,category,topics,body_text);''')
+            for identifier, title, body, ready in (
+                    ('trust', 'Trust Through the Storm', 'Faith trusts God in a storm.', 1),
+                    ('prayer', 'Prayer in the Night', 'Prayer brings believers together to pray.', 1),
+                    ('empty', 'Faith Empty Record', '', 0)):
+                db.execute('INSERT INTO illustrations VALUES(?,?,?,?,?)',(identifier,title,body,'connect_1001','Shared story credit'))
+                db.execute('INSERT INTO illustration_reading VALUES(?,?,?,?)',(identifier,identifier,body,ready))
+                db.execute('INSERT INTO illustrations_fts VALUES(?,?,?,?,?)',(identifier,title,'Faith','faith prayer',body))
+        for item in (patch.object(study,'sermon_catalogue',return_value=[]),
+                     patch.object(knowledge,'_private_sermon_search',side_effect=AssertionError('Private retrieval is forbidden')),
+                     patch.object(study,'sermon_notes_storage',side_effect=AssertionError('Personal notes must not be opened'))):
+            item.start();self.addCleanup(item.stop)
+        self.ctx=self.app.test_request_context();self.ctx.push();self.addCleanup(self.ctx.pop)
+
+    def test_creation_requests_retrieve_existing_shared_outlines_for_every_account(self):
+        for question in ('Create a sermon about faith','Give me a sermon on faith','creat sermon faith','Find an outline about faith'):
+            with patch.object(knowledge.sermon_ebooks,'is_sermon_admin',return_value=True):
+                context=knowledge.library_context_for_gemini(question)
+            self.assertTrue(context.sermon_workflow)
+            self.assertIn('Living Faith',context)
+            self.assertIn('I. Trust God',context)
+            self.assertEqual(context.approved_sources[0]['url'],'/pastor-resources/bible-study?sermon=outline-faith')
+            self.assertNotIn('PRIVATE-NOTES-CANARY',context)
+            self.assertNotIn('PRIVATE-SERMON-CANARY',context)
+        self.assertTrue(knowledge.library_context_for_gemini('Create sermon faith').outline_only_notice)
+
+    def test_illustration_search_uses_real_stories_and_omits_empty_records(self):
+        context=knowledge.library_context_for_gemini('Find a sermon illustration about faith')
+        self.assertIn('Trust Through the Storm',context)
+        self.assertNotIn('Faith Empty Record',context)
+        self.assertNotIn('Living Faith',context)
+        self.assertTrue(all('?illustration=' in row['url'] for row in context.approved_sources))
+
+    def test_submitted_outline_gets_one_distinct_story_per_main_point(self):
+        context=knowledge.library_context_for_gemini('Analyze my sermon outline and recommend illustrations:\nI. Trust God\n  A. Have faith\nII. Pray faithfully')
+        self.assertEqual([point['point'] for point in context.sermon_point_matches],['Trust God','Pray faithfully'])
+        self.assertEqual([point['source']['id'] for point in context.sermon_point_matches],['trust','prayer'])
+        result=knowledge.validate_library_answer('Invented recommendation [Fake](/pastor-resources/bible-study?illustration=missing)',context)
+        self.assertEqual(result.count('?illustration='),2)
+        self.assertNotIn('missing',result)
+        self.assertLess(result.index('Trust God'),result.index('Pray faithfully'))
+
+    def test_unmatched_main_point_is_preserved_and_explicit(self):
+        context=knowledge.library_context_for_gemini('Analyze my outline:\n1. Trust God\n2. Xerophytes')
+        result=knowledge.validate_library_answer('[Wrong](/pastor-resources/read/999)',context)
+        self.assertIn('Xerophytes',result)
+        self.assertIn('No matching shared illustration',result)
+        self.assertEqual(result.count('?illustration='),1)
+
+    def test_followup_uses_only_user_supplied_points(self):
+        context=knowledge.library_context_for_gemini('Recommend illustrations for each point',history=[
+            dict(role='user',content='My outline\n1. Trust God\n2. Pray faithfully'),
+            dict(role='assistant',content='PRIVATE-NOTES-CANARY')])
+        self.assertEqual(len(context.sermon_point_matches),2)
+        self.assertNotIn('PRIVATE-NOTES-CANARY',context)
+
+    def test_invented_bible_study_links_cannot_authorize_sources(self):
+        context=knowledge.library_context_for_gemini('Find sermon outline faith')
+        answer=knowledge.validate_library_answer('[Invented](/pastor-resources/bible-study?sermon=private-123)',context)
+        self.assertNotIn('private-123',answer)
+        self.assertIn('sermon=outline-faith',answer)
+
+    def test_missing_storage_fails_closed_without_creating_files(self):
+        self.app.config['BIBLE_STUDY_DATABASE']=str(Path(self.directory.name)/'absent.db')
+        self.app.config['BIBLE_ILLUSTRATIONS_DATABASE']=str(Path(self.directory.name)/'absent-stories.db')
+        context=knowledge.library_context_for_gemini('Give me a sermon about xerophytes')
+        self.assertFalse(context.approved_sources)
+        self.assertFalse(Path(self.app.config['BIBLE_STUDY_DATABASE']).exists())
+        self.assertFalse(Path(self.app.config['BIBLE_ILLUSTRATIONS_DATABASE']).exists())
+
+    def test_bare_outline_is_recognized_and_nested_subpoints_are_not_main_points(self):
+        context=knowledge.library_context_for_gemini('I. Trust God\n  A. Have faith\n  C. More faith\nII. Pray faithfully')
+        self.assertEqual([point['point'] for point in context.sermon_point_matches],['Trust God','Pray faithfully'])
+
+    def test_long_outline_asks_to_split_without_searching_or_silently_dropping_points(self):
+        question='Analyze my outline\n'+'\n'.join(f'{i}. Faith' for i in range(1,20))
+        with patch.object(self.study,'search_shared_illustrations',side_effect=AssertionError('No unbounded search')):
+            context=knowledge.library_context_for_gemini(question)
+        self.assertIn('12 main points',context.sermon_input_error)
+
+    def test_search_does_not_modify_shared_databases(self):
+        before=(self.bible.read_bytes(),self.illustrations.read_bytes())
+        knowledge.library_context_for_gemini('Find a sermon outline faith')
+        knowledge.library_context_for_gemini('Find sermon illustration faith')
+        self.assertEqual(before,(self.bible.read_bytes(),self.illustrations.read_bytes()))
+
+
 if __name__ == '__main__':
     unittest.main()

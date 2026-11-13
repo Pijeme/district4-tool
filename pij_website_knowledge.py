@@ -182,7 +182,7 @@ BIBLE STUDY - READING AND STUDY TOOLS
 PRIVATE SERMON EBOOKS
 - The separate Sermon eBooks area under Pastor's Resources is a PRIVATE created-sermon collection restricted by backend authorization to the configured sermon admin account.
 - It supports private PDF sync, list/search, reader state, highlights/annotations, bookmarks, reader search and download.
-- Pij may retrieve this private collection only when Flask explicitly authorizes the logged-in account. Other users must never be told its private contents.
+- Pij never retrieves private Sermon eBooks or personal Sermon Notes, including for the owner. It searches only shared Bible Study sermon outlines and illustrations. Users may paste their own outline for analysis and one shared illustration recommendation per main point.
 - Publicly published sermon ebooks that live in normal Pastor's Resources are NOT private and may be searched like other public library books.
 
 TEMPORARY EDIT
