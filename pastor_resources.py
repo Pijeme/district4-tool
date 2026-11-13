@@ -18547,50 +18547,6 @@ load(1,true);
 """
 
 
-EBOOK_MAINTENANCE_HTML = """
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="robots" content="noindex">
-    <title>Under Maintenance | District 4 Tool</title>
-    <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; min-height: 100vh; min-height: 100svh; padding: 32px 20px;
-            display: grid; place-items: center; background: #f2f5fa; color: #172741;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-        main { width: 100%; max-width: 560px; padding: 44px 28px; text-align: center;
-            background: white; border: 1px solid #dfe6ef; border-radius: 24px;
-            box-shadow: 0 16px 48px #1727410d; }
-        .logo { width: 76px; height: 76px; object-fit: contain; margin-bottom: 16px; }
-        .label { margin: 0 0 12px; color: #69778a; font-size: 12px;
-            font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-        h1 { font-size: clamp(28px, 7vw, 38px); line-height: 1.2; margin: 0 0 20px; }
-        p { color: #566579; font-size: 16px; line-height: 1.7; margin: 0 0 16px; }
-        a { display: inline-block; margin-top: 12px; padding: 15px 25px;
-            border-radius: 12px; background: #172f53; color: white;
-            font-size: 16px; font-weight: 700; text-decoration: none; }
-        a:hover { background: #254875; }
-        a:focus-visible { outline: 3px solid #b37a12; outline-offset: 4px; }
-        .thanks { font-size: 14px; margin: 24px 0 0; }
-    </style>
-</head>
-<body>
-    <main>
-        <img class="logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="District 4">
-        <div class="label">Ebook Library</div>
-        <h1>Under Maintenance</h1>
-        <p>Our ebook library is temporarily unavailable while we restore access.</p>
-        <p>You can continue reading and studying in Bible Study.</p>
-        <a href="{{ url_for('bible_study.page') }}">Go to Bible Study</a>
-        <p class="thanks">Thank you for your patience and understanding.</p>
-    </main>
-</body>
-</html>
-"""
-
-
 # =========================================================
 # ROUTE REGISTRATION - V3 OVERRIDES EARLIER VERSION
 # =========================================================
@@ -18600,12 +18556,7 @@ def register_pastor_resources_routes(app):
 
     @app.route("/under-maintenance")
     def pastor_resources_maintenance():
-        return Response(
-            render_template_string(EBOOK_MAINTENANCE_HTML),
-            status=503,
-            mimetype="text/html",
-            headers={"Cache-Control": "no-store", "Retry-After": "3600"},
-        )
+        return redirect(url_for("pastor_resources"))
 
     @app.before_request
     def pastor_resources_database_maintenance_guard():
@@ -18632,10 +18583,6 @@ def register_pastor_resources_routes(app):
         "/pastor-resources"
     )
     def pastor_resources():
-        # Temporary library landing page; Bible Study and the rest of the app stay available.
-        if os.getenv("EBOOK_LIBRARY_MAINTENANCE", "1").strip().lower() not in ("0", "false", "no", "off"):
-            return redirect(url_for("pastor_resources_maintenance"))
-
         if not any_user_logged_in():
             return redirect(
                 url_for("splash")
