@@ -588,14 +588,19 @@
         });
         return clearChatPromise;
       }
-      function closePij() {
-        clearPijHistory().catch(() => {});
+      function hidePijPanel() {
         panel.classList.remove('open');
         panel.setAttribute('aria-hidden', 'true');
         launcher.setAttribute('aria-expanded', 'false');
         document.body.classList.remove('pij-mobile-open');
+      }
+      function closePij() {
+        clearPijHistory().catch(() => {});
+        hidePijPanel();
         launcher.focus();
       }
+      // Following a source keeps the recommendations available when Pij is reopened.
+      document.addEventListener('pij:source-opened', hidePijPanel);
 
       if (introStart) {
         introStart.addEventListener('click', function () {

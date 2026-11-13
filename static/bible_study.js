@@ -1278,7 +1278,7 @@
         } finally{finish();}
     }
 
-    function selectStudyTab(name, focus = false) {
+    function selectStudyTab(name, focus = false, load = true) {
         if (!["word", "concordance", "commentary", "sermon", "illustrations"].includes(name)) return;
         const changed = studyTab !== name;
         if (changed) { clearCommentaryVerseFocus();++wordRequest; ++concordanceRequest; ++commentaryRequest; ++illustrationRequest; }
@@ -1293,6 +1293,7 @@
         }
         positionWorkspaceTools();
         if (focus) element(({word:"Word",concordance:"Concordance",commentary:"Commentary",sermon:"Sermon",illustrations:"Illustrations"})[name]+"Tab").focus();
+        if (!load) return;
         if (name === "illustrations") {loadIllustrations();return;}
         if (name === "sermon") { loadSermons(); return; }
         if (name === "commentary") { loadCommentary(); return; }
@@ -3122,6 +3123,37 @@
     mobile.addEventListener("change", () => {positionTabs();setRatio(state.split_ratio);});
     new ResizeObserver(()=>setRatio(state.split_ratio)).observe(element("Layout"));
 
+    function sharedResourceLink(href) {
+        const url=new URL(href,location.href);
+        if(url.origin!==location.origin || url.pathname.replace(/\/$/,"")!==location.pathname.replace(/\/$/,""))return null;
+        const sermon=url.searchParams.get("sermon"),illustration=url.searchParams.get("illustration");
+        if(sermon && /^[A-Za-z0-9_-]{1,128}$/.test(sermon))return {url,kind:"sermon",id:sermon};
+        if(illustration && /^[A-Za-z0-9_-]{1,120}$/.test(illustration))return {url,kind:"illustrations",id:illustration};
+        return null;
+    }
+    async function openSharedResource(href,remember=false) {
+        const linked=sharedResourceLink(href);
+        if(!linked)return false;
+        if(remember && linked.url.href!==location.href)history.pushState(null,"",linked.url.href);
+        // A recommendation is independent of the user's saved Bible chapter.
+        // Show it prominently and fetch its source directly, without loading a chapter list.
+        await setMode("study");
+        selectStudyTab(linked.kind,false,false);
+        document.dispatchEvent(new Event("pij:source-opened"));
+        element("Study").focus({preventScroll:true});
+        if(linked.kind==="sermon")await openSermon(linked.id);
+        else await openIllustration(linked.id);
+        return true;
+    }
+    document.addEventListener("click",event=>{
+        if(event.defaultPrevented || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)return;
+        const link=event.target.closest?.("a.pij-internal-link[href]");
+        if(!link || link.hasAttribute("download") || link.target && link.target!=="_self" || !sharedResourceLink(link.href))return;
+        event.preventDefault();
+        openSharedResource(link.href,true).catch(error=>toast(error.message));
+    });
+    window.addEventListener("popstate",()=>openSharedResource(location.href).catch(error=>toast(error.message)));
+
     (async function initialize() {
         if(element("Sync") && config.syncUrl && new URLSearchParams(location.search).get("sync")==="1"){
             element("SyncDialog").showModal();pollSync();
@@ -3211,16 +3243,8 @@
                 element("Status").textContent=error.message;
             }
         }
-        // Pij links open only shared resource readers, never personal Sermon Notes.
-        const linkedSermon=query.get("sermon"),linkedIllustration=query.get("illustration");
-        const sharedId=/^[A-Za-z0-9_-]{1,120}$/;
-        if(linkedSermon && sharedId.test(linkedSermon)) {
-            await chapterLoadPromise;
-            setMode("split");selectStudyTab("sermon");await openSermon(linkedSermon);
-        } else if(linkedIllustration && sharedId.test(linkedIllustration)) {
-            await chapterLoadPromise;
-            setMode("split");selectStudyTab("illustrations");await openIllustration(linkedIllustration);
-        }
+        // Open the selected source even while the former Bible chapter is still loading.
+        await openSharedResource(location.href);
         if (element("Sync") && config.syncUrl) pollSync();
     })();
 })();

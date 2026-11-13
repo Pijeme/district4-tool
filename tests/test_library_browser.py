@@ -841,6 +841,39 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!el('Verses').querySelector('mark'),'Navigation created a permanent highlight');
         ''',setup,window_size=(390,844))
 
+    def test_pij_link_opens_without_waiting_for_previous_chapter(self):
+        setup="history.replaceState(null,'','?sermon=outline-fixture');"+self.personal_setup().replace(
+            "const path=String(url);let data={ok:true};", "const path=String(url);let data={ok:true};if(path.includes('/chapter?'))return new Promise(()=>{});").replace(
+            "layout_mode:'split'", "layout_mode:'bible'").replace(
+            "else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/sermons/'))data.sermon={id:'outline-fixture',title:'Selected Outline',ranges:[],blocks:[{type:'heading',text:'I. Selected point'}]};
+            else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            await new Promise(resolve=>setTimeout(resolve,250));
+            check(document.getElementById('bsSermonTitle').textContent==='Selected Outline','Recommendation waited for the previous Bible chapter');
+            check(document.getElementById('bibleStudyRoot').dataset.mode==='study','Saved Bible fullscreen concealed the recommendation');
+            check(!document.getElementById('bsSermonReader').hidden,'Selected outline is hidden');
+        ''',setup,window_size=(390,844))
+
+    def test_pij_click_in_existing_reader_switches_source_and_supports_back(self):
+        setup=self.personal_setup().replace("else if(path.endsWith('/history'))data.history=[];",'''
+            else if(path.includes('/sermons?'))data.sermons=[];
+            else if(path.includes('/sermons/'))data.sermon={id:path.split('/').pop(),title:path.endsWith('/outline-second')?'Second Outline':'First Outline',ranges:[],blocks:[{type:'heading',text:'I. Existing source point'}]};
+            else if(path.endsWith('/history'))data.history=[];''')
+        self.run_browser(self.render_preview(),'''
+            let dismissals=0;document.addEventListener('pij:source-opened',()=>dismissals++);
+            const wait=()=>new Promise(resolve=>setTimeout(resolve,120));
+            const link=document.createElement('a');link.className='pij-internal-link';link.href='?sermon=outline-first';link.textContent='First';document.body.append(link);
+            link.click();await wait();
+            check(document.getElementById('bsSermonTitle').textContent==='First Outline','First Pij click did not open source');
+            link.href='?sermon=outline-second';link.click();await wait();
+            check(document.getElementById('bsSermonTitle').textContent==='Second Outline','Second click retained the former source');
+            check(new URLSearchParams(location.search).get('sermon')==='outline-second','Selected source URL was not retained');
+            history.back();await wait();
+            check(document.getElementById('bsSermonTitle').textContent==='First Outline','Back navigation did not restore the selected source');
+            check(dismissals>=2,'Pij was not dismissed to reveal the source');
+        ''',setup,window_size=(390,844))
+
     def test_pij_outline_link_opens_shared_outline_reader(self):
         setup="history.replaceState(null,'','?sermon=outline-fixture');"+self.personal_setup().replace(
             "else if(path.endsWith('/history'))data.history=[];",'''
