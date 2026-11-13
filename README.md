@@ -573,3 +573,11 @@ extraction is unavailable, the existing Drive thumbnail fallback is saved locall
 as well. Temporary placeholder covers are not cached by the browser, allowing a
 later request to retry. This feature does not copy the original ebooks into local
 storage. New code must be deployed and the application restarted to take effect.
+
+### Temporary ebook maintenance page
+
+The ebook library currently redirects to `/under-maintenance`, which displays a
+maintenance notice and a **Go to Bible Study** link. Bible Study and other site
+pages remain available. The notice uses HTTP 503 and `Cache-Control: no-store`.
+After restoring ebook access, set `EBOOK_LIBRARY_MAINTENANCE=0` in the server's
+`.env` and restart the app service to reopen the library.
