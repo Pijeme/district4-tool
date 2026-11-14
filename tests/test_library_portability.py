@@ -2549,16 +2549,17 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(fetch.call_args.args, (expected, str(self.path)))
         legacy.assert_not_called()
         fetch.return_value = None
-        self.assertEqual(get_daily(today=local_midnight.date()), (expected, "Today's NIV verse is temporarily unavailable."))
+        self.assertEqual(get_daily(today=local_midnight.date()), (expected, "Today's verse is temporarily unavailable."))
         self.assertFalse(self.path.exists())
 
-    def test_bulletin_template_identifies_niv_and_escapes_source_text(self):
+    def test_bulletin_template_hides_edition_label_and_escapes_source_text(self):
         from flask import render_template
         with self.app.test_request_context():
             html = render_template('bulletin.html', verse_reference='Genesis 1:1', verse_text='<script>fixture</script>',
                                    today_str='October 21, 2026', area_number='1', posts=[], current_church='Fixture Church')
-        self.assertIn('Genesis 1:1 (NIV)', html)
-        self.assertIn('New International Version (NIV)', html)
+        self.assertIn('Genesis 1:1', html)
+        self.assertNotIn('(NIV)', html)
+        self.assertNotIn('New International Version', html)
         self.assertNotIn('bible-api.com', html)
         self.assertNotIn('KJV', html)
         self.assertIn('&lt;script&gt;fixture&lt;/script&gt;', html)
@@ -4497,7 +4498,7 @@ class BibleStudyIntegrationTests(unittest.TestCase):
         self.assertEqual(daily.call_args.args[2:4],('Genesis 1:1','Synthetic verse.'))
         self.assertEqual(response.headers['Cache-Control'],'private, no-store')
 
-    def test_bulletin_renders_cached_summary_with_source_and_escapes_ai_text(self):
+    def test_bulletin_renders_cached_devotional_without_source_label_and_escapes_text(self):
         from flask import render_template
         self.app.add_url_rule('/bulletin/leadership-insight',endpoint='bulletin_leadership_insight',view_func=lambda:'')
         self.app.add_url_rule('/bulletin/devotion/<day>/interactions',endpoint='devotion_interactions',view_func=lambda day:'')
@@ -4505,9 +4506,9 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             html=render_template('bulletin.html',verse_reference='Genesis 1:1',verse_text='Synthetic verse.',
                 leadership_insight=dict(title='<script>untrusted</script>',passage='Genesis 1:1-2',summary='Fixture summary.',content='Exact indexed article.\nSecond paragraph <source>.'),
                 insight_pending=False,verse_day='2026-10-21',today_str='Today',area_number='1',posts=[],current_church='')
-        self.assertIn('Maxwell Leadership Bible',html)
+        self.assertNotIn('Maxwell Leadership Bible',html)
         self.assertNotIn('AI-generated summary',html)
-        self.assertIn('class="maxwell-insight"',html)
+        self.assertIn('class="maxwell-insight daily-devotional"',html)
         self.assertIn('Exact indexed article.\nSecond paragraph &lt;source&gt;.',html)
         self.assertIn('Genesis 1:1-2',html)
         self.assertIn('&lt;script&gt;untrusted&lt;/script&gt;',html)

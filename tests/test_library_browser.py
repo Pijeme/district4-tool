@@ -271,9 +271,9 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(year.options[0].value==='2024'&&year.options[year.options.length-1].value==='2034','Wrong year bounds');
         ''','''window.pickerRequests=[];window.addEventListener('submit',e=>{e.preventDefault();pickerRequests.push(Object.fromEntries(new FormData(e.target)))});''')
 
-    def test_bulletin_reactions_comments_and_sharing_preserve_message_and_verse(self):
+    def render_bulletin_devotional(self, insight=None, pending=False):
         app = Flask(__name__, template_folder=str(ROOT/'templates'), static_folder=str(ROOT/'static'))
-        app.jinja_loader = DictLoader({'base.html':'<html><head></head><body>{% block content %}{% endblock %}</body></html>',
+        app.jinja_loader = DictLoader({'base.html':'<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>'+ '\n'.join((ROOT/'static'/name).read_text(encoding='utf-8') for name in ('styles.css','visual_upgrade.css','glass_theme.css')) +'</style></head><body class="district-glass"><main class="app-main">{% block content %}{% endblock %}</main></body></html>',
             'bulletin.html':(ROOT/'templates/bulletin.html').read_text(encoding='utf-8'),
             'ui_icons.html':(ROOT/'templates/ui_icons.html').read_text(encoding='utf-8')})
         app.add_url_rule('/pastor-resources/bible-study',endpoint='bible_study.page',view_func=lambda:'')
@@ -283,12 +283,28 @@ class BibleStudyBrowserTests(unittest.TestCase):
             from flask import render_template
             html=render_template('bulletin.html',verse_reference='Psalm 119:105',verse_text='Synthetic verse.',verse_day='2026-10-29',
                 today_str='Today',area_number='1',posts=[],current_church='',district_interaction_csrf='test-csrf',
-                insight_pending=False,leadership_insight=dict(title='Synthetic devotion',passage='Psalm 119:105',excerpt='Original message.',
-                    content='Original message.\\nFull devotional paragraph.',source_title='Synthetic source'))
+                insight_pending=pending,leadership_insight=insight)
         html=html.replace('</body>','<script src="/static/bulletin_insight.js"></script></body>')
+        return html
+
+    def test_bulletin_reactions_comments_and_sharing_preserve_message_and_verse(self):
+        from daily_devotional import devotional_view
+        html = self.render_bulletin_devotional(devotional_view(dict(
+            title="Synthetic devotion",passage="Psalm 119:105",excerpt="Original message.",
+            content="Original message.\n\nReflect · Apply\nA question?\n\nPractise\nFull devotional paragraph.\n\nPrayer\nLord, guide our service.",
+            source_title="NIV, Maxwell Leadership Bible, 3rd Edition (John C. Maxwell)")))
         self.run_browser(html, '''
             const wait=()=>new Promise(r=>setTimeout(r,30)),el=name=>document.getElementById('devotion'+name);
             check(!el('Copy'),'Copy message button remains');
+            const card=document.getElementById('maxwellInsight'),details=card.querySelector('details');
+            check(card.querySelectorAll('.devotional-body h4').length===3,'Devotional section headings missing');
+            check(!card.innerText.includes('Maxwell')&&!document.querySelector('.verse-ref').textContent.includes('NIV'),'Removed labels remain');
+            check(!document.body.innerText.includes('District-wide conversation ·'),'Removed visibility sentence remains');
+            details.open=true;await wait();
+            check(card.querySelector('.devotional-preview').hidden,'Expanded devotional duplicates preview');
+            check(details.querySelector('summary').textContent==='Read less','Read less label missing');
+            details.open=false;await wait();
+            check(!card.querySelector('.devotional-preview').hidden,'Preview did not return');
             check(el('Like').querySelector('img')&&el('Share').querySelector('img'),'Static action icons missing');
             el('Like').click();await wait();check(el('Like').getAttribute('aria-pressed')==='true','Like state did not persist');
             check(el('Like').querySelector('img')&&el('LikeLabel').textContent==='Liked','Like state replaced its icon');
@@ -299,9 +315,10 @@ class BibleStudyBrowserTests(unittest.TestCase):
             check(!el('People').querySelector('img'),'Comment executed markup');el('Close').click();
             el('Share').click();await wait();
             check(sharedMessage.text.includes('Original message.')&&sharedMessage.text.includes('Full devotional paragraph.'),'Share omitted devotional message');
-            check(sharedMessage.text.includes('Synthetic verse.')&&sharedMessage.text.includes('Psalm 119:105 (NIV)'),'Share omitted verse text/reference');
+            check(sharedMessage.text.includes('Synthetic verse.')&&sharedMessage.text.includes('Psalm 119:105'),'Share omitted verse text/reference');
             el('Shares').click();await wait();check(el('People').textContent.includes('Used share menu'),'Share participants missing');el('Close').click();
             check(devotionWrites.every(o=>o.headers['X-CSRF-Token']==='test-csrf'),'Interaction requests lack CSRF protection');
+            check(!sharedMessage.text.includes('NIV')&&!sharedMessage.text.includes('Maxwell'),'Share reintroduced removed labels');
             check(shareEvents.join(',')==='native,record','Share activity was recorded before the native share call');
             const recorded=devotionWrites.length;
             shareAllowed=false;el('Share').click();await wait();
@@ -332,6 +349,41 @@ class BibleStudyBrowserTests(unittest.TestCase):
                 return new Response(JSON.stringify({ok:true,...devotionState,people:[{actor_name:'Pastor One',church_name:'Church One',created_at:'2026-10-29T00:00:00Z',method:'share_menu'}],entries:commentEntries,next_before:null,next_offset:null}),{headers:{'Content-Type':'application/json'}});
             };
         ''')
+
+    def test_bulletin_pending_devotional_keeps_formatting_and_removed_labels_on_mobile(self):
+        from daily_devotional import devotional_view
+        insight = devotional_view(dict(title='Serving faithfully', passage='Psalm 119:105',
+            content='NIV, Maxwell Leadership Bible, 3rd Edition (John C. Maxwell) · A faithful example\n'
+                    'Psalm 119:105 (NIV)\n\nA readable paragraph.\n\nReflect · Apply\n'
+                    '- Listen well\n- Serve patiently\n\nPractise\n3. Offer help\n4. Encourage someone\n\n'
+                    'Prayer\nLord, guide us.\n\n<img src=x onerror=alert(1)>',
+            source_title='NIV, Maxwell Leadership Bible, 3rd Edition (John C. Maxwell)'))
+        setup = 'const readyInsight='+json.dumps(insight)+';'+r'''
+            let devotionalLoads=0;
+            window.fetch=async(url)=>new Response(JSON.stringify(String(url).includes('leadership-insight')?
+                {ok:true,day:'2026-10-29',reference:'Psalm 119:105',pending:++devotionalLoads===1,insight:readyInsight}:
+                {ok:true,likes:0,comments:0,shares:0,liked:false}),{headers:{'Content-Type':'application/json'}});
+        '''
+        for width in (320,390,1200):
+            with self.subTest(width=width):
+                self.run_browser(self.render_bulletin_devotional(pending=True), r'''
+                    const card=document.getElementById('maxwellInsight'),details=card.querySelector('details');
+                    check(!card.hidden,'Ready devotional stayed hidden');
+                    check(card.querySelectorAll('.devotional-body h4').length===4,'Loaded content lost headings');
+                    check(card.querySelectorAll('ul li').length===2,'Loaded content lost bullet list');
+                    check(card.querySelector('ol').start===3,'Loaded content lost numbered list');
+                    details.open=true;await new Promise(resolve=>setTimeout(resolve,30));
+                    check(card.querySelector('.devotional-preview').hidden,'Loaded preview duplicates full text');
+                    check(!card.innerText.includes('Maxwell')&&!document.body.innerText.includes('NIV'),'Labels reappeared after loading');
+                    check(!document.body.innerText.includes('District-wide conversation ·'),'Visibility sentence remains');
+                    check(!card.querySelector('img,script'),'Devotional executed HTML markup');
+                    check(card.innerText.includes('<img src=x onerror=alert(1)>'),'Plain text was lost');
+                    check(getComputedStyle(card.querySelector('.devotional-body')).fontSize==='17px','Reading font too small');
+                    check(document.documentElement.scrollWidth<=innerWidth+1,'Devotional overflows viewport');
+                    await new Promise(resolve=>setTimeout(resolve,2100));
+                    check(card.querySelector('details').open,'Background update collapsed the reading');
+                    check(card.querySelector('.devotional-preview').hidden,'Background update duplicated preview');
+                ''',setup,(width,850))
 
     def test_translation_switch_word_matches_verse_popups_and_copy_on_desktop_and_mobile(self):
         setup=self.personal_setup()+'''
@@ -2279,8 +2331,9 @@ class BibleStudyBrowserTests(unittest.TestCase):
             const card=document.getElementById('maxwellInsight');
             check(!card.hidden&&getComputedStyle(card).display!=='none','Matching insight remains hidden');
             check(!card.textContent.includes('AI-generated summary'),'Removed summary label remains');
-            check(card.textContent.includes('Maxwell Leadership Bible'),'Source attribution missing');
-            check(card.querySelector('h3').textContent==='Daily Devotional','Devotional title not updated');
+            check(!card.textContent.includes('Maxwell Leadership Bible'),'Removed source label remains');
+            check(card.querySelector('.devotional-label').textContent==='Daily Devotional','Devotional label missing');
+            check(card.querySelector('h3').textContent==='<img src=x onerror=alert(1)>','Devotional title lost');
             check(card.querySelector('.maxwell-source-content').textContent==='Exact indexed source.\\nSecond original paragraph.','Read more did not preserve indexed text');
             check(!card.querySelector('img'),'AI text executed as HTML');
             card.querySelector('summary').click();await new Promise(resolve=>setTimeout(resolve,20));

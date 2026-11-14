@@ -28,8 +28,32 @@
         function wireDetails() {
             const details = card.querySelector("details");
             if (details) details.addEventListener("toggle", () => {
-                details.querySelector("summary").textContent = details.open ? "Read less" : "Read more";
+                details.querySelector("summary").textContent = details.open ? "Read less" : "Read full devotional";
+                const preview = card.querySelector(".devotional-preview");
+                if (preview) preview.hidden = details.open;
             });
+        }
+        function renderInsight() {
+            const wasOpen = Boolean(card.querySelector("details")?.open);
+            const body = node("div", undefined, "maxwell-source-content devotional-body");
+            const blocks = insight.blocks || String(insight.content || "").split(/\n\s*\n/).map(text => ({kind: "paragraph", text}));
+            for (const block of blocks) {
+                if (block.kind === "list" || block.kind === "ordered_list") {
+                    const list = node(block.kind === "list" ? "ul" : "ol");
+                    if (block.kind === "ordered_list") list.start = Number(block.start) || 1;
+                    for (const item of block.items || []) list.append(node("li", item));
+                    body.append(list);
+                } else body.append(node(block.kind === "heading" ? "h4" : "p", block.text,
+                    block.kind === "reference" ? "devotional-reference" : ""));
+            }
+            const details = node("details", undefined, "devotional-details");
+            details.open = wasOpen;
+            details.append(node("summary", wasOpen ? "Read less" : "Read full devotional"), body);
+            card.replaceChildren(node("p", "Daily Devotional", "devotional-label"),
+                node("h3", insight.title, "devotional-title"), node("p", insight.passage, "devotional-passage"),
+                node("p", insight.excerpt, "devotional-preview"), details);
+            card.querySelector(".devotional-preview").hidden = wasOpen;
+            wireDetails();
         }
         function counts(data) {
             liked = data.liked;
@@ -109,7 +133,7 @@
             });
             function message() {
                 return ["Daily Devotional - " + config.day, insight.title, insight.content,
-                    "Verse of the Day", config.verse, config.reference + " (NIV)", "Source: " + (insight.source_title || "Maxwell Leadership Bible")].join("\n\n");
+                    "Verse of the Day", config.verse, config.reference].join("\n\n");
             }
             async function share() {
                 if (!insight || el("Share").disabled) return;
@@ -147,11 +171,7 @@
                 if (data.reference !== config.reference || data.day !== config.day) return;
                 if (data.insight) {
                     insight = data.insight;
-                    const details = document.createElement("details");
-                    details.append(node("summary", "Read more"), node("div", insight.content, "maxwell-source-content"));
-                    card.replaceChildren(node("h3", "Daily Devotional"), node("p", insight.source_title || "Maxwell Leadership Bible", "muted small"),
-                        node("strong", insight.title), node("p", insight.passage, "muted small"), node("p", insight.excerpt), details);
-                    wireDetails(); card.hidden = false; card.style.removeProperty("display");
+                    renderInsight(); card.hidden = false; card.style.removeProperty("display");
                     if (actions) { actions.hidden = false; refresh(); }
                 }
                 if (data.pending && attempt < 40) setTimeout(() => poll(attempt + 1), 2000);

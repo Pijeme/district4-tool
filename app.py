@@ -53,7 +53,7 @@ from thanksgiving_pledges import register_thanksgiving_pledges
 from temp_edit import register_temp_edit_routes
 from pastor_resources import register_pastor_resources_routes
 from bible_study import daily_maxwell_insight, get_indexed_niv_passage, register_bible_study_routes
-from daily_devotional import ORIGINAL_SOURCE, bible_study_passage, compose_devotional, get_daily_entry
+from daily_devotional import ORIGINAL_SOURCE, bible_study_passage, compose_devotional, devotional_view, get_daily_entry
 from mobile_bible_api import register_mobile_bible_routes
 from sermon_ebooks import register_sermon_ebooks_routes
 from pastor_report_pdf import build_monthly_activity_report_pdf, monthly_report_filename
@@ -2611,7 +2611,7 @@ def get_verse_of_the_day(today=None):
         reference, app.config['BIBLE_STUDY_DATABASE'], static_folder=app.static_folder,
         protected_paths=(DATABASE, AI_DATABASE),
     )
-    return reference, verse_text or "Today's NIV verse is temporarily unavailable."
+    return reference, verse_text or "Today's verse is temporarily unavailable."
 
 
 # ========================
@@ -4077,8 +4077,8 @@ def developer_working_area():
 
 def _devotion_insight(post):
     body = post['message']
-    return dict(title=post['title'], content=body, excerpt=body.split('\n', 1)[0][:600],
-                passage=post['source_passage'] or post['verse_reference'], source_title=post['source_title'])
+    return devotional_view(dict(title=post['title'], content=body, excerpt=body.split('\n', 1)[0][:600],
+                passage=post['source_passage'] or post['verse_reference'], source_title=post['source_title']))
 
 
 def _save_daily_devotion(day, reference, verse_text, insight, plan_key=''):

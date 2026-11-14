@@ -28,6 +28,17 @@ Archived days remain unchanged. A source note that finishes loading can enrich
 today's reflection; subsequent source outages do not remove a published note.
 No AI request or new package dependency is required.
 
+## Bulletin reading format
+
+The bulletin shows a devotional title, passage and short preview. Read full
+devotional expands paragraphs, section headings and lists; Read less restores
+the preview. Server-rendered and background-loaded entries use the same reading
+blocks. The bulletin and Share message omit the NIV/source display labels and
+the former district-wide conversation sentence. Source metadata and archived
+messages remain stored, and comments, likes and sharing retain their existing
+access and behavior. Formatting is escaped text; devotional text cannot inject
+HTML into the bulletin.
+
 ## Sermon Notes selection controls
 
 The website and standalone Android app share the Bible reader's selection

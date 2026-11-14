@@ -259,6 +259,30 @@ class ActivityTests(unittest.TestCase):
             kept_archive = appmod._save_daily_devotion('2020-01-01', entry['reference'], 'New verse', enriched, plan_key=entry['key'])
             self.assertEqual(kept_archive['title'], 'Archive')
 
+    def test_devotional_display_formats_archived_text_without_rewriting_it(self):
+        raw = ('NIV, Maxwell Leadership Bible, 3rd Edition (John C. Maxwell) · A faithful example\n'
+               'Psalm 119:105 (NIV)\n\nA paragraph wrapped\nacross two lines.\n\n'
+               'Reflect · Apply\n- Listen well\n- Serve patiently\n\nPractise\n'
+               '3. Offer help\n4. Encourage someone\n\nPrayer\nLord, guide us.\n\n'
+               '<img src=x onerror=alert(1)>')
+        with appmod.app.app_context():
+            view = appmod._save_daily_devotion('2020-01-02', 'Psalm 119:105', 'Verse.',
+                dict(title='Faithful service',content=raw,passage='Psalm 119:105 (NIV)',source_title='Maxwell Leadership Bible'))
+            stored = appmod.get_db().execute('SELECT message,source_title FROM daily_devotion_posts WHERE day=?',
+                                             ('2020-01-02',)).fetchone()
+            self.assertEqual(stored['message'], raw)
+            self.assertEqual(stored['source_title'], 'Maxwell Leadership Bible')
+        self.assertNotIn('Maxwell', view['content'])
+        self.assertNotIn('NIV', view['content'])
+        self.assertEqual(view['passage'], 'Psalm 119:105')
+        self.assertEqual(view['excerpt'], 'A paragraph wrapped across two lines.')
+        self.assertEqual([block['text'] for block in view['blocks'] if block['kind']=='heading'],
+                         ['A faithful example','Reflect · Apply','Practise','Prayer'])
+        self.assertEqual(next(block for block in view['blocks'] if block['kind']=='list')['items'],
+                         ['Listen well','Serve patiently'])
+        self.assertEqual(next(block for block in view['blocks'] if block['kind']=='ordered_list')['start'], 3)
+        self.assertIn('<img src=x onerror=alert(1)>', view['blocks'][-1]['text'])
+
     def test_bulletin_integrates_controls_and_reminder_once_for_each_role(self):
         insight = dict(title='Synthetic devotion',content='Full original message.',source_title='Synthetic source')
         with patch.object(appmod,'get_verse_of_the_day',return_value=('Psalm 119:105','Synthetic verse.')), \

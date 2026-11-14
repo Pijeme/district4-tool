@@ -12,6 +12,7 @@ can accompany each day's reflection; the book itself is not bundled here.
 No model, external service or indexed book is needed for daily availability.
 """
 
+import re
 from datetime import date
 
 
@@ -264,6 +265,72 @@ def compose_devotional(entry, maxwell_note=None):
                                f"{maxwell_note.get('passage') or entry['reference']}\n\n{maxwell_note['content']}\n\n"
                                f"Original daily reflection\n{entry['content']}"))
     return result
+
+
+def devotional_view(insight):
+    """Build safe reading blocks without changing stored devotional/source text."""
+    source = re.compile(
+        r'\b(?:NIV[ ,]+)?Maxwell Leadership Bible'
+        r'(?:,?\s*(?:3rd|Third)\s+Edition)?'
+        r'(?:\s*\(John C\. Maxwell\))?(?:\s+companion plan)?', re.I)
+
+    def clean(text):
+        text = source.sub('', str(text or ''))
+        text = re.sub(r'\(NIV\)|\[NIV\]|\bNIV\b', '', text, flags=re.I)
+        return re.sub(r'[ \t]{2,}', ' ', text).strip(' \t·|,')
+
+    blocks, paragraph, lines = [], [], []
+    list_block = None
+
+    def flush():
+        if paragraph:
+            blocks.append(dict(kind='paragraph', text=' '.join(paragraph)))
+            paragraph.clear()
+
+    for original in str(insight.get('content') or '').replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line = clean(original)
+        if not line or line.lower() == 'source:':
+            flush()
+            list_block = None
+            lines.append('')
+            continue
+        lines.append(line)
+        heading = re.match(r'^#{1,6}\s+(.+?)\s*#*$', line)
+        bold_heading = re.fullmatch(r'\*\*(.+?)\*\*', line)
+        named_heading = re.fullmatch(
+            r'(?:Reflect(?:\s*[·:–—-]\s*.+)?|Practise|Practice|Prayer|Original daily reflection|Daily reflection):?', line, re.I)
+        reference = re.fullmatch(r'(?:[1-3]\s*)?[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s+\d+:\d+(?:[-–]\d+)?\.?', line)
+        if heading or bold_heading or named_heading or source.match(original.strip()):
+            flush()
+            list_block = None
+            title = (heading or bold_heading).group(1) if heading or bold_heading else line.rstrip(':')
+            if title.lower() == 'original daily reflection':
+                title = 'Daily reflection'
+            blocks.append(dict(kind='heading', text=title))
+        elif reference:
+            flush()
+            list_block = None
+            blocks.append(dict(kind='reference', text=line))
+        else:
+            item = re.match(r'^(?:([-*•])\s+|(\d+)[.)]\s+)(.+)$', line)
+            if item:
+                flush()
+                kind = 'ordered_list' if item.group(2) else 'list'
+                if list_block is None or list_block['kind'] != kind:
+                    list_block = dict(kind=kind, items=[])
+                    if kind == 'ordered_list':
+                        list_block['start'] = int(item.group(2))
+                    blocks.append(list_block)
+                list_block['items'].append(item.group(3))
+            else:
+                list_block = None
+                paragraph.append(line)
+    flush()
+    preview = next((block['text'] for block in blocks if block['kind'] == 'paragraph'), clean(insight.get('excerpt')))
+    if len(preview) > 420:
+        preview = preview[:420].rsplit(' ', 1)[0] + '…'
+    return dict(insight, title=clean(insight.get('title')) or 'Daily reflection',
+                content='\n'.join(lines).strip(), passage=clean(insight.get('passage')), excerpt=preview, blocks=blocks)
 
 
 def bible_study_passage(reference):

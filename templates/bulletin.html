@@ -31,28 +31,33 @@
         </div>
         <p class="verse-text">{{ verse_text }}</p>
         <div class="verse-reference-row">
-          <p class="verse-ref">{{ verse_reference }} (NIV)</p>
+          <p class="verse-ref">{{ verse_reference }}</p>
           <a class="verse-study-shortcut" href="{{ bible_study_link|default(url_for('bible_study.page')) }}"><img src="{{ url_for('static', filename='bible-study/open-in-bible-study-v1.webp') }}" width="190" height="38" alt="Open in Bible Study" decoding="async"></a>
         </div>
         {% if devotion_plan %}<p class="muted small">Two-year leadership journey &middot; Year {{ devotion_plan.year }} &middot; {% if devotion_plan.week %}Week {{ devotion_plan.week }}{% else %}{{ devotion_plan.theme }}{% endif %}</p>{% endif %}
       </div>
 
-      <p class="muted small">
-        New International Version (NIV), from the Bible Study collection.
-      </p>
       {% if leadership_insight or insight_pending %}
-      <section id="maxwellInsight" class="maxwell-insight" {% if not leadership_insight %}hidden{% endif %}>
+      <section id="maxwellInsight" class="maxwell-insight daily-devotional" {% if not leadership_insight %}hidden{% endif %}>
         {% if leadership_insight %}
-        <h3>Daily Devotional</h3>
-        <p class="muted small">{{ leadership_insight.source_title|default("Maxwell Leadership Bible") }}</p>
-        <strong>{{ leadership_insight.title }}</strong>
-        <p class="muted small">{{ leadership_insight.passage }}</p>
-        <p>{{ leadership_insight.excerpt }}</p>
-        <details><summary>Read more</summary><div class="maxwell-source-content">{{ leadership_insight.content }}</div></details>
+        <p class="devotional-label">Daily Devotional</p>
+        <h3 class="devotional-title">{{ leadership_insight.title }}</h3>
+        <p class="devotional-passage">{{ leadership_insight.passage }}</p>
+        <p class="devotional-preview">{{ leadership_insight.excerpt }}</p>
+        <details class="devotional-details"><summary>Read full devotional</summary>
+          <div class="maxwell-source-content devotional-body">
+            {% for block in leadership_insight.blocks|default([]) %}
+              {% if block.kind == 'heading' %}<h4>{{ block.text }}</h4>
+              {% elif block.kind == 'reference' %}<p class="devotional-reference">{{ block.text }}</p>
+              {% elif block.kind == 'list' %}<ul>{% for item in block['items'] %}<li>{{ item }}</li>{% endfor %}</ul>
+              {% elif block.kind == 'ordered_list' %}<ol start="{{ block.start }}">{% for item in block['items'] %}<li>{{ item }}</li>{% endfor %}</ol>
+              {% else %}<p>{{ block.text }}</p>{% endif %}
+            {% else %}{% for paragraph in leadership_insight.content.split('\n\n') %}<p>{{ paragraph }}</p>{% endfor %}{% endfor %}
+          </div>
+        </details>
         {% endif %}
       </section>
       <div id="devotionActions" class="devotion-actions" {% if not leadership_insight %}hidden{% endif %}>
-        <p class="muted small">District-wide conversation · Names, churches and comments are visible to everyone signed in.</p>
         <div class="devotion-counts">
           <button type="button" id="devotionLikes">0 likes</button>
           <button type="button" id="devotionComments">0 comments</button>
