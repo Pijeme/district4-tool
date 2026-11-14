@@ -297,6 +297,119 @@ class ScannerSyncTests(unittest.TestCase):
             sheet.delete_rows.assert_called_once_with(2)
         self.assertTrue(self.event_post('backup/' + PAID).get_json()['removed'])
 
+    def test_bulk_print_preparation_is_protected_and_does_not_mark_printed(self):
+        url='/event-registration/admin/print/prepare'
+        with patch.object(appmod,'_log_visit_if_needed',return_value=None):
+            self.assertEqual(self.client.post(url,data={'keys':[PAID],'event_id':1}).status_code,403)
+        self.unlock_event_admin()
+        self.assertEqual(self.client.post(url,data={'keys':[PAID],'event_id':1}).status_code,400)
+        response=self.event_post('print/prepare',{'keys':[OTHER,PAID,OTHER],'event_id':1})
+        self.assertEqual(response.status_code,200,response.get_json())
+        data=response.get_json()
+        self.assertEqual([item['key'] for item in data['items']],[OTHER,PAID])
+        self.assertEqual((data['width_mm'],data['height_mm']),(100,148))
+        self.assertIn('size:100mm 148mm',data['html'])
+        self.assertEqual(data['html'].count('<img '),2)
+        self.assertIn('break-after:page',data['html'])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute('SELECT SUM(physical_printed),SUM(printed) FROM event_attendees').fetchone(),(0,0))
+        self.assertEqual(self.event_post('print/prepare',{'keys':[],'event_id':1}).status_code,400)
+        self.assertEqual(self.event_post('print/prepare',{'keys':['bad-key'],'event_id':1}).status_code,400)
+        self.assertEqual(self.event_post('print/prepare',{'keys':[PAID],'event_id':999}).status_code,409)
+        self.execute('UPDATE event_attendees SET complete=0 WHERE key=?',(OTHER,))
+        self.assertEqual(self.event_post('print/prepare',{'keys':[PAID,OTHER],'event_id':1}).status_code,409)
+        self.execute('UPDATE event_attendees SET deleted_at=? WHERE key=?',(NOW,PAID))
+        self.assertEqual(self.event_post('print/prepare',{'keys':[PAID],'event_id':1}).status_code,409)
+
+    def test_bulk_print_document_escapes_attendee_names(self):
+        self.unlock_event_admin()
+        self.execute('UPDATE event_attendees SET name=? WHERE key=?',('<script>alert(1)</script>',PAID))
+        response=self.event_post('print/prepare',{'keys':[PAID],'event_id':1})
+        self.assertEqual(response.status_code,200)
+        html=response.get_json()['html']
+        self.assertNotIn('<script>',html)
+        self.assertIn('&lt;script&gt;',html)
+
+    def test_pending_deletions_can_be_reviewed_or_forgotten_without_google(self):
+        self.unlock_event_admin()
+        self.assertEqual(self.event_post('delete/'+PAID,{'confirm':'yes','revision':1}).status_code,200)
+        path = '/event-registration/admin/deletions'
+        self.assertEqual(appmod.app.test_client().get(path).status_code,403)
+        active_forget = self.event_post('deletions/'+OTHER+'/forget',{'confirm':'yes','revision':1})
+        self.assertEqual(active_forget.status_code,409)
+        self.execute('UPDATE event_attendees SET deleted_at=? WHERE key=?',(NOW,OTHER))
+        data = self.client.get(path).get_json()
+        self.assertEqual(data['pending_deletions'],2)
+        self.assertEqual(len(data['records']),2)
+        self.assertEqual({item['key'] for item in data['records']},{PAID,OTHER})
+        for item in data['records']:
+            self.assertEqual(item['name'],'Test attendee')
+            self.assertEqual(item['area'],'7')
+            self.assertNotIn('birthday',item)
+            self.assertNotIn('cloud_snapshot',item)
+        forget = 'deletions/'+PAID+'/forget'
+        self.assertEqual(self.event_post(forget,{'revision':1}).status_code,400)
+        self.assertEqual(self.event_post(forget,{'confirm':'yes','revision':99}).status_code,409)
+        self.assertEqual(self.client.post('/event-registration/admin/'+forget,data={'confirm':'yes','revision':1}).status_code,400)
+        with patch('requests.sessions.Session.request',side_effect=AssertionError('Forget must never call Google')):
+            response = self.event_post(forget,{'confirm':'yes','revision':1})
+            self.assertEqual(response.status_code,200,response.get_json())
+            self.assertEqual(response.get_json()['pending_deletions'],1)
+            self.assertEqual(self.event_post(forget,{'confirm':'yes','revision':1}).status_code,200)
+            response = self.event_post('deletions/'+OTHER+'/forget',{'confirm':'yes','revision':1})
+            self.assertEqual(response.status_code,200,response.get_json())
+            self.assertEqual(response.get_json()['pending_deletions'],0)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM event_attendees').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM event_deletion_queue').fetchone()[0],0)
+
+    def test_public_thumbnails_are_small_and_revoked_when_deleted_or_inactive(self):
+        import io
+        from PIL import Image
+        photo = Path(self.temp.name)/'thumbnail-source.png'
+        Image.new('RGB',(900,900),'#c78d6b').save(photo)
+        self.execute('UPDATE event_attendees SET photo=? WHERE key=?',('f'*64+'.png',PAID))
+        url = '/event-registration/thumbnail/1/1.jpg'
+        with patch.object(appmod,'event_asset_path',return_value=photo):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code,200)
+            self.assertIn('no-store',response.headers['Cache-Control'])
+            with Image.open(io.BytesIO(response.data)) as image:
+                self.assertEqual(image.size,(80,96))
+                self.assertEqual(image.format,'JPEG')
+        with patch.object(appmod,'_log_visit_if_needed',return_value=None):
+            self.assertEqual(self.client.get('/event-registration/image/'+PAID+'/photo.png').status_code,403)
+        self.assertEqual(self.client.get('/event-registration/thumbnail/1/999.jpg').status_code,404)
+        placeholder = self.client.get('/event-registration/thumbnail/1/2.jpg')
+        self.assertEqual(placeholder.status_code,200)
+        self.execute('UPDATE event_attendees SET deleted_at=? WHERE key=?',(NOW,PAID))
+        self.assertEqual(self.client.get(url).status_code,404)
+        self.execute('UPDATE registration_events SET active=0 WHERE id=1')
+        self.assertEqual(self.client.get('/event-registration/thumbnail/1/2.jpg').status_code,404)
+
+    def test_drive_cleanup_errors_are_actionable_and_keep_deletion_queued(self):
+        self.unlock_event_admin()
+        response = self.event_post('delete/' + PAID, {'confirm':'yes','revision':1})
+        self.assertEqual(response.status_code,200)
+        env = {'EVENT_DRIVE_SCRIPT_URL':'https://script.google.com/macros/s/test/exec',
+               'EVENT_DRIVE_API_TOKEN':'x'*32}
+        cases = [('AUTH','rejected its token'),('EVENT_ONLY','not accepting Event operations'),
+                 ('INPUT','Update the existing Apps Script deployment'),('DRIVE','Executions log'),
+                 ('UNKNOWN','cleanup remains queued')]
+        with patch.dict(os.environ,env), patch.object(appmod.requests,'post') as drive, \
+             patch.object(appmod,'event_sheet') as sheets:
+            for code,message in cases:
+                with self.subTest(code=code):
+                    drive.return_value = Mock()
+                    drive.return_value.json.return_value = {'ok':False,'code':code}
+                    response = self.event_post('backup/' + PAID)
+                    self.assertEqual(response.status_code,503)
+                    self.assertIn(message,response.get_json()['error'])
+                    self.assertNotIn('x'*32,response.get_json()['error'])
+                    with closing(sqlite3.connect(self.database)) as db:
+                        self.assertEqual(db.execute('SELECT COUNT(*) FROM event_deletion_queue WHERE key=?',(PAID,)).fetchone()[0],1)
+            sheets.assert_not_called()
+
     def test_event_pages_render_and_protected_actions_require_admin(self):
         with patch.object(appmod, '_log_visit_if_needed', return_value=None), \
                 patch.object(appmod, 'event_directory', return_value=([], [])), \

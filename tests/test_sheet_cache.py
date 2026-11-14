@@ -952,6 +952,7 @@ class EventRegistrationTests(unittest.TestCase):
             patch.dict(os.environ,DATA_DIR=str(self.directory)),
             patch.dict(appmod.app.config,TESTING=True,SECRET_KEY='event-tests'),
             patch.object(appmod,'utc_now',return_value=self.now),
+            patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',datetime(2026,1,1,tzinfo=timezone.utc)),
             patch.object(appmod,'get_gs_client',side_effect=AssertionError('Unexpected live Google request')),
             patch.object(appmod,'event_render_id',return_value=self.photo),
         ):
@@ -1005,7 +1006,216 @@ class EventRegistrationTests(unittest.TestCase):
             'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(self.photo),'camera-photo.png')})
         self.assertEqual(response.status_code,200,response.data)
         with appmod.app.app_context():
+            attendee = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+        if not attendee['complete']:
+            response = self.client.post('/event-registration/review/'+key,data={
+                'csrf_token':self.csrf(),'revision':attendee['revision']})
+            self.assertEqual(response.status_code,200,response.data)
+        with appmod.app.app_context():
             return dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+
+    def test_scheduled_opening_blocks_public_drafts_and_submissions_until_exact_time(self):
+        from datetime import timedelta
+        launch = datetime(2026,11,15,10,tzinfo=timezone.utc)
+        event = self.create_event()
+        key,details = self.register_details(event,'Waiting Attendee')
+        self.assertEqual(self.client.post('/event-registration/photo/'+key,data={
+            'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(self.photo),'photo.png')}).status_code,200)
+        with appmod.app.app_context():
+            before = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+            next_number = appmod.event_current()['next_number']
+        with self.client.session_transaction() as state:
+            state.pop('event_admin_until',None)
+            state.pop('ao_logged_in',None)
+        with patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',launch), \
+             patch.object(appmod,'utc_now',return_value=launch-timedelta(seconds=1)):
+            for path in ('/event-registration','/event-registration?new=1&admin=1',
+                         '/event-registration/photo/'+key,'/event-registration/review/'+key):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code,200)
+                self.assertIn(b'eventOpeningCountdown',response.data)
+                self.assertIn(b'general-convention-registration-opening.jpg',response.data)
+                self.assertNotIn(b'id="eventRegistrationForm"',response.data)
+                self.assertIn('no-store',response.headers['Cache-Control'])
+            self.assertEqual(self.client.get('/event-registration/image/'+key+'/review.png').status_code,423)
+            self.assertNotIn(b'eventOpeningCountdown',self.client.get('/event-registration?tab=attendees').data)
+            self.assertIn(b'Admin access',self.client.get('/event-registration?tab=admin').data)
+            for path,data in (('/event-registration/details',details),
+                ('/event-registration/photo/'+key,{'csrf_token':self.csrf(),'camera_capture':'1'}),
+                ('/event-registration/review/'+key,{'csrf_token':self.csrf(),'revision':before['revision']})):
+                response = self.client.post(path,data=data)
+                self.assertEqual(response.status_code,423,response.data)
+                self.assertEqual(response.json['code'],'REGISTRATION_NOT_OPEN')
+            with appmod.app.app_context():
+                self.assertEqual(dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()),before)
+                self.assertEqual(appmod.event_current()['next_number'],next_number)
+            self.assertEqual(self.client.post('/event-registration/details',data={}).status_code,400)
+        with patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',launch),patch.object(appmod,'utc_now',return_value=launch):
+            page = self.client.get('/event-registration')
+            self.assertIn(b'id="eventRegistrationForm"',page.data)
+            self.assertNotIn(b'eventOpeningCountdown',page.data)
+            self.assertEqual(self.client.post('/event-registration/details',data=details).status_code,200)
+            attendee = self.capture(key)
+            self.assertTrue(attendee['complete'])
+            self.assertEqual(attendee['number'],next_number)
+
+    def test_scheduled_opening_exempts_admin_and_verified_owner_only(self):
+        event = self.create_event()
+        launch = datetime(2026,11,15,10,tzinfo=timezone.utc)
+        with patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',launch):
+            # An event-admin session can register before launch.
+            with self.client.session_transaction() as state:
+                state.pop('ao_logged_in',None)
+            self.assertIn(b'id="eventRegistrationForm"',self.client.get('/event-registration').data)
+            key,_ = self.register_details(event,'Admin Test')
+            self.assertTrue(self.capture(key)['complete'])
+            # The owner's account also works without unlocking event admin.
+            self.admin(developer=True)
+            with self.client.session_transaction() as state:
+                state.pop('event_admin_until',None)
+            page = self.client.get('/event-registration?new=1')
+            self.assertIn(b'Admin preview',page.data)
+            key,_ = self.register_details(event,'Owner Test')
+            self.assertTrue(self.capture(key)['complete'])
+            # Another overseer and an expired event-admin session get no exemption.
+            with self.client.session_transaction() as state:
+                state.update(ao_username='otherao',event_admin_until=appmod.time.time()-1)
+            self.assertIn(b'eventOpeningCountdown',self.client.get('/event-registration').data)
+            with self.client.session_transaction() as state:
+                state['ao_username'] = 'Pijeme'
+            with appmod.app.app_context():
+                appmod.get_db().execute("UPDATE sheet_accounts_cache SET position='Pastor' WHERE username='Pijeme'")
+                appmod.get_db().commit()
+            self.assertIn(b'eventOpeningCountdown',self.client.get('/event-registration').data)
+
+    def test_opening_status_uses_server_time_and_never_logs_visits(self):
+        from datetime import timedelta
+        launch = datetime(2026,11,15,10,tzinfo=timezone.utc)
+        with patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',launch), \
+             patch.object(appmod,'_log_visit_if_needed',side_effect=AssertionError('Countdown must not log visits')):
+            for now,expected in ((launch-timedelta(microseconds=1),False),(launch,True),(launch+timedelta(seconds=1),True)):
+                with patch.object(appmod,'utc_now',return_value=now):
+                    response = self.client.get('/event-registration/opening-status')
+                    self.assertEqual(response.status_code,200)
+                    self.assertEqual(response.json['is_open'],expected)
+                    self.assertEqual(response.json['server_now_ms'],int(now.timestamp()*1000))
+                    self.assertEqual(datetime.fromisoformat(response.json['opens_at']),launch)
+                    self.assertIn('no-store',response.headers['Cache-Control'])
+
+    def test_print_size_is_fixed_and_export_metadata_matches(self):
+        from PIL import Image
+        event=self.create_event()
+        key,_=self.register_details(event)
+        person=self.capture(key)
+        page=self.client.get('/event-registration/print/'+key)
+        self.assertEqual(page.status_code,200)
+        self.assertNotIn(b'eventPrintWidth',page.data)
+        self.assertIn('100 × 148 mm'.encode(),page.data)
+        self.assertIn(b'eventPrintResultsDialog',page.data)
+        body=self.real_renderer(event,person,self.photo)
+        with Image.open(io.BytesIO(body)) as image:
+            xdpi,ydpi=image.info['dpi']
+            self.assertAlmostEqual(image.width/xdpi*25.4,100,places=2)
+            self.assertAlmostEqual(image.height/ydpi*25.4,148,places=2)
+
+    def test_area_overseer_is_first_church_option_and_area_zero_is_rejected(self):
+        event = self.create_event()
+        with appmod.app.app_context():
+            appmod.get_db().execute("UPDATE sheet_accounts_cache SET age='0' WHERE username='otherao'")
+            appmod.get_db().commit()
+            churches,areas = appmod.event_directory()
+            self.assertNotIn('0',areas)
+            self.assertFalse(any(item['area']=='0' for item in churches))
+            first = next(item for item in churches if item['area']=='1')
+            self.assertEqual(first['church_id'],'Area Overseer')
+            self.assertEqual(first['role'],'area_overseer')
+        key,data = self.register_details(event)
+        data.update(church_key=first['key'],name='Area Leader',address='Forged address',pastor='Forged leader')
+        response = self.client.post('/event-registration/details',data=data)
+        self.assertEqual(response.status_code,200,response.data)
+        with appmod.app.app_context():
+            row = appmod.get_db().execute('SELECT name,area,church,address,pastor FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(row['name'],'Ptr. Area Leader')
+            self.assertEqual(row['church'],'Area Overseer')
+            self.assertEqual(row['area'],'1')
+            self.assertEqual(row['address'],first['address'])
+            self.assertEqual(row['pastor'],first['pastor'])
+        self.assertEqual(self.client.post('/event-registration/details',data={**data,'area':'0'}).status_code,400)
+        self.assertEqual(self.client.post('/event-registration/details',data={**data,'church_key':'area-overseer:0'}).status_code,400)
+
+    def test_review_keeps_draft_private_and_confirms_only_after_corrections(self):
+        from PIL import Image
+        event = self.create_event()
+        key,details = self.register_details(event,'Before Review')
+        with self.client.session_transaction() as state:
+            state.pop('event_admin_until',None)
+        response = self.client.post('/event-registration/photo/'+key,data={
+            'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(self.photo),'camera.png')})
+        self.assertEqual(response.status_code,200,response.data)
+        self.assertIn('/event-registration/review/',response.json['redirect'])
+        with appmod.app.app_context():
+            draft = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+            self.assertEqual(draft['complete'],0)
+            self.assertIsNone(draft['number'])
+            self.assertEqual(appmod.event_current()['next_number'],1)
+        self.assertEqual(self.client.get('/event-registration/progress?list=1').json['count'],0)
+        self.assertIn(b'Review your ID',self.client.get(response.json['redirect']).data)
+        with patch.object(appmod,'event_render_id',self.real_renderer), \
+             patch('reportlab.graphics.barcode.qrencoder.QRCode',side_effect=AssertionError('Preview must not generate a QR')):
+            preview = self.client.get('/event-registration/image/'+key+'/review.png')
+            self.assertEqual(preview.status_code,200)
+            with Image.open(io.BytesIO(preview.data)) as image:
+                self.assertEqual(image.size,(600,900))
+                self.assertEqual(image.getpixel((5,5)),(16,37,78))
+        stranger = appmod.app.test_client()
+        self.assertEqual(stranger.get('/event-registration/image/'+key+'/review.png').status_code,403)
+        self.assertEqual(stranger.get('/event-registration/review/'+key).status_code,403)
+        self.assertEqual(self.client.get('/event-registration/image/'+key+'/id.png').status_code,403)
+        self.assertEqual(self.client.get('/event-registration/ticket/'+key).status_code,404)
+        details['name'] = 'After Review'
+        changed = self.client.post('/event-registration/details',data=details)
+        self.assertEqual(changed.status_code,200,changed.data)
+        self.assertIn('/event-registration/review/',changed.json['redirect'])
+        stale = self.client.post('/event-registration/review/'+key,data={'csrf_token':self.csrf(),'revision':draft['revision']})
+        self.assertEqual(stale.status_code,400)
+        with appmod.app.app_context():
+            current = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+            self.assertEqual(current['photo'],draft['photo'])
+            self.assertEqual(current['name'],'After Review')
+        confirmed = self.client.post('/event-registration/review/'+key,data={'csrf_token':self.csrf(),'revision':current['revision']})
+        self.assertEqual(confirmed.status_code,200,confirmed.data)
+        self.assertEqual(self.client.post('/event-registration/review/'+key,data={'csrf_token':self.csrf(),'revision':current['revision']}).status_code,200)
+        with appmod.app.app_context():
+            saved = appmod.get_db().execute('SELECT complete,number FROM event_attendees WHERE key=?',(key,)).fetchone()
+            self.assertEqual(tuple(saved),(1,1))
+            self.assertEqual(appmod.event_current()['next_number'],2)
+        page = self.client.get(confirmed.json['redirect'])
+        self.assertIn(b'Would you like to register another attendee?',page.data)
+        self.assertIn(b'id="eventRegisterAnother"',page.data)
+        self.assertIn(b'id="eventRegistrationExit" href="/event-registration?tab=attendees"',page.data)
+
+    def test_review_retakes_replace_draft_photo_and_closed_event_cannot_confirm(self):
+        from PIL import Image
+        event = self.create_event()
+        key,_ = self.register_details(event)
+        url = '/event-registration/review/'+key
+        self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf(),'revision':1}).status_code,400)
+        for color in ('red','blue'):
+            photo = io.BytesIO()
+            Image.new('RGB',(400,400),color).save(photo,'PNG')
+            response = self.client.post('/event-registration/photo/'+key,data={
+                'csrf_token':self.csrf(),'camera_capture':'1','photo':(io.BytesIO(photo.getvalue()),'camera.png')})
+            self.assertEqual(response.status_code,200)
+            with appmod.app.app_context():
+                draft = dict(appmod.get_db().execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone())
+                self.assertEqual(draft['complete'],0)
+                self.assertIsNone(draft['number'])
+                with Image.open(appmod.event_asset_path(draft['photo'])) as saved:
+                    self.assertEqual(saved.getpixel((200,200)),(255,0,0) if color=='red' else (0,0,255))
+        self.create_event('Youth Convention')
+        response = self.client.post(url,data={'csrf_token':self.csrf(),'revision':draft['revision']})
+        self.assertEqual(response.status_code,400)
+        self.assertIn('no longer active',response.json['error'])
 
     def test_public_access_admin_password_and_developer_boundary(self):
         page = self.client.get('/event-registration?tab=admin')
@@ -1139,7 +1349,7 @@ class EventRegistrationTests(unittest.TestCase):
         url = '/event-registration/cancel/'+key
         page = self.client.get('/event-registration/photo/'+key)
         self.assertIn(b'eventPhotoCancel',page.data)
-        self.assertLess(page.data.index(b'Finish registration'),page.data.index(b'Cancel submission'))
+        self.assertLess(page.data.index(b'Review ID'),page.data.index(b'Cancel submission'))
         self.assertEqual(self.client.post(url,data={'csrf_token':self.csrf()}).status_code,400)
         stranger = appmod.app.test_client()
         with stranger.session_transaction() as state:
@@ -1574,6 +1784,217 @@ class EventRegistrationTests(unittest.TestCase):
         page = self.client.get('/event-registration?new=1')
         self.assertIn(b'name="minister"',page.data)
 
+    def test_uploaded_template_keeps_event_fields_without_printing_them(self):
+        from PIL import Image, ImageOps
+        self.admin(developer=True)
+        data = dict(csrf_token=self.csrf(),id_design='ready_made',kind='District Convention',
+                    start_date='2026-12-20',end_date='2026-12-23',
+                    theme='Event information entered in the form',scripture='Luke 10:2')
+        artwork = (Path(appmod.app.static_folder)/appmod.EVENT_HARVEST_TEMPLATE).read_bytes()
+        with patch.object(appmod,'event_render_id',self.real_renderer):
+            preview = self.client.post('/event-registration/admin/event/preview',
+                data={**data,'background':(io.BytesIO(artwork),'finished-template.png')})
+            self.assertEqual(preview.status_code,200,preview.data[:200])
+            response = self.client.post('/event-registration/admin/event/save',
+                data={**data,'background':(io.BytesIO(artwork),'finished-template.png')})
+            self.assertEqual(response.status_code,200,response.data)
+            with appmod.app.app_context():
+                event = dict(appmod.event_current())
+                self.assertEqual(event['id_design'],'ready_made')
+                self.assertEqual(event['theme'],data['theme'])
+                self.assertEqual(event['scripture'],data['scripture'])
+                before = self.real_renderer(event)
+                altered_metadata = {**event,'theme':'A different theme','scripture':'Another Bible reference',
+                                    'kind':'Youth Convention','start_date':'2027-01-01'}
+                self.assertEqual(before,self.real_renderer(altered_metadata))
+                background = appmod.event_asset_path(event['background']).read_bytes()
+                with Image.open(io.BytesIO(before)) as output, Image.open(io.BytesIO(background)) as source:
+                    expected = ImageOps.fit(source.convert('RGB'),(1000,1500))
+                    self.assertEqual(output.crop((0,0,1000,615)).tobytes(),expected.crop((0,0,1000,615)).tobytes())
+            response = self.client.post('/event-registration/admin/event/save',
+                data={**data,'event_id':str(event['id']),'theme':'Updated event information'})
+            self.assertEqual(response.status_code,200,response.data)
+            with appmod.app.app_context():
+                saved = dict(appmod.event_current())
+                self.assertEqual(saved['background'],event['background'])
+                self.assertEqual(before,self.real_renderer(saved))
+
+    def test_edit_bundled_template_keeps_event_information_editable(self):
+        event = self.create_event()
+        data = dict(csrf_token=self.csrf(),event_id=str(event['id']),id_design='harvest_2026',
+                    kind=event['kind'],start_date=event['start_date'],end_date=event['end_date'],
+                    theme=appmod.EVENT_HARVEST_THEME,scripture=appmod.EVENT_HARVEST_SCRIPTURE)
+        self.assertEqual(self.client.post('/event-registration/admin/event/save',data=data).status_code,200)
+        data.update(id_design='ready_made',theme='Updated public event theme',scripture='Luke 10:2')
+        response = self.client.post('/event-registration/admin/event/save',data=data)
+        self.assertEqual(response.status_code,200,response.data)
+        with appmod.app.app_context():
+            event = dict(appmod.event_current())
+            self.assertEqual(event['theme'],'Updated public event theme')
+            self.assertEqual(event['scripture'],'Luke 10:2')
+            self.assertEqual(event['id_design'],'harvest_2026')
+        page = self.client.get('/event-registration?tab=admin').data
+        self.assertIn(b'ID template picture',page)
+        self.assertIn(b'name="theme"',page)
+        self.assertIn(b'name="scripture"',page)
+        self.assertNotIn(b'<select name="id_design"',page)
+
+    def test_missing_artwork_does_not_block_details_or_camera_capture(self):
+        event = self.create_event()
+        with appmod.app.app_context():
+            event['background'] = 'e'*64+'.png'
+            appmod.get_db().execute('UPDATE registration_events SET background=? WHERE id=?',(event['background'],event['id']))
+            appmod.get_db().commit()
+        with patch.object(appmod,'event_render_id',self.real_renderer):
+            self.assertEqual(self.client.get('/event-registration/background/'+str(event['id'])+'.png').status_code,404)
+            key,_ = self.register_details(event)
+            page = self.client.get('/event-registration/photo/'+key)
+            self.assertEqual(page.status_code,200)
+            self.assertIn(b'Take your ID photo',page.data)
+            attendee = self.capture(key)
+            self.assertEqual(attendee['complete'],1)
+            response = self.client.get('/event-registration/image/'+key+'/id.png')
+            self.assertEqual(response.status_code,503)
+            self.assertIn('artwork for this event is missing',response.json['error'])
+            data = {field:event[field] for field in ('kind','start_date','end_date','theme','scripture')}
+            data.update(csrf_token=self.csrf(),event_id=str(event['id']))
+            response = self.client.post('/event-registration/admin/event/preview',data=data)
+            self.assertEqual(response.status_code,400)
+            self.assertIn('Edit event / ID design',response.json['error'])
+
+    def test_bundled_harvest_recovers_missing_saved_artwork(self):
+        event = self.create_event()
+        data = dict(csrf_token=self.csrf(),event_id=str(event['id']),id_design='harvest_2026',
+                    kind=event['kind'],start_date=event['start_date'],end_date=event['end_date'],
+                    theme=appmod.EVENT_HARVEST_THEME,scripture=appmod.EVENT_HARVEST_SCRIPTURE)
+        with patch.object(appmod,'event_render_id',self.real_renderer):
+            response = self.client.post('/event-registration/admin/event/save',data=data)
+            self.assertEqual(response.status_code,200,response.data)
+            with appmod.app.app_context():
+                event = dict(appmod.event_current())
+                appmod.event_asset_path(event['background']).unlink()
+            background = self.client.get('/event-registration/background/'+str(event['id'])+'.png')
+            self.assertEqual(background.status_code,200)
+            self.assertEqual(background.data,(Path(appmod.app.static_folder)/appmod.EVENT_HARVEST_TEMPLATE).read_bytes())
+            background.close()
+            key,_ = self.register_details(event)
+            self.capture(key)
+            self.assertEqual(self.client.get('/event-registration/image/'+key+'/id.png').status_code,200)
+
+    def test_id_design_schema_migration_preserves_classic_event(self):
+        event = self.create_event()
+        with appmod.app.app_context():
+            db = appmod.get_db()
+            db.execute('ALTER TABLE registration_events DROP COLUMN id_design')
+            db.commit()
+            appmod.event_tables()
+            stored = dict(appmod.event_current())
+            self.assertEqual(stored['id_design'],'classic')
+            for field in ('id','name','theme','scripture','background'):
+                self.assertEqual(stored[field],event[field])
+
+    def test_harvest_template_preview_save_and_event_text_guard(self):
+        from PIL import Image, ImageOps
+        self.admin(developer=True)
+        data = dict(csrf_token=self.csrf(),id_design='harvest_2026',kind='District Convention',
+                    start_date='2026-12-20',end_date='2026-12-23',
+                    theme=appmod.EVENT_HARVEST_THEME,scripture=appmod.EVENT_HARVEST_SCRIPTURE)
+        with patch.object(appmod,'event_render_id',self.real_renderer):
+            preview = self.client.post('/event-registration/admin/event/preview',data=data)
+            self.assertEqual(preview.status_code,200,preview.data[:200])
+            with Image.open(io.BytesIO(preview.data)) as rendered, \
+                 Image.open(Path(appmod.app.static_folder)/appmod.EVENT_HARVEST_TEMPLATE) as template:
+                base = ImageOps.fit(template.convert('RGB'),(1000,1500))
+                self.assertEqual(rendered.size,(1000,1500))
+                self.assertEqual(rendered.crop((0,0,1000,615)).tobytes(),base.crop((0,0,1000,615)).tobytes())
+            saved = self.client.post('/event-registration/admin/event/save',data=data)
+            self.assertEqual(saved.status_code,200,saved.data)
+        with appmod.app.app_context():
+            event = dict(appmod.event_current())
+            self.assertEqual(event['id_design'],'harvest_2026')
+            self.assertTrue(appmod.event_asset_path(event['background']).is_file())
+        data['event_id'] = str(event['id'])
+        for changed in ({'theme':'Another theme'}, {'kind':'Youth Convention'},
+                        {'start_date':'2027-12-20','end_date':'2027-12-23'}, {'id_design':'unknown'}):
+            with self.subTest(changed=changed):
+                response = self.client.post('/event-registration/admin/event/save',data={**data,**changed})
+                self.assertEqual(response.status_code,400)
+        key,_ = self.register_details(event)
+        self.capture(key)
+        with patch.object(appmod,'event_render_id',self.real_renderer):
+            self.assertEqual(self.client.get('/event-registration/image/'+key+'/id.png').status_code,200)
+            self.assertEqual(self.client.get('/event-registration/image/'+key+'/shared.png').status_code,200)
+
+    def test_template_fields_fit_long_names_and_temporary_id_preserves_qr(self):
+        from PIL import Image
+        event = dict(id_design='harvest_2026')
+        attendee = dict(name='Ptr. Juan Miguel De Los Santos Dela Cruz',area='12',
+                        church='International One Way Outreach Miramonte Community Church',key='a'*32)
+        first = self.real_renderer(event,attendee,self.photo)
+        second = self.real_renderer(event,{**attendee,'name':'Ana Reyes','area':'7','church':'Miramonte Church','key':'b'*32},self.photo)
+        temporary = self.real_renderer(event,attendee,self.photo,temporary=True)
+        with Image.open(io.BytesIO(first)) as original, Image.open(io.BytesIO(second)) as other, \
+             Image.open(io.BytesIO(temporary)) as shared:
+            for box in ((130,940,870,1018),(380,1025,620,1067),(125,1069,875,1121),(330,1140,670,1464)):
+                self.assertNotEqual(original.crop(box).tobytes(),other.crop(box).tobytes())
+            for box in ((329,624,671,921),(130,940,870,1018),(330,1140,670,1464)):
+                self.assertEqual(original.crop(box).tobytes(),shared.crop(box).tobytes())
+        with self.assertRaisesRegex(ValueError,'too long'):
+            self.real_renderer(event,{**attendee,'name':'Very long name '*30},self.photo)
+
+    def test_finished_harvest_artwork_cannot_use_original_layout(self):
+        event = self.create_event()
+        data = {field:event[field] for field in ('kind','start_date','end_date','theme','scripture')}
+        data.update(csrf_token=self.csrf(),event_id=str(event['id']),id_design='classic')
+        artwork = (Path(appmod.app.static_folder)/appmod.EVENT_HARVEST_TEMPLATE).read_bytes()
+        # Preview and Save both reject a template uploaded into the background field.
+        for action in ('preview','save'):
+            response = self.client.post('/event-registration/admin/event/'+action,
+                data={**data,'background':(io.BytesIO(artwork),'harvest.png')})
+            self.assertEqual(response.status_code,400)
+            self.assertIn('ready-made Harvest template',response.json['error'])
+        # The same check covers an existing event with the wrong saved design.
+        from werkzeug.datastructures import FileStorage
+        normalized = appmod.ccm_photo(FileStorage(stream=io.BytesIO(artwork),filename='harvest.png'))
+        with appmod.app.app_context():
+            filename = appmod.event_asset_write(normalized)
+            appmod.get_db().execute('UPDATE registration_events SET background=? WHERE id=?',(filename,event['id']))
+            appmod.get_db().commit()
+        response = self.client.post('/event-registration/admin/event/preview',data=data)
+        self.assertEqual(response.status_code,400)
+        self.assertIn('without duplicating event text',response.json['error'])
+
+    def test_template_portrait_stays_in_frame_and_preserves_bottom_of_capture(self):
+        from PIL import Image, ImageOps
+        image = Image.new('RGB',(400,400),'blue')
+        # A lower face/shoulder region must survive the square-to-frame crop.
+        image.paste('red',(0,360,400,400))
+        capture = io.BytesIO()
+        image.save(capture,'PNG')
+        rendered = self.real_renderer(dict(id_design='harvest_2026'),photo=capture.getvalue())
+        with Image.open(io.BytesIO(rendered)) as output, \
+             Image.open(Path(appmod.app.static_folder)/appmod.EVENT_HARVEST_TEMPLATE) as template:
+            expected = ImageOps.fit(template.convert('RGB'),(1000,1500))
+            self.assertEqual(output.getpixel((500,910)),(255,0,0))
+            for point in ((320,760),(680,760),(500,618),(500,926)):
+                self.assertEqual(output.getpixel(point),expected.getpixel(point))
+
+    def test_changing_to_custom_template_requires_matching_artwork(self):
+        from PIL import Image
+        event = self.create_event()
+        data = {field:event[field] for field in ('kind','start_date','end_date','theme','scripture')}
+        data.update(csrf_token=self.csrf(),event_id=str(event['id']),id_design='ready_made')
+        url = '/event-registration/admin/event/save'
+        self.assertEqual(self.client.post(url,data=data).status_code,400)
+        self.assertEqual(self.client.post(url,data={**data,'background':(io.BytesIO(self.photo),'square.png')}).status_code,400)
+        artwork = io.BytesIO()
+        Image.new('RGB',(400,600),'maroon').save(artwork,'PNG')
+        response = self.client.post(url,data={**data,'background':(io.BytesIO(artwork.getvalue()),'template.png')})
+        self.assertEqual(response.status_code,200,response.data)
+        self.assertEqual(self.client.post(url,data=data).status_code,200)
+        with appmod.app.app_context():
+            self.assertEqual(appmod.event_current()['id_design'],'ready_made')
+
     def test_id_layout_fits_long_theme_and_rejects_unreadable_overflow(self):
         from PIL import Image
         event = self.create_event()
@@ -1758,7 +2179,9 @@ class EventRegistrationTests(unittest.TestCase):
             private = self.client.get('/event-registration/admin/delegate/'+key)
             self.assertEqual(private.json['delegate']['birthday'],'2000-06-01')
             self.assertEqual(appmod.app.test_client().get('/event-registration/admin/delegate/'+key).status_code,403)
-            self.client.post('/event-registration/admin/delete/'+key,data={'csrf_token':self.csrf(),'confirm':'yes','revision':1})
+            deleted = self.client.post('/event-registration/admin/delete/'+key,data={
+                'csrf_token':self.csrf(),'confirm':'yes','revision':updated['delegates'][0]['revision']})
+            self.assertEqual(deleted.status_code,200,deleted.data)
             self.assertEqual(self.meal_api(event,'delegates').json['delegates'],[])
 
     def test_meal_sets_claim_retry_duplicates_and_audit_void(self):

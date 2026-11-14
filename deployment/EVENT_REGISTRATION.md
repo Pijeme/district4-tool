@@ -8,11 +8,27 @@ does not grant that permission.
 
 ## Events and registration
 
+Public registration opens on **November 15, 2026, at 6:00 PM Philippine time**
+(`2026-11-15T10:00:00Z`). Until then, the Registration tab shows the supplied
+convention poster and a countdown. The server blocks early detail submissions,
+camera uploads, review pages/previews and registration confirmation, including
+previously saved draft links. Registered Attendees and admin login remain accessible.
+The signed-in developer account (validated against the Accounts mirror) and an
+unlocked event-admin session are exempt. Other account roles are not exempt.
+The countdown uses server time and verifies the opening before automatically
+loading the form. The opening check needs no scheduled job and runs after a restart.
+Deploy the updated code and `static/event/general-convention-registration-opening.jpg`
+before the opening; local changes do not update the hosted website automatically.
+After this one-time launch date, registration works normally for future events.
+
 The developer's Create Event dialog offers District Convention and Youth
-Convention, start/end dates, a theme, Bible text/reference and a blank ID
-background upload. The start year forms the stored Event value, for example
+Convention, start/end dates, a theme, Bible text/reference and a finished ID
+template picture upload. The start year forms the stored Event value, for example
 `District Convention 2026`. Preview ID renders the actual layout with sample
-attendee details. Saving checks that the text fits at readable font sizes.
+attendee details. Theme and Bible reference are event metadata for the registration
+page; the finished ID artwork already contains the fixed lettering. Only the photo,
+name, area, church and QR are added to the template. Saving checks that attendee
+text fits at readable font sizes.
 Creating a new event makes it active and preserves all earlier events and
 attendees. The admin event dropdown can view earlier collections. An event
 with registrations must keep its type and year; dates, theme, text and
@@ -21,11 +37,26 @@ background can still be edited. Changes to the design apply to future prints.
 The public form collects Name, Bday, optional Contact #, Area, Church Name,
 Church Address and Pastor. Area and church selections come from cached
 Accounts data. The server fills address/pastor; New church permits manual
-entry without adding an Accounts row. Details are saved locally before the
-separate camera page. Registration is completed with a live-camera capture;
-there is no photo picker. Cameras require HTTPS or localhost. Camera switching,
+entry without adding an Accounts row. Area 0 is excluded from the choices and
+rejected by the server.
+After choosing an area, **Area Overseer** is the first selectable church option.
+It saves that label as the church, uses the area's cached overseer ministry
+address/name where available, and applies one `Ptr.` prefix. It does not grant
+an account role or administrative access. Details are saved locally before the
+separate camera page. A live-camera capture saves a draft photo, then **Review ID**
+opens `/event-registration/review/<key>`. The owner-only preview image never
+generates a QR, contains repeated watermarks and a non-entry banner baked into
+the pixels, and is limited to 600 × 900. The attendee can edit the registration
+form while keeping the photo or retake it. Confirmation is a separate CSRF-protected
+POST; a revision check rejects stale details/photos. Only confirmation assigns
+the attendee number and marks the registration complete. Drafts are excluded from
+the roster, scanner, ticket verification and backup. Repeated confirmation does
+not allocate another number. The success page asks whether to Register another
+(a new blank form) or Exit (the Registered Attendees tab).
+
+There is no photo picker. Cameras require HTTPS or localhost. Camera switching,
 capture, preview and retake are supported. Retries reuse the same registration.
-Below Finish registration, Cancel submission opens a confirmation dialog with
+Below Review ID, Cancel submission opens a confirmation dialog with
 Yes, cancel and Back. Back preserves the captured photo and details. Confirming
 removes only that visitor's unfinished local registration and clears its session
 ownership. Cancellation requires CSRF and never deletes a completed attendee or
@@ -51,8 +82,12 @@ details save, including when the camera step finishes on another day. Internal
 opaque keys protect private photos and support stable QR links; these are not
 shown as registration numbers on IDs.
 
-The **Registered Attendees** public tab shows only registration number, name,
-area and church for completed registrations in the active event. It supports
+The **Registered Attendees** public tab shows a small photo, registration number,
+name, area and church for completed registrations in the active event. Public
+photo URLs use event ID and attendee number instead of private ticket keys;
+the server returns only an 80 × 96 JPEG, with a placeholder when no photo exists.
+Full-resolution photos retain their existing access checks. Public thumbnails
+stop working when the registration is deleted or its event is inactive. It supports
 search, sorting and an area filter without renumbering attendees. The banner
 shows the live registered count beside the dates. Neither the list nor the count
 includes unfinished camera steps or deleted registrations.
@@ -133,7 +168,10 @@ registration order, area, church or name, and filters by area. Paid and Release
 have separate actions. Each admin can choose Payment only, Print only, Release
 only or All actions; the choice is saved on that browser. Focused views show the
 number, name, area, church and selected action. Phones show compact portrait cards
-without horizontal scrolling. Event selection and backup settings are collapsible.
+without horizontal scrolling. The existing gear icon beside Create Event and
+Lock admin opens an Event & backup dialog containing event selection, event
+editing/deletion, Backup Data, cleanup counts and backup progress. Its close
+button and Escape are disabled while backup is running.
 Revision checks prevent stale windows from overwriting
 newer local changes. Admin mutations require CSRF protection.
 
@@ -142,7 +180,8 @@ the local attendee row and revokes their QR, photo and print access immediately;
 attendee numbers never change or get reused. A queued deletion is retained
 in `event_deletion_queue` until Backup Data confirms both the Google Sheets row
 removal and Google Drive cleanup. The queue keeps the identifiers needed to retry,
-not the full local registration or its photo. The Event script moves only files
+plus the name, area and church labels needed to review the pending list, not the
+full registration or its photo. The Event script moves only files
 whose descriptions match that exact event and attendee identity to Drive Trash,
 including old generated versions and legacy portraits. Other attendees' files
 and the folder are preserved. Partial failures retain the queue for retry, and
@@ -154,6 +193,17 @@ as a new version of the existing Event web app.** Keep its URL and token. The ne
 authenticated `action: delete` operation is required to confirm Drive cleanup;
 an older deployment leaves deletions queued instead of reporting false success.
 
+The gear dialog's **Review pending records** opens an admin-only list covering
+legacy deleted rows and durable cleanup records from all events. Each entry shows
+its name, event, area/church, deletion time and latest error. **Retry Google cleanup**
+retries that record through the existing confirmed-deletion flow; it does not
+restore the attendee or upload a deleted registration again. **Delete local record**
+requires explicit confirmation and only removes that local row/cleanup item,
+without calling Google. This is intended for cloud copies the admin already
+removed manually. CSRF, revision checks, active-row protection and the per-record
+backup lock prevent accidental or concurrent removal. Neither action renumbers
+active attendees.
+
 Only the developer can see or invoke Delete event. Each deletion requires entering
 the current event admin password, including when Admin is already unlocked. The
 server checks it on every request; the dialog clears it after confirmation,
@@ -162,14 +212,49 @@ Confirmation closes that
 event and deletes all its registrations, including unfinished ones. It keeps
 earlier/different events intact and allows recreating a corrected event of the
 same type and year. Any queued Google removals, including ones from deleted
-events, are processed before registrations in the next submission. The admin
+events, are retried during the next submission. The browser backs up current
+attendees first, then attempts queued cleanup. A failure for one record does not
+stop other registrations or meal backups. The final result reports confirmed
+backups, confirmed removals and failed records separately; failed deletions remain
+queued. The admin
 submission button remains available when deletions are queued and the list
 is empty. Previously published QR links for a deleted event stop working.
 
-Print is available regardless of payment/release. It opens a dedicated page
-with the actual ID, printer-dialog and PNG-download actions. A separate
-checkbox explicitly confirms successful physical printing; opening/cancelling
-the printer dialog and downloading never mark physical printing complete.
+Print is available regardless of payment/release. The attendee table has a
+checkbox beside each Print button and a select-all checkbox in its Print header.
+Select-all applies to currently visible rows; Print selected prints only visible
+checked IDs, in the displayed order. A normal row Print click starts a single-ID
+job immediately. Both paths prepare an admin/CSRF-protected, ID-only document in
+an offscreen iframe, wait for every image, then open the browser printer dialog.
+There is one ID per page, always 100 × 148 mm, with zero document margins and no
+width input. Up to 100 IDs can be prepared in one job.
+
+The first job prints the actual selected IDs after the admin chooses printer,
+paper and quality settings in the normal printer dialog/driver preferences;
+there is no separate test-page job. A first-use hint is hidden on that browser
+after a successful physical-print confirmation. The app remembers only that
+confirmation, not the printer name or driver settings. Those settings remain
+managed by the browser/Windows, and the normal print dialog opens for every job.
+
+When the print dialog closes, a popup lists the job's IDs. Unconfirmed IDs start
+unchecked. Staff check only physically successful prints and click Mark selected
+as printed. Each checked ID uses the existing revision-protected physical-print
+confirmation endpoint. Cancelling, closing without selecting, image-load errors
+and unchecked/failed IDs do not set printed status. Previously confirmed IDs
+keep their status. A stale record reports an error and refreshes its revision;
+the admin must review and select it again before retrying confirmation.
+
+**Reprint remaining IDs** saves checked successful IDs first, then starts a new
+real print job containing only the unchecked, unconfirmed IDs. It leaves the
+current popup open if saving a successful confirmation fails, so no selections
+are lost or silently duplicated. The button is disabled once every ID in the
+job is confirmed. A cancelled or failed job can be retried without selecting
+the same attendees again in the table.
+
+The dedicated print page remains available, with the actual ID, fixed-size Print
+ID action and PNG download. Its original manual confirmation checkbox also
+remains available. Opening/cancelling the print dialog and downloading never
+mark physical printing complete.
 The additive `physical_printed` field starts unconfirmed for legacy records,
 because the old `printed` field also allowed download confirmations. Existing
 data is preserved; admins must confirm physical printing before a new release.
@@ -177,8 +262,9 @@ The saved completion mark makes the attendee-list Print button green. The Print
 ID button on the print page also turns green immediately after a successful
 checkbox save; clearing the checkbox restores the normal button color.
 Browser printing uses the user's printer dialog, not unattended direct printing.
-The default physical size is 70 × 105 mm, adjustable by width at a fixed ratio.
-Only the ID is included in the print document.
+The physical size is fixed at 100 × 148 mm. The PNG's DPI metadata requests the
+same physical dimensions. Only the ID is included in the print document; use
+actual size / 100% in the printer dialog.
 
 Release / Share opens a new browser tab with an ID preview, **Release ID** and
 **Share Temporary ID**. The server permits Release ID only after payment and

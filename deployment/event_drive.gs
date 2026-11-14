@@ -49,15 +49,16 @@ function doPost(event) {
       while (files.hasNext()) {
         const file = files.next();
         const description = file.getDescription();
-        if (description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
+        if (!file.isTrashed() && description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
           file.setTrashed(true);
         }
       }
       // Confirm all versions are gone from the active event folder, including a retry.
       const remaining = folder.getFiles();
       while (remaining.hasNext()) {
-        const description = remaining.next().getDescription();
-        if (description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
+        const file = remaining.next();
+        const description = file.getDescription();
+        if (!file.isTrashed() && description.startsWith(prefix) && pattern.test(description.slice(prefix.length))) {
           return reply({ok:false, code:'DRIVE'});
         }
       }
@@ -104,7 +105,7 @@ function doPost(event) {
     return reply({ok:true, purpose:'event', file_id:file.getId(), name:data.filename,
                   folder_id:EVENT_DRIVE_FOLDER, side:data.side});
   } catch (error) {
-    console.error('Event Drive upload failed: ' + String(error && error.message || error));
+    console.error('Event Drive operation failed: ' + String(error && error.message || error));
     return reply({ok:false, code:'DRIVE'});
   } finally {
     if (lock && lock.hasLock()) lock.releaseLock();

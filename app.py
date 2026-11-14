@@ -10,6 +10,7 @@ import secrets
 import tempfile
 import hmac
 import shutil
+import threading
 import json
 import time
 import io
@@ -2908,7 +2909,7 @@ def website_activity_context():
 @app.after_request
 def collect_website_activity(response):
     if (response.direct_passthrough or request.path.startswith("/ai/")
-            or request.endpoint in {'healthz','event_progress'} or request.blueprint == 'bible_mobile'):
+            or request.endpoint in {'healthz','event_progress','event_thumbnail','event_opening_status'} or request.blueprint == 'bible_mobile'):
         return response
     actor = website_actor()
     old_actor = getattr(g, "website_actor", actor)
@@ -3252,8 +3253,8 @@ def restrict_member_staff_tools():
 def before_request():
     if request.endpoint == "healthz":
         return
-    if request.endpoint == 'event_progress':
-        # Frequent version checks are read-only and never log visits or sync Google.
+    if request.endpoint in ('event_progress','event_thumbnail','event_opening_status'):
+        # Polling and small roster photos never log visits or sync Google.
         return
     if request.blueprint == 'bible_mobile':
         # Bearer-token calls authenticate in their blueprint. Only mobile login
@@ -7433,6 +7434,12 @@ def ccm_verify(key):
 EVENT_HEADERS = ['Name', 'Bday', 'Contact #', 'Area', 'Church Name', 'Church Address',
                  'Pastor', 'Date created', 'Paid', 'Print', 'Release', 'Event']
 EVENT_TYPES = ('District Convention', 'Youth Convention')
+EVENT_PRINT_WIDTH_MM, EVENT_PRINT_HEIGHT_MM = 100, 148
+EVENT_HARVEST_THEME = 'The Urgent Call For The Great Harvest'
+EVENT_HARVEST_SCRIPTURE = 'Matt. 9:35–38'
+EVENT_HARVEST_TEMPLATE = 'event/harvest-convention-2026-template.png'
+EVENT_REGISTRATION_OPENS_AT = datetime.fromisoformat('2026-11-15T18:00:00+08:00')
+EVENT_REGISTRATION_POSTER = 'event/general-convention-registration-opening.jpg'
 
 
 def event_tables():
@@ -7466,6 +7473,12 @@ def event_tables():
             except sqlite3.OperationalError:
                 if 'deleted_at' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                     raise
+    if 'id_design' not in {r['name'] for r in db.execute('PRAGMA table_info(registration_events)')}:
+        try:
+            db.execute("ALTER TABLE registration_events ADD COLUMN id_design TEXT NOT NULL DEFAULT 'classic'")
+        except sqlite3.OperationalError:
+            if 'id_design' not in {r['name'] for r in db.execute('PRAGMA table_info(registration_events)')}:
+                raise
     for column in ('id_drive_id','id_backup_hash'):
         if column not in {r['name'] for r in db.execute('PRAGMA table_info(event_attendees)')}:
             try:
@@ -7517,10 +7530,31 @@ def event_pending_deletions():
         + (SELECT COUNT(*) FROM event_attendees WHERE deleted_at<>'')''').fetchone()[0]
 
 
+def event_deleted_records():
+    """Admin display labels for both legacy deleted rows and durable cleanup items."""
+    db = get_db()
+    records = {row['key']:dict(row) for row in db.execute("SELECT * FROM event_attendees WHERE deleted_at<>''")}
+    for queued in db.execute('SELECT key,payload,backup_error FROM event_deletion_queue'):
+        records[queued['key']] = {**json.loads(queued['payload']),'backup_error':queued['backup_error']}
+    events = {row['id']:dict(row) for row in db.execute('SELECT id,kind,start_date FROM registration_events')}
+    result = []
+    for row in records.values():
+        snapshot = json.loads(row.get('cloud_snapshot') or '{}')
+        event = events.get(row['event_id'])
+        event_name = event['kind']+' '+event['start_date'][:4] if event else 'Previous event'
+        result.append(dict(key=row['key'],event_id=row['event_id'],event_name=event_name,
+            number=row.get('number'),name=row.get('name') or snapshot.get('Name') or 'Unfinished registration',
+            area=row.get('area',''),church=row.get('church',''),deleted_at=row.get('deleted_at',''),
+            revision=row['revision'],error=row.get('backup_error',''),
+            retry_url=url_for('event_backup_one',key=row['key']),
+            forget_url=url_for('event_forget_deletion',key=row['key'])))
+    return sorted(result,key=lambda row:(row['event_id'],row['deleted_at'],row['name'].casefold()))
+
+
 def event_queue_deletion(attendee):
     """Keep only cloud cleanup identifiers, then remove the local registration."""
     fields = ('key','event_id','number','created_at','sheet_row','cloud_snapshot',
-              'id_drive_id','photo_drive_id','revision','deleted_at')
+              'id_drive_id','photo_drive_id','revision','deleted_at','name','area','church')
     payload = {field:attendee[field] for field in fields}
     if payload['cloud_snapshot']:
         previous = json.loads(payload['cloud_snapshot'])
@@ -7961,6 +7995,61 @@ def event_current():
     return get_db().execute("SELECT * FROM registration_events WHERE active=1 AND deleted_at='' ").fetchone()
 
 
+def event_registration_opening(view):
+    """Enforce the public launch on the server, including saved draft links."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if request.endpoint == 'event_registration' and request.args.get('tab') in ('admin','attendees'):
+            return view(*args, **kwargs)
+        if request.endpoint == 'event_image' and kwargs.get('side') != 'review':
+            return view(*args, **kwargs)
+        now = utc_now()
+        if now >= EVENT_REGISTRATION_OPENS_AT or event_admin() or is_cache_developer():
+            return view(*args, **kwargs)
+        event_tables()
+        active = event_current()
+        if not active:
+            return view(*args, **kwargs)
+        if request.method not in ('GET','HEAD'):
+            event_guard()
+            return jsonify(ok=False,code='REGISTRATION_NOT_OPEN',
+                error='Registration opens November 15, 2026 at 6:00 PM Philippine time.',
+                opens_at=EVENT_REGISTRATION_OPENS_AT.isoformat(),redirect=url_for('event_registration')),423
+        if request.endpoint == 'event_image':
+            return jsonify(ok=False,code='REGISTRATION_NOT_OPEN',
+                error='Registration has not opened yet.',opens_at=EVENT_REGISTRATION_OPENS_AT.isoformat()),423
+        days, remainder = divmod(max(0,int((EVENT_REGISTRATION_OPENS_AT-now).total_seconds())),86400)
+        hours, remainder = divmod(remainder,3600)
+        minutes, seconds = divmod(remainder,60)
+        return render_template('event_registration.html',view='opening',tab='registration',
+            event=dict(active),csrf=event_csrf(),admin=False,developer=False,
+            opening_at=EVENT_REGISTRATION_OPENS_AT.isoformat(),opening_server_ms=int(now.timestamp()*1000),
+            opening_poster=EVENT_REGISTRATION_POSTER,
+            opening_countdown=dict(days=days,hours=hours,minutes=minutes,seconds=seconds))
+    return wrapped
+
+
+@app.get('/event-registration/opening-status')
+def event_opening_status():
+    now = utc_now()
+    return jsonify(opens_at=EVENT_REGISTRATION_OPENS_AT.isoformat(),server_now_ms=int(now.timestamp()*1000),
+                   is_open=now>=EVENT_REGISTRATION_OPENS_AT,registration_url=url_for('event_registration'))
+
+
+def event_background_path(event):
+    """Use the saved artwork, with a recoverable fallback for the bundled design."""
+    path = event_asset_path(event['background']) if event.get('background') else None
+    if path and path.is_file():
+        return path
+    if event.get('id_design') == 'harvest_2026':
+        bundled = Path(app.static_folder) / EVENT_HARVEST_TEMPLATE
+        if bundled.is_file():
+            return bundled
+    raise CCMStorageError('The ID artwork for this event is missing. Open Admin > Event & backup > '
+                          'Edit event / ID design, then upload the finished ID template picture and save. '
+                          'Registration details and camera capture can still be completed.')
+
+
 def event_attendee(key, admin=False, include_deleted=False):
     if not re.fullmatch(r'[a-f0-9]{32}', key or ''):
         abort(404)
@@ -7972,18 +8061,19 @@ def event_attendee(key, admin=False, include_deleted=False):
     return dict(row)
 
 
-def event_render_id(event, attendee=None, photo=None, background=None, temporary=False):
-    """Render a translucent frosted header/theme panel and glowing attendee text."""
+def event_render_id(event, attendee=None, photo=None, background=None, temporary=False, review=False):
+    """Fill a ready-made template or render the original event layout."""
     from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
     from reportlab.graphics.barcode.qrencoder import QRCode, QRErrorCorrectLevel
     width, height = 1000, 1500
-    if background is None and event.get('background'):
-        background = event_asset_path(event['background']).read_bytes()
+    ready_made = event.get('id_design', 'classic') in ('harvest_2026', 'ready_made')
+    if background is None and (event.get('background') or ready_made):
+        background = event_background_path(event).read_bytes()
     if background:
         with Image.open(io.BytesIO(background)) as source:
             card = ImageOps.fit(source.convert('RGB'), (width,height)).convert('RGBA')
     else:
-        card = Image.new('RGBA', (width,height), '#f1e8d3')
+        card = Image.new('RGBA', (width,height), '#16284e' if review and ready_made else '#f1e8d3')
     font_path = str(Path(app.static_folder) / 'ccm' / 'Tinos-Bold.ttf')
 
     def layout(value, box, initial, minimum, limit, font_file=font_path):
@@ -8046,75 +8136,129 @@ def event_render_id(event, attendee=None, photo=None, background=None, temporary
             fill = '#740b12' if theme and index == len(lines)-1 else color
             draw.text(position,line,font=font,fill=fill,stroke_width=2 if theme else 0,stroke_fill='#d5a43c')
 
-    # A lightly frosted, translucent panel keeps the uploaded background visible.
-    panel_box = (38,28,962,638)
-    frosted = card.crop(panel_box).filter(ImageFilter.GaussianBlur(7))
-    frosted = Image.alpha_composite(frosted,Image.new('RGBA',frosted.size,(255,255,255,100)))
-    panel_mask = Image.new('L',frosted.size,0)
-    ImageDraw.Draw(panel_mask).rounded_rectangle((0,0,frosted.width-1,frosted.height-1),radius=28,fill=255)
-    card.paste(frosted,panel_box[:2],panel_mask)
-    border = Image.new('RGBA',card.size)
-    ImageDraw.Draw(border).rounded_rectangle((38,28,961,637),radius=28,outline=(255,255,255,175),width=2)
-    card = Image.alpha_composite(card,border)
-    organization = 'INTERNATIONAL ONE WAY\nOUTREACH · DISTRICT 4'
-    organization_layout = layout(organization,(0,0,752,118),52,40,2)
-    organization_height = organization_layout[-1]
-    organization_width = max(bound[2]-bound[0] for bound in organization_layout[2])
-    with Image.open(Path(app.static_folder)/'img'/'logo.png') as original:
-        logo = original.convert('RGBA')
-        logo = logo.crop(logo.getbbox())
-        logo.thumbnail((organization_height,organization_height),Image.Resampling.LANCZOS)
-        # Center the actual logo and lettering together, keeping a 14px visual gap.
-        logo_x = round((width-logo.width-14-organization_width)/2)
-        organization_x = logo_x+logo.width+14
-        organization_box = (organization_x-10,48,organization_x+organization_width+10,166)
-        card.alpha_composite(logo,(logo_x,round((organization_box[1]+organization_box[3]-logo.height)/2)))
-    text(organization,organization_box,52,40,2,glow=False)
-    year = date.fromisoformat(event['start_date']).year
-    title = ('General Convention' if event['kind']=='District Convention' else 'Youth Convention')+' '+str(year)
-    text(title,(90,166,910,254),72,36,1,color='#740b12',glow=False,
-         font_file=str(Path(app.static_folder)/'fonts'/'Kalam-Regular.ttf'))
-    text('THEME',(365,254,635,294),28,20,1,color='#740b12',glow=False)
-    text(event['theme'],(60,294,940,532),96,30,5,theme=True,glow=False)
-    text(event['scripture'],(80,538,920,630),42,22,3,glow=False)
+    if not ready_made:
+        # A lightly frosted, translucent panel keeps the uploaded background visible.
+        panel_box = (38,28,962,638)
+        frosted = card.crop(panel_box).filter(ImageFilter.GaussianBlur(7))
+        frosted = Image.alpha_composite(frosted,Image.new('RGBA',frosted.size,(255,255,255,100)))
+        panel_mask = Image.new('L',frosted.size,0)
+        ImageDraw.Draw(panel_mask).rounded_rectangle((0,0,frosted.width-1,frosted.height-1),radius=28,fill=255)
+        card.paste(frosted,panel_box[:2],panel_mask)
+        border = Image.new('RGBA',card.size)
+        ImageDraw.Draw(border).rounded_rectangle((38,28,961,637),radius=28,outline=(255,255,255,175),width=2)
+        card = Image.alpha_composite(card,border)
+        organization = 'INTERNATIONAL ONE WAY\nOUTREACH · DISTRICT 4'
+        organization_layout = layout(organization,(0,0,752,118),52,40,2)
+        organization_height = organization_layout[-1]
+        organization_width = max(bound[2]-bound[0] for bound in organization_layout[2])
+        with Image.open(Path(app.static_folder)/'img'/'logo.png') as original:
+            logo = original.convert('RGBA')
+            logo = logo.crop(logo.getbbox())
+            logo.thumbnail((organization_height,organization_height),Image.Resampling.LANCZOS)
+            # Center the actual logo and lettering together, keeping a 14px visual gap.
+            logo_x = round((width-logo.width-14-organization_width)/2)
+            organization_x = logo_x+logo.width+14
+            organization_box = (organization_x-10,48,organization_x+organization_width+10,166)
+            card.alpha_composite(logo,(logo_x,round((organization_box[1]+organization_box[3]-logo.height)/2)))
+        text(organization,organization_box,52,40,2,glow=False)
+        year = date.fromisoformat(event['start_date']).year
+        title = ('General Convention' if event['kind']=='District Convention' else 'Youth Convention')+' '+str(year)
+        text(title,(90,166,910,254),72,36,1,color='#740b12',glow=False,
+             font_file=str(Path(app.static_folder)/'fonts'/'Kalam-Regular.ttf'))
+        text('THEME',(365,254,635,294),28,20,1,color='#740b12',glow=False)
+        text(event['theme'],(60,294,940,532),96,30,5,theme=True,glow=False)
+        text(event['scripture'],(80,538,920,630),42,22,3,glow=False)
     draw = ImageDraw.Draw(card)
-    draw.rounded_rectangle((300,648,700,1043),radius=24,fill='#fffdf8',outline='#c99b2c',width=5)
+    portrait_box = (329,624,671,921) if ready_made else (306,654,694,1037)
+    portrait_size = (portrait_box[2]-portrait_box[0],portrait_box[3]-portrait_box[1])
+    if not ready_made:
+        draw.rounded_rectangle((300,648,700,1043),radius=24,fill='#fffdf8',outline='#c99b2c',width=5)
     if photo:
         with Image.open(io.BytesIO(photo)) as source:
-            portrait = ImageOps.fit(source.convert('RGB'),(388,383),centering=(.5,.4))
+            portrait = ImageOps.fit(ImageOps.exif_transpose(source).convert('RGB'),portrait_size,
+                                    centering=(.5,1) if ready_made else (.5,.4))
         mask = Image.new('L',portrait.size,0)
-        ImageDraw.Draw(mask).rounded_rectangle((0,0,portrait.width-1,portrait.height-1),radius=18,fill=255)
-        card.paste(portrait,(306,654),mask)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,portrait.width-1,portrait.height-1),radius=34 if ready_made else 18,fill=255)
+        card.paste(portrait,portrait_box[:2],mask)
+    elif ready_made:
+        draw.ellipse((443,675,557,789),fill='#d8c4bb')
+        draw.rounded_rectangle((386,801,614,893),radius=45,fill='#d8c4bb')
     else:
         draw.ellipse((420,726,580,886),fill='#b9c3ce')
         draw.rounded_rectangle((354,899,646,1020),radius=55,fill='#b9c3ce')
     attendee = attendee or {'name':'SAMPLE ATTENDEE','area':'4','church':'Sample Church','key':'0'*32}
-    text(attendee['name'],(45,1055,955,1140),65,25,2)
-    text('Area '+attendee['area'],(180,1152,820,1197),37,22,1)
-    text(attendee['church'],(80,1204,920,1270),39,22,2)
-    qr = QRCode(None,QRErrorCorrectLevel.M)
-    qr.addData(CCM_BASE_URL.rsplit('/ccm',1)[0]+'/event-registration/ticket/'+attendee['key'])
-    qr.make()
-    scale = max(1,200//(qr.moduleCount+8))
-    qr_image = Image.new('RGB',((qr.moduleCount+8)*scale,)*2,'white')
-    qdraw = ImageDraw.Draw(qr_image)
-    for y,row in enumerate(qr.modules):
-        for x,dark in enumerate(row):
-            if dark:
-                qdraw.rectangle(((x+4)*scale,(y+4)*scale,(x+5)*scale-1,(y+5)*scale-1),fill='black')
-    card.paste(qr_image,((width-qr_image.width)//2,1290+(200-qr_image.height)//2))
+    if ready_made:
+        text(attendee['name'],(130,940,870,1018),62,25,2,color='white',glow=False)
+        text('AREA '+attendee['area'],(380,1025,620,1067),37,22,1,color='#740b12',glow=False)
+        text(attendee['church'],(125,1069,875,1121),42,20,2,color='white',glow=False)
+    else:
+        text(attendee['name'],(45,1055,955,1140),65,25,2)
+        text('Area '+attendee['area'],(180,1152,820,1197),37,22,1)
+        text(attendee['church'],(80,1204,920,1270),39,22,2)
+    if not review:
+        qr = QRCode(None,QRErrorCorrectLevel.M)
+        qr.addData(CCM_BASE_URL.rsplit('/ccm',1)[0]+'/event-registration/ticket/'+attendee['key'])
+        qr.make()
+        qr_size = 324 if ready_made else 200
+        scale = max(1,qr_size//(qr.moduleCount+8))
+        qr_image = Image.new('RGB',((qr.moduleCount+8)*scale,)*2,'white')
+        qdraw = ImageDraw.Draw(qr_image)
+        for y,row in enumerate(qr.modules):
+            for x,dark in enumerate(row):
+                if dark:
+                    qdraw.rectangle(((x+4)*scale,(y+4)*scale,(x+5)*scale-1,(y+5)*scale-1),fill='black')
+        if ready_made:
+            # Fill the template's QR panel, including its four-module quiet zone.
+            # Nearest-neighbor keeps the enlarged modules pure black and white.
+            qr_image = qr_image.resize((qr_size,qr_size),Image.Resampling.NEAREST)
+        qr_y = 1140+(324-qr_image.height)//2 if ready_made else 1290+(200-qr_image.height)//2
+        card.paste(qr_image,((width-qr_image.width)//2,qr_y))
     if temporary:
         # Keep the portrait, name and QR unobstructed. Printable originals never use this banner.
         draw = ImageDraw.Draw(card)
         draw.rounded_rectangle((40,760,280,900),radius=12,fill='#fff0c4',outline='#9a5700',width=3)
         draw.multiline_text((160,830),'TEMPORARY\nID',font=ImageFont.truetype(font_path,34),
                             anchor='mm',align='center',fill='#773c00')
+    if review:
+        # Baked into the pixels, so hiding webpage elements cannot remove the
+        # watermark or reveal a QR. Attendee previews never generate a QR code.
+        qr_box = (345,1180,655,1415) if ready_made else (390,1300,610,1480)
+        text('PREVIEW ONLY\nNOT VALID\nFOR ENTRY',qr_box,32,22,3,color='#742334',glow=False)
+        watermark = Image.new('RGBA',card.size)
+        watermark_draw = ImageDraw.Draw(watermark)
+        watermark_font = ImageFont.truetype(str(Path(app.static_folder)/'fonts'/'NotoSans-Bold.ttf'),64)
+        for y in range(-200,height+200,240):
+            for x in range(-300,width+300,650):
+                watermark_draw.text((x,y),'PREVIEW ONLY',font=watermark_font,
+                                    fill=(255,255,255,115),stroke_width=2,stroke_fill=(8,24,50,65))
+        card = Image.alpha_composite(card,watermark.rotate(32,resample=Image.Resampling.BICUBIC))
+        banner = ImageDraw.Draw(card)
+        banner.rectangle((0,0,width,54),fill='#10254e')
+        banner.text((width//2,27),'PREVIEW ONLY - NOT VALID FOR ENTRY',
+                    font=ImageFont.truetype(font_path,27),fill='white',anchor='mm')
+        card = card.resize((600,900),Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
-    card.convert('RGB').save(buffer,'PNG',dpi=(363,363),compress_level=3)
+    card.convert('RGB').save(buffer,'PNG',dpi=(96,96) if review else
+                            (width*25.4/EVENT_PRINT_WIDTH_MM,height*25.4/EVENT_PRINT_HEIGHT_MM),compress_level=3)
     return buffer.getvalue()
 
 
 def event_form_config():
+    event_id = request.form.get('event_id','')
+    old = get_db().execute("SELECT * FROM registration_events WHERE id=? AND deleted_at=''",(event_id,)).fetchone() if event_id else None
+    if event_id and not old:
+        abort(404)
+    config = dict(old) if old else {}
+    upload = request.files.get('background')
+    has_upload = bool(upload and upload.filename)
+    # Cached original forms retain their renderer. The current form explicitly
+    # uses a finished template; its theme/reference fields are event metadata.
+    legacy_form = 'theme' in request.form or 'scripture' in request.form
+    design = request.form.get('id_design',config.get('id_design','classic') if legacy_form else 'ready_made')
+    if design not in ('classic','harvest_2026','ready_made'):
+        raise ValueError('Choose an available ID design.')
+    if design == 'ready_made' and not has_upload and config.get('id_design') == 'harvest_2026':
+        design = 'harvest_2026'
     kind = request.form.get('kind','')
     if kind not in EVENT_TYPES:
         raise ValueError('Choose District Convention or Youth Convention.')
@@ -8125,29 +8269,71 @@ def event_form_config():
             raise ValueError
     except ValueError:
         raise ValueError('Choose valid event dates; the end must be on or after the start.') from None
-    theme,scripture = (request.form.get(field,'').strip() for field in ('theme','scripture'))
+    if design == 'harvest_2026':
+        defaults = {'theme':EVENT_HARVEST_THEME,'scripture':EVENT_HARVEST_SCRIPTURE}
+    else:
+        defaults = config if not has_upload else {}
+    theme,scripture = (request.form.get(field,defaults.get(field,'')).strip() for field in ('theme','scripture'))
     if not theme or not scripture or len(theme)>600 or len(scripture)>500:
         raise ValueError('Enter a theme (up to 600 characters) and Bible verse/reference (up to 500 characters).')
-    event_id = request.form.get('event_id','')
-    old = get_db().execute("SELECT * FROM registration_events WHERE id=? AND deleted_at=''",(event_id,)).fetchone() if event_id else None
-    if event_id and not old:
-        abort(404)
-    config = dict(old) if old else {}
-    config.update(kind=kind,name=kind+' '+str(start.year),start_date=start.isoformat(),end_date=end.isoformat(),theme=theme,scripture=scripture)
+    if request.form.get('id_design') == 'harvest_2026' and (kind != 'District Convention' or start.year != 2026 or
+                                    theme != EVENT_HARVEST_THEME or scripture != EVENT_HARVEST_SCRIPTURE):
+        raise ValueError('The Harvest template is for General Convention 2026, “The Urgent Call For The Great Harvest”, Matt. 9:35–38. Upload an updated template to use different event text.')
+    config.update(kind=kind,name=kind+' '+str(start.year),start_date=start.isoformat(),end_date=end.isoformat(),
+                  theme=theme,scripture=scripture,id_design=design)
     if old and old['name']!=config['name'] and get_db().execute('SELECT 1 FROM event_attendees WHERE event_id=?',(old['id'],)).fetchone():
         raise ValueError('An event with registrations must keep its original event type and year.')
-    upload = request.files.get('background')
-    background = ccm_photo(upload) if upload and upload.filename else None
+    if design == 'harvest_2026':
+        background = (Path(app.static_folder) / EVENT_HARVEST_TEMPLATE).read_bytes()
+    else:
+        background = ccm_photo(upload) if has_upload else None
+        # Different layouts cannot reuse artwork with incompatible field positions.
+        if not background and old and old['id_design'] != design:
+            raise ValueError('Upload a finished ID template picture with blank attendee spaces.')
+    if design == 'classic':
+        # The downloadable template already has all event lettering and frames.
+        # Reject it as an original-layout background, including a saved upload.
+        artwork = background
+        if artwork is None and config.get('background'):
+            saved = event_asset_path(config['background'])
+            if saved.is_file():
+                artwork = saved.read_bytes()
+        if artwork:
+            from PIL import Image, ImageOps
+            with Image.open(io.BytesIO(artwork)) as uploaded, \
+                 Image.open(Path(app.static_folder) / EVENT_HARVEST_TEMPLATE) as bundled:
+                expected = ImageOps.exif_transpose(bundled).convert('RGB')
+                expected.thumbnail(uploaded.size)
+                if expected.size == uploaded.size and expected.tobytes() == uploaded.convert('RGB').tobytes():
+                    raise ValueError('This picture is the ready-made Harvest template. Reload the event editor '
+                                     'and upload it as the ID template picture to align the attendee fields '
+                                     'without duplicating event text.')
     if not background and not config.get('background'):
-        raise ValueError('Upload the blank background picture for this event.')
+        raise ValueError('Upload the finished ID template picture for this event.')
+    if design == 'ready_made' and background:
+        from PIL import Image
+        with Image.open(io.BytesIO(background)) as artwork:
+            if abs(artwork.width / artwork.height - 2/3) > .025:
+                raise ValueError('Use a portrait template with a 2:3 width-to-height ratio and the same field positions as the Harvest template.')
     return config,background
 
 
 def event_directory():
     # A missing church name must use New church; never print an address as its name.
-    churches = [church for church in ccm_churches() if church['church_id'].strip()]
     areas = [r[0] for r in get_db().execute("SELECT DISTINCT TRIM(age) FROM sheet_accounts_cache WHERE TRIM(COALESCE(age,''))<>''")]
-    return churches, sorted(areas, key=lambda v: (not v.isdigit(), int(v) if v.isdigit() else v.casefold()))
+    areas = sorted((area for area in areas if not (area.isdigit() and int(area)==0)),
+                   key=lambda v:(not v.isdigit(),int(v) if v.isdigit() else v.casefold()))
+    overseers = {}
+    for row in get_db().execute("""SELECT name,TRIM(age) area,church_address FROM sheet_accounts_cache
+            WHERE LOWER(TRIM(position))='area overseer' ORDER BY sheet_row"""):
+        overseers.setdefault(row['area'],row)
+    churches = []
+    for area in areas:
+        leader = overseers.get(area)
+        churches.append(dict(key='area-overseer:'+area,area=area,church_id='Area Overseer',role='area_overseer',
+                             address=(leader['church_address'] or '') if leader else '',pastor=(leader['name'] or '') if leader else ''))
+    churches.extend(church for church in ccm_churches() if church['church_id'].strip() and church['area'] in areas)
+    return churches, areas
 
 
 def event_registration_name(name, area, church, minister=False):
@@ -8171,6 +8357,7 @@ def event_registration_name(name, area, church, minister=False):
 
 
 @app.get('/event-registration')
+@event_registration_opening
 def event_registration():
     event_tables()
     tab = request.args.get('tab','registration')
@@ -8225,7 +8412,10 @@ def event_registration():
         meal_sessions=meal_sessions,meal_totals=meal_totals,
         registered_count=registered_count,
         completed_count=sum(bool(p['paid'] and p['physical_printed'] and p['released']) for p in attendees),
-        pending_deletions=event_pending_deletions() if admin else 0)
+        pending_deletions=event_pending_deletions() if admin else 0,
+        registration_preview=bool(active and tab=='registration' and utc_now()<EVENT_REGISTRATION_OPENS_AT
+                                  and (admin or developer)),
+        opening_at=EVENT_REGISTRATION_OPENS_AT.isoformat())
 
 
 @app.get('/event-registration/progress')
@@ -8314,15 +8504,15 @@ def event_save():
         db.execute('BEGIN IMMEDIATE')
         try:
             if config.get('id'):
-                changed = db.execute('''UPDATE registration_events SET name=?,kind=?,start_date=?,end_date=?,theme=?,scripture=?,background=?,updated_at=?
-                              WHERE id=? AND deleted_at='' ''',tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background'))+(now,config['id']))
+                changed = db.execute('''UPDATE registration_events SET name=?,kind=?,start_date=?,end_date=?,theme=?,scripture=?,background=?,id_design=?,updated_at=?
+                              WHERE id=? AND deleted_at='' ''',tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background','id_design'))+(now,config['id']))
                 if not changed.rowcount:
                     raise ValueError('This event was deleted. Reload the admin page.')
             else:
                 db.execute('UPDATE registration_events SET active=0 WHERE active=1')
                 db.execute('''INSERT INTO registration_events
-                    (key,name,kind,start_date,end_date,theme,scripture,background,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
-                    (uuid.uuid4().hex,)+tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background'))+(now,now))
+                    (key,name,kind,start_date,end_date,theme,scripture,background,id_design,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                    (uuid.uuid4().hex,)+tuple(config[f] for f in ('name','kind','start_date','end_date','theme','scripture','background','id_design'))+(now,now))
             db.commit()
         except Exception:
             db.rollback()
@@ -8340,10 +8530,15 @@ def event_background(event_id):
     row = get_db().execute('SELECT * FROM registration_events WHERE id=?',(event_id,)).fetchone()
     if not row or row['deleted_at'] or not (row['active'] or event_admin() or is_cache_developer()):
         abort(404)
-    return send_file(event_asset_path(row['background']),mimetype='image/png')
+    try:
+        artwork = event_background_path(dict(row))
+    except CCMStorageError:
+        abort(404)
+    return send_file(artwork,mimetype='image/png')
 
 
 @app.post('/event-registration/details')
+@event_registration_opening
 def event_details():
     event_guard()
     event_tables()
@@ -8373,6 +8568,7 @@ def event_details():
         if area not in areas:
             raise ValueError('Choose an area from the district records.')
         new = request.form.get('new_church')=='1'
+        area_overseer = False
         if new:
             church,address,pastor = field('church',200),field('address',300),field('pastor',150)
         else:
@@ -8380,8 +8576,11 @@ def event_details():
             if not selected:
                 raise ValueError('Choose a church or check New church.')
             church,address,pastor = selected['church_id'],selected['address'],selected['pastor']
-        name = event_registration_name(name,area,church,request.form.get('minister')=='1')
-        event_render_id(dict(active),dict(name=name,area=area,church=church,key=key))
+            area_overseer = selected.get('role') == 'area_overseer'
+        name = event_registration_name(name,area,church,request.form.get('minister')=='1' or area_overseer)
+        # Validate printable text independently of artwork availability. A missing
+        # background must not prevent saving details and reaching camera capture.
+        event_render_id(dict(active),dict(name=name,area=area,church=church,key=key),background=b'')
         now = utc_now_iso()
         db = get_db()
         db.execute('BEGIN IMMEDIATE')
@@ -8398,19 +8597,21 @@ def event_details():
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (key,active['id'],name,birthday.isoformat(),contact,area,church,address,pastor,int(new),now,now))
             elif not old['complete']:
-                db.execute('''UPDATE event_attendees SET name=?,birthday=?,contact=?,area=?,church=?,address=?,pastor=?,new_church=?,updated_at=?
+                db.execute('''UPDATE event_attendees SET name=?,birthday=?,contact=?,area=?,church=?,address=?,pastor=?,new_church=?,updated_at=?,revision=revision+1
                               WHERE key=?''',(name,birthday.isoformat(),contact,area,church,address,pastor,int(new),now,key))
             db.commit()
         except Exception:
             db.rollback()
             raise
         session['event_registration_key'] = key
-        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+        saved = db.execute('SELECT photo,complete FROM event_attendees WHERE key=?',(key,)).fetchone()
+        return jsonify(ok=True,redirect=url_for('event_review_page' if saved['photo'] and not saved['complete'] else 'event_photo_page',key=key))
     except (ValueError,CCMStorageError) as exc:
         return jsonify(ok=False,error=str(exc)),400
 
 
 @app.get('/event-registration/photo/<key>')
+@event_registration_opening
 def event_photo_page(key):
     event_tables()
     attendee = event_attendee(key)
@@ -8420,6 +8621,7 @@ def event_photo_page(key):
 
 
 @app.post('/event-registration/photo/<key>')
+@event_registration_opening
 def event_photo_save(key):
     event_guard()
     event_tables()
@@ -8441,16 +8643,67 @@ def event_photo_save(key):
             if not current or current['deleted_at']:
                 raise ValueError('This registration was deleted. Open a new registration form.')
             if not current['complete']:
-                db.execute('UPDATE registration_events SET next_number=next_number+1 WHERE id=?',(active['id'],))
-                db.execute('UPDATE event_attendees SET number=?,photo=?,complete=1,updated_at=? WHERE key=?',
-                           (active['next_number'],filename,utc_now_iso(),key))
+                db.execute('UPDATE event_attendees SET photo=?,updated_at=?,revision=revision+1 WHERE key=?',
+                           (filename,utc_now_iso(),key))
             db.commit()
         except Exception:
             db.rollback()
             raise
-        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+        return jsonify(ok=True,redirect=url_for('event_review_page',key=key))
     except (ValueError,CCMStorageError) as exc:
         return jsonify(ok=False,error=str(exc)),400
+
+
+@app.get('/event-registration/review/<key>')
+@event_registration_opening
+def event_review_page(key):
+    event_tables()
+    attendee = event_attendee(key)
+    if attendee['complete'] or not attendee['photo']:
+        return redirect(url_for('event_photo_page',key=key))
+    event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
+    return render_template('event_registration.html',view='review',attendee=attendee,event=event,
+                           csrf=event_csrf(),tab='registration',admin=event_admin(),developer=False)
+
+
+@app.post('/event-registration/review/<key>')
+@event_registration_opening
+def event_confirm_registration(key):
+    event_guard()
+    event_tables()
+    if key != session.get('event_registration_key'):
+        abort(403)
+    attendee = event_attendee(key)
+    if attendee['complete']:
+        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+    db = get_db()
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        active = event_current()
+        current = db.execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+        if not current or current['deleted_at']:
+            raise ValueError('This registration was deleted. Open a new registration form.')
+        if current['complete']:
+            db.commit()
+            return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+        if not active or active['id'] != current['event_id']:
+            raise ValueError('Registration for this event is no longer active. Your details and photo are still saved locally.')
+        if not current['photo']:
+            raise ValueError('Take your ID photo before confirming registration.')
+        if current['revision'] != request.form.get('revision',type=int):
+            raise ValueError('Your details or photo changed. Reload this review before confirming registration.')
+        if not current['complete']:
+            db.execute('UPDATE registration_events SET next_number=next_number+1 WHERE id=?',(active['id'],))
+            db.execute('UPDATE event_attendees SET number=?,complete=1,updated_at=?,revision=revision+1 WHERE key=?',
+                       (active['next_number'],utc_now_iso(),key))
+        db.commit()
+        return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
+    except ValueError as exc:
+        db.rollback()
+        return jsonify(ok=False,error=str(exc)),400
+    except Exception:
+        db.rollback()
+        raise
 
 
 @app.post('/event-registration/photo/<key>/backup')
@@ -8500,17 +8753,28 @@ def event_upload_id(attendee, event):
 
 
 @app.get('/event-registration/image/<key>/<side>.png')
+@event_registration_opening
 def event_image(key,side):
     event_tables()
     attendee = event_attendee(key,admin=side in ('id','shared'))
-    if not attendee['complete']:
+    if not attendee['complete'] and (side not in ('photo','review') or not attendee['photo']):
         abort(404)
     photo = event_asset_path(attendee['photo']).read_bytes()
     if side=='photo':
         body = photo
-    elif side in ('id','shared'):
+    elif side in ('id','shared','review'):
         event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
-        body = event_render_id(event,attendee,photo,temporary=side=='shared' and not attendee['physical_printed'])
+        try:
+            if side == 'review':
+                try:
+                    background = event_background_path(event).read_bytes()
+                except CCMStorageError:
+                    background = b''  # A missing template must not block attendee review.
+                body = event_render_id(event,attendee,photo,background=background,review=True)
+            else:
+                body = event_render_id(event,attendee,photo,temporary=side=='shared' and not attendee['physical_printed'])
+        except CCMStorageError as exc:
+            return jsonify(ok=False,error=str(exc)),503
     else:
         abort(404)
     return send_file(io.BytesIO(body),mimetype='image/png',as_attachment=request.args.get('download')=='1',
@@ -8573,6 +8837,45 @@ def event_delete_attendee(key):
     return jsonify(ok=True,pending_deletions=event_pending_deletions())
 
 
+@app.get('/event-registration/admin/deletions')
+def event_list_deletions():
+    if not event_admin():
+        abort(403)
+    event_tables()
+    return jsonify(ok=True,records=event_deleted_records(),pending_deletions=event_pending_deletions())
+
+
+@app.post('/event-registration/admin/deletions/<key>/forget')
+def event_forget_deletion(key):
+    event_guard(admin=True)
+    event_tables()
+    if not re.fullmatch(r'[a-f0-9]{32}',key):
+        abort(404)
+    if request.form.get('confirm') != 'yes':
+        return jsonify(ok=False,error='Confirm removal of this local cleanup record.'),400
+    from sheet_cache import _locked_sync
+    with _locked_sync(data_path('event-record-backup-'+key)):
+        db = get_db()
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            row = db.execute('SELECT * FROM event_attendees WHERE key=?',(key,)).fetchone()
+            queued = db.execute('SELECT payload FROM event_deletion_queue WHERE key=?',(key,)).fetchone()
+            if row and not row['deleted_at']:
+                db.rollback()
+                return jsonify(ok=False,error='This is an active registration. Use its normal Delete action.'),409
+            record = json.loads(queued['payload']) if queued else dict(row) if row else None
+            if record and record['revision'] != request.form.get('revision',type=int):
+                db.rollback()
+                return jsonify(ok=False,error='This cleanup record changed. Reload the list before removing it.'),409
+            db.execute("DELETE FROM event_attendees WHERE key=? AND deleted_at<>''",(key,))
+            db.execute('DELETE FROM event_deletion_queue WHERE key=?',(key,))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return jsonify(ok=True,pending_deletions=event_pending_deletions())
+
+
 @app.post('/event-registration/admin/event/<int:event_id>/delete')
 def event_delete_event(event_id):
     event_guard(developer=True)
@@ -8610,6 +8913,33 @@ def event_delete_event(event_id):
     return jsonify(ok=True,redirect=url_for('event_registration',tab='admin'))
 
 
+@app.post('/event-registration/admin/print/prepare')
+def event_print_prepare():
+    event_guard(admin=True)
+    event_tables()
+    keys = request.form.getlist('keys')
+    event_id = request.form.get('event_id',type=int)
+    if not keys or len(keys)>100 or any(not re.fullmatch(r'[a-f0-9]{32}',key) for key in keys):
+        return jsonify(ok=False,error='Select between 1 and 100 IDs to print.'),400
+    keys = list(dict.fromkeys(keys))
+    placeholders = ','.join('?' for _ in keys)
+    rows = {row['key']:dict(row) for row in get_db().execute(f'''SELECT a.key,a.number,a.name,a.area,a.church,a.revision,a.physical_printed
+        FROM event_attendees a JOIN registration_events e ON e.id=a.event_id
+        WHERE a.event_id=? AND e.deleted_at='' AND a.complete=1 AND a.deleted_at='' AND a.key IN ({placeholders})''',(event_id,*keys))}
+    if len(rows) != len(keys):
+        return jsonify(ok=False,error='Some selected registrations changed or are unavailable. Refresh the attendee list before printing.'),409
+    items = [dict(**rows[key],image_url=url_for('event_image',key=key,side='id'),
+                  status_url=url_for('event_status',key=key)) for key in keys]
+    document = render_template_string('''<!doctype html><html><head><meta charset="utf-8"><title>Event IDs</title>
+        <style>@page{size:{{ width }}mm {{ height }}mm;margin:0}
+        html,body{margin:0;padding:0;width:{{ width }}mm;line-height:0}
+        img{display:block;width:{{ width }}mm;height:{{ height }}mm;object-fit:fill;break-inside:avoid;break-after:page;page-break-after:always;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+        img:last-child{break-after:auto;page-break-after:auto}</style></head><body>
+        {% for item in items %}<img src="{{ item.image_url }}" alt="ID for {{ item.name }}">{% endfor %}</body></html>''',
+        items=items,width=EVENT_PRINT_WIDTH_MM,height=EVENT_PRINT_HEIGHT_MM)
+    return jsonify(ok=True,items=items,html=document,width_mm=EVENT_PRINT_WIDTH_MM,height_mm=EVENT_PRINT_HEIGHT_MM)
+
+
 @app.get('/event-registration/print/<key>')
 def event_print(key):
     if not event_admin():
@@ -8634,6 +8964,32 @@ def event_release(key):
     event = dict(get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone())
     return render_template('event_registration.html',view='release',attendee=attendee,event=event,
                            admin=True,developer=False,csrf=event_csrf(),tab='admin')
+
+
+@app.get('/event-registration/thumbnail/<int:event_id>/<int:number>.jpg')
+def event_thumbnail(event_id,number):
+    """Small public photo for the active roster, without exposing ticket keys."""
+    row = get_db().execute("""SELECT a.photo FROM event_attendees a JOIN registration_events e ON e.id=a.event_id
+        WHERE e.id=? AND e.active=1 AND e.deleted_at='' AND a.number=? AND a.complete=1 AND a.deleted_at=''""",
+        (event_id,number)).fetchone()
+    if not row:
+        abort(404)
+    from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+    portrait = None
+    if re.fullmatch(r'[a-f0-9]{64}\.png',row['photo'] or ''):
+        try:
+            with Image.open(event_asset_path(row['photo'])) as source:
+                portrait = ImageOps.fit(ImageOps.exif_transpose(source).convert('RGB'),(80,96))
+        except (OSError,UnidentifiedImageError):
+            pass
+    if portrait is None:
+        portrait = Image.new('RGB',(80,96),'#e8eef8')
+        drawing = ImageDraw.Draw(portrait)
+        drawing.ellipse((25,15,55,45),fill='#8495b0')
+        drawing.rounded_rectangle((12,50,68,88),radius=22,fill='#8495b0')
+    body = io.BytesIO()
+    portrait.save(body,'JPEG',quality=82,optimize=True)
+    return send_file(io.BytesIO(body.getvalue()),mimetype='image/jpeg')
 
 
 @app.get('/event-registration/ticket/<key>')
@@ -8680,6 +9036,15 @@ def event_remove_drive_registration(attendee, event):
             event_key=event['key'],record_key=attendee['key']),timeout=(10,60))
         response.raise_for_status()
         result = response.json()
+        if not result.get('ok'):
+            messages = {
+                'AUTH':'The Event Drive connection rejected its token. Check EVENT_DRIVE_API_TOKEN against the Event Apps Script project properties; the deletion remains queued.',
+                'EVENT_ONLY':'The configured Drive endpoint is not accepting Event operations. Check EVENT_DRIVE_SCRIPT_URL; the deletion remains queued.',
+                'INPUT':'The Event Drive script rejected the cleanup request. Update the existing Apps Script deployment with deployment/event_drive.gs, then retry Backup Data.',
+                'DRIVE':'Google Drive could not confirm deleted ID cleanup. Check the Event Apps Script Executions log and folder access, and deploy the latest deployment/event_drive.gs. The cleanup remains queued.',
+            }
+            raise CCMStorageError(messages.get(result.get('code'),
+                'Drive deletion was not confirmed. Update the Event Apps Script deployment with deployment/event_drive.gs, then retry Backup Data. The cleanup remains queued.'))
         if not (result.get('ok') and result.get('deleted') is True and result.get('purpose')=='event'
                 and result.get('record_key')==attendee['key'] and result.get('event_key')==event['key']
                 and result.get('folder_id')==EVENT_FOLDER_ID):
@@ -8792,7 +9157,7 @@ def event_backup_attendee(key):
                                 WHERE key=?''',(saved[0][0],json.dumps(cloud),attendee['revision'],key))
             get_db().commit()
         current_event = get_db().execute('SELECT * FROM registration_events WHERE id=?',(attendee['event_id'],)).fetchone()
-        fields = ('name','kind','start_date','end_date','theme','scripture','background','updated_at','deleted_at')
+        fields = ('name','kind','start_date','end_date','theme','scripture','background','id_design','updated_at','deleted_at')
         design_unchanged = current_event and all(current_event[field] == event[field] for field in fields)
         current = get_db().execute("SELECT revision=backed_up_revision AND deleted_at='' FROM event_attendees WHERE key=?",(key,)).fetchone()
         return {'clean':bool(current and current[0] and design_unchanged)}

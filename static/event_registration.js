@@ -4,6 +4,50 @@
   const shell = document.querySelector('.event-shell');
   if (!shell) return;
   document.body.classList.add('event-page');
+  const openingCountdown=$('eventOpeningCountdown');
+  if(openingCountdown) {
+    const opensAt=Date.parse(openingCountdown.dataset.opensAt),status=$('eventOpeningStatus');
+    let serverTime=Number(openingCountdown.dataset.serverMs),anchor=performance.now();
+    let tickTimer,syncTimer,syncing=false,leaving=false,stopped=false,openingCheckRequested=false;
+    function tick() {
+      clearTimeout(tickTimer);
+      if(stopped || leaving) return;
+      const remaining=Math.max(0,Math.ceil((opensAt-serverTime-(performance.now()-anchor))/1000));
+      const values={days:Math.floor(remaining/86400),hours:Math.floor(remaining/3600)%24,minutes:Math.floor(remaining/60)%60,seconds:remaining%60};
+      for(const [unit,value] of Object.entries(values)) openingCountdown.querySelector('[data-countdown-unit="'+unit+'"]').textContent=String(value).padStart(2,'0');
+      if(!remaining && !syncing && !openingCheckRequested) {openingCheckRequested=true;syncOpening();}
+      if(!document.hidden) tickTimer=setTimeout(tick,1000);
+    }
+    async function syncOpening() {
+      if(syncing || stopped || leaving || document.hidden) return;
+      syncing=true;clearTimeout(syncTimer);
+      try {
+        const response=await fetch(openingCountdown.dataset.statusUrl,{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(10000)});
+        if(!response.ok) throw new Error('Opening time is unavailable.');
+        const data=await response.json();
+        if(stopped) return;
+        serverTime=data.server_now_ms;anchor=performance.now();
+        if(data.is_open) {
+          leaving=true;clearTimeout(tickTimer);status.textContent='Registration is open! Taking you to the form…';
+          window.location.replace(data.registration_url);return;
+        }
+        status.textContent='This page will open registration automatically when it is time.';
+      } catch(_) {
+        status.textContent='Checking the opening time. We’ll retry automatically; you can also refresh this page.';
+      } finally {
+        syncing=false;
+        if(!stopped && !leaving && !document.hidden) syncTimer=setTimeout(syncOpening,serverTime+(performance.now()-anchor)>=opensAt?5000:30000);
+      }
+    }
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden) {clearTimeout(tickTimer);clearTimeout(syncTimer);}
+      else {syncOpening();tick();}
+    });
+    window.addEventListener('pagehide',()=>{stopped=true;clearTimeout(tickTimer);clearTimeout(syncTimer);});
+    window.addEventListener('pageshow',()=>{stopped=false;syncOpening();tick();});
+    syncOpening();tick();
+    return;
+  }
   const csrf = shell.dataset.csrf;
   let pendingWrites = 0, writeGeneration = 0;
   let applyProgress = () => {};
@@ -76,11 +120,12 @@
       const selected = churches.find(c => c.key === church.value);
       address.value = selected?.address || '';
       pastor.value = selected?.pastor || '';
+      if (selected?.role === 'area_overseer') registration.elements.minister.checked = true;
     }
     function fillChurches(initial = false) {
       church.replaceChildren(new Option('Choose church', ''));
       churches.filter(c => c.area === area.value).forEach(c => {
-        const option = new Option(c.church_id + ' · ' + c.pastor, c.key);
+        const option = new Option(c.role === 'area_overseer' ? 'Area Overseer' : c.church_id + ' · ' + c.pastor, c.key);
         option.selected = initial && c.church_id === church.dataset.name && c.address === church.dataset.address && c.pastor === church.dataset.pastor;
         church.add(option);
       });
@@ -266,7 +311,27 @@
     navigator.mediaDevices?.addEventListener?.('devicechange', () => { if (stream && !opening) listCameras(generation); });
   }
 
+  const reviewForm = $('eventReviewForm');
+  if (reviewForm) {
+    let busy = false;
+    $('eventReviewImage').addEventListener('error',() => error('eventReviewError','The ID preview could not load. Reload this page to review it.'));
+    reviewForm.addEventListener('submit',async event => {
+      event.preventDefault();
+      if (busy) return;
+      busy = true;
+      $('eventConfirmRegistration').disabled = true;
+      error('eventReviewError','');
+      try {
+        const result = await post(reviewForm.action,new FormData(reviewForm));
+        window.location.assign(result.redirect);
+      } catch (failure) { error('eventReviewError',failure.message); }
+      finally { busy = false; $('eventConfirmRegistration').disabled = false; }
+    });
+  }
+
   const rows = [...document.querySelectorAll('[data-attendee-row]')];
+  const printSelection = new Set();
+  let printBusy = false, syncPrintSelection = () => {};
   function pendingDeletions(count) {
     if (!$('eventPendingDeletionCount')) return;
     $('eventPendingDeletionCount').textContent = count;
@@ -312,6 +377,7 @@
       $('eventResultCount').textContent = count;
       $('eventNoResults').hidden = count !== 0;
       summary();
+      syncPrintSelection();
     }
     function makeRow(person) {
       const row = document.createElement('tr');
@@ -328,7 +394,7 @@
       }
       cell(person.number,'event-number');
       const name = cell('','event-person'), strong = document.createElement('strong');
-      if (admin) {const img=document.createElement('img');img.src=person.photo_url;img.alt='';img.loading='lazy';name.append(img);}
+      const img=document.createElement('img');img.src=admin?person.photo_url:'/event-registration/thumbnail/'+shell.dataset.eventId+'/'+person.number+'.jpg';img.alt='';img.loading='lazy';img.decoding='async';name.append(img);
       strong.textContent=person.name;name.append(strong);
       cell(person.area,'event-area','','Area');cell(person.church,'event-church','','Church');
       if (admin) {
@@ -336,7 +402,9 @@
         const paid = document.createElement('button');
         paid.type='button';paid.className='event-status'+(person.paid?' on':'');paid.dataset.field='paid';paid.dataset.value=String(person.paid);
         paid.setAttribute('aria-pressed',String(!!person.paid));paid.textContent=person.paid?'\u2713 Paid':'Payment';cell('','','payment').append(paid);
-        const print = document.createElement('a');print.className='event-btn event-print-link'+(person.physical_printed?' printed':'');print.href=person.print_url;print.textContent=person.physical_printed?'\u2713 Printed':'Print';cell('','','print').append(print);
+        const printCell=document.createElement('div');printCell.className='event-print-cell';
+        const choose=document.createElement('input');choose.type='checkbox';choose.className='event-print-select';choose.value=person.key;choose.checked=printSelection.has(person.key);choose.setAttribute('aria-label','Select ID for '+person.name);
+        const print = document.createElement('a');print.className='event-btn event-print-link'+(person.physical_printed?' printed':'');print.href=person.print_url;print.textContent=person.physical_printed?'\u2713 Printed':'Print';printCell.append(choose,print);cell('','','print').append(printCell);
         const release = document.createElement('a');release.className='event-status event-release-link'+(person.released?' on':'');release.href=person.release_url;release.target='_blank';release.rel='noopener';release.textContent=person.released?'\u2713 Released':'Release / Share';cell('','','release').append(release);
         const details=document.createElement('button');details.type='button';details.className='event-btn secondary event-delegate-details';details.dataset.url=person.details_url;details.textContent='View details';cell('','','extra').append(details);
         const remove=document.createElement('button');remove.type='button';remove.className='event-btn danger event-delete-attendee';remove.textContent='Delete';cell('','','extra').append(remove);
@@ -436,6 +504,74 @@
   }
   $('eventAdminSelect')?.addEventListener('change',event => window.location.assign(event.target.value));
   let backupRunning = false;
+  const settingsDialog = $('eventSettingsDialog');
+  if (settingsDialog) {
+    $('eventSettingsButton').addEventListener('click',() => settingsDialog.showModal());
+    $('eventSettingsClose').addEventListener('click',() => { if (!backupRunning) settingsDialog.close(); });
+    settingsDialog.addEventListener('cancel',event => { if (backupRunning) event.preventDefault(); });
+    settingsDialog.addEventListener('close',() => refreshProgress());
+  }
+  const cleanupDialog = $('eventCleanupDialog');
+  if (cleanupDialog) {
+    let cleanupBusy = false, cleanupRecords = new Map();
+    async function loadCleanup() {
+      const response = await fetch(cleanupDialog.dataset.listUrl,{credentials:'same-origin',cache:'no-store'});
+      if (!response.ok) throw new Error('Could not load deleted registrations. Unlock Admin again and retry.');
+      const data = await response.json();
+      cleanupRecords = new Map(data.records.map(record => [record.key,record]));
+      pendingDeletions(data.pending_deletions);
+      const list = $('eventCleanupList');
+      list.replaceChildren();
+      $('eventCleanupEmpty').hidden = !!data.records.length;
+      data.records.forEach(record => {
+        const card = document.createElement('article');card.className='event-cleanup-record';card.dataset.key=record.key;
+        const title=document.createElement('h3');title.textContent=record.name;card.append(title);
+        const meta=document.createElement('p');meta.className='event-help';
+        meta.textContent=[record.number?'#'+record.number:'Unfinished registration',record.area?'Area '+record.area:'',record.church,record.event_name+' (event '+record.event_id+')'].filter(Boolean).join(' · ');card.append(meta);
+        if(record.deleted_at) {const date=document.createElement('p');date.className='event-help';date.textContent='Deleted '+new Date(record.deleted_at).toLocaleString();card.append(date);}
+        if(record.error) {const detail=document.createElement('details'),summary=document.createElement('summary'),message=document.createElement('p');summary.textContent='Last backup error';message.textContent=record.error;detail.append(summary,message);card.append(detail);}
+        const actions=document.createElement('div');actions.className='event-actions';
+        for(const [action,label] of [['retry','Retry Google cleanup'],['forget','Delete local record']]) {
+          const button=document.createElement('button');button.type='button';button.dataset.cleanupAction=action;button.className='event-btn '+(action==='forget'?'danger':'secondary');button.textContent=label;actions.append(button);
+        }
+        card.append(actions);list.append(card);
+      });
+    }
+    $('eventPendingReview').addEventListener('click',async () => {
+      if(backupRunning || cleanupBusy) return;
+      cleanupDialog.showModal();error('eventCleanupError','');$('eventCleanupStatus').textContent='Loading deleted registrations…';
+      try {await loadCleanup();$('eventCleanupStatus').textContent='';}
+      catch(failure) {error('eventCleanupError',failure.message);}
+    });
+    $('eventCleanupClose').addEventListener('click',() => {if(!cleanupBusy) cleanupDialog.close();});
+    cleanupDialog.addEventListener('cancel',event => {if(cleanupBusy) event.preventDefault();});
+    cleanupDialog.addEventListener('click',async event => {
+      const button=event.target.closest('[data-cleanup-action]');
+      if(!button || cleanupBusy || backupRunning) return;
+      const record=cleanupRecords.get(button.closest('[data-key]').dataset.key);
+      if(!record) return;
+      cleanupBusy=true;error('eventCleanupError','');
+      $('eventCleanupList').querySelectorAll('button').forEach(item=>item.disabled=true);
+      try {
+        if(button.dataset.cleanupAction==='forget') {
+          const accepted=await confirmStatus('Delete the local cleanup record for '+record.name+'? This stops retries for this item. It does not change anything in Google Sheets or Drive.',{title:'Delete local cleanup record?',button:'Yes, delete local record',danger:true});
+          if(!accepted) return;
+          const result=await post(record.forget_url,formData({confirm:'yes',revision:record.revision}));pendingDeletions(result.pending_deletions);
+          $('eventCleanupStatus').textContent='Local cleanup record deleted. Google files were not changed.';
+        } else {
+          $('eventCleanupStatus').textContent='Retrying Google cleanup for '+record.name+'…';
+          const result=await post(record.retry_url);pendingDeletions(result.pending_deletions);
+          $('eventCleanupStatus').textContent='Google cleanup confirmed for '+record.name+'.';
+        }
+        await loadCleanup();
+      } catch(failure) {
+        $('eventCleanupStatus').textContent='';error('eventCleanupError',failure.message);
+        try {await loadCleanup();} catch(_) {}
+      } finally {
+        cleanupBusy=false;$('eventCleanupList').querySelectorAll('button').forEach(item=>item.disabled=false);
+      }
+    });
+  }
   const backupButton = $('eventBackupButton');
   backupButton?.addEventListener('click',async () => {
     if (backupRunning) return;
@@ -445,27 +581,35 @@
     const progress = $('eventBackupProgress'), status = $('eventBackupStatus');
     progress.hidden = false;
     progress.value = 0;
-    let completed = 0, total = 0, removed = 0, changed = 0;
+    let completed = 0, total = 0, removed = 0, changed = 0, failed = 0, firstError = '', mealError = '';
     try {
       status.textContent = 'Preparing local registrations…';
       const queue = await post(backupButton.dataset.url,formData({event_id:backupButton.dataset.event}));
       total = queue.keys.length;
-      for (const key of queue.keys) {
-        status.textContent = 'Backing up attendee '+(completed+1)+' of '+total+': printable ID and registration details…';
-        const result = await post(backupButton.dataset.url+'/'+encodeURIComponent(key));
-        completed++;
-        if (result.removed) removed++;
-        if (!result.clean) changed++;
-        progress.value = Math.floor(completed/total*100);
-        pendingDeletions(result.pending_deletions);
+      const activeKeys = new Set(rows.map(row => row.dataset.key));
+      const keys = queue.keys.filter(key => activeKeys.has(key)).concat(queue.keys.filter(key => !activeKeys.has(key)));
+      for (const [index,key] of keys.entries()) {
+        status.textContent = 'Processing registration '+(index+1)+' of '+total+' · '+(completed-removed)+' backed up'+(failed?' · '+failed+' need retry':'')+'…';
+        try {
+          const result = await post(backupButton.dataset.url+'/'+encodeURIComponent(key));
+          completed++;
+          if (result.removed) removed++;
+          if (!result.clean) changed++;
+          pendingDeletions(result.pending_deletions);
+        } catch (failure) {
+          failed++;
+          if (!firstError) firstError = failure.message;
+        }
+        progress.value = Math.floor((index+1)/total*100);
       }
       if (backupButton.dataset.event && backupButton.dataset.mealUrl) {
         status.textContent = 'Backing up synced meal and audit records…';
-        await post(backupButton.dataset.mealUrl,formData({event_id:backupButton.dataset.event}));
+        try { await post(backupButton.dataset.mealUrl,formData({event_id:backupButton.dataset.event})); }
+        catch (failure) { mealError = failure.message; }
       }
       progress.value = 100;
-      status.textContent = completed+' registrations processed.'+(completed>removed?' Printable IDs saved to Google Drive; details saved to Google Sheets.':'')+(removed?' '+removed+' deleted registration'+(removed===1?'':'s')+' removed.':'')+(changed?' '+changed+' changed during backup. Click Backup Data again to save the latest changes.':'');
-    } catch (failure) { status.textContent = completed+' of '+total+' backed up. '+failure.message; }
+      status.textContent = (completed-removed)+' registration'+(completed-removed===1?'':'s')+' backed up.'+(completed>removed?' Printable IDs saved to Google Drive; details saved to Google Sheets.':'')+(removed?' '+removed+' deleted registration'+(removed===1?'':'s')+' cleaned up.':'')+(failed?' '+failed+' record'+(failed===1?'':'s')+' could not be confirmed and remain queued for retry. '+firstError:'')+(changed?' '+changed+' changed during backup. Click Backup Data again to save the latest changes.':'')+(mealError?' Meal/audit backup needs retry: '+mealError:'');
+    } catch (failure) { status.textContent = 'Backup could not be prepared. '+failure.message; }
     finally { backupRunning = false; backupButton.disabled = !rows.length && !Number($('eventPendingDeletionCount').textContent) && backupButton.dataset.hasMeals!=='1'; $('eventAdminSelect').disabled = false; refreshProgress(); }
   });
   $('eventDeleteEventButton')?.addEventListener('click',async event => {
@@ -494,12 +638,16 @@
       const config = editing ? JSON.parse($('eventSelectedConfig').textContent) : null;
       configForm.elements.event_id.value = config?.id || '';
       for (const field of ['kind','start_date','end_date','theme','scripture']) if (config) configForm.elements[field].value = config[field];
-      configForm.elements.background.required = !editing;
+      const keepTemplate = !!config?.background && ['harvest_2026','ready_made'].includes(config.id_design);
+      configForm.elements.background.required = !keepTemplate;
+      $('eventKeepTemplateNote').hidden = !keepTemplate;
       configForm.elements.end_date.min = config?.start_date || '';
       $('eventDialogTitle').textContent = editing?'Edit Event':'Create Event';
       $('eventConfigSave').textContent = editing?'Save event':'Create Event';
-      $('eventActivationNote').hidden = editing;
-      $('eventConfigPreview').hidden = true;
+      if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
+      $('eventConfigPreview').hidden = !keepTemplate;
+      if (keepTemplate) $('eventConfigPreview').src = '/event-registration/background/' + config.id + '.png?v=' + encodeURIComponent(config.updated_at);
+      $('eventPreviewHint').textContent = keepTemplate ? 'Current template. Preview ID adds a sample attendee.' : 'Choose your template picture, then preview the ID with a sample attendee.';
       error('eventConfigError','');
       dialog.showModal();
     }
@@ -508,7 +656,15 @@
     dialog.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click',() => { if (!busy) dialog.close(); }));
     dialog.addEventListener('cancel',event => { if (busy) event.preventDefault(); });
     configForm.elements.start_date.addEventListener('change',() => { configForm.elements.end_date.min = configForm.elements.start_date.value; });
-    configForm.addEventListener('input',() => { $('eventConfigPreview').hidden = true; $('eventPreviewHint').textContent = 'Preview again to see the updated layout.'; });
+    configForm.elements.background.addEventListener('change',() => {
+      const picture = configForm.elements.background.files[0];
+      if (!picture) return;
+      if (previewURL) URL.revokeObjectURL(previewURL);
+      previewURL = URL.createObjectURL(picture);
+      $('eventConfigPreview').src = previewURL;
+      $('eventConfigPreview').hidden = false;
+      $('eventPreviewHint').textContent = 'Uploaded template. Preview ID adds the photo, name, area, church and QR.';
+    });
     async function sendConfig(preview) {
       if (busy || !configForm.reportValidity()) return;
       busy = true;
@@ -537,6 +693,182 @@
     window.addEventListener('pagehide',() => { if (previewURL) URL.revokeObjectURL(previewURL); });
   }
 
+  const printResults = $('eventPrintResultsDialog');
+  const visiblePrintRows = () => rows.filter(row => !row.hidden);
+  let beginPrint = async () => {}, rememberPrinterSetup = () => {};
+  if (printResults) {
+    let printItems = [], printFrame = null, savingPrintResults = false, retryingPrint = false;
+    const resultList=$('eventPrintResultsList'), resultSave=$('eventPrintResultsSave');
+    const resultRetry=$('eventPrintResultsRetry');
+    const printerSetupKey='eventPrinterFirstPrintConfirmed.v1';
+    function showPrinterSetupHint() {
+      let confirmed=false;
+      try {confirmed=localStorage.getItem(printerSetupKey)==='1';} catch(_) {}
+      document.querySelectorAll('[data-printer-first-use]').forEach(note=>note.hidden=confirmed);
+      if($('eventPrinterSetupStatus')) $('eventPrinterSetupStatus').textContent=confirmed
+        ? 'A successful print is confirmed in this browser. You can adjust settings on any print.'
+        : 'Confirm a successful physical print to finish setup. Failed or cancelled attempts stay pending.';
+      if($('eventPrinterSetupBadge')) {
+        $('eventPrinterSetupBadge').textContent=confirmed?'Print confirmed':'Setup pending';
+        $('eventPrinterSetupBadge').classList.toggle('is-confirmed',confirmed);
+      }
+    }
+    rememberPrinterSetup = () => {
+      // This remembers only that a real print was confirmed. Printer settings
+      // belong to the browser/driver; the app never fabricates or saves them.
+      try {localStorage.setItem(printerSetupKey,'1');} catch(_) {}
+      showPrinterSetupHint();
+    };
+    showPrinterSetupHint();
+    window.addEventListener('storage',event=>{if(event.key===printerSetupKey || event.key===null) showPrinterSetupHint();});
+    $('eventPrinterSetupReset')?.addEventListener('click',()=>{
+      try {localStorage.removeItem(printerSetupKey);} catch(_) {}
+      showPrinterSetupHint();
+    });
+    const printMessage = message => { const target=$('eventPrintJobStatus') || $('eventPrintStatus'); if(target) target.textContent=message; };
+    syncPrintSelection = () => {
+      const available=new Set(rows.map(row=>row.dataset.key));
+      for(const key of printSelection) if(!available.has(key)) printSelection.delete(key);
+      const visible=visiblePrintRows(), selected=visible.filter(row=>printSelection.has(row.dataset.key));
+      document.querySelectorAll('.event-print-select').forEach(input=>{input.checked=printSelection.has(input.value);input.disabled=printBusy;});
+      if($('eventPrintSelectAll')) { $('eventPrintSelectAll').checked=!!visible.length && selected.length===visible.length; $('eventPrintSelectAll').indeterminate=!!selected.length && selected.length<visible.length; $('eventPrintSelectAll').disabled=printBusy || !visible.length; }
+      if($('eventPrintSelected')) { $('eventPrintSelected').disabled=printBusy || !selected.length; $('eventPrintSelectionCount').textContent=selected.length+' ID'+(selected.length===1?'':'s')+' selected'; }
+      if($('eventPrinterDialog')) {
+        $('eventPrinterDialog').disabled=printBusy || !selected.length;
+        $('eventPrinterSelectionHint').textContent=selected.length
+          ? selected.length+' selected ID'+(selected.length===1?'':'s')+' ready to print.'
+          : 'Select IDs in the attendee list to enable printing.';
+      }
+      if($('eventPrintNow')) $('eventPrintNow').disabled=printBusy || !$('eventPrintable').complete || !$('eventPrintable').naturalWidth;
+      if($('eventPrintComplete')) $('eventPrintComplete').disabled=printBusy;
+    };
+    $('eventPrintSelectAll')?.addEventListener('change',event=>{
+      visiblePrintRows().forEach(row=>event.target.checked?printSelection.add(row.dataset.key):printSelection.delete(row.dataset.key));syncPrintSelection();
+    });
+    $('eventAttendeeRows')?.addEventListener('change',event=>{
+      if(!event.target.matches('.event-print-select')) return;
+      event.target.checked?printSelection.add(event.target.value):printSelection.delete(event.target.value);syncPrintSelection();
+    });
+    const remainingPrintKeys = () => [...resultList.querySelectorAll('input:not(:checked):not(:disabled)')].map(input=>input.closest('[data-key]').dataset.key);
+    const resultsReady = () => {
+      resultSave.disabled=savingPrintResults || !resultList.querySelector('input:checked:not(:disabled)');
+      const remaining=remainingPrintKeys().length;
+      resultRetry.disabled=savingPrintResults || retryingPrint || !remaining;
+      resultRetry.textContent='Reprint remaining IDs'+(remaining?' ('+remaining+')':'');
+    };
+    resultList.addEventListener('change',resultsReady);
+    function showPrintResults(items) {
+      printItems=items;resultList.replaceChildren();$('eventPrintResultsStatus').textContent='';
+      $('eventPrintResultsDone').textContent='Nothing printed / Close';
+      items.forEach(item=>{
+        item.confirmed=!!item.physical_printed;
+        const label=document.createElement('label');label.className='event-print-result';label.dataset.key=item.key;
+        const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=item.confirmed;checkbox.disabled=item.confirmed;
+        const content=document.createElement('span'),name=document.createElement('strong'),details=document.createElement('small'),state=document.createElement('small');
+        name.textContent='#'+item.number+' · '+item.name;details.textContent='Area '+item.area+' · '+item.church;state.dataset.printState='';state.textContent=item.confirmed?'Already marked as physically printed.':'Confirm only if this physical ID printed successfully.';
+        content.append(name,details,state);label.append(checkbox,content);resultList.append(label);
+        if(item.confirmed) printSelection.delete(item.key);
+      });
+      resultsReady();printResults.showModal();
+    }
+    beginPrint = async keys => {
+      if(printBusy || !keys.length) return;
+      printBusy=true;syncPrintSelection();error('eventGlobalError','');printMessage('Preparing '+keys.length+' ID'+(keys.length===1?'':'s')+' at 100 × 148 mm…');
+      try {
+        const data=formData({event_id:shell.dataset.eventId});keys.forEach(key=>data.append('keys',key));
+        const job=await post(shell.dataset.printPrepareUrl,data);
+        printFrame=document.createElement('iframe');printFrame.className='event-print-frame';printFrame.setAttribute('aria-hidden','true');printFrame.tabIndex=-1;
+        await new Promise((resolve,reject)=>{
+          printFrame.onload=async()=>{try{await Promise.all([...printFrame.contentDocument.images].map(img=>img.decode()));resolve();}catch(_){reject(new Error('An ID image could not load. No printing status was changed.'));}};
+          printFrame.srcdoc=job.html;document.body.append(printFrame);
+        });
+        let shown=false;
+        const finished=()=>{if(shown)return;shown=true;printMessage('Select the IDs that physically printed successfully.');showPrintResults(job.items);};
+        printFrame.contentWindow.addEventListener('afterprint',finished,{once:true});
+        printFrame.contentWindow.focus();printFrame.contentWindow.print();
+        // print() blocks until its dialog closes; afterprint is the primary path.
+        setTimeout(finished,0);
+      } catch(failure) {
+        printFrame?.remove();printFrame=null;printBusy=false;syncPrintSelection();printMessage('');error('eventGlobalError',failure.message);
+      }
+    };
+    const selectedPrintKeys = () => [...document.querySelectorAll('#eventAttendeeRows [data-attendee-row]')].filter(row=>!row.hidden && printSelection.has(row.dataset.key)).map(row=>row.dataset.key);
+    $('eventPrintSelected')?.addEventListener('click',()=>beginPrint(selectedPrintKeys()));
+    $('eventPrinterDialog')?.addEventListener('click',async()=>{
+      const keys=selectedPrintKeys();
+      if(printBusy || !keys.length) return;
+      // Close settings before opening the print results dialog. Waiting for the
+      // close event prevents its refresh from racing with preparation of the job.
+      await new Promise(resolve=>{
+        settingsDialog.addEventListener('close',resolve,{once:true});
+        settingsDialog.close();
+      });
+      await beginPrint(keys);
+    });
+    $('eventAttendeeRows')?.addEventListener('click',event=>{
+      const link=event.target.closest('.event-print-link');
+      if(!link || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();beginPrint([link.closest('[data-attendee-row]').dataset.key]);
+    });
+    function closeResults() {if(!savingPrintResults) printResults.close();}
+    $('eventPrintResultsClose').addEventListener('click',closeResults);
+    $('eventPrintResultsDone').addEventListener('click',closeResults);
+    printResults.addEventListener('cancel',event=>{if(savingPrintResults)event.preventDefault();});
+    printResults.addEventListener('close',()=>{printFrame?.remove();printFrame=null;printBusy=false;printMessage(printItems.filter(item=>item.confirmed).length+' of '+printItems.length+' IDs marked as physically printed.');syncPrintSelection();refreshProgress();});
+    async function savePrintResults() {
+      if(savingPrintResults) return false;
+      const chosen=[...resultList.querySelectorAll('input:checked:not(:disabled)')];
+      if(!chosen.length) return true;
+      savingPrintResults=true;let confirmed=0,failed=0;
+      $('eventPrintResultsStatus').textContent='Saving physical print confirmations…';
+      $('eventPrintResultsClose').disabled=$('eventPrintResultsDone').disabled=true;
+      resultList.querySelectorAll('input').forEach(input=>input.disabled=true);resultsReady();
+      for(const checkbox of chosen) {
+        const label=checkbox.closest('[data-key]'),item=printItems.find(item=>item.key===label.dataset.key),state=label.querySelector('[data-print-state]');
+        try {
+          const result=await post(item.status_url,formData({field:'physical_printed',value:1,physical_confirmed:'yes',confirm:'yes',revision:item.revision}));
+          item.confirmed=true;item.revision=result.revision;confirmed++;printSelection.delete(item.key);state.textContent='Physical printing confirmed.';state.className='';
+          const row=rows.find(row=>row.dataset.key===item.key);
+          if(row) {row.dataset.printed='1';row.dataset.revision=result.revision;const link=row.querySelector('.event-print-link');link.classList.add('printed');link.textContent='✓ Printed';}
+          if($('eventPrintComplete') && document.querySelector('.event-print-card')?.dataset.key===item.key) { $('eventPrintComplete').checked=true;$('eventPrintComplete').dataset.revision=result.revision;$('eventPrintNow').classList.add('printed'); }
+        } catch(failure) {
+          failed++;checkbox.checked=false;state.textContent=failure.message;state.className='event-print-result-error';
+          try {
+            const response=await fetch('/event-registration/progress?admin=1&event='+encodeURIComponent(shell.dataset.eventId),{credentials:'same-origin',cache:'no-store'});
+            if(response.ok) {const data=await response.json(),current=data.attendees?.find(person=>person.key===item.key);if(current) {item.revision=current.revision;if(current.physical_printed){item.confirmed=true;checkbox.checked=true;state.textContent='Already confirmed as physically printed.';}}else{item.unavailable=true;}}
+          } catch(_) {}
+        }
+      }
+      savingPrintResults=false;
+      $('eventPrintResultsClose').disabled=$('eventPrintResultsDone').disabled=false;
+      resultList.querySelectorAll('input').forEach(input=>{const item=printItems.find(item=>item.key===input.closest('[data-key]').dataset.key);input.disabled=item.confirmed || item.unavailable;});
+      $('eventPrintResultsStatus').textContent=confirmed+' ID'+(confirmed===1?'':'s')+' marked as physically printed.'+(failed?' '+failed+' need review; check their messages before retrying.':'');
+      if(confirmed) rememberPrinterSetup();
+      $('eventPrintResultsDone').textContent='Done / Close';resultsReady();
+      return failed===0;
+    }
+    resultSave.addEventListener('click',async()=>{
+      if(await savePrintResults() && printItems.length && printItems.every(item=>item.confirmed)) closeResults();
+    });
+    resultRetry.addEventListener('click',async()=>{
+      if(savingPrintResults || retryingPrint) return;
+      const keys=remainingPrintKeys();
+      if(!keys.length) return;
+      retryingPrint=true;resultsReady();
+      try {
+        // Keep successful selections before replacing the result list. If a
+        // confirmation fails, leave this popup open so no result is lost.
+        if(!await savePrintResults()) return;
+        await new Promise(resolve=>{
+          printResults.addEventListener('close',resolve,{once:true});
+          printResults.close();
+        });
+        await beginPrint(keys);
+      } finally {retryingPrint=false;resultsReady();}
+    });
+    syncPrintSelection();
+  }
+
   const printable = $('eventPrintable');
   if (printable) {
     document.body.classList.add('event-id-print');
@@ -546,12 +878,7 @@
     ready();
     $('eventPrintNow').addEventListener('click',() => {
       if (!printable.complete || !printable.naturalWidth) return;
-      window.print();
-      $('eventPrintStatus').textContent = 'Check the box after confirming the ID printed successfully.';
-    });
-    $('eventPrintWidth').addEventListener('input',event => {
-      const width = Number(event.target.value);
-      if (width >= 30 && width <= 180) printable.parentElement.style.setProperty('--event-card-width',width+'mm');
+      beginPrint([document.querySelector('.event-print-card').dataset.key]);
     });
     $('eventDownloadID').addEventListener('click',async event => {
       event.preventDefault();
@@ -582,6 +909,7 @@
         }
         const result = await post(checkbox.dataset.statusUrl,formData({field:'physical_printed',value:value?1:0,physical_confirmed:value?'yes':'',confirm:'yes',revision:checkbox.dataset.revision}));
         checkbox.dataset.revision = result.revision;
+        if(value) rememberPrinterSetup();
         $('eventPrintNow').classList.toggle('printed',value);
         $('eventPrintStatus').textContent = value?'Physical ID printing confirmed.':'Physical printing confirmation cleared.';
       } catch (failure) { checkbox.checked = !value; $('eventPrintStatus').textContent = failure.message; }
@@ -667,7 +995,7 @@
 
   let liveCursor='',liveBusy=false,liveStopped=false,liveTimer;
   async function refreshProgress() {
-    if(!shell.dataset.liveUrl || liveStopped || liveBusy || document.hidden || pendingWrites || backupRunning || document.querySelector('dialog[open]') || document.querySelector('[data-attendee-row][data-busy]')) return;
+    if(!shell.dataset.liveUrl || liveStopped || liveBusy || document.hidden || pendingWrites || backupRunning || printBusy || document.querySelector('dialog[open]') || document.querySelector('[data-attendee-row][data-busy]')) return;
     liveBusy=true;
     const generation=writeGeneration,button=$('eventRefresh'),status=$('eventLiveStatus');
     if(button) button.disabled=true;
@@ -679,7 +1007,7 @@
         throw new Error('Updates are temporarily unavailable. Retrying automatically.');
       }
       const data=await response.json();
-      if(generation!==writeGeneration || pendingWrites || backupRunning || document.querySelector('dialog[open]') || document.querySelector('[data-attendee-row][data-busy]')) return;
+      if(generation!==writeGeneration || pendingWrites || backupRunning || printBusy || document.querySelector('dialog[open]') || document.querySelector('[data-attendee-row][data-busy]')) return;
       if(String(data.event_id??'')!==shell.dataset.eventId) {
         liveStopped=true;error('eventGlobalError','This event has changed or closed. Reload this page to see the current event. Your entered details have not been cleared.');return;
       }
