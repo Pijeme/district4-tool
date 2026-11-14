@@ -6,7 +6,7 @@
 <section class="card ui-church-status">
   <h2 class="ui-page-title">Church Status</h2>
   <p class="muted small">
-    Overview of all churches per month (Google Sheets source). Month turns <b>green</b> only if <b>all churches</b> submitted.
+    Choose a report month to see each church’s reporting status. The month turns <b>green</b> when <b>all churches</b> have submitted.
   </p>
 
   <style>
@@ -229,15 +229,26 @@
         grid-template-columns: 1fr;
       }
     }
+    .church-month-filter {display:flex;gap:12px;flex-wrap:wrap;align-items:end;}
+    .church-month-filter label {flex:1;min-width:0;}
+    .church-month-filter select {min-height:44px;font-size:16px;width:100%;}
+    @media(max-width:480px){.church-month-filter {display:grid;grid-template-columns:1fr;}}
   </style>
 
-  <form method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
+  <form class="church-month-filter" method="GET" action="{{ url_for('ao_church_status') }}" style="margin-bottom: 14px;">
     <label class="ui-year-control">{{ icon("calendar") }}<span>Report year</span>
     <select name="year" onchange="this.form.submit()">
       {% for y in year_options %}
         <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
       {% endfor %}
     </select></label>
+    <label class="ui-year-control" for="churchReportingMonth">{{ icon("calendar") }}<span>Report month</span>
+      <select id="churchReportingMonth" name="month" onchange="this.form.submit()">
+        {% for name, number in month_options %}
+        <option value="{{ number }}" {% if number == selected_month %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
   </form>
 
   <div class="form-vertical">

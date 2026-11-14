@@ -5728,8 +5728,14 @@ def ao_church_status():
 
     sync_from_sheets_if_needed(force=False)
 
-    today = date.today()
-    year = request.args.get("year", type=int) or today.year
+    today = datetime.now(PH_TZ).date()
+    previous_month = today.replace(day=1) - timedelta(days=1)
+    year = request.args.get("year", type=int) or previous_month.year
+    if year not in range(2025, 2036):
+        year = previous_month.year
+    selected_month = request.args.get("month", type=int) or request.args.get("open_month", type=int) or previous_month.month
+    if not 1 <= selected_month <= 12:
+        selected_month = previous_month.month
 
     year_options = list(range(2025, 2036))
 
@@ -5811,12 +5817,15 @@ def ao_church_status():
             }
         )
 
-    open_month = request.args.get("open_month", type=int)
+    months = [month for month in months if month['month'] == selected_month]
+    open_month = selected_month
 
     return render_template(
         "ao_church_status.html",
         year=year,
         year_options=year_options,
+        month_options=month_names,
+        selected_month=selected_month,
         months=months,
         open_month=open_month,
         ao_is_sub_area=ao_is_sub_area_overseer(),

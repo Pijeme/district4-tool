@@ -5,6 +5,21 @@ libraries, Gemini assistance, and SQLite storage. No separate database server is
 needed. Run one container: background jobs and their progress use process-local
 state, so the image deliberately runs one Gunicorn worker with four threads.
 
+## Monthly area progress
+
+Area Progress Monitor opens the last completed month. Use Progress month to
+choose a single month (including the current month); the former three-month
+view has been removed. Church Reporting has its own month selector, and the
+separate Church Status page has month and year dropdowns.
+
+The **Area Insights** button in the header replaces the notification bell.
+Choose a message to open its explanation and supporting church figures, then
+choose a church to open its progress for that message's month. Attendance growth
+compares the selected completed month with the preceding month; declining
+attendance requires actual reports and two consecutive decreases across three
+monthly checkpoints. Missing reports do not count as zero attendance. All
+insights use the signed-in overseer's existing area/sub-area scope.
+
 ## Android scanner read-only API
 
 `meal_scanner_readonly.py` provides `/api/v2/meal-scanner` for master-device

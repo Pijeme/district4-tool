@@ -447,6 +447,80 @@ class CacheSafetyTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM sheet_accounts_cache').fetchone()[0],3)
                 self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='pij_library_chunks'").fetchall())
 
+    def test_monitor_months_and_reporting_selection_are_independent(self):
+        self.login()
+        url = '/api/ao-tool/area-progress-monitor/snapshot'
+        now = datetime(2026, 11, 14, tzinfo=timezone.utc)
+        with patch.object(monitor, '_now_ph', return_value=now), patch.object(
+                monitor, '_notification_payload', side_effect=AssertionError('Notifications should not load')):
+            default = self.client.get(url).get_json()
+            self.assertEqual(default['month_labels'], ['Oct 2026'])
+            response = self.client.get(url, query_string={
+                'selected_month':'2026-09', 'reporting_month':'2026-08', 'period':'3_months'})
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['month_labels'], ['Sep 2026'])
+            self.assertEqual(payload['period'], 'this_month')
+            self.assertEqual(payload['reporting']['month'], '2026-08')
+            self.assertEqual(payload['reporting']['counts']['No Report'], 1)
+            self.assertEqual(payload['finances']['all'][0]['value'], 1200)
+            self.assertNotIn('notifications', payload)
+            reported = self.client.get(url, query_string={
+                'selected_month':'2026-08', 'reporting_month':'2026-09'}).get_json()
+            self.assertEqual(reported['finances']['all'][0]['value'], 0)
+            self.assertEqual(reported['reporting']['counts']['Reported'], 1)
+            self.assertEqual(reported['reporting']['rows'][0]['date_submitted'], '')
+            self.assertEqual(reported['reporting']['rows'][0]['time_submitted'], '')
+            self.assertEqual(payload['month_options'][0]['value'], '2026-11')
+        self.google.assert_not_called()
+
+    def test_monitor_insight_details_explain_real_comparisons_and_missing_reports(self):
+        churches = {name: {'church_name':name} for name in ('Growing', 'Declining', 'Missing', 'Zero')}
+        rows = []
+        for name, averages in {'Growing':(10,20,30), 'Declining':(30,20,10),
+                               'Missing':(30,None,10), 'Zero':(0,0,10)}.items():
+            for month, average in zip((8,9,10), averages):
+                if average is None:
+                    continue
+                row = dict.fromkeys([*monitor.FINANCE_FIELDS, *monitor.MINISTRY_FIELDS,
+                                     'adult','youth','children'], 0)
+                row.update(church_key=name, year=2026, month=month,
+                           adult=average*monitor._number_of_sundays(2026, month))
+                rows.append(row)
+        reporting = {'month':'2026-09', 'month_label':'September 2026', 'deadline_label':'October 05, 2026',
+                     'rows':[{'church_key':'Missing','church_name':'Missing','status':'No Report',
+                              'date_submitted':'','time_submitted':''}]}
+        with patch.object(monitor, '_now_ph', return_value=datetime(2026,11,14,tzinfo=timezone.utc)), \
+             patch.object(monitor, '_fetch_report_rows', return_value=rows):
+            details = monitor._area_insight_details(monitor.Scope('1','','area overseer'),
+                                                     churches, '2026-10', reporting)
+        by_id = {item['id']:item for item in details}
+        growth = by_id['attendance-growth']['rows']
+        self.assertEqual([row['church_name'] for row in growth], ['Growing'])
+        self.assertEqual(growth[0]['values'], {'Sep 2026':20, 'Oct 2026':30, 'Change':'+50.0%'})
+        self.assertEqual([row['church_name'] for row in by_id['attendance-decline']['rows']], ['Declining'])
+        self.assertEqual(by_id['missing-reports']['rows'][0]['month'], '2026-09')
+        self.assertIn('October 05, 2026', by_id['missing-reports']['explanation'])
+        self.assertTrue(all(item['explanation'] for item in details))
+        with patch.object(monitor, '_now_ph', return_value=datetime(2026,10,14,tzinfo=timezone.utc)), \
+             patch.object(monitor, '_fetch_report_rows', return_value=rows):
+            incomplete = monitor._area_insight_details(monitor.Scope('1','','area overseer'),
+                                                        churches, '2026-10', reporting)
+        self.assertFalse({'attendance-growth','attendance-decline'} & {item['id'] for item in incomplete})
+        self.assertIn('still in progress', incomplete[0]['message'])
+
+    def test_church_status_displays_only_the_selected_month_and_keeps_legacy_links(self):
+        self.login()
+        for query in ('year=2026&month=9', 'year=2026&open_month=9'):
+            response = self.client.get('/ao-tool/church-status?' + query)
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertEqual(html.count('class="btn-secondary ui-month-toggle"'), 1)
+            self.assertIn('<b>September 2026</b>', html)
+            self.assertIn('<option value="9" selected>September</option>', html)
+            self.assertIn('id="month-9" class="ui-month-body" style="display:block', html)
+        self.google.assert_not_called()
+
     def test_normal_login_and_page_flows_use_sqlite(self):
         for route in ('/','/ao-login','/pastor-login'):
             response=self.client.post(route,data={'username':'pastorone' if route!='/ao-login' else 'Pijeme','password':'test-password'})

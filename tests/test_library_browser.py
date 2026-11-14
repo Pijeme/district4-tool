@@ -3067,5 +3067,102 @@ class SermonNotesDriveTests(unittest.TestCase):
         self.run_browser(html, verify, setup)
 
 
+
+@unittest.skipUnless(BROWSER, 'An installed Chromium browser is required')
+class AreaProgressMonitorBrowserTests(unittest.TestCase):
+    run_browser = LibraryBrowserTests.run_browser
+
+    def render_monitor(self):
+        import area_progress_monitor as monitor
+        app = Flask(__name__)
+        styles = '\n'.join((ROOT/'static'/name).read_text(encoding='utf-8')
+                           for name in ('styles.css','visual_upgrade.css','glass_theme.css'))
+        app.jinja_loader = DictLoader({'base.html': '<html><head><meta charset="UTF-8"><meta name="viewport" '
+            'content="width=device-width,initial-scale=1"><style>'+styles+'</style></head>'
+            '<body class="district-glass"><main class="app-main container">{% block content %}{% endblock %}</main></body></html>'})
+        with app.test_request_context():
+            return app.jinja_env.from_string(monitor.PAGE_HTML).render(
+                finance_options=monitor.FINANCE_FIELDS, attendance_options=monitor.ATTENDANCE_FIELDS,
+                ministry_options=monitor.MINISTRY_FIELDS, api_base='/api/monitor',
+                ao_tool_url='/ao-tool', church_status_url='/ao-tool/church-status')
+
+    def monitor_setup(self):
+        return r'''
+        window.Chart=class {constructor(){} destroy(){}};
+        window.requests=[];
+        window.fetch=async(input)=>{
+            const url=new URL(String(input),'https://test.invalid');requests.push(url);
+            const month=url.searchParams.get('selected_month')||'2026-10';
+            const reportingMonth=url.searchParams.get('reporting_month')||month;
+            const church={church_key:'church-a',church_name:'Church A with a long congregation name',color:'#1674bc'};
+            const ranking={title:'Total',top:[{...church,value:1200}],all:[{...church,value:1200}],y_max:1200};
+            const payload={scope:{area:'1',sub_area:''},empty:false,period:'this_month',
+                selected_month:month,reporting_month:reportingMonth,month_labels:[month],
+                month_options:[{value:'2026-10',label:'October 2026'},
+                               {value:'2026-09',label:'September 2026'},
+                               {value:'2026-08',label:'August 2026'}],
+                churches:[church],legend:[church],last_sync_display:'Today',
+                finances:ranking,attendance:ranking,ministry:ranking,
+                reporting:{month:reportingMonth,month_label:reportingMonth,deadline_label:'November 05, 2026',
+                    counts:{Reported:1},rows:[{...church,status:'Reported',date_submitted:'',time_submitted:''}]},
+                insight_details:[{id:'attendance-growth',category:'Attendance',title:'Top growing attendance',
+                    period:month,message:'Church A grew by 50%.',explanation:'Average attendance increased from 20 to 30.',
+                    rows:[{...church,month,values:{'Previous average':20,'Current average':30,'Change':'+50.0%'}}]}]};
+            if(url.pathname.includes('/church/'))return {ok:true,json:async()=>({church,
+                selected_month:month,month_labels:[month],insights:['Progress for '+month],flags:[],
+                attendance_series:{all:[30]},finance_series:{amount_to_send:[1200]},
+                ministry_series:{received_jesus:[2]},manual_remarks:{},automatic_remarks:{}})};
+            return {ok:true,json:async()=>payload};
+        };
+        const settle=()=>new Promise(resolve=>setTimeout(resolve,80));
+        '''
+
+    def test_area_insights_messages_open_detail_popup_on_mobile_and_desktop(self):
+        for width in (320,390,768,1200):
+            with self.subTest(width=width):
+                self.run_browser(self.render_monitor(), r'''
+                    await settle();
+                    check(document.documentElement.scrollWidth<=innerWidth+1,'Page overflows viewport');
+                    check(!document.getElementById('notificationBtn'),'Notification bell remains');
+                    check(getComputedStyle(document.querySelector('#areaProgressMonitor h1')).color==='rgb(255, 255, 255)','Hero heading lacks contrast');
+                    check(!document.querySelector('[data-period="3_months"]'),'Three-month view remains');
+                    check(document.getElementById('singleMonthSelect').getBoundingClientRect().height>=44,'Small month control');
+                    check(!document.getElementById('content').textContent.includes('Church A grew'),'Insights remain on dashboard');
+                    document.getElementById('insightsBtn').click();
+                    check(document.getElementById('insightsDialog').open,'Insights did not open');
+                    document.querySelector('[data-insight="0"]').click();
+                    const dialog=document.getElementById('insightDetailDialog');
+                    check(dialog.open,'Message did not open details');
+                    check(dialog.textContent.includes('20 to 30'),'Explanation missing');
+                    check(dialog.textContent.includes('+50.0%'),'Supporting figures missing');
+                    check(dialog.getBoundingClientRect().width<=innerWidth,'Popup overflows viewport');
+                    document.querySelector('[data-close-dialog="insightDetailDialog"]').click();
+                    check(!dialog.open,'Close details failed');
+                    check(document.getElementById('insightsDialog').open,'Parent insights should remain open');
+                ''', self.monitor_setup(), (width,850))
+
+    def test_month_controls_keep_reporting_and_progress_separate_and_open_matching_details(self):
+        self.run_browser(self.render_monitor(), r'''
+            await settle();
+            let select=document.getElementById('singleMonthSelect');
+            select.value='2026-09';select.dispatchEvent(new Event('change',{bubbles:true}));await settle();
+            check(document.getElementById('reportingMonthSelect').value==='2026-09','Reporting should initially follow progress');
+            select=document.getElementById('reportingMonthSelect');
+            select.value='2026-08';select.dispatchEvent(new Event('change',{bubbles:true}));await settle();
+            check(document.getElementById('singleMonthSelect').value==='2026-09','Reporting changed progress month');
+            check(document.getElementById('reportingMonthSelect').value==='2026-08','Reporting selection reset');
+            document.querySelector('[data-reporting]').click();await settle();
+            check(document.getElementById('churchModal').classList.contains('open'),'Church detail did not open');
+            check(document.querySelector('#churchModal [data-detail-month]').value==='2026-08','Detail shows wrong month');
+            check(document.getElementById('churchModal').textContent.includes('Progress for 2026-08'),'Wrong church detail data');
+            document.getElementById('closeChurchModal').click();
+            document.getElementById('insightsBtn').click();
+            document.querySelector('[data-insight]').click();
+            document.querySelector('#insightDetailBody [data-church]').click();await settle();
+            check(document.querySelector('#churchModal [data-detail-month]').value==='2026-09','Insight opened reporting month');
+            check(!document.getElementById('insightsDialog').open,'Insight list obscures church detail');
+            check(!document.getElementById('insightDetailDialog').open,'Insight popup obscures church detail');
+        ''', self.monitor_setup(), (390,850))
+
 if __name__ == '__main__':
     unittest.main()
