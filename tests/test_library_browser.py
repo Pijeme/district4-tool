@@ -3088,7 +3088,8 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
 
     def monitor_setup(self):
         return r'''
-        window.Chart=class {constructor(){} destroy(){}};
+        window.chartConfigs=[];
+        window.Chart=class {constructor(canvas,config){chartConfigs.push(config)} destroy(){}};
         window.requests=[];
         window.fetch=async(input)=>{
             const url=new URL(String(input),'https://test.invalid');requests.push(url);
@@ -3102,7 +3103,7 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
                                {value:'2026-09',label:'September 2026'},
                                {value:'2026-08',label:'August 2026'}],
                 churches:[church],legend:[church],last_sync_display:'Today',
-                finances:ranking,attendance:ranking,ministry:ranking,
+                finances:{...ranking,y_max:100000},attendance:ranking,ministry:ranking,
                 reporting:{month:reportingMonth,month_label:reportingMonth,deadline_label:'November 05, 2026',
                     counts:{Reported:1},rows:[{...church,status:'Reported',date_submitted:'',time_submitted:''}]},
                 insight_details:[{id:'attendance-growth',category:'Attendance',title:'Top growing attendance',
@@ -3126,6 +3127,8 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
                     check(!document.getElementById('notificationBtn'),'Notification bell remains');
                     check(getComputedStyle(document.querySelector('#areaProgressMonitor h1')).color==='rgb(255, 255, 255)','Hero heading lacks contrast');
                     check(!document.querySelector('[data-period="3_months"]'),'Three-month view remains');
+                    check(chartConfigs[0].options.scales.x.max===100000,'Financial scale must end at 100k');
+                    check(chartConfigs[1].options.scales.x.max===undefined,'Attendance scale should remain automatic');
                     check(document.getElementById('singleMonthSelect').getBoundingClientRect().height>=44,'Small month control');
                     check(!document.getElementById('content').textContent.includes('Church A grew'),'Insights remain on dashboard');
                     document.getElementById('insightsBtn').click();

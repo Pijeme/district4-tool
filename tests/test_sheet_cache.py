@@ -450,11 +450,16 @@ class CacheSafetyTests(unittest.TestCase):
     def test_monitor_months_and_reporting_selection_are_independent(self):
         self.login()
         url = '/api/ao-tool/area-progress-monitor/snapshot'
+        with sqlite3.connect(self.path) as db:
+            db.execute('''INSERT INTO area_monitor_chart_ceiling
+                (scope_key, metric_key, ceiling_value, updated_at)
+                VALUES ('area:1|sub:-', 'finances:amount_to_send', 300000, '2026-10-01')''')
         now = datetime(2026, 11, 14, tzinfo=timezone.utc)
         with patch.object(monitor, '_now_ph', return_value=now), patch.object(
                 monitor, '_notification_payload', side_effect=AssertionError('Notifications should not load')):
             default = self.client.get(url).get_json()
             self.assertEqual(default['month_labels'], ['Oct 2026'])
+            self.assertEqual(default['finances']['y_max'], 100000)
             response = self.client.get(url, query_string={
                 'selected_month':'2026-09', 'reporting_month':'2026-08', 'period':'3_months'})
             self.assertEqual(response.status_code, 200)
