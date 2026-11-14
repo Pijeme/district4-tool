@@ -48,7 +48,7 @@ jobs:
           code=code.replace('        topics = _parse_thompson_index(pdf, progress)','        topics = {} # Bible-only maintenance')
           code=code.replace('        concordance = _parse_thompson_concordance(pdf, progress)','        concordance = {}')
           code=code.replace('        studies = _parse_thompson_studies(pdf, starts, progress)','        studies = {}')
-          code=re.sub(r'    if len\(topics\)<4000.*?\n        raise SyncError\([^\n]*\)\n','',code)
+          code=re.sub(r'(?m)^ +if len\(topics\)<4000[^\n]*\n +raise SyncError\([^\n]*\)\n','',code)
           namespace=dict(vars(study));exec(code,namespace);parse_pdf=namespace['parse_thompson_pdf']
           plan=dict(schema_version=1,source_hashes={},scanned={},changes=[],skipped=[])
           session=resources.get_drive_session()
