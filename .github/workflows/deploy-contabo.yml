@@ -6,7 +6,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - name: Configure SSH
         env:
@@ -21,32 +21,84 @@ jobs:
           ssh -o BatchMode=yes developer@84.247.158.139 << 'REMOTE'
           set -e
           cd /home/developer/district4-tool-main
-          timeout 240 .venv/bin/python - <<'PY'
-          import os,subprocess,sqlite3,re,json,collections
+          timeout 1500 .venv/bin/python - <<'PY'
+          import os,subprocess,sqlite3,json,hashlib,inspect,re,time
           from pathlib import Path
           pid=subprocess.check_output(['systemctl','show','district4-tool','-p','MainPID','--value'],text=True).strip()
-          raw=Path('/proc/'+pid+'/environ').read_bytes()
-          os.environ.update(dict(part.decode().split('=',1) for part in raw.split(b'\0') if b'=' in part))
+          os.environ.update(dict(part.decode().split('=',1) for part in Path('/proc/'+pid+'/environ').read_bytes().split(b'\0') if b'=' in part))
           from runtime_config import data_path
-          path=Path(os.getenv('BIBLE_STUDY_DATABASE') or data_path('bible_study_data/bible_study.db'))
-          with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as db:
+          import bible_study as study
+          import pastor_resources as resources
+          path=Path(os.getenv('BIBLE_STUDY_DATABASE') or data_path('bible_study_data/bible_study.db')).resolve()
+          work=path.parent/'spacing_maintenance';work.mkdir(mode=0o700,exist_ok=True)
+          with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
               db.row_factory=sqlite3.Row
-              for translation in ('NIV','CEBOCB','TCB'):
-                  edition=db.execute('''SELECT e.id,s.title,s.sha256,s.source_path,d.source_kind FROM bible_editions e
-                      JOIN bible_sources s ON s.id=e.source_id LEFT JOIN bible_edition_details d ON d.edition_id=e.id
-                      WHERE e.translation=? AND e.is_active=1 AND e.status='ready' ''',(translation,)).fetchone()
-                  if not edition:
-                      print(json.dumps(dict(translation=translation,available=False)),flush=True);continue
-                  verses=db.execute('SELECT id,book_id,chapter,verse,text FROM bible_verses WHERE edition_id=? AND is_active=1',(edition['id'],)).fetchall()
-                  patterns=collections.Counter();samples=[];token_errors=0
-                  for verse in verses:
-                      suspect=[token for token in re.findall(r"\w+(?:['’]\w+)*",verse['text']) if re.search(r'[a-zà-ÿ][A-ZÀ-Þ]',token)]
-                      patterns.update(suspect)
-                      if suspect and len(samples)<18:samples.append(dict(reference=[verse['book_id'],verse['chapter'],verse['verse']],words=suspect,text=verse['text'][:400]))
-                      for token in db.execute('SELECT start_offset,end_offset,text FROM bible_tokens WHERE verse_id=?',(verse['id'],)):
-                          if verse['text'][token['start_offset']:token['end_offset']]!=token['text']:token_errors+=1
-                  print(json.dumps(dict(translation=translation,source=dict(edition),verses=len(verses),token_offset_errors=token_errors,
-                      suspected_words=patterns.most_common(35),samples=samples),ensure_ascii=False),flush=True)
-          print('audit_complete=True',flush=True)
+              editions=[dict(row) for row in db.execute('''SELECT e.id,e.translation,s.sha256,s.source_path
+                  FROM bible_editions e JOIN bible_sources s ON s.id=e.source_id
+                  WHERE e.translation IN ('NIV','CEBOCB','TCB') AND e.is_active=1 AND e.status='ready' ''')]
+          # This process alone uses the corrected parsers. Production code is unchanged by this check.
+          old_plain=study._usfm_plain
+          def fixed_plain(text):
+              text=re.sub(r'\\ref\s+([^|\\]+)(?:\|[^\\]*)?\\ref\*',r'\1',text)
+              text=re.sub(r'\\[+a-zA-Z][a-zA-Z0-9-]*\*','',text)
+              text=re.sub(r'\\[+a-zA-Z][a-zA-Z0-9-]*[ \t]*','',text)
+              text=re.sub(r'[ \t]+',' ',text)
+              return re.sub(r'\n\s*\n+','\n',text).strip()
+          code=inspect.getsource(study.parse_thompson_pdf).replace('if runs and kind:', 'if runs:')
+          code=code.replace('        topics = _parse_thompson_index(pdf, progress)','        topics = {} # Bible-only maintenance')
+          code=code.replace('        concordance = _parse_thompson_concordance(pdf, progress)','        concordance = {}')
+          code=code.replace('        studies = _parse_thompson_studies(pdf, starts, progress)','        studies = {}')
+          code=re.sub(r'    if len\(topics\)<4000.*?\n        raise SyncError\([^\n]*\)\n','',code)
+          namespace=dict(vars(study));exec(code,namespace);parse_pdf=namespace['parse_thompson_pdf']
+          plan=dict(schema_version=1,source_hashes={},scanned={},changes=[],skipped=[])
+          session=resources.get_drive_session()
+          for edition in editions:
+              kind=edition['translation'];started=time.monotonic()
+              print('source_check_start='+kind,flush=True)
+              extension='.pdf' if kind=='NIV' else '.zip'
+              source=work/(edition['sha256']+extension)
+              if not source.is_file():
+                  data=resources.download_drive_file_bytes(session,edition['source_path'].removeprefix('drive:'))
+                  if hashlib.sha256(data).hexdigest()!=edition['sha256']:raise RuntimeError('Source changed; will not repair against a different edition')
+                  source.write_bytes(data);source.chmod(0o600)
+              data=source.read_bytes()
+              if hashlib.sha256(data).hexdigest()!=edition['sha256']:raise RuntimeError('Source fingerprint mismatch')
+              if kind=='NIV':
+                  def progress(message): print('source_progress='+message,flush=True)
+                  fresh=parse_pdf(data,progress=progress)['verses']
+              else:
+                  study._usfm_plain=fixed_plain
+                  fresh={(v['book_id'],v['chapter'],v['verse']):v for v in study.parse_usfm_archive(data,kind)['verses']}
+                  study._usfm_plain=old_plain
+              plan['source_hashes'][kind]=edition['sha256']
+              changed=0
+              with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+                  db.row_factory=sqlite3.Row
+                  rows=db.execute('SELECT id,book_id,chapter,verse,text,content_hash FROM bible_verses WHERE edition_id=? AND is_active=1',(edition['id'],)).fetchall()
+                  plan['scanned'][kind]=len(rows)
+                  for row in rows:
+                      ref=(row['book_id'],row['chapter'],row['verse'])
+                      candidate=fresh.get(ref)
+                      if not candidate:raise RuntimeError('Source verse coverage does not match indexed Bible')
+                      before=row['text'];after=candidate['text']
+                      if before==after:continue
+                      i=j=0;inserted=0
+                      while i<len(before) and j<len(after):
+                          if before[i]==after[j]:i+=1;j+=1
+                          elif after[j]==' ':j+=1;inserted+=1
+                          else:break
+                      if i==len(before) and all(c==' ' for c in after[j:]):
+                          inserted+=len(after)-j
+                          if inserted:
+                              plan['changes'].append(dict(translation=kind,book_id=ref[0],chapter=ref[1],verse=ref[2],verse_id=row['id'],
+                                  before=before,after=after,spaces_added=inserted,source_sha256=edition['sha256']))
+                              changed+=1
+                      else:
+                          plan['skipped'].append(dict(translation=kind,book_id=ref[0],chapter=ref[1],verse=ref[2],reason='Difference includes more than insertion of spaces'))
+              print(json.dumps(dict(translation=kind,scanned=plan['scanned'][kind],spacing_changes=changed,seconds=round(time.monotonic()-started,1))),flush=True)
+              (work/'source_verified_plan.json').write_text(json.dumps(plan,ensure_ascii=False))
+          print('plan_path='+str(work/'source_verified_plan.json'),flush=True)
+          print('planned_verse_corrections='+str(len(plan['changes'])),flush=True)
+          print('nonspacing_differences_skipped='+str(len(plan['skipped'])),flush=True)
           PY
           REMOTE
