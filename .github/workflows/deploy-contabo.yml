@@ -22,7 +22,8 @@ jobs:
           set -e
           cd /home/developer/district4-tool-main
           timeout 720 .venv/bin/python - <<'PY'
-          import os,subprocess,sqlite3,json,time
+          import os,subprocess,sqlite3,json,time,hashlib,shutil
+          from datetime import datetime,timezone
           from pathlib import Path
           pid=subprocess.check_output(['systemctl','show','district4-tool','-p','MainPID','--value'],text=True).strip()
           os.environ.update(dict(part.decode().split('=',1) for part in Path('/proc/'+pid+'/environ').read_bytes().split(b'\0') if b'=' in part))
@@ -31,15 +32,52 @@ jobs:
           path=Path(os.getenv('BIBLE_STUDY_DATABASE') or data_path('bible_study_data/bible_study.db')).resolve()
           work=path.parent/'spacing_maintenance'
           plan=json.loads((work/'source_verified_plan.json').read_text())
-          print('planned_verses='+str(len(plan['changes'])),flush=True)
-          print('database_bytes='+str(path.stat().st_size),flush=True)
-          start=time.monotonic()
-          report=study.repair_bible_spacing(path,plan,dry_run=True)
-          (work/'validated_spacing_report.json').write_text(json.dumps(report,ensure_ascii=False))
-          print('spacing_validation='+report['status'],flush=True)
-          print('validation_seconds='+str(round(time.monotonic()-start,2)),flush=True)
+          validated=json.loads((work/'validated_spacing_report.json').read_text())
+          assert validated['status']=='validated' and len(validated['changes'])==len(plan['changes'])==8678
+          assert validated['anchors']['deferred']==0
+          if shutil.disk_usage(path.parent).free < path.stat().st_size*2:
+              raise RuntimeError('Insufficient free disk space for verified recovery backup and maintenance staging')
+          print('apply_started=True',flush=True)
+          started=time.monotonic()
+          report=study.repair_bible_spacing(path,plan)
+          assert report['status']=='completed' and len(report['changes'])==8678
+          report.update(schema_version=1,source_hashes=plan['source_hashes'],generated_at=datetime.now(timezone.utc).isoformat())
+          temporary=work/'spacing_correction_report.json.tmp';temporary.touch(mode=0o600,exist_ok=False)
+          temporary.write_text(json.dumps(report,ensure_ascii=False))
+          os.replace(temporary,work/'spacing_correction_report.json')
+          csv_path=work/'bible-spacing-corrections.csv';csv_path.touch(mode=0o600,exist_ok=True)
+          csv_path.write_text(study.bible_spacing_report_csv(report),encoding='utf-8-sig',newline='')
+          print('repair_status='+report['status'],flush=True)
+          print('apply_seconds='+str(round(time.monotonic()-started,2)),flush=True)
           print('translation_counts='+json.dumps(report['translations']),flush=True)
           print('anchor_mapping_counts='+json.dumps(report['anchors']),flush=True)
-          print('original_database_unchanged=True',flush=True)
+          print('recovery_backup='+report['backup'],flush=True)
+          print('report_ready=True',flush=True)
+          with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+              db.row_factory=sqlite3.Row
+              for kind,expected in plan['scanned'].items():
+                  count=db.execute('''SELECT COUNT(*) FROM bible_verses v JOIN bible_editions e ON e.id=v.edition_id
+                      WHERE e.translation=? AND e.is_active=1 AND v.is_active=1''',(kind,)).fetchone()[0]
+                  assert count==expected
+                  print(kind+'_active_verses='+str(count),flush=True)
+              mismatch=db.execute('''SELECT COUNT(*) FROM bible_tokens t JOIN bible_verses v ON v.id=t.verse_id
+                  JOIN bible_editions e ON e.id=v.edition_id WHERE v.is_active=1 AND e.is_active=1
+                  AND e.translation IN ('NIV','CEBOCB','TCB')
+                  AND substr(v.text,t.start_offset+1,t.end_offset-t.start_offset)<>t.text''').fetchone()[0]
+              assert mismatch==0
+              print('active_token_offset_errors='+str(mismatch),flush=True)
+              for change in report['changes']:
+                  row=db.execute('SELECT text,is_active,content_hash FROM bible_verses WHERE id=?',(change['new_verse_id'],)).fetchone()
+                  assert row['text']==change['after'] and row['is_active']==1 and row['content_hash']==hashlib.sha256(row['text'].encode()).hexdigest()
+                  original=db.execute('SELECT text,is_active FROM bible_verses WHERE id=?',(change['verse_id'],)).fetchone()
+                  assert original['text']==change['before'] and original['is_active']==0
+              print('all_original_revisions_preserved=True',flush=True)
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              assert db.execute('PRAGMA foreign_key_check').fetchone() is None
+              print('final_database_integrity=ok',flush=True)
+          examples=[('NIV','inShinar','in Shinar'),('CEBOCB','GinoongDios','Ginoong Dios'),('TCB','PanginoongDiyos','Panginoong Diyos')]
+          for kind,before,after in examples:
+              item=next(row for row in report['changes'] if row['translation']==kind and before in row['before'] and after in row['after'])
+              print('example='+json.dumps(dict(translation=kind,reference=study.BOOKS[item['book_id']-1][0]+' '+str(item['chapter'])+':'+str(item['verse']),before=before,after=after),ensure_ascii=False),flush=True)
           PY
           REMOTE
