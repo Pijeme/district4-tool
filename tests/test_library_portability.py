@@ -5090,5 +5090,136 @@ class PijSharedSermonTests(unittest.TestCase):
         self.assertEqual(before,(self.bible.read_bytes(),self.illustrations.read_bytes()))
 
 
+class BibleSpacingMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        import bible_study as study
+        self.study=study
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        self.path=Path(directory.name)/'bible.db'
+        study.initialize_database(self.path)
+        self.plan=dict(schema_version=1,source_hashes={},changes=[],scanned={kind:1 for kind in ('NIV','CEBOCB','TCB')})
+        with sqlite3.connect(self.path) as db:
+            for index,kind in enumerate(('NIV','CEBOCB','TCB'),1):
+                digest=hashlib.sha256(kind.encode()).hexdigest();self.plan['source_hashes'][kind]=digest
+                db.execute("INSERT INTO bible_sources(id,title,sha256,source_path,created_at) VALUES(?,? ,?,'synthetic','now')",(index,'Synthetic '+kind,digest))
+                db.execute("INSERT INTO bible_import_runs(id,source_id,status,started_at) VALUES(?,?,'validated','now')",(index,index))
+                db.execute("INSERT INTO bible_editions(id,source_id,import_run_id,edition_key,translation,title,status,is_active) VALUES(?,?,?, ?,?,'Synthetic','ready',1)",(index,index,index,kind+':'+digest,kind))
+                before='AlphaBeta gamma.';after='Alpha Beta gamma.'
+                db.execute('INSERT INTO bible_verses(id,edition_id,book_id,chapter,verse,text,content_hash) VALUES(?,?,1,1,1,?,?)',(index,index,before,hashlib.sha256(before.encode()).hexdigest()))
+                for number,match in enumerate(re.finditer(r'\w+',before)):
+                    db.execute('INSERT INTO bible_tokens(verse_id,token_index,start_offset,end_offset,text) VALUES(?,?,?,?,?)',(index,number,match.start(),match.end(),match[0]))
+                self.plan['changes'].append(dict(translation=kind,verse_id=index,book_id=1,chapter=1,verse=1,before=before,after=after,source_sha256=digest))
+            db.execute("INSERT INTO bible_annotations VALUES('mark','member:one',1,'group','highlight',5,9,'Beta','yellow','Keep my note',1,'old','old')")
+            db.execute("INSERT INTO bible_annotations VALUES('joined','member:two',1,'group2','note',0,9,'AlphaBeta','','Keep this private text',1,'old','old')")
+            db.execute("INSERT INTO bible_bookmarks VALUES('bookmark','member:one',1,5,'My label','old','old')")
+            db.execute("INSERT INTO bible_navigation_history VALUES(1,'member:one',1,'old')")
+            db.execute("INSERT INTO bible_reader_state(user_key,edition_id,book_id,chapter,verse,character_offset,updated_at) VALUES('member:one',1,1,1,1,5,'old')")
+            db.execute("INSERT INTO bible_red_letter_spans(verse_id,start_offset,end_offset,speaker,evidence_source_id,evidence_locator) VALUES(1,0,9,'Jesus',1,'Synthetic source')")
+            db.execute("INSERT INTO bible_chain_topics VALUES(1,1,'topic','Synthetic topic','[]',1)")
+            db.execute('INSERT INTO bible_chain_verses VALUES(1,1)')
+
+    def test_change_report_contains_every_reference_and_is_developer_only(self):
+        report=self.study.repair_bible_spacing(self.path,self.plan,dry_run=True)
+        csv_text=self.study.bible_spacing_report_csv(report)
+        self.assertEqual(csv_text.count('Genesis 1:1'),3)
+        self.assertIn('AlphaBeta gamma.',csv_text)
+        self.assertIn('Alpha Beta gamma.',csv_text)
+        directory=self.path.parent/'spacing_maintenance';directory.mkdir()
+        (directory/'spacing_correction_report.json').write_text(json.dumps(report))
+        app=Flask(__name__);app.secret_key='test-session'
+        app.config.update(BIBLE_STUDY_DATABASE=str(self.path),AI_DATABASE=str(self.path.parent/'ai.db'))
+        app.add_url_rule('/',endpoint='splash',view_func=lambda:'Sign in')
+        self.study.register_bible_study_routes(app)
+        client=app.test_client();url='/pastor-resources/bible-study/maintenance/spacing-report.csv'
+        with client.session_transaction() as saved:saved.update(member_logged_in=True,username='reader')
+        self.assertEqual(client.get(url).status_code,403)
+        with client.session_transaction() as saved:
+            saved.clear();saved.update(ao_logged_in=True,ao_username='Pijeme',ao_role='Area Overseer')
+        result=client.get(url)
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(result.mimetype,'text/csv')
+        self.assertTrue(result.cache_control.no_store)
+        self.assertIn('attachment',result.headers['Content-Disposition'])
+        self.assertIn('Alpha Beta',result.get_data(as_text=True))
+
+    def test_usfm_closing_styles_preserve_explicit_source_spaces(self):
+        plain=self.study._usfm_plain
+        self.assertEqual(plain(r'\nd Alpha\nd* Beta'),'Alpha Beta')
+        self.assertEqual(plain(r'Alpha \add Beta\add* gamma'),'Alpha Beta gamma')
+        self.assertEqual(plain(r'Al\it pha\it*Beta'),'AlphaBeta')
+        self.assertEqual(plain(r'\add Alpha \+it Beta\+it* gamma\add* delta'),'Alpha Beta gamma delta')
+
+    def test_dry_run_never_modifies_live_data(self):
+        before=self.path.read_bytes()
+        report=self.study.repair_bible_spacing(self.path,self.plan,dry_run=True)
+        self.assertEqual(report['status'],'validated')
+        self.assertEqual(len(report['changes']),3)
+        self.assertEqual(self.path.read_bytes(),before)
+        self.assertFalse((self.path.parent/'backups').exists())
+
+    def test_revisions_tokens_colors_and_personal_anchors_are_preserved(self):
+        report=self.study.repair_bible_spacing(self.path,self.plan)
+        self.assertEqual(report['status'],'completed')
+        self.assertTrue(Path(report['backup']).is_file())
+        self.assertEqual(report['anchors'],dict(annotations=2,bookmarks=1,history=1,reader_positions=1,deferred=0))
+        with sqlite3.connect(self.path) as db:
+            db.row_factory=sqlite3.Row
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM bible_verses WHERE is_active=1').fetchone()[0],3)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM bible_verses').fetchone()[0],6)
+            for change in report['changes']:
+                old=db.execute('SELECT * FROM bible_verses WHERE id=?',(change['verse_id'],)).fetchone()
+                new=db.execute('SELECT * FROM bible_verses WHERE id=?',(change['new_verse_id'],)).fetchone()
+                self.assertEqual((old['text'],old['is_active'],old['revision']),('AlphaBeta gamma.',0,1))
+                self.assertEqual((new['text'],new['is_active'],new['revision']),('Alpha Beta gamma.',1,2))
+                self.assertEqual(new['content_hash'],hashlib.sha256(new['text'].encode()).hexdigest())
+                for token in db.execute('SELECT * FROM bible_tokens WHERE verse_id=?',(new['id'],)):
+                    self.assertEqual(new['text'][token['start_offset']:token['end_offset']],token['text'])
+            new_id=report['changes'][0]['new_verse_id']
+            annotation=db.execute("SELECT * FROM bible_annotations WHERE id='mark'").fetchone()
+            self.assertEqual((annotation['verse_id'],annotation['start_offset'],annotation['end_offset'],annotation['selected_text'],annotation['note']),
+                             (new_id,6,10,'Beta','Keep my note'))
+            joined=db.execute("SELECT selected_text,note FROM bible_annotations WHERE id='joined'").fetchone()
+            self.assertEqual(tuple(joined),('Alpha Beta','Keep this private text'))
+            self.assertEqual(tuple(db.execute("SELECT verse_id,character_offset,label FROM bible_bookmarks").fetchone()),(new_id,6,'My label'))
+            self.assertEqual(db.execute('SELECT verse_id FROM bible_navigation_history').fetchone()[0],new_id)
+            self.assertEqual(db.execute('SELECT character_offset FROM bible_reader_state').fetchone()[0],6)
+            self.assertEqual(tuple(db.execute('SELECT start_offset,end_offset FROM bible_red_letter_spans WHERE verse_id=?',(new_id,)).fetchone()),(0,10))
+            self.assertEqual(db.execute('SELECT topic_id FROM bible_chain_verses WHERE verse_id=?',(new_id,)).fetchone()[0],1)
+            self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
+        with sqlite3.connect(report['backup']) as db:
+            self.assertEqual(db.execute('SELECT text FROM bible_verses WHERE id=1').fetchone()[0],'AlphaBeta gamma.')
+
+    def test_letters_punctuation_and_existing_whitespace_cannot_be_changed(self):
+        for after in ('Alpha Beta delta.','Alpha Beta gamma!','AlphaBeta gamma.','AlphaBeta\ngamma.'):
+            plan=copy.deepcopy(self.plan);plan['changes'][0]['after']=after
+            before=self.path.read_bytes()
+            with self.assertRaises(self.study.SyncError):self.study.repair_bible_spacing(self.path,plan)
+            self.assertEqual(self.path.read_bytes(),before)
+
+    def test_stale_source_or_verse_rolls_back_every_correction(self):
+        for alteration in ('source','verse'):
+            plan=copy.deepcopy(self.plan)
+            if alteration=='source':plan['source_hashes']['NIV']='f'*64
+            else:plan['changes'][-1]['before']='Different original words'
+            before=self.path.read_bytes()
+            with self.assertRaises(self.study.SyncError):self.study.repair_bible_spacing(self.path,plan)
+            self.assertEqual(self.path.read_bytes(),before)
+
+    def test_reapplying_reviewed_plan_is_idempotent(self):
+        self.study.repair_bible_spacing(self.path,self.plan)
+        again=self.study.repair_bible_spacing(self.path,self.plan)
+        self.assertEqual(again['status'],'unchanged')
+        self.assertEqual(again['already_fixed'],3)
+        self.assertFalse(again['changes'])
+
+    def test_corrupt_saved_selection_is_retained_instead_of_misplaced(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("UPDATE bible_annotations SET selected_text='Original quotation' WHERE id='mark'")
+        report=self.study.repair_bible_spacing(self.path,self.plan)
+        self.assertEqual(report['anchors']['deferred'],1)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(tuple(db.execute("SELECT verse_id,selected_text,note FROM bible_annotations WHERE id='mark'").fetchone()),(1,'Original quotation','Keep my note'))
+
+
 if __name__ == '__main__':
     unittest.main()

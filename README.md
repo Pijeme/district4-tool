@@ -619,3 +619,28 @@ logs remain inaccessible to member sessions, including direct URLs and mutation
 endpoints. Their staff links are hidden. Separate admin permissions and private
 sermon restrictions remain in force. Reading saves and personal Bible Study data
 use each member's own account key; prayer actions use the member's own identity.
+
+### Source-verified Bible spacing maintenance
+
+The Bible importers retain spaces after USFM closing styles and after filtered
+PDF footnote/cross-reference glyphs. Explicit operator spacing repairs use a plan
+compared against the exact source-file hashes of the active English, Cebuano and
+Tagalog editions. Only inserting ASCII spaces is allowed; changes to letters,
+punctuation or existing whitespace are rejected.
+
+`bible_study.repair_bible_spacing(database_path, plan, dry_run=True)` validates on
+a private SQLite snapshot. Applying without `dry_run` first creates and verifies
+a recovery backup, then uses one transaction. Prior verse revisions and tokens
+remain intact. Token offsets are rebuilt and source red-letter spans, chain links,
+valid personal selections, bookmarks, history and reading positions are mapped
+to the corrected revision. User-written note text and bookmark labels are kept.
+Unverifiable saved selections stay attached to their original revision for review.
+No inferred Strong's alignment or private sermon data is copied into Bible text.
+
+The operator saves the detailed result at
+`bible_study_data/spacing_maintenance/spacing_correction_report.json` alongside
+the configured Bible database. The signed-in developer can download every
+before/after verse from
+`/pastor-resources/bible-study/maintenance/spacing-report.csv`. This report is
+private and unavailable to other accounts. Routine page requests do not run
+repairs, create databases, download source Bibles or invoke AI translation.
