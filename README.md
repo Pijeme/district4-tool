@@ -10,7 +10,9 @@ state, so the image deliberately runs one Gunicorn worker with four threads.
 Area Progress Monitor opens the last completed month. Use Progress month to
 choose a single month (including the current month); the former three-month
 view has been removed. Church Reporting has its own month selector, and the
-separate Church Status page has month and year dropdowns.
+separate Church Status page has month and year dropdowns. Financial charts scale
+to the highest amount in the selected month and metric, rounded up to readable
+axis values, including in View all.
 
 The **Area Insights** button in the header replaces the notification bell.
 Choose a message to open its explanation and supporting church figures, then

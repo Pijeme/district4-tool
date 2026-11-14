@@ -3096,6 +3096,7 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
             const month=url.searchParams.get('selected_month')||'2026-10';
             const reportingMonth=url.searchParams.get('reporting_month')||month;
             const church={church_key:'church-a',church_name:'Church A with a long congregation name',color:'#1674bc'};
+            const financialValue=month==='2026-10'?72500:month==='2026-09'?1200:0;
             const ranking={title:'Total',top:[{...church,value:1200}],all:[{...church,value:1200}],y_max:1200};
             const payload={scope:{area:'1',sub_area:''},empty:false,period:'this_month',
                 selected_month:month,reporting_month:reportingMonth,month_labels:[month],
@@ -3103,7 +3104,7 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
                                {value:'2026-09',label:'September 2026'},
                                {value:'2026-08',label:'August 2026'}],
                 churches:[church],legend:[church],last_sync_display:'Today',
-                finances:{...ranking,y_max:100000},attendance:ranking,ministry:ranking,
+                finances:{...ranking,top:[{...church,value:financialValue}],all:[{...church,value:financialValue}],y_max:Math.max(1,financialValue)},attendance:ranking,ministry:ranking,
                 reporting:{month:reportingMonth,month_label:reportingMonth,deadline_label:'November 05, 2026',
                     counts:{Reported:1},rows:[{...church,status:'Reported',date_submitted:'',time_submitted:''}]},
                 insight_details:[{id:'attendance-growth',category:'Attendance',title:'Top growing attendance',
@@ -3127,7 +3128,11 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
                     check(!document.getElementById('notificationBtn'),'Notification bell remains');
                     check(getComputedStyle(document.querySelector('#areaProgressMonitor h1')).color==='rgb(255, 255, 255)','Hero heading lacks contrast');
                     check(!document.querySelector('[data-period="3_months"]'),'Three-month view remains');
-                    check(chartConfigs[0].options.scales.x.max===100000,'Financial scale must end at 100k');
+                    check(chartConfigs[0].options.scales.x.max===undefined,'Financial scale must allow rounding');
+                    check(chartConfigs[0].options.scales.x.suggestedMax===72500,'Financial scale must follow selected month');
+                    document.querySelector('[data-expand="finances"]').click();
+                    check(chartConfigs.at(-1).options.scales.x.suggestedMax===72500,'Expanded financial scale differs');
+                    document.getElementById('closeChartModal').click();
                     check(chartConfigs[1].options.scales.x.max===undefined,'Attendance scale should remain automatic');
                     check(document.getElementById('singleMonthSelect').getBoundingClientRect().height>=44,'Small month control');
                     check(!document.getElementById('content').textContent.includes('Church A grew'),'Insights remain on dashboard');
@@ -3150,6 +3155,7 @@ class AreaProgressMonitorBrowserTests(unittest.TestCase):
             let select=document.getElementById('singleMonthSelect');
             select.value='2026-09';select.dispatchEvent(new Event('change',{bubbles:true}));await settle();
             check(document.getElementById('reportingMonthSelect').value==='2026-09','Reporting should initially follow progress');
+            check(chartConfigs.at(-3).options.scales.x.suggestedMax===1200,'Financial scale did not decrease for selected month');
             select=document.getElementById('reportingMonthSelect');
             select.value='2026-08';select.dispatchEvent(new Event('change',{bubbles:true}));await settle();
             check(document.getElementById('singleMonthSelect').value==='2026-09','Reporting changed progress month');

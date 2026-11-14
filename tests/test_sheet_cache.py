@@ -448,6 +448,13 @@ class CacheSafetyTests(unittest.TestCase):
                 self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='pij_library_chunks'").fetchall())
 
     def test_monitor_months_and_reporting_selection_are_independent(self):
+        values = fixtures()
+        october = list(values['Report'][1])
+        october[values['Report'][0].index('activity_date')] = '10/4/2026'
+        october[values['Report'][0].index('amount to send')] = '72500'
+        values['Report'].append(october)
+        with appmod.app.app_context():
+            self.sync(FakeSheets(values))
         self.login()
         url = '/api/ao-tool/area-progress-monitor/snapshot'
         with sqlite3.connect(self.path) as db:
@@ -459,7 +466,7 @@ class CacheSafetyTests(unittest.TestCase):
                 monitor, '_notification_payload', side_effect=AssertionError('Notifications should not load')):
             default = self.client.get(url).get_json()
             self.assertEqual(default['month_labels'], ['Oct 2026'])
-            self.assertEqual(default['finances']['y_max'], 100000)
+            self.assertEqual(default['finances']['y_max'], 72500)
             response = self.client.get(url, query_string={
                 'selected_month':'2026-09', 'reporting_month':'2026-08', 'period':'3_months'})
             self.assertEqual(response.status_code, 200)
@@ -469,10 +476,12 @@ class CacheSafetyTests(unittest.TestCase):
             self.assertEqual(payload['reporting']['month'], '2026-08')
             self.assertEqual(payload['reporting']['counts']['No Report'], 1)
             self.assertEqual(payload['finances']['all'][0]['value'], 1200)
+            self.assertEqual(payload['finances']['y_max'], 1200)
             self.assertNotIn('notifications', payload)
             reported = self.client.get(url, query_string={
                 'selected_month':'2026-08', 'reporting_month':'2026-09'}).get_json()
             self.assertEqual(reported['finances']['all'][0]['value'], 0)
+            self.assertEqual(reported['finances']['y_max'], 1)
             self.assertEqual(reported['reporting']['counts']['Reported'], 1)
             self.assertEqual(reported['reporting']['rows'][0]['date_submitted'], '')
             self.assertEqual(reported['reporting']['rows'][0]['time_submitted'], '')
