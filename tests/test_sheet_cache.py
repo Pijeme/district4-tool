@@ -135,6 +135,148 @@ class CacheSafetyTests(unittest.TestCase):
                 state.update(ao_logged_in=True,ao_username=username,ao_role=role,ao_area_number='1',ao_name='Test AO')
             state['cache_control_token']='test-csrf-token'
 
+    def member_login(self, username='alice', password='test-password'):
+        with self.client.session_transaction() as state:
+            state.clear()
+        return self.client.post('/',data={'username':username,'password':password})
+
+    def test_member_login_uses_members_mirror_and_sets_only_member_session(self):
+        response=self.member_login('ALICE')
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(response.location,'/bulletin')
+        with self.client.session_transaction() as state:
+            self.assertTrue(state['member_logged_in'])
+            self.assertEqual(state['username'],'alice')
+            self.assertEqual(state['role'],'Member')
+            self.assertEqual(state['name'],'Alice')
+            self.assertEqual(state['church_id'],'ChurchA')
+            self.assertEqual(state['area'],'1')
+            self.assertEqual(state['birthday'],'2000-01-01')
+            self.assertNotIn('pastor_logged_in',state)
+            self.assertNotIn('ao_logged_in',state)
+        self.google.assert_not_called()
+
+    def test_member_bad_password_and_duplicate_usernames_fail_closed(self):
+        self.assertIn(b'Invalid username or password',self.member_login(password='wrong').data)
+        with self.client.session_transaction() as state:
+            self.assertFalse(state.get('member_logged_in'))
+        with appmod.app.app_context():
+            appmod.get_db().execute("INSERT INTO sheet_members_account_cache(sheet_row,username,password,name) VALUES(99,'ALICE','test-password','Duplicate')")
+            appmod.get_db().commit()
+        self.assertIn(b'Invalid username or password',self.member_login().data)
+        with self.client.session_transaction() as state:
+            self.assertFalse(state.get('member_logged_in'))
+
+    def test_member_login_never_overrides_a_staff_username(self):
+        with appmod.app.app_context():
+            appmod.get_db().execute("UPDATE sheet_members_account_cache SET username='pastorone',password='member-only-password'")
+            appmod.get_db().commit()
+        response=self.member_login('PASTORONE','member-only-password')
+        self.assertIn(b'Invalid username or password',response.data)
+        with self.client.session_transaction() as state:
+            self.assertFalse(state.get('member_logged_in'))
+            self.assertFalse(state.get('pastor_logged_in'))
+
+    def test_member_staff_paths_and_mutations_are_blocked_before_google_or_handlers(self):
+        self.member_login()
+        paths=['/pastor-tool','/pastor-tool/2026/11/1','/pastor-tool/submit/start',
+               '/pastor-tool/report/2026/11.pdf','/ao-tool','/ao-tool/create-account',
+               '/ao-tool/cache/download-db','/api/ao-tool/area-progress-monitor/snapshot',
+               '/church-progress/ChurchA','/church-progress/ChurchA/member/create',
+               '/church-progress/ChurchA/member/delete','/do-tool','/sync-area-data-log']
+        with patch.object(appmod,'sync_from_sheets_if_needed',side_effect=AssertionError('Denied requests must not sync')):
+            for path in paths:
+                with self.subTest(path=path):
+                    method='post' if path.endswith(('/start','/create','/delete','/download-db')) else 'get'
+                    self.assertEqual(getattr(self.client,method)(path).status_code,403)
+        with self.client.session_transaction() as state:
+            state.update(ao_logged_in=True,ao_username='Pijeme',ao_role='Area Overseer')
+        self.assertEqual(self.client.get('/ao-tool').status_code,403)
+
+    def test_members_can_use_shared_pages_without_staff_menu_links(self):
+        self.member_login()
+        with patch.dict(appmod.app.config,BIBLE_STUDY_DATABASE=os.path.join(self.directory.name,'bible.db')):
+            for path in ('/prayer-request','/prayer-request/status','/prayer-request/answered','/schedules',
+                         '/pastor-resources','/pastor-resources/bible-study',
+                         '/pastor-resources/bible-study/api/status','/about-developer'):
+                with self.subTest(path=path):
+                    self.assertEqual(self.client.get(path).status_code,200)
+            response=self.client.get('/prayer-request').get_data(as_text=True)
+            self.assertNotIn('<span>Pastor\'s Tool</span>',response)
+            self.assertNotIn('<span>AO Tool</span>',response)
+            self.assertNotIn('<span>Church Progress</span>',response)
+            self.assertIn('<span>Pastor\'s Resources</span>',response)
+            self.assertIn('pijLauncher',response)
+            self.assertEqual(self.client.get('/pastor-resources/bible-study/api/sync').status_code,403)
+        self.google.assert_not_called()
+
+    def test_member_prayer_identity_and_reader_storage_are_account_scoped(self):
+        self.member_login()
+        with appmod.app.test_request_context():
+            from flask import session
+            session.update(member_logged_in=True,username='alice',role='Member',name='Alice',church_id='ChurchA')
+            self.assertEqual(appmod._current_user_key(),'alice')
+            self.assertEqual(appmod._current_user_display(),'Alice')
+            self.assertEqual(appmod._current_user_church_name(),'ChurchA')
+            self.assertEqual(pastor_resources.current_reader_user_key(),'member:alice')
+        self.assertEqual(self.client.get('/prayer-request/edit/req1').status_code,403)
+        self.assertEqual(self.client.post('/prayer-request/delete/req1').status_code,403)
+        # Private sermon APIs must stay forbidden even though shared ebooks are open.
+        self.assertEqual(self.client.get('/pastor-resources/sermon-ebooks/api/list').status_code,403)
+
+    def test_members_can_chat_with_pij(self):
+        import ai_assistant as ai
+        self.member_login()
+        with patch.object(ai,'safe_context_for_gemini',return_value='Authorized member context'), \
+             patch.object(ai,'library_context_for_gemini',return_value='No library needed'), \
+             patch.object(ai,'ask_pij',return_value=('Member reply','test-model')):
+            response=self.client.post('/ai/chat',json={'message':'Hello'})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json['answer'],'Member reply')
+        ai.conversation_memory.clear();ai.history_touched.clear()
+
+    def test_legacy_member_cannot_use_pastor_login_to_gain_staff_access(self):
+        with appmod.app.app_context():
+            appmod.get_db().execute("INSERT INTO sheet_accounts_cache(username,password,name,position) VALUES('legacy-member','test-password','Legacy','Member')")
+            appmod.get_db().commit()
+        response=self.client.post('/pastor-login',data={'username':'legacy-member','password':'test-password'})
+        self.assertEqual(response.status_code,200)
+        with self.client.session_transaction() as state:
+            self.assertFalse(state.get('pastor_logged_in'))
+        self.assertEqual(self.member_login('legacy-member').status_code,302)
+        self.assertEqual(self.client.get('/pastor-tool').status_code,403)
+        # Explicitly signing in with a real staff account clears the old member identity.
+        self.assertEqual(self.client.post('/ao-login',data={'username':'Pijeme','password':'test-password'}).status_code,302)
+        with self.client.session_transaction() as state:
+            self.assertTrue(state['ao_logged_in'])
+            self.assertNotIn('member_logged_in',state)
+
+    def test_pastor_created_member_can_login_after_sheets_then_cache_refresh(self):
+        self.login(pastor=True)
+        fake=FakeSheets();events=[];ws=Mock()
+        ws.get_all_values.side_effect=lambda:copy.deepcopy(fake.values['Members Account'])
+        def append(row,**kwargs):
+            events.append('sheets-write');fake.values['Members Account'].append(row)
+        ws.append_row.side_effect=append
+        def refresh(*names):
+            events.append('local-refresh');self.sync(fake,list(names));return True
+        with patch.object(members,'_get_members_ws',return_value=ws), \
+             patch.object(members,'_generate_password',return_value='generated-test-pass'), \
+             patch.object(appmod,'refresh_after_sheet_write',side_effect=refresh):
+            result=self.client.post('/church-progress/ChurchA/member/create',json={'name':'New Member','bday':'2000-02-01'})
+        self.assertTrue(result.json['ok'])
+        self.assertEqual(events,['sheets-write','local-refresh'])
+        self.assertEqual(self.member_login(result.json['username'],result.json['password']).status_code,302)
+        with self.client.session_transaction() as state:
+            self.assertTrue(state['member_logged_in'])
+            self.assertEqual(state['name'],'New Member')
+            self.assertNotIn('pastor_logged_in',state)
+
+    def test_generated_member_username_avoids_staff_names(self):
+        ws=Mock();ws.get_all_values.return_value=[members.MEMBER_HEADERS]
+        with appmod.app.app_context(),patch.object(members,'_get_members_ws',return_value=ws):
+            self.assertEqual(members._generate_username('Pastor One'),'pastorone2')
+
     def test_full_sync_fetches_exact_eight_and_preserves_unrelated_tables(self):
         fake = FakeSheets()
         with appmod.app.app_context():

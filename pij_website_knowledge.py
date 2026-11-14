@@ -295,10 +295,10 @@ def current_identity() -> dict[str, str]:
         "kind": "member" if session.get("member_logged_in") else "unknown",
         "role": role or "Member",
         "username": str(session.get("username") or "").strip(),
-        "name": "",
-        "church": "",
-        "church_address": "",
-        "area": "",
+        "name": str(session.get("name") or "").strip(),
+        "church": str(session.get("church_id") or "").strip(),
+        "church_address": str(session.get("church_address") or "").strip(),
+        "area": str(session.get("area") or "").strip(),
         "sub_area": "",
     }
 

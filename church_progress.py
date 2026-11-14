@@ -1829,6 +1829,11 @@ def _all_member_usernames() -> set[str]:
             if u:
                 usernames.add(u)
 
+    # Prevent a generated member login from colliding with the staff namespace.
+    with closing(_connect()) as conn:
+        usernames.update(str(row[0] or "").strip().lower()
+                         for row in conn.execute("SELECT username FROM sheet_accounts_cache"))
+
     return usernames
 
 

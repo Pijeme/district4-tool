@@ -602,3 +602,20 @@ This reads the same local shared sources as Bible Study. It does not copy or
 index personal sermons. If shared sources have not yet been imported, use the
 existing Bible Study sync and ebook indexing tools; Pij reports unavailable
 sources instead of inventing matches.
+
+### Member accounts
+
+Assigned pastors create and manage member accounts through their church's
+Church Progress page. The existing order is retained: save to **District4 Data →
+Members Account** in Google Sheets, then refresh the local member mirror. A failed
+Sheets write does not create a local account. Members sign in at the normal
+website login using those credentials; authentication reads the local mirror.
+New member usernames also avoid existing staff usernames. Duplicate member
+usernames and collisions with a staff login fail closed instead of mixing roles.
+
+Members can use shared features, including Bible Study, ebooks, Pij, prayer
+requests and schedules. Pastor's Tool, AO/DO tools, Church Progress and developer
+logs remain inaccessible to member sessions, including direct URLs and mutation
+endpoints. Their staff links are hidden. Separate admin permissions and private
+sermon restrictions remain in force. Reading saves and personal Bible Study data
+use each member's own account key; prayer actions use the member's own identity.

@@ -1587,6 +1587,8 @@ def _current_user_key():
         return (session.get("ao_username") or "").strip() or "ao"
     if session.get("pastor_logged_in"):
         return (session.get("pastor_username") or "").strip() or "pastor"
+    if session.get("member_logged_in") is True:
+        return str(session.get("username") or "").strip()
     return ""
 
 
@@ -1596,6 +1598,8 @@ def _current_user_display():
         return (session.get("ao_name") or "").strip() or (session.get("ao_username") or "AO")
     if session.get("pastor_logged_in"):
         return (session.get("pastor_name") or "").strip() or (session.get("pastor_username") or "Pastor")
+    if session.get("member_logged_in") is True:
+        return str(session.get("name") or session.get("username") or "Member").strip()
     return "Unknown"
 
 
@@ -1608,6 +1612,8 @@ def _current_user_church_name():
         return (session.get("pastor_church_address") or "").strip()
     if session.get("ao_logged_in"):
         return (session.get("ao_church_id") or "").strip()
+    if session.get("member_logged_in") is True:
+        return str(session.get("church_id") or session.get("church_address") or "").strip()
     return ""
 
 
@@ -2621,7 +2627,8 @@ def pastor_logged_in():
 
 
 def any_user_logged_in():
-    return pastor_logged_in() or ao_logged_in()
+    return (pastor_logged_in() or ao_logged_in()
+            or session.get("member_logged_in") is True and bool(str(session.get("username") or "").strip()))
 
 
 def ao_is_sub_area_overseer():
@@ -3232,6 +3239,16 @@ def _insert_pastor_login_event(row):
 
 
 @app.before_request
+def restrict_member_staff_tools():
+    if session.get("member_logged_in") is not True:
+        return None
+    # Protect all subroutes and JSON endpoints, not just the menu links.
+    staff_paths = ("/pastor-tool", "/ao-tool", "/api/ao-tool", "/church-progress", "/do-tool", "/sync-area-data-log")
+    if any(request.path == prefix or request.path.startswith(prefix + "/") for prefix in staff_paths):
+        abort(403)
+
+
+@app.before_request
 def before_request():
     if request.endpoint == "healthz":
         return
@@ -3357,12 +3374,13 @@ def splash():
                 """
                 SELECT username, password, name, church_address, sex, age, position, sub_area, contact, birthday
                 FROM sheet_accounts_cache
-                WHERE TRIM(username) = TRIM(?)
+                WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
                 """,
                 (username,),
             ).fetchone()
 
             if row and str(row["password"] or "").strip() == password:
+                username = str(row["username"] or "").strip()
                 session.clear()
                 session.permanent = True
 
@@ -3419,6 +3437,28 @@ def splash():
                 session["member_logged_in"] = True
                 return redirect(url_for("bulletin"))
 
+            elif row is None:
+                # Accounts owns its username namespace. Never let a member row
+                # override an existing staff account with the same login name.
+                members = get_db().execute(
+                    """SELECT username,password,name,bday,church_id,church_address,area_number,pastor
+                       FROM sheet_members_account_cache
+                       WHERE LOWER(TRIM(username))=LOWER(TRIM(?)) LIMIT 2""", (username,)
+                ).fetchall()
+                if (len(members) == 1 and str(members[0]["username"] or "").strip()
+                        and hmac.compare_digest(str(members[0]["password"] or "").strip().encode(), password.encode())):
+                    member = members[0]
+                    session.clear()
+                    session.permanent = True
+                    session.update(
+                        username=str(member["username"]).strip(), pledge_actor=str(member["username"]).strip(),
+                        name=member["name"] or "", birthday=member["bday"] or "",
+                        church_id=member["church_id"] or "", church_address=member["church_address"] or "",
+                        area=member["area_number"] or "", member_pastor=member["pastor"] or "",
+                        role="Member", selected_position="member", member_logged_in=True,
+                    )
+                    return redirect(url_for("bulletin"))
+                error = "Invalid username or password."
             else:
                 error = "Invalid username or password."
 
@@ -4292,7 +4332,9 @@ def pastor_login():
                 (username,),
             ).fetchone()
 
-            if row and str(row["password"] or "").strip() == password:
+            if (row and str(row["password"] or "").strip() == password
+                    and str(row["position"] or "").strip().lower() == "pastor"):
+                session.clear()
                 session["pledge_actor"] = username
                 session["pastor_logged_in"] = True
                 session["pastor_username"] = username
@@ -5256,6 +5298,7 @@ def ao_login():
         if row and (str(row["password"] or "").strip() == password):
             pos = str((row["position"] if "position" in row.keys() else "") or "").strip().lower()
             if pos in ("area overseer", "sub area overseer"):
+                session.clear()
                 session["pledge_actor"] = username
                 session["ao_logged_in"] = True
                 session["ao_username"] = username

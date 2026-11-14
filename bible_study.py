@@ -6076,7 +6076,7 @@ def initialize_database(database_path, **path_options):
 
 def _account_key():
     # Match Pastor's Resources permissions. A username alone is not a login.
-    if session.get('pastor_logged_in') is not True and session.get('ao_logged_in') is not True:
+    if not any(session.get(flag) is True for flag in ('pastor_logged_in', 'ao_logged_in', 'member_logged_in')):
         return ''
     return current_reader_user_key()
 

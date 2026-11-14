@@ -269,10 +269,10 @@
   {% set role_raw = session.get('role') or session.get('ao_role') or '' %}
   {% set role = role_raw|lower|trim %}
   {% set is_logged_in = session.get("pastor_username") or session.get("ao_logged_in") or session.get("member_logged_in") or session.get("username") %}
-  {% set is_pastor = role == 'pastor' or session.get("pastor_logged_in") %}
   {% set is_member = role == 'member' or session.get("member_logged_in") %}
-  {% set is_do = role in ['district overseer', 'do'] %}
-  {% set is_ao = (role in ['area overseer', 'ao', 'sub area overseer', 'subarea overseer'] or session.get("ao_logged_in")) and not is_do %}
+  {% set is_pastor = not is_member and (role == 'pastor' or session.get("pastor_logged_in")) %}
+  {% set is_do = not is_member and role in ['district overseer', 'do'] %}
+  {% set is_ao = (role in ['area overseer', 'ao', 'sub area overseer', 'subarea overseer'] or session.get("ao_logged_in")) and not is_do and not is_member %}
   {% set pij_person_name = (session.get("pastor_name") if is_pastor else session.get("ao_name")) or '' %}
   {% set pij_person_role = 'Pastor' if is_pastor else ('District Overseer' if is_do else ('Area Overseer' if is_ao else '')) %}
   {% set pij_greeting_name = (pij_person_role ~ ' ' ~ pij_person_name)|trim %}

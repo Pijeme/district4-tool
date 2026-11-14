@@ -1697,7 +1697,8 @@ class BibleStudyIntegrationTests(unittest.TestCase):
             {'ao_logged_in': 'true', 'ao_username': 'Pijeme', 'ao_role': 'Area Overseer'},
             {'ao_logged_in': True},
             {'pastor_logged_in': True},
-            {'member_logged_in': True, 'username': 'Member'},
+            {'member_logged_in': True},
+            {'member_logged_in': 'true', 'username': 'Member'},
         ):
             with self.client.session_transaction() as session:
                 session.clear()
@@ -1714,6 +1715,18 @@ class BibleStudyIntegrationTests(unittest.TestCase):
                 self.assertEqual(config['referenceBooks']['mt'],'Matthew')
                 self.assertEqual(config['referenceBooks']['1cor'],'1 Corinthians')
                 self.assertEqual(self.client.get(self.base + '/api/status').status_code, 200)
+
+    def test_authenticated_members_can_read_but_cannot_run_developer_sync(self):
+        with self.client.session_transaction() as saved:
+            saved.clear();saved.update(member_logged_in=True,username='Member',role='Member')
+        self.assertEqual(self.client.get(self.base).status_code,200)
+        self.assertEqual(self.client.get(self.base+'/api/status').status_code,200)
+        self.assertEqual(self.client.get(self.base+'/api/sync').status_code,403)
+        with self.app.test_request_context():
+            from flask import session
+            session.update(member_logged_in=True,username='Member',role='Member')
+            self.assertEqual(self.bible._account_key(),'member:member')
+        self.assertFalse(self.path.exists())
 
     def test_missing_database_is_an_empty_preview_and_is_not_created(self):
         self.preview()
