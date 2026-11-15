@@ -3253,6 +3253,10 @@ def restrict_member_staff_tools():
 def before_request():
     if request.endpoint == "healthz":
         return
+    if request.path == '/event-registration/api/offline/v1' or request.path.startswith('/event-registration/api/offline/v1/'):
+        # The offline companion authenticates in its own API. Manual exchange
+        # must never trigger Google reads, browser sessions, or visit logging.
+        return
     if request.endpoint in ('event_progress','event_thumbnail','event_opening_status'):
         # Polling and small roster photos never log visits or sync Google.
         return
@@ -9268,6 +9272,18 @@ register_meal_scanner_api(app, get_db, event_tables,
                               'audit': event_meal_api_audit.__wrapped__,
                               'sync-status': event_meal_api_status.__wrapped__,
                           })
+
+from registration_sync import register_registration_sync
+from sheet_cache import _locked_sync as _event_offline_record_lock
+
+register_registration_sync(
+    app, get_db=get_db, ensure_events=event_tables,
+    asset_path=event_asset_path, asset_write=event_asset_write,
+    check_password=event_password_matches, rate_limit=event_limit,
+    directory=event_directory, queue_deletion=event_queue_deletion,
+    record_lock=lambda key: _event_offline_record_lock(data_path('event-record-backup-'+key)),
+    validate_print=lambda event, person: event_render_id(event, person, background=b''),
+)
 
 # Gunicorn imports app:app and never enters __main__. Complete the additive
 # application schema setup here, before accepting any requests, on both servers.
