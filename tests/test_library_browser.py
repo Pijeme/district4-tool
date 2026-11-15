@@ -2166,14 +2166,20 @@ class BibleStudyBrowserTests(unittest.TestCase):
                         page=context.new_page();page.set_content(html);page.wait_for_selector('#bsVerse1')
                         if width>700:
                             widths=page.locator('#bsWideTabs [role=tab]').evaluate_all('(tabs)=>tabs.map(tab=>tab.getBoundingClientRect().width)')
-                            if touch:
+                            if width<=1100:
+                                self.assertEqual(widths[:3],[88 if touch else 104]*3)
+                                tools=page.locator('#bsWideTabs>[aria-label="Study tools"]').bounding_box()
+                                reader=page.locator('#bsWideTabs>.bs-reader-tabs').bounding_box()
+                                self.assertGreaterEqual(tools['y'],reader['y']+reader['height']-1)
+                                self.assertTrue(all(w>100 for w in widths[3:]))
+                            elif touch:
                                 self.assertEqual(widths[:2],[88]*2)
                                 self.assertTrue(all(64<=w<=88 for w in widths[2:]))
                             else:
                                 self.assertEqual(widths,[104]*8)
-                            if touch:
+                            if touch and width>1100:
                                 self.assertTrue(page.evaluate('''()=>{const tabs=document.querySelector('#bsWideTabs>[aria-label="Study tools"]').getBoundingClientRect();return tabs.left>=innerWidth/2&&tabs.right<=innerWidth;}'''),'Study tabs crossed the fixed center of the tablet')
-                                self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);return range.getBoundingClientRect().bottom<=tab.getBoundingClientRect().bottom+1;})'''),'Compact tablet tabs clip their text')
+                            self.assertTrue(page.locator('#bsWideTabs [role=tab]').evaluate_all('''tabs=>tabs.every(tab=>{const range=document.createRange();range.selectNodeContents(tab);const box=tab.getBoundingClientRect();return [...range.getClientRects()].every(r=>r.left>=box.left-1&&r.right<=box.right+1&&r.top>=box.top-1&&r.bottom<=box.bottom+1);})'''),'Tablet tab text extends outside its button')
                             def positions():return page.locator('#bsWideTabs [role=tab]').evaluate_all('tabs=>tabs.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})')
                             before=positions()
                             for key in ('Home','End'):
@@ -2706,7 +2712,7 @@ class SermonNotesEditorTests(unittest.TestCase):
             const previousFetch=window.fetch;
             const sample={id:'2'.repeat(32),version:1,dirty:false,note:{schema_version:1,theme:'Selection test',text:'John 3:16',content:{blocks:[{type:'paragraph',runs:[{text:'Faith '},{text:'grows',bold:true},{text:' through prayer and patient trust.'}]}]}}};
             window.notePatches=[];window.keyboardHides=0;
-            Object.defineProperty(navigator,'virtualKeyboard',{value:{hide(){keyboardHides++;}}});
+            Object.defineProperty(navigator,'virtualKeyboard',{value:{hide(){keyboardHides++;if(window.simulateKeyboardClose){window.simulateKeyboardClose=false;keyboardViewport.height=900;keyboardViewport.dispatchEvent(new Event('resize'));}}}});
             window.keyboardViewport=Object.assign(new EventTarget(),{width:innerWidth,height:innerHeight,offsetTop:0,offsetLeft:0,scale:1});
             Object.defineProperty(window,'visualViewport',{value:keyboardViewport});
             const response=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
@@ -2775,8 +2781,15 @@ class SermonNotesEditorTests(unittest.TestCase):
                             page.mouse.move(points['x'],points['y']);page.mouse.down();page.mouse.move(points['end'],points['y'],steps=8);page.mouse.up()
                             self.assertEqual(page.evaluate('getSelection().toString()'),'grows through prayer')
                         color=tools.locator('[data-notes-selection-command="hiliteColor"][data-color="#ffdef3"]')
+                        page.evaluate("keyboardViewport.height=400;keyboardViewport.dispatchEvent(new Event('resize'));window.simulateKeyboardClose=true;")
+                        tool_top=tools.bounding_box()['y']
+                        tools.evaluate("""tools=>tools.addEventListener('pointerdown',()=>{window.formattingPress={editorFocused:document.activeElement.id==='bsNotesEditor',keyboardHides,top:tools.getBoundingClientRect().top};},{once:true})""")
                         if touch:color.tap()
                         else:color.click()
+                        press=page.evaluate('formattingPress')
+                        if touch:self.assertFalse(press['editorFocused'],'The keyboard was kept active until after the formatting click')
+                        self.assertGreater(press['keyboardHides'],0)
+                        self.assertAlmostEqual(press['top'],tool_top,delta=1,msg='Closing the keyboard moved the control before its click')
                         page.wait_for_function('notePatches.some(note=>note.content.blocks.some(block=>block.runs.some(run=>run.highlight==="#ffdef3")))')
                         highlighted=page.evaluate('notePatches.at(-1).content.blocks.flatMap(block=>block.runs).filter(run=>run.highlight==="#ffdef3").map(run=>run.text).join("")')
                         self.assertEqual(highlighted,'grows through prayer')
@@ -2798,7 +2811,7 @@ class SermonNotesEditorTests(unittest.TestCase):
                         self.assertFalse(errors,errors);context.close()
                     finally:browser.close()
 
-    def test_stationary_tablet_ribbon_and_keyboard_safe_formatting(self):
+    def test_tablet_headers_follow_panes_and_keyboard_safe_formatting(self):
         from playwright.sync_api import sync_playwright
         setup=BibleStudyBrowserTests.setup_api(self,True)+r"""
             const previousFetch=window.fetch;
@@ -2842,9 +2855,14 @@ class SermonNotesEditorTests(unittest.TestCase):
                         dock=page.locator('.bs-notes-dock').bounding_box();heading=page.locator('.bs-fixed-study-heading .bs-banner').bounding_box();pane=page.locator('#bsBible').bounding_box()
                         page.locator('#bsDivider').focus();page.keyboard.press('Shift+ArrowLeft')
                         self.assertNotEqual(page.locator('#bsBible').bounding_box()['width'],pane['width'])
-                        self.assertAlmostEqual(page.locator('.bs-notes-dock').bounding_box()['width'],dock['width'],delta=1)
-                        self.assertAlmostEqual(page.locator('.bs-notes-dock').bounding_box()['y'],dock['y'],delta=1)
-                        self.assertAlmostEqual(page.locator('.bs-fixed-study-heading .bs-banner').bounding_box()['x'],heading['x'],delta=1)
+                        after_dock=page.locator('.bs-notes-dock').bounding_box();after_heading=page.locator('.bs-fixed-study-heading .bs-banner').bounding_box()
+                        after_pane=page.locator('#bsBible').bounding_box();study_pane=page.locator('#bsStudy').bounding_box()
+                        self.assertAlmostEqual(after_dock['x'],after_pane['x']+7,delta=1)
+                        self.assertAlmostEqual(after_dock['width'],after_pane['width']-14,delta=1)
+                        self.assertAlmostEqual(after_heading['x'],study_pane['x']+7,delta=1)
+                        self.assertAlmostEqual(after_heading['width'],study_pane['width']-14,delta=1)
+                        self.assertAlmostEqual(after_heading['y'],after_dock['y'],delta=1)
+                        self.assertAlmostEqual(after_heading['height'],after_dock['height'],delta=1)
                         page.locator('#bsNotesFontSize').select_option('18')
                         page.locator('#bsNotesCase').select_option('upper')
                         self.assertIn('SELECT THESE SAMPLE WORDS.',page.locator('#bsNotesEditor').inner_text())
@@ -2909,8 +2927,9 @@ class SermonNotesEditorTests(unittest.TestCase):
             if(innerWidth>700){
                 const fixed=el('FixedTools').getBoundingClientRect(),dockWidth=dock.getBoundingClientRect().width,heading=document.querySelector('.bs-fixed-study-heading .bs-banner').getBoundingClientRect();
                 const divider=el('Divider');divider.focus();divider.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',shiftKey:true,bubbles:true}));await wait();
-                check(Math.abs(dock.getBoundingClientRect().width-dockWidth)<1&&Math.abs(el('FixedTools').getBoundingClientRect().top-fixed.top)<1,'Divider moved the note ribbon');
-                check(Math.abs(document.querySelector('.bs-fixed-study-heading .bs-banner').getBoundingClientRect().left-heading.left)<1,'Divider moved the study heading');
+                check(Math.abs(el('FixedTools').getBoundingClientRect().top-fixed.top)<1,'Divider moved the header row vertically');
+                check(Math.abs(dock.getBoundingClientRect().width-el('Bible').getBoundingClientRect().width+14)<1,'Notes header does not follow its pane');
+                check(Math.abs(document.querySelector('.bs-fixed-study-heading .bs-banner').getBoundingClientRect().left-el('Study').getBoundingClientRect().left-7)<1,'Study header does not follow its pane');
             }
             check(tools.querySelectorAll('[data-notes-selection-command="hiliteColor"]').length===6,'Bible highlight palette is missing');
             check(!el('NotesFormat').querySelector('[data-notes-command="underline"],[data-notes-command="hiliteColor"]'),'Redundant formatting commands remain');

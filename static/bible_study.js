@@ -60,7 +60,7 @@
     window.addEventListener("pageshow",sizeWorkspace);
     sizeWorkspace();
     const readerTabs=root.querySelector(".bs-reader-tabs"),studyTabs=element("Study").querySelector(".bs-study-tabs");
-    // The desktop/tablet control row is independent of the draggable panes.
+    // Keep the control row above the panes; its columns follow the divider.
     const notesDock=element("NotesTools").closest(".bs-notes-dock"),notesDockHome=element("NotesPanel");
     const fixedTools=node("div",undefined,"bs-fixed-workspace-tools");fixedTools.id="bsFixedTools";
     const fixedReader=node("div",undefined,"bs-fixed-reader-tools"),fixedStudy=node("div",undefined,"bs-fixed-study-heading");
@@ -1873,6 +1873,7 @@
     window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);
     const notesTools=element("NotesTools");
     let notesMenuOpen=false,notesToolbarPointerUntil=0,notesSelecting=false,notesFormatting=false;
+    let notesToolPointer=null,notesToolPositionTimer=null;
     root.dataset.notesMenu="selection";
     // Keep selection tools outside the scrolling document, like the Bible tools.
     // Showing or dismissing them must not move the words under the user's finger.
@@ -1891,7 +1892,7 @@
         else CSS.highlights.delete("sermon-format-selection");
     }
     function notesPositionTools(){
-        if(!notesMenuOpen)return;
+        if(!notesMenuOpen||notesToolPointer!==null)return;
         const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
         const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight;
         notesTools.style.width=Math.max(1,Math.min(640,width-12))+"px";
@@ -1922,6 +1923,7 @@
         control.value=key;
     }
     function notesCloseMenu(){
+        clearTimeout(notesToolPositionTimer);notesToolPointer=null;
         notesMenuOpen=false;notesTools.removeAttribute("data-open");
         notesTools.hidden=true;
         notesFormattingKeyboard(false);notesPaintFormattingSelection();
@@ -1936,12 +1938,25 @@
         }
         notesPositionTools();
     }
-    notesTools.addEventListener("pointerdown",()=>{
+    notesTools.addEventListener("pointerdown",event=>{
+        const control=event.target.closest("button,select,input");if(!control)return;
+        clearTimeout(notesToolPositionTimer);notesToolPointer=event.pointerId;
         notesToolbarPointerUntil=performance.now()+1000;
         const selection=window.getSelection();
         if(selection?.rangeCount&&!selection.isCollapsed&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))notesRange=selection.getRangeAt(0).cloneRange();
-        notesFormattingKeyboard(true);notesPaintFormattingSelection();
+        // Park focus only after the user chooses a formatting control. Keep the
+        // control still until its click, even while the keyboard is closing.
+        notesParkFormattingFocus(control);
     },{passive:true});
+    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,event=>{
+        if(event.pointerId!==notesToolPointer)return;
+        clearTimeout(notesToolPositionTimer);
+        notesToolPositionTimer=setTimeout(()=>{notesToolPointer=null;notesPositionTools();},250);
+    },true);
+    notesTools.addEventListener("click",()=>{
+        clearTimeout(notesToolPositionTimer);notesToolPointer=null;requestAnimationFrame(notesPositionTools);
+    });
+    notesTools.addEventListener("focusin",()=>{notesFormattingKeyboard(true);notesPaintFormattingSelection();notesEditor.blur();});
     // Keep the editor's native range and formatting/save functions.
     notesTools.addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
     notesTools.addEventListener("click",event=>{
@@ -1954,7 +1969,12 @@
         const text=notesRange?.toString();if(text)await copyScripture(text,"Sermon Notes");
         notesParkFormattingFocus(element("NotesCopySelection"));
     });
-    element("NotesDismissSelection").addEventListener("click",notesCloseMenu);
+    function notesDismissSelection(){
+        const selection=window.getSelection();
+        if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))selection.collapseToEnd();
+        notesCloseMenu();
+    }
+    element("NotesDismissSelection").addEventListener("click",notesDismissSelection);
     element("NotesErase").addEventListener("click",()=>{
         if(!notesActive||notesReadMode||!notesRange||notesRange.collapsed||!notesEditor.contains(notesRange.commonAncestorContainer))return;
         notesFormat("delete");
@@ -1968,7 +1988,7 @@
     document.addEventListener("pointerdown",event=>{
         if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
-    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesCloseMenu();}},true);
+    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesDismissSelection();}},true);
     const notesMenuVisibility=new MutationObserver(()=>{
         if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)notesCloseMenu();
         if(element("NotesPanel").hidden)notesCloseActions();

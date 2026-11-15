@@ -72,6 +72,17 @@ Keyboard suppression and the saved-selection overlay start only when a formattin
 control is used. Returning to the editor restores normal keyboard input. Existing
 range-based formatting, autosave, Undo and Copy retain their behavior. An outside
 tap, Escape, dismissing the toolbar, or leaving the document closes it.
+On touch devices, touching a formatting control parks focus outside the editor
+immediately, after saving its range. The toolbar keeps its position through that
+tap while the keyboard closes, then moves to the resized viewport. Dismiss and
+Escape collapse the native range so a delayed Safari selection event cannot
+reopen the dismissed tools.
+
+In split view at tablet widths from 701 to 1100 CSS pixels, study tabs occupy a
+second row with five equal columns. Their complete labels remain inside the
+buttons. The notes controls and active study banner above the panes use the same
+column split as the content and stretch to equal height, including after moving
+the divider. Phone tab placement remains separate from this tablet row.
 Delete first names the target sermon in a confirmation with **Cancel** and
 **Delete sermon**. Cancel has default focus; closing or dismissing that dialog
 does not send a delete request.
