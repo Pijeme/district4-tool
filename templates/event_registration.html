@@ -128,7 +128,7 @@
     <div class="event-table-wrap event-roster-wrap">
       <table class="event-table event-roster-table">
         <caption><span id="eventResultCount">{{ attendees|length - completed_count }}</span> <span id="eventStageCaption">delegates for processing</span></caption>
-        <thead><tr><th>#</th><th>Name</th><th>Area</th><th>Church Name</th><th data-feature="extra">Church Address</th><th data-feature="payment">Payment</th><th data-feature="print"><label class="event-print-select-label"><input id="eventPrintSelectAll" type="checkbox" aria-label="Select all visible IDs for bulk printing">Print</label></th><th data-feature="release">Release</th><th data-feature="extra">Details</th><th data-feature="extra">Delete</th></tr></thead>
+        <thead><tr><th>#</th><th>Name</th><th>Area</th><th>Church Name</th><th data-feature="extra">Church Address</th><th data-feature="payment">Payment</th><th data-feature="print"><label class="event-print-select-label"><input id="eventPrintSelectAll" type="checkbox" aria-label="Select all visible unprinted IDs for bulk printing" title="Select only IDs not yet confirmed as physically printed">Print</label></th><th data-feature="release">Release</th><th data-feature="extra">Details</th><th data-feature="extra">Delete</th></tr></thead>
         <tbody id="eventAttendeeRows">
         {% for person in attendees %}
           <tr data-attendee-row data-number="{{ person.number }}" data-name="{{ person.name }}" data-area="{{ person.area }}" data-church="{{ person.church }}" data-search="{{ [person.name,person.area,person.church,person.address]|join(' ') }}" data-revision="{{ person.revision }}" data-status-url="{{ url_for('event_status',key=person.key) }}" data-delete-url="{{ url_for('event_delete_attendee',key=person.key) }}" data-key="{{ person.key }}" data-paid="{{ person.paid }}" data-printed="{{ person.physical_printed }}" data-released="{{ person.released }}">
@@ -136,7 +136,7 @@
             <td class="event-person"><img src="{{ url_for('event_image',key=person.key,side='photo') }}" alt="" loading="lazy"><strong>{{ person.name }}</strong></td>
             <td class="event-area" data-label="Area">{{ person.area }}</td><td class="event-church" data-label="Church">{{ person.church }}</td><td data-feature="extra" data-label="Address">{{ person.address }}</td>
             <td data-feature="payment"><button class="event-status {{ 'on' if person.paid }}" data-field="paid" data-value="{{ person.paid }}" aria-pressed="{{ 'true' if person.paid else 'false' }}">{{ '✓ Paid' if person.paid else 'Payment' }}</button></td>
-            <td data-feature="print"><div class="event-print-cell"><input class="event-print-select" type="checkbox" value="{{ person.key }}" aria-label="Select ID for {{ person.name }}"><a class="event-btn event-print-link{{ ' printed' if person.physical_printed else '' }}" href="{{ url_for('event_print',key=person.key) }}">{{ '✓ Printed' if person.physical_printed else 'Print' }}</a></div></td>
+            <td data-feature="print"><div class="event-print-cell"><input class="event-print-select" type="checkbox" value="{{ person.key }}" aria-label="Select ID for {{ person.name }}" {% if person.physical_printed %}disabled title="Already physically printed. Use the Print button to reprint this ID."{% endif %}><a class="event-btn event-print-link{{ ' printed' if person.physical_printed else '' }}" href="{{ url_for('event_print',key=person.key) }}">{{ '✓ Printed' if person.physical_printed else 'Print' }}</a></div></td>
             <td data-feature="release"><a class="event-status event-release-link {{ 'on' if person.released }}" href="{{ url_for('event_release',key=person.key) }}" target="_blank" rel="noopener">{{ '✓ Released' if person.released else 'Release / Share' }}</a></td>
             <td data-feature="extra"><button class="event-btn secondary event-delegate-details" data-url="{{ url_for('event_delegate_details',key=person.key) }}" type="button">View details</button></td>
             <td data-feature="extra"><button class="event-btn danger event-delete-attendee" type="button">Delete</button></td>
@@ -211,5 +211,5 @@
   {% endif %}
   <dialog id="eventConfirmDialog" class="event-dialog event-confirm-dialog"><h2>Change status?</h2><p id="eventConfirmMessage"></p><label id="eventConfirmPasswordLabel" hidden>Event admin password<input id="eventConfirmPassword" type="password" autocomplete="off" maxlength="256"></label><div class="event-actions"><button class="event-btn" id="eventConfirmYes">Yes, change status</button><button class="event-btn secondary" id="eventConfirmCancel">Cancel</button></div></dialog>
 </div>
-<script src="{{ url_for('static',filename='event_registration.js',v='21') }}" defer></script>
+<script src="{{ url_for('static',filename='event_registration.js',v='22') }}" defer></script>
 {% endblock %}

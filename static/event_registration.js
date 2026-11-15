@@ -694,7 +694,7 @@
   }
 
   const printResults = $('eventPrintResultsDialog');
-  const visiblePrintRows = () => rows.filter(row => !row.hidden);
+  const visiblePrintRows = () => rows.filter(row => !row.hidden && row.dataset.printed !== '1');
   let beginPrint = async () => {}, rememberPrinterSetup = () => {};
   if (printResults) {
     let printItems = [], printFrame = null, savingPrintResults = false, retryingPrint = false;
@@ -727,10 +727,11 @@
     });
     const printMessage = message => { const target=$('eventPrintJobStatus') || $('eventPrintStatus'); if(target) target.textContent=message; };
     syncPrintSelection = () => {
-      const available=new Set(rows.map(row=>row.dataset.key));
+      // Bulk selection excludes confirmed physical prints; the row Print link still allows a deliberate reprint.
+      const available=new Set(rows.filter(row=>row.dataset.printed!=='1').map(row=>row.dataset.key));
       for(const key of printSelection) if(!available.has(key)) printSelection.delete(key);
       const visible=visiblePrintRows(), selected=visible.filter(row=>printSelection.has(row.dataset.key));
-      document.querySelectorAll('.event-print-select').forEach(input=>{input.checked=printSelection.has(input.value);input.disabled=printBusy;});
+      document.querySelectorAll('.event-print-select').forEach(input=>{input.checked=printSelection.has(input.value);input.disabled=printBusy || input.closest('[data-attendee-row]')?.dataset.printed==='1';});
       if($('eventPrintSelectAll')) { $('eventPrintSelectAll').checked=!!visible.length && selected.length===visible.length; $('eventPrintSelectAll').indeterminate=!!selected.length && selected.length<visible.length; $('eventPrintSelectAll').disabled=printBusy || !visible.length; }
       if($('eventPrintSelected')) { $('eventPrintSelected').disabled=printBusy || !selected.length; $('eventPrintSelectionCount').textContent=selected.length+' ID'+(selected.length===1?'':'s')+' selected'; }
       if($('eventPrinterDialog')) {
@@ -792,7 +793,7 @@
         printFrame?.remove();printFrame=null;printBusy=false;syncPrintSelection();printMessage('');error('eventGlobalError',failure.message);
       }
     };
-    const selectedPrintKeys = () => [...document.querySelectorAll('#eventAttendeeRows [data-attendee-row]')].filter(row=>!row.hidden && printSelection.has(row.dataset.key)).map(row=>row.dataset.key);
+    const selectedPrintKeys = () => visiblePrintRows().filter(row=>printSelection.has(row.dataset.key)).map(row=>row.dataset.key);
     $('eventPrintSelected')?.addEventListener('click',()=>beginPrint(selectedPrintKeys()));
     $('eventPrinterDialog')?.addEventListener('click',async()=>{
       const keys=selectedPrintKeys();

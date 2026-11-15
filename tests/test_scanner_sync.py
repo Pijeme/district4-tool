@@ -427,6 +427,95 @@ class ScannerSyncTests(unittest.TestCase):
             for path in ('?tab=admin', '/print/' + PAID, '/release/' + PAID):
                 self.assertEqual(self.client.get('/event-registration' + path).status_code, 200)
 
+    def test_bulk_print_browser_selection_skips_printed_with_filters_and_live_updates(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest('Playwright is needed for this browser regression check.')
+        from urllib.parse import urlsplit,parse_qs
+        from email.parser import BytesParser
+        from email.policy import default
+        import json,mimetypes
+        root=Path(__file__).resolve().parents[1]
+        versions=[('online',root/'static/event_registration.js'),
+                  ('offline',root.parent/'Offline Registration Software/static/event_registration.js')]
+        extra='d'*32
+        self.execute('INSERT INTO event_attendees (key,event_id,number,name,birthday,area,church,address,pastor,created_at,updated_at,complete) VALUES (?,1,3,?,?,?,?,?,?,?, ?,1)',
+                     (extra,'Other area delegate','2000-01-01','9','Other church','','',NOW,NOW))
+        self.unlock_event_admin()
+        with sync_playwright() as playwright:
+            browser=playwright.chromium.launch(channel='msedge',headless=True)
+            try:
+                for version,script in versions:
+                    with self.subTest(version=version):
+                        if not script.is_file():continue
+                        self.execute('UPDATE event_attendees SET physical_printed=1,printed=1,revision=revision+1 WHERE key=?',(PAID,))
+                        self.execute('UPDATE event_attendees SET physical_printed=0,printed=1,revision=revision+1 WHERE key=?',(OTHER,))
+                        context=browser.new_context()
+                        page=context.new_page();errors=[];jobs=[]
+                        page.on('pageerror',lambda error:errors.append(str(error)))
+                        def route_request(route):
+                            parsed=urlsplit(route.request.url);path=parsed.path
+                            if path=='/event-registration/admin/print/prepare':
+                                content_type=route.request.headers.get('content-type','')
+                                if content_type.startswith('multipart/form-data'):
+                                    body=b'Content-Type: '+content_type.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+route.request.post_data_buffer
+                                    parts=BytesParser(policy=default).parsebytes(body).iter_parts()
+                                    jobs.append([part.get_content().strip() for part in parts if part.get_param('name',header='content-disposition')=='keys'])
+                                else:jobs.append(parse_qs(route.request.post_data or '').get('keys',[]))
+                                route.fulfill(status=400,content_type='application/json',body=json.dumps(dict(ok=False,error='Print intercepted by regression test.')))
+                            elif path=='/event-registration':
+                                response=self.client.get(path+'?'+parsed.query)
+                                route.fulfill(status=response.status_code,content_type='text/html',body=response.data)
+                            elif path=='/event-registration/progress':
+                                response=self.client.get(path+'?'+parsed.query)
+                                route.fulfill(status=response.status_code,content_type='application/json',body=response.data)
+                            elif path=='/static/event_registration.js':
+                                route.fulfill(content_type='application/javascript',body=script.read_bytes())
+                            elif path.startswith('/static/'):
+                                asset=(root/path.lstrip('/')).resolve()
+                                if asset.is_file() and asset.is_relative_to(root/'static'):
+                                    route.fulfill(content_type=mimetypes.guess_type(asset.name)[0] or 'application/octet-stream',body=asset.read_bytes())
+                                else:route.fulfill(status=404,body='')
+                            else:route.fulfill(status=404,content_type='application/json',body='{}')
+                        page.route('**/*',route_request)
+                        try:
+                            page.goto('https://registration.test/event-registration?tab=admin')
+                            page.wait_for_function('document.querySelectorAll(".event-print-select").length===3')
+                            choose=page.locator('#eventPrintSelectAll')
+                            choose.check()
+                            selected=lambda:page.locator('.event-print-select:checked').evaluate_all('(inputs)=>inputs.map(input=>input.value).sort()')
+                            self.assertEqual(selected(),sorted([OTHER,extra]))
+                            self.assertTrue(page.locator('.event-print-select[value="'+PAID+'"]').is_disabled())
+                            self.assertTrue(choose.is_checked())
+                            page.locator('.event-print-select[value="'+OTHER+'"]').uncheck()
+                            self.assertTrue(choose.evaluate('(input)=>input.indeterminate'))
+                            page.locator('#eventFilterArea').select_option('7')
+                            choose.check()
+                            page.locator('#eventPrintSelected').click()
+                            page.wait_for_function('document.getElementById("eventGlobalError").textContent.includes("intercepted")')
+                            self.assertEqual(jobs[-1],[OTHER])
+                            self.execute('UPDATE event_attendees SET physical_printed=1,revision=revision+1 WHERE key=?',(OTHER,))
+                            page.locator('#eventRefresh').click()
+                            page.wait_for_function('(key)=>document.querySelector(`[data-key="${key}"]`).dataset.printed==="1"',arg=OTHER)
+                            self.assertTrue(choose.is_disabled())
+                            self.assertFalse(choose.is_checked())
+                            self.assertFalse(page.locator('.event-print-select[value="'+OTHER+'"]').is_checked())
+                            self.assertTrue(page.locator('#eventPrintSelected').is_disabled())
+                            self.execute('UPDATE event_attendees SET physical_printed=0,revision=revision+1 WHERE key=?',(OTHER,))
+                            page.locator('#eventRefresh').click()
+                            page.wait_for_function('(key)=>!document.querySelector(`.event-print-select[value="${key}"]`).disabled',arg=OTHER)
+                            self.assertFalse(choose.is_disabled())
+                            page.locator('#eventFilterArea').select_option('')
+                            choose.check();self.assertEqual(selected(),sorted([OTHER,extra]))
+                            choose.uncheck();self.assertEqual(selected(),[])
+                            page.locator('[data-key="'+PAID+'"] .event-print-link').click()
+                            page.wait_for_function('document.getElementById("eventGlobalError").textContent.includes("intercepted")')
+                            self.assertEqual(jobs[-1],[PAID])
+                            self.assertEqual(errors,[])
+                        finally:context.close()
+            finally:browser.close()
+
 
 if __name__ == '__main__':
     import sys
