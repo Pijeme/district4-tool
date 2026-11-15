@@ -60,9 +60,18 @@ the former paragraph-style menu is removed. These styles survive saving,
 reading, Drive synchronization and PDF export (with substitute PDF fonts when
 the source family is unavailable).
 
-On phones and touch-enabled tablets, **Editing tools** opens these controls in
-a pop-up. It closes after an edit/format action, an outside tap, Escape, or
-scrolling the reading pane. The desktop keeps the visible sticky toolbar.
+Selecting editor text opens a floating formatting toolbar, using the same
+out-of-flow approach as the Bible reader. The normal top actions remain visible;
+opening or dismissing formatting does not change the document's position. The
+initial pointer gesture finishes before opening the tools. Adjusting an existing
+selection keeps the toolbar available and leaves native text focus and selection
+handles alone. The toolbar follows the visible viewport when browser controls,
+zoom or a keyboard change its size or position.
+
+Keyboard suppression and the saved-selection overlay start only when a formatting
+control is used. Returning to the editor restores normal keyboard input. Existing
+range-based formatting, autosave, Undo and Copy retain their behavior. An outside
+tap, Escape, dismissing the toolbar, or leaving the document closes it.
 Delete first names the target sermon in a confirmation with **Cancel** and
 **Delete sermon**. Cancel has default focus; closing or dismissing that dialog
 does not send a delete request.

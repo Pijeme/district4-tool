@@ -2700,6 +2700,104 @@ class SermonNotesEditorTests(unittest.TestCase):
             with self.subTest(size=size):
                 self.run_browser(self.render_preview(),verify,setup,window_size=size)
 
+    def test_native_notes_selection_stays_still_until_formatting_on_mouse_and_touch(self):
+        from playwright.sync_api import sync_playwright
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r"""
+            const previousFetch=window.fetch;
+            const sample={id:'2'.repeat(32),version:1,dirty:false,note:{schema_version:1,theme:'Selection test',text:'John 3:16',content:{blocks:[{type:'paragraph',runs:[{text:'Faith '},{text:'grows',bold:true},{text:' through prayer and patient trust.'}]}]}}};
+            window.notePatches=[];window.keyboardHides=0;
+            Object.defineProperty(navigator,'virtualKeyboard',{value:{hide(){keyboardHides++;}}});
+            window.keyboardViewport=Object.assign(new EventTarget(),{width:innerWidth,height:innerHeight,offsetTop:0,offsetLeft:0,scale:1});
+            Object.defineProperty(window,'visualViewport',{value:keyboardViewport});
+            const response=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];
+                if(!path.includes('/api/notes'))return previousFetch(url,options);
+                if(path.endsWith('/notes'))return response({notes:[{id:sample.id,theme:sample.note.theme,text:sample.note.text}],drive_configured:true});
+                if(options.method==='PATCH'){sample.version++;sample.note=JSON.parse(options.body).note;notePatches.push(sample.note);}
+                return response({item:sample});
+            };
+            window.selectNoteWords=(start,end)=>{
+                const editor=document.getElementById('bsNotesEditor'),block=editor.lastElementChild;
+                const walker=document.createTreeWalker(block,NodeFilter.SHOW_TEXT),range=document.createRange();
+                let text,offset=0,started=false;
+                while(text=walker.nextNode()){
+                    const next=offset+text.length;
+                    if(!started&&start<next){range.setStart(text,start-offset);started=true;}
+                    if(started&&end<=next){range.setEnd(text,end-offset);break;}offset=next;
+                }
+                editor.focus({preventScroll:true});getSelection().removeAllRanges();getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+            };
+        """
+        html=self.render_preview()
+        with sync_playwright() as playwright:
+            for engine,width,touch in [('chromium',1280,False),('chromium',393,True),('webkit',393,True),('webkit',820,True)]:
+                with self.subTest(engine=engine,width=width):
+                    browser=getattr(playwright,engine).launch(headless=True)
+                    try:
+                        context=browser.new_context(viewport=dict(width=width,height=900),is_mobile=touch,has_touch=touch)
+                        page=context.new_page();page.add_init_script(setup.replace('width:innerWidth,height:innerHeight',f'width:{width},height:900'))
+                        errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                        def route(request):
+                            path=request.request.url.split('?',1)[0]
+                            if path=='https://district.test/':request.fulfill(body=html,content_type='text/html; charset=utf-8')
+                            elif path.startswith('https://district.test/static/'):
+                                file=ROOT/path.removeprefix('https://district.test/')
+                                if file.is_file():request.fulfill(path=str(file))
+                                else:request.abort()
+                            else:request.abort()
+                        page.route('**/*',route);page.goto('https://district.test/')
+                        page.locator('#bsNotesTab').click();page.locator('#bsNotesList button').click()
+                        editor=page.locator('#bsNotesEditor');editor.wait_for(state='visible')
+                        tools=page.locator('#bsNotesTools');before=editor.bounding_box()
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        page.evaluate('selectNoteWords(6,11)')
+                        self.assertTrue(tools.is_hidden(),'Tools opened while the initial selection gesture was still active')
+                        editor.dispatch_event('pointerup',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        tools.wait_for(state='visible')
+                        self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
+                        self.assertEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
+                        self.assertEqual(page.evaluate('getSelection().toString()'),'grows')
+                        self.assertEqual(page.evaluate('keyboardHides'),0)
+                        self.assertIsNone(editor.get_attribute('inputmode'))
+                        # Extending a native range must not dismiss tools or take focus.
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        self.assertTrue(tools.is_visible())
+                        page.evaluate('selectNoteWords(6,26)')
+                        editor.dispatch_event('pointerup',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        self.assertEqual(page.evaluate('getSelection().toString()'),'grows through prayer')
+                        self.assertEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
+                        self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
+                        self.assertEqual(page.evaluate('keyboardHides'),0)
+                        if not touch:
+                            points=page.evaluate("""()=>{const r=getSelection().getRangeAt(0),rects=[...r.getClientRects()];return {x:rects[0].left+1,y:rects[0].top+rects[0].height/2,end:rects.at(-1).right-1};}""")
+                            page.mouse.move(points['x'],points['y']);page.mouse.down();page.mouse.move(points['end'],points['y'],steps=8);page.mouse.up()
+                            self.assertEqual(page.evaluate('getSelection().toString()'),'grows through prayer')
+                        color=tools.locator('[data-notes-selection-command="hiliteColor"][data-color="#ffdef3"]')
+                        if touch:color.tap()
+                        else:color.click()
+                        page.wait_for_function('notePatches.some(note=>note.content.blocks.some(block=>block.runs.some(run=>run.highlight==="#ffdef3")))')
+                        highlighted=page.evaluate('notePatches.at(-1).content.blocks.flatMap(block=>block.runs).filter(run=>run.highlight==="#ffdef3").map(run=>run.text).join("")')
+                        self.assertEqual(highlighted,'grows through prayer')
+                        self.assertEqual(editor.get_attribute('inputmode'),'none')
+                        self.assertGreater(page.evaluate('keyboardHides'),0)
+                        # The toolbar must fit the visible viewport when a keyboard
+                        # or browser controls change its size/position.
+                        page.evaluate("keyboardViewport.height=400;keyboardViewport.offsetTop=60;keyboardViewport.dispatchEvent(new Event('resize'))")
+                        bounds=tools.bounding_box();self.assertGreaterEqual(bounds['y'],60);self.assertLessEqual(bounds['y']+bounds['height'],460)
+                        page.evaluate("keyboardViewport.height=900;keyboardViewport.offsetTop=0;keyboardViewport.dispatchEvent(new Event('resize'))")
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        self.assertIsNone(editor.get_attribute('inputmode'))
+                        page.evaluate('selectNoteWords(6,11)')
+                        editor.dispatch_event('pointerup',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
+                        self.assertEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
+                        self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
+                        page.keyboard.press('Escape');self.assertTrue(tools.is_hidden())
+                        self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
+                        self.assertFalse(errors,errors);context.close()
+                    finally:browser.close()
+
     def test_stationary_tablet_ribbon_and_keyboard_safe_formatting(self):
         from playwright.sync_api import sync_playwright
         setup=BibleStudyBrowserTests.setup_api(self,True)+r"""
@@ -2733,8 +2831,13 @@ class SermonNotesEditorTests(unittest.TestCase):
                             else:request.abort()
                         page.route('**/*',route);page.goto('https://district.test/')
                         page.locator('#bsNotesTab').click();page.locator('#bsNotesList button').click();page.locator('#bsNotesEditor').wait_for(state='visible')
+                        editor_top=page.locator('#bsNotesEditor').bounding_box()['y']
                         page.evaluate("()=>{const e=document.querySelector('#bsNotesEditor');e.focus();const r=document.createRange();r.selectNodeContents(e.lastElementChild);getSelection().removeAllRanges();getSelection().addRange(r);document.dispatchEvent(new Event('selectionchange'));}")
                         page.locator('#bsNotesTools').wait_for(state='visible')
+                        self.assertAlmostEqual(page.locator('#bsNotesEditor').bounding_box()['y'],editor_top,delta=1)
+                        self.assertEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
+                        self.assertIsNone(page.locator('#bsNotesEditor').get_attribute('inputmode'))
+                        if touch:self.assertFalse(page.evaluate("CSS.highlights.has('sermon-format-selection')"))
                         self.assertEqual(page.locator('#bibleStudyRoot').get_attribute('data-fixed-notes-tools'),'true')
                         dock=page.locator('.bs-notes-dock').bounding_box();heading=page.locator('.bs-fixed-study-heading .bs-banner').bounding_box();pane=page.locator('#bsBible').bounding_box()
                         page.locator('#bsDivider').focus();page.keyboard.press('Shift+ArrowLeft')
@@ -2742,10 +2845,6 @@ class SermonNotesEditorTests(unittest.TestCase):
                         self.assertAlmostEqual(page.locator('.bs-notes-dock').bounding_box()['width'],dock['width'],delta=1)
                         self.assertAlmostEqual(page.locator('.bs-notes-dock').bounding_box()['y'],dock['y'],delta=1)
                         self.assertAlmostEqual(page.locator('.bs-fixed-study-heading .bs-banner').bounding_box()['x'],heading['x'],delta=1)
-                        if touch:
-                            self.assertNotEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
-                            self.assertEqual(page.locator('#bsNotesEditor').get_attribute('inputmode'),'none')
-                            self.assertTrue(page.evaluate("CSS.highlights.has('sermon-format-selection')"))
                         page.locator('#bsNotesFontSize').select_option('18')
                         page.locator('#bsNotesCase').select_option('upper')
                         self.assertIn('SELECT THESE SAMPLE WORDS.',page.locator('#bsNotesEditor').inner_text())
@@ -2792,18 +2891,18 @@ class SermonNotesEditorTests(unittest.TestCase):
             openTools();await wait();check(isOpen(),'Selecting editor text did not open formatting');
             const bounds=tools.getBoundingClientRect();check(bounds.left>=0&&bounds.right<=innerWidth&&bounds.top>=0&&bounds.bottom<=innerHeight,'Selection formatting is clipped');
             check(tools.classList.contains('bs-selection-toolbar'),'Sermon selection lost shared Bible styling');
-            const dock=tools.closest('.bs-notes-dock'),actions=el('NotesCreate').closest('.bs-notes-actions');
-            check(actions.hidden&&getComputedStyle(actions).display==='none','Normal sermon actions are still visible');
-            check(getComputedStyle(tools).position==='relative'&&bounds.top>=dock.getBoundingClientRect().top&&bounds.bottom<=dock.getBoundingClientRect().bottom,'Selection tools did not replace the top actions');
-            check(bounds.height<=165,'Always-visible selection ribbon is too tall: '+bounds.height);
+            const dock=document.querySelector('.bs-notes-dock'),actions=el('NotesCreate').closest('.bs-notes-actions');
+            check(!actions.hidden&&getComputedStyle(actions).display!=='none','Selection hid the normal sermon actions');
+            check(getComputedStyle(tools).position==='fixed'&&!dock.contains(tools),'Selection tools still resize the document toolbar');
+            check(bounds.height<=165,'Selection ribbon is too tall: '+bounds.height);
             check(!tools.querySelector('details,summary')&&getComputedStyle(el('NotesFormat')).display!=='none','Formatting must be visible without an expander');
             check(el('NotesShrink').nextElementSibling.tagName==='LABEL'&&el('NotesCase').previousElementSibling.htmlFor==='bsNotesCase','Case control is missing beside A-');
             check(tools.querySelector('[data-notes-selection-command=underline]').nextElementSibling.dataset.notesCommand==='bold','Bold must be beside underline');
             check(el('NotesCopySelection').nextElementSibling===el('NotesUndo')&&el('NotesUndo').nextElementSibling===el('NotesErase'),'Copy, Undo and Erase are not neighbours');
             check(['NotesClearFormat','NotesUndo','NotesErase'].every(id=>el(id.replace('Notes','Notes')).querySelector('svg')),'Command icons missing');
             check(el('NotesClearFormat').querySelector('br'),'Clear Format must use two lines');
-            check(el('NotesFontSize').tagName==='SELECT'&&el('NotesEditor').getAttribute('inputmode')==='none','Formatting must not request a text keyboard');
-            if(navigator.maxTouchPoints||matchMedia('(any-pointer: coarse)').matches)check(document.activeElement!==el('NotesEditor'),'Formatting left the editor focused');
+            check(el('NotesFontSize').tagName==='SELECT'&&!el('NotesEditor').hasAttribute('inputmode'),'Selecting text changed keyboard handling');
+            check(document.activeElement===el('NotesEditor'),'Selecting text moved focus away from the editor');
             const paper=getComputedStyle(el('NotesEditor'));check(paper.borderRadius==='0px'&&paper.borderTopWidth==='0px'&&paper.backgroundColor==='rgb(255, 255, 255)','Editor is not a flat white page');
             check(['paddingTop','paddingRight','paddingBottom','marginTop','marginRight','marginBottom','marginLeft'].every(side=>parseFloat(paper[side])===0)&&paper.paddingLeft==='8px','Writing surface must have only the small left margin');
             check(Math.abs(el('NotesEditor').getBoundingClientRect().width-el('NotesPanel').getBoundingClientRect().width)<1,'Writing surface does not fill the notes pane');

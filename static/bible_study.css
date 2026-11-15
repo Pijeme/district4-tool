@@ -454,8 +454,9 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 #bsNotesJob progress{width:100%}#bsNotesJobErrors{font-size:12px;max-height:150px;overflow:auto;overflow-wrap:anywhere}
 .bs-root .bs-notes-panel [hidden],.bs-root .bs-notes-format[hidden]{display:none!important}
 @media(max-width:700px){.bs-notes-panel{padding:10px}.bs-notes-editor,.bs-notes-preview{padding:14px 10px;font-size:16px}.bs-notes-actions{gap:4px}.bs-root .bs-notes-actions button{font-size:11px;padding:6px}.bs-root .bs-reader-tabs button{flex:1 0 94px}}
-/* Always-visible selection ribbon. Font-size choices avoid a touch keyboard. */
-.bs-root[data-notes-menu=selection] #bsNotesTools{position:relative;display:block;inset:auto;width:100%;max-width:none;max-height:none;margin:0;padding:5px 6px;border:0;border-radius:5px;background:#f3f6fc;color:#263b50;box-shadow:none;transform:none;overflow:visible;font:12px/1.2 Arial,sans-serif}
+/* Floating tools leave the document and native selection handles in place. */
+.bs-root[data-notes-menu=selection] #bsNotesTools{position:fixed;display:block;inset:auto;left:0;width:min(640px,calc(100vw - 12px));max-width:none;max-height:calc(100dvh - 16px);margin:0;padding:7px 8px calc(7px + env(safe-area-inset-bottom,0px));border:1px solid #dce4ed;border-radius:12px;background:#f3f6fc;color:#263b50;box-shadow:0 4px 22px #18243130;transform:none;overflow:auto;overscroll-behavior:contain;font:12px/1.2 Arial,sans-serif}
+.bs-notes-editor{user-select:text;-webkit-user-select:text;touch-action:pan-y pinch-zoom;scroll-margin-bottom:180px}
 .bs-root #bsNotesTools:focus{outline:none}
 .bs-root #bsNotesTools #bsNotesFormat{display:block;margin:0;padding:0;border:0;border-radius:0;background:transparent}
 .bs-root #bsNotesTools .bs-notes-font-row{display:grid;grid-template-columns:minmax(65px,min(50%,280px)) 54px 30px 30px 80px;align-items:center;gap:4px;margin:0 28px 5px 0;padding:0;border:0}

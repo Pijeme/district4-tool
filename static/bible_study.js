@@ -1872,22 +1872,40 @@
     element("Bible").addEventListener("scroll",()=>{if(notesActionsOpen)notesCloseActions();},{passive:true});
     window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);
     const notesTools=element("NotesTools");
-    let notesMenuOpen=false,notesToolbarPointerUntil=0;
+    let notesMenuOpen=false,notesToolbarPointerUntil=0,notesSelecting=false,notesFormatting=false;
     root.dataset.notesMenu="selection";
-    const notesMainActions=notesTools.closest(".bs-notes-dock").querySelector(".bs-notes-actions");
+    // Keep selection tools outside the scrolling document, like the Bible tools.
+    // Showing or dismissing them must not move the words under the user's finger.
+    root.append(notesTools);
     const notesOriginalInputMode=notesEditor.getAttribute("inputmode");
     function notesFormattingKeyboard(active){
+        if(notesFormatting===active)return;
+        notesFormatting=active;
         if(active){notesEditor.setAttribute("inputmode","none");notesEditor.setAttribute("virtualkeyboardpolicy","manual");}
         else {if(notesOriginalInputMode===null)notesEditor.removeAttribute("inputmode");else notesEditor.setAttribute("inputmode",notesOriginalInputMode);notesEditor.removeAttribute("virtualkeyboardpolicy");}
         try {if(active)navigator.virtualKeyboard?.hide();window.IOWOAndroid?.setNotesFormatting?.(active);}catch(_){}
     }
     function notesPaintFormattingSelection(){
         if(!window.CSS?.highlights||typeof window.Highlight!=="function")return;
-        if(notesMenuOpen&&notesRange&&!notesRange.collapsed&&notesEditor.contains(notesRange.commonAncestorContainer))CSS.highlights.set("sermon-format-selection",new Highlight(notesRange));
+        if(notesFormatting&&notesMenuOpen&&notesRange&&!notesRange.collapsed&&notesEditor.contains(notesRange.commonAncestorContainer))CSS.highlights.set("sermon-format-selection",new Highlight(notesRange));
         else CSS.highlights.delete("sermon-format-selection");
     }
+    function notesPositionTools(){
+        if(!notesMenuOpen)return;
+        const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
+        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight;
+        notesTools.style.width=Math.max(1,Math.min(640,width-12))+"px";
+        notesTools.style.maxHeight=Math.max(1,height-16)+"px";
+        const bounds=notesTools.getBoundingClientRect();
+        notesTools.style.left=(left+Math.max(6,(width-bounds.width)/2))+"px";
+        notesTools.style.top=Math.max(top+8,top+height-bounds.height-8)+"px";
+    }
+    window.addEventListener("resize",notesPositionTools);
+    window.visualViewport?.addEventListener("resize",notesPositionTools);
+    window.visualViewport?.addEventListener("scroll",notesPositionTools);
     function notesParkFormattingFocus(preferred){
         if(!notesMenuOpen)return;
+        notesFormattingKeyboard(true);
         const selection=window.getSelection();
         if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))notesRange=selection.getRangeAt(0).cloneRange();
         notesPaintFormattingSelection();
@@ -1905,7 +1923,7 @@
     }
     function notesCloseMenu(){
         notesMenuOpen=false;notesTools.removeAttribute("data-open");
-        notesTools.hidden=true;notesMainActions.hidden=false;
+        notesTools.hidden=true;
         notesFormattingKeyboard(false);notesPaintFormattingSelection();
     }
     function notesShowSelectionTools(){
@@ -1914,11 +1932,16 @@
         if(!selection?.rangeCount||selection.isCollapsed||!selection.toString().trim()||!notesEditor.contains(selection.anchorNode)||!notesEditor.contains(selection.focusNode))return;
         notesRange=selection.getRangeAt(0).cloneRange();notesCloseActions();
         if(!notesMenuOpen){
-            notesMenuOpen=true;notesMainActions.hidden=true;notesTools.hidden=false;notesTools.dataset.open="true";
-            notesFormattingKeyboard(true);notesParkFormattingFocus();
+            notesMenuOpen=true;notesTools.hidden=false;notesTools.dataset.open="true";
         }
+        notesPositionTools();
     }
-    notesTools.addEventListener("pointerdown",()=>{notesToolbarPointerUntil=performance.now()+1000;},{passive:true});
+    notesTools.addEventListener("pointerdown",()=>{
+        notesToolbarPointerUntil=performance.now()+1000;
+        const selection=window.getSelection();
+        if(selection?.rangeCount&&!selection.isCollapsed&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))notesRange=selection.getRangeAt(0).cloneRange();
+        notesFormattingKeyboard(true);notesPaintFormattingSelection();
+    },{passive:true});
     // Keep the editor's native range and formatting/save functions.
     notesTools.addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
     notesTools.addEventListener("click",event=>{
@@ -1936,7 +1959,12 @@
         if(!notesActive||notesReadMode||!notesRange||notesRange.collapsed||!notesEditor.contains(notesRange.commonAncestorContainer))return;
         notesFormat("delete");
     });
-    notesEditor.addEventListener("pointerdown",()=>{if(notesMenuOpen)notesCloseMenu();},true);
+    notesEditor.addEventListener("pointerdown",()=>{
+        notesSelecting=true;notesFormattingKeyboard(false);notesPaintFormattingSelection();
+    },true);
+    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,()=>{
+        if(!notesSelecting)return;notesSelecting=false;notesShowSelectionTools();
+    },true);
     document.addEventListener("pointerdown",event=>{
         if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
@@ -2298,7 +2326,7 @@
             if(parent){const css=getComputedStyle(parent),family=css.fontFamily.split(",")[0].replace(/^["']|["']$/g,"");
                 if(notesFonts.includes(family))element("NotesFont").value=family;
                 notesDisplaySize(Math.round(parseFloat(css.fontSize)*.75*10)/10);}
-            if(!selection.isCollapsed)notesShowSelectionTools();
+            if(!selection.isCollapsed){if(!notesSelecting)notesShowSelectionTools();}
             else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
         }else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
     });
@@ -2321,6 +2349,7 @@
     notesEditor.addEventListener("paste",event=>{event.preventDefault();document.execCommand("insertText",false,event.clipboardData?.getData("text/plain")||"");notesMarkChanged();});
     element("NotesFormat").addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
     function notesRestoreSelection(){
+        notesFormattingKeyboard(true);
         notesEditor.focus({preventScroll:true});if(notesRange&&notesEditor.contains(notesRange.commonAncestorContainer)){const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);}
     }
     function notesFormat(command,value){
