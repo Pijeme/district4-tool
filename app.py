@@ -8641,8 +8641,11 @@ def event_photo_save(key):
     attendee = event_attendee(key)
     if attendee['complete']:
         return jsonify(ok=True,redirect=url_for('event_photo_page',key=key))
-    if request.form.get('camera_capture')!='1':
-        return jsonify(ok=False,error='Take your picture using the registration camera.'),400
+    photo_source = request.form.get('photo_source') or ('camera' if request.form.get('camera_capture')=='1' else '')
+    if photo_source not in ('camera','upload'):
+        return jsonify(ok=False,error='Take a photo or upload a saved picture before submitting.'),400
+    if not request.files.get('photo') or not request.files['photo'].filename:
+        return jsonify(ok=False,error='Take a photo or choose a picture to upload.'),400
     try:
         photo = ccm_photo(request.files.get('photo'))
         filename = event_asset_write(photo)
@@ -8702,7 +8705,7 @@ def event_confirm_registration(key):
         if not active or active['id'] != current['event_id']:
             raise ValueError('Registration for this event is no longer active. Your details and photo are still saved locally.')
         if not current['photo']:
-            raise ValueError('Take your ID photo before confirming registration.')
+            raise ValueError('Take or upload your ID photo before confirming registration.')
         if current['revision'] != request.form.get('revision',type=int):
             raise ValueError('Your details or photo changed. Reload this review before confirming registration.')
         if not current['complete']:

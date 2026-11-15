@@ -166,149 +166,153 @@
 
   const cameraForm = $('eventPhotoForm');
   if (cameraForm) {
-    const video = $('eventCamera'), facing = $('eventCameraFacing'), preview = $('eventCapturedPhoto');
-    let stream = null, generation = 0, captured = null, capturedURL = null, busy = false, opening = false;
-    try { facing.value = localStorage.getItem('eventCameraFacing') === 'environment' ? 'environment' : 'default'; } catch {}
-    function stop() {
-      generation++;
-      stream?.getTracks().forEach(track => track.stop());
-      stream = null;
-      video.srcObject = null;
-      video.hidden = true;
-      $('eventCameraCapture').hidden = true;
+    const video=$('eventCamera'),facing=$('eventCameraFacing'),preview=$('eventCapturedPhoto'),fileInput=$('eventPhotoFile');
+    const mobile=!!navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+    const maxPhotoEdge=1400,photoQuality=.9,maxOriginalBytes=40*1024*1024;
+    let stream=null,generation=0,captured=null,capturedURL=null,photoSource='camera',busy=false,opening=false,processing=false;
+    if(mobile)facing.querySelector('option[value="default"]')?.remove();
+    let remembered='';try{remembered=localStorage.getItem('eventCameraFacing');}catch{}
+    facing.value=remembered==='environment'?'environment':mobile?'user':'default';
+    function controls(){
+      $('eventPhotoSave').disabled=busy||opening||processing||!captured;
+      $('eventPhotoCancel').disabled=busy;
+      $('eventCameraOpen').disabled=$('eventCameraRetake').disabled=facing.disabled=busy||opening||processing;
+      $('eventCameraCapture').disabled=busy||opening||processing;
+      $('eventPhotoUpload').disabled=fileInput.disabled=busy||processing;
     }
-    async function listCameras(current) {
-      if (!navigator.mediaDevices?.enumerateDevices) return;
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        if (current !== generation) return;
-        facing.querySelector('optgroup')?.remove();
-        const cameras = devices.filter(device => device.kind === 'videoinput' && device.deviceId);
-        if (!cameras.length) return;
-        const group = document.createElement('optgroup');
-        group.label = 'Connected cameras';
-        cameras.forEach((device,index) => group.append(new Option(device.label || 'Camera ' + (index + 1), 'device:' + device.deviceId)));
-        facing.append(group);
-        const active = stream?.getVideoTracks()[0]?.getSettings?.().deviceId;
-        if (cameras.some(device => device.deviceId === active)) facing.value = 'device:' + active;
-      } catch {} // Device labels are optional; default/front/back capture still works.
+    function stop(){
+      generation++;stream?.getTracks().forEach(track=>track.stop());stream=null;
+      video.srcObject=null;video.hidden=true;$('eventCameraCapture').hidden=true;opening=false;
     }
-    async function start() {
-      stop();
-      const current = generation;
-      opening = true;
-      $('eventCameraOpen').disabled = $('eventCameraRetake').disabled = true;
-      facing.disabled = true;
-      error('eventCameraError','');
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) throw new Error('A live camera needs HTTPS or localhost. Open the secure website on a device with a camera.');
-        const selection = facing.value;
-        const constraints = {width:{ideal:1400},height:{ideal:1400}};
-        if (selection.startsWith('device:')) constraints.deviceId = {exact:selection.slice(7)};
-        else if (selection === 'user' || selection === 'environment') constraints.facingMode = {ideal:selection};
+    function clearPhoto(){
+      captured=null;if(capturedURL)URL.revokeObjectURL(capturedURL);capturedURL=null;
+    }
+    function selectPhoto(blob,source){
+      clearPhoto();captured=blob;photoSource=source;capturedURL=URL.createObjectURL(blob);
+      preview.src=capturedURL;preview.hidden=false;$('eventCameraPlaceholder').hidden=true;
+      $('eventCameraOpen').hidden=source==='camera';$('eventCameraRetake').hidden=source!=='camera';
+      $('eventPhotoStatus').textContent='Photo ready. Submit to review your ID.';controls();
+    }
+    async function listCameras(current){
+      if(!navigator.mediaDevices?.enumerateDevices)return;
+      try{
+        const devices=await navigator.mediaDevices.enumerateDevices();if(current!==generation)return;
+        const previous=facing.value;facing.querySelector('optgroup')?.remove();
+        const cameras=devices.filter(device=>device.kind==='videoinput'&&device.deviceId);
+        if(cameras.length){
+          const group=document.createElement('optgroup');group.label='Detected cameras';
+          cameras.forEach((device,index)=>group.append(new Option(device.label||'Camera '+(index+1),'device:'+device.deviceId)));
+          facing.append(group);
+        }
+        const active=stream?.getVideoTracks()[0]?.getSettings?.().deviceId;
+        if(cameras.some(device=>device.deviceId===active))facing.value='device:'+active;
+        else if([...facing.options].some(option=>option.value===previous))facing.value=previous;
+        else facing.value=mobile?'user':'default';
+      }catch{} // Privacy restrictions can hide device names until camera permission is granted.
+    }
+    async function start(){
+      if(busy||processing)return;
+      stop();const current=generation;opening=true;controls();error('eventCameraError','');
+      try{
+        if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera access requires HTTPS or localhost. You can upload a saved picture below.');
+        const selection=facing.value,constraints={width:{ideal:maxPhotoEdge},height:{ideal:maxPhotoEdge}};
+        if(selection.startsWith('device:'))constraints.deviceId={exact:selection.slice(7)};
+        else if(selection==='user'||selection==='environment')constraints.facingMode={ideal:selection};
         let candidate;
-        try {
-          candidate = await navigator.mediaDevices.getUserMedia({audio:false,video:constraints});
-        } catch (failure) {
-          if (current !== generation) return;
-          // Older webcams and unplugged remembered devices can reject constraints.
-          if (failure.name !== 'OverconstrainedError' && !(selection.startsWith('device:') && failure.name === 'NotFoundError')) throw failure;
-          candidate = await navigator.mediaDevices.getUserMedia({audio:false,video:true});
+        try{candidate=await navigator.mediaDevices.getUserMedia({audio:false,video:constraints});}
+        catch(failure){
+          if(current!==generation)return;
+          if(failure.name!=='OverconstrainedError'&&!(selection.startsWith('device:')&&failure.name==='NotFoundError'))throw failure;
+          candidate=await navigator.mediaDevices.getUserMedia({audio:false,video:true});
         }
-        if (current !== generation) { candidate.getTracks().forEach(track => track.stop()); return; }
-        stream = candidate;
-        video.srcObject = stream;
-        await video.play();
-        if (current !== generation) return;
-        const actualFacing = stream.getVideoTracks()[0]?.getSettings?.().facingMode;
-        video.classList.toggle('front', actualFacing ? actualFacing === 'user' : selection !== 'environment');
-        video.hidden = false;
-        preview.hidden = true;
-        $('eventCameraPlaceholder').hidden = true;
-        $('eventCameraCapture').hidden = false;
-        $('eventCameraOpen').hidden = true;
-        $('eventCameraRetake').hidden = true;
-        captured = null;
-        $('eventPhotoSave').disabled = true;
+        if(current!==generation){candidate.getTracks().forEach(track=>track.stop());return;}
+        stream=candidate;video.srcObject=stream;await video.play();if(current!==generation)return;
+        const actualFacing=stream.getVideoTracks()[0]?.getSettings?.().facingMode;
+        video.classList.toggle('front',actualFacing?actualFacing==='user':selection!=='environment');
+        clearPhoto();video.hidden=false;preview.hidden=true;$('eventCameraPlaceholder').hidden=true;
+        $('eventCameraCapture').hidden=false;$('eventCameraOpen').hidden=true;$('eventCameraRetake').hidden=true;
+        $('eventPhotoStatus').textContent='Position your face and shoulders, then take your photo.';
         await listCameras(current);
-      } catch (failure) {
-        if (current !== generation) return;
+      }catch(failure){
+        if(current!==generation)return;
         stop();
-        const messages = {
-          NotAllowedError:'Camera permission was blocked. Allow camera access for this site in your browser and in Windows Settings > Privacy & security > Camera, then try again.',
-          NotFoundError:'No camera was found. Connect or enable your desktop webcam, then click Open camera again.',
-          NotReadableError:'The camera is busy or unavailable. Close Teams, Zoom, or other apps using it, check your webcam privacy switch, then try again.'
+        const messages={
+          NotAllowedError:mobile?'Camera permission was blocked. Allow access in your browser settings, or upload a picture below.':'Camera permission was blocked. Allow camera access for this site and in Windows camera privacy settings, or upload a picture below.',
+          NotFoundError:mobile?'No camera is available. Check camera permissions, or upload a picture below.':'No camera was found. Connect or enable your webcam, or upload a picture below.',
+          NotReadableError:'The camera is busy or unavailable. Close other apps using it, or upload a picture below.'
         };
-        error('eventCameraError',messages[failure.name] || failure.message || 'The camera could not start. Please retry.');
-        $('eventCameraOpen').hidden = false;
-        $('eventCameraPlaceholder').hidden = !!captured;
-        preview.hidden = !captured;
-      } finally {
-        if (current === generation || !stream) {
-          opening = false;
-          facing.disabled = false;
-          $('eventCameraOpen').disabled = $('eventCameraRetake').disabled = false;
-        }
-      }
+        error('eventCameraError',messages[failure.name]||failure.message||'The camera could not start. Try again or upload a picture.');
+        $('eventCameraOpen').hidden=false;$('eventCameraPlaceholder').hidden=!!captured;preview.hidden=!captured;
+      }finally{if(current===generation||!stream){opening=false;controls();}}
     }
-    $('eventCameraOpen').addEventListener('click', () => { if (!opening) start(); });
-    $('eventCameraRetake').addEventListener('click', () => { if (!opening) start(); });
-    facing.addEventListener('change', () => {
-      try { localStorage.setItem('eventCameraFacing',facing.value === 'environment' ? 'environment' : 'default'); } catch {}
-      if (stream || opening) start();
+    $('eventCameraOpen').addEventListener('click',()=>{if(!opening)start();});
+    $('eventCameraRetake').addEventListener('click',()=>{if(!opening)start();});
+    facing.addEventListener('change',()=>{
+      try{localStorage.setItem('eventCameraFacing',facing.value==='environment'?'environment':mobile?'user':'default');}catch{}
+      if(stream||opening)start();
     });
-    $('eventCameraCapture').addEventListener('click', () => {
-      if (!video.videoWidth || !video.videoHeight || busy) return;
-      const canvas = $('eventCameraCanvas'), size = Math.min(video.videoWidth,video.videoHeight);
-      canvas.width = canvas.height = Math.min(1400,size);
+    $('eventCameraCapture').addEventListener('click',()=>{
+      if(!video.videoWidth||!video.videoHeight||busy||processing)return;
+      const canvas=$('eventCameraCanvas'),size=Math.min(video.videoWidth,video.videoHeight);
+      canvas.width=canvas.height=Math.min(maxPhotoEdge,size);
       canvas.getContext('2d').drawImage(video,(video.videoWidth-size)/2,(video.videoHeight-size)/2,size,size,0,0,canvas.width,canvas.height);
-      const current = generation;
-      canvas.toBlob(blob => {
-        if (current !== generation) return;
-        if (!blob) { error('eventCameraError','The picture could not be captured. Please try again.'); return; }
-        captured = blob;
-        if (capturedURL) URL.revokeObjectURL(capturedURL);
-        capturedURL = URL.createObjectURL(blob);
-        preview.src = capturedURL;
-        preview.hidden = false;
-        stop();
-        $('eventCameraRetake').hidden = false;
-        $('eventPhotoSave').disabled = false;
-      },'image/png');
+      const current=generation;
+      canvas.toBlob(blob=>{
+        if(current!==generation)return;
+        if(!blob){error('eventCameraError','The picture could not be captured. Please try again.');return;}
+        stop();selectPhoto(blob,'camera');
+      },'image/jpeg',photoQuality);
     });
-    cameraForm.addEventListener('submit', async event => {
-      event.preventDefault();
-      if (busy || !captured) return;
-      busy = true;
-      $('eventPhotoSave').disabled = true;
-      $('eventPhotoCancel').disabled = true;
-      error('eventCameraError','');
-      const data = new FormData(cameraForm);
-      data.set('camera_capture','1');
-      data.set('photo',captured,'camera-photo.png');
-      try { const result = await post(cameraForm.action,data); window.location.assign(result.redirect); }
-      catch (failure) { error('eventCameraError',failure.message); }
-      finally { busy = false; $('eventPhotoSave').disabled = !captured; $('eventPhotoCancel').disabled = false; }
+    $('eventPhotoUpload').addEventListener('click',()=>{if(!busy&&!processing){fileInput.value='';fileInput.click();}});
+    fileInput.addEventListener('change',async()=>{
+      const file=fileInput.files?.[0];if(!file||busy||processing)return;
+      if(!['image/jpeg','image/png','image/webp'].includes(file.type)&&!(file.type===''&&/\.(jpe?g|png|webp)$/i.test(file.name))){error('eventCameraError','Choose another picture or take a new photo.');return;}
+      if(file.size>maxOriginalBytes){error('eventCameraError','This picture is too large to load. Choose another photo.');return;}
+      stop();const current=generation;processing=true;controls();error('eventCameraError','');
+      $('eventCameraOpen').hidden=!!captured&&photoSource==='camera';
+      $('eventCameraRetake').hidden=!captured||photoSource!=='camera';
+      preview.hidden=!captured;$('eventCameraPlaceholder').hidden=!!captured;
+      $('eventPhotoStatus').textContent='Preparing your photo...';
+      const image=new Image(),url=URL.createObjectURL(file);
+      try{
+        await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(Error('This picture could not be read. Choose another photo.'));image.src=url;});
+        if(current!==generation)return;
+        const width=image.naturalWidth,height=image.naturalHeight;
+        if(!width||!height||width*height>80000000)throw Error('This picture is too large to process. Choose a smaller photo.');
+        const scale=Math.min(1,maxPhotoEdge/Math.max(width,height)),canvas=$('eventCameraCanvas');
+        canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));
+        const context=canvas.getContext('2d');context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
+        context.imageSmoothingEnabled=true;context.imageSmoothingQuality='high';context.drawImage(image,0,0,canvas.width,canvas.height);
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',photoQuality));
+        if(current!==generation)return;
+        if(!blob)throw Error('The picture could not be prepared. Choose another image.');
+        selectPhoto(blob,'upload');
+      }catch(failure){if(current===generation){error('eventCameraError',failure.message);$('eventPhotoStatus').textContent=captured?'Your previous photo is still selected.':'';}}
+      finally{URL.revokeObjectURL(url);processing=false;fileInput.value='';controls();}
     });
-    $('eventPhotoCancel').addEventListener('click',async () => {
-      if (busy) return;
-      busy = true;
-      $('eventPhotoSave').disabled = $('eventPhotoCancel').disabled = true;
-      error('eventCameraError','');
-      try {
-        const accepted = await confirmStatus('Are you sure you want to cancel your registration? Your entered details and captured photo will be discarded.',
-          {title:'Cancel submission?',button:'Yes, cancel',cancel:'Back',danger:true});
-        if (!accepted) return;
-        const result = await post($('eventPhotoCancel').dataset.url,formData({confirm:'yes'}));
-        stop();
-        if (capturedURL) { URL.revokeObjectURL(capturedURL); capturedURL = null; }
-        captured = null;
-        window.location.assign(result.redirect);
-      } catch (failure) { error('eventCameraError',failure.message); }
-      finally { busy = false; $('eventPhotoSave').disabled = !captured; $('eventPhotoCancel').disabled = false; }
+    cameraForm.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy||opening||processing||!captured)return;
+      busy=true;controls();error('eventCameraError','');
+      const data=new FormData(cameraForm);data.set('photo_source',photoSource);
+      if(photoSource==='camera')data.set('camera_capture','1');
+      data.set('photo',captured,photoSource==='camera'?'camera-photo.jpg':'uploaded-photo.jpg');
+      try{const result=await post(cameraForm.action,data);window.location.assign(result.redirect);}
+      catch(failure){error('eventCameraError',failure.message);}
+      finally{busy=false;controls();}
     });
-    window.addEventListener('pagehide', () => { stop(); if (capturedURL) URL.revokeObjectURL(capturedURL); });
-    navigator.mediaDevices?.addEventListener?.('devicechange', () => { if (stream && !opening) listCameras(generation); });
+    $('eventPhotoCancel').addEventListener('click',async()=>{
+      if(busy)return;busy=true;controls();error('eventCameraError','');
+      try{
+        const accepted=await confirmStatus('Cancel this registration? Your entered details and selected photo will be discarded.',{title:'Cancel submission?',button:'Yes, cancel',cancel:'Back',danger:true});
+        if(!accepted)return;
+        const result=await post($('eventPhotoCancel').dataset.url,formData({confirm:'yes'}));stop();clearPhoto();window.location.assign(result.redirect);
+      }catch(failure){error('eventCameraError',failure.message);}
+      finally{busy=false;controls();}
+    });
+    window.addEventListener('pagehide',event=>{stop();if(!event.persisted)clearPhoto();controls();});
+    window.addEventListener('pageshow',event=>{if(event.persisted){controls();listCameras(generation);}});
+    navigator.mediaDevices?.addEventListener?.('devicechange',()=>{if(!opening)listCameras(generation);});
+    controls();listCameras(generation);
   }
 
   const reviewForm = $('eventReviewForm');

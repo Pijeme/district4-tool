@@ -43,33 +43,44 @@ After choosing an area, **Area Overseer** is the first selectable church option.
 It saves that label as the church, uses the area's cached overseer ministry
 address/name where available, and applies one `Ptr.` prefix. It does not grant
 an account role or administrative access. Details are saved locally before the
-separate camera page. A live-camera capture saves a draft photo, then **Review ID**
-opens `/event-registration/review/<key>`. The owner-only preview image never
-generates a QR, contains repeated watermarks and a non-entry banner baked into
-the pixels, and is limited to 600 × 900. The attendee can edit the registration
-form while keeping the photo or retake it. Confirmation is a separate CSRF-protected
-POST; a revision check rejects stale details/photos. Only confirmation assigns
-the attendee number and marks the registration complete. Drafts are excluded from
-the roster, scanner, ticket verification and backup. Repeated confirmation does
-not allocate another number. The success page asks whether to Register another
-(a new blank form) or Exit (the Registered Attendees tab).
+separate photo page. Delegates may take a new camera photo or choose **Upload
+picture** below the camera controls. **Submit** saves the selected photo and opens
+the watermarked ID review page; it does not finish registration. **Confirm
+registration** on that review still requires an explicit POST and the current
+revision. Only that confirmation assigns the number and marks the record complete.
+Drafts remain excluded from the roster, scanner, ticket verification and backup.
 
-There is no photo picker. Cameras require HTTPS or localhost. Camera switching,
-capture, preview and retake are supported. Retries reuse the same registration.
-Below Review ID, Cancel submission opens a confirmation dialog with
-Yes, cancel and Back. Back preserves the captured photo and details. Confirming
-removes only that visitor's unfinished local registration and clears its session
-ownership. Cancellation requires CSRF and never deletes a completed attendee or
-consumes a registration number. Registration and its confirmation make no cloud
-uploads; an administrator starts them with Backup Data.
-On desktop, choose **Default camera / desktop webcam**, click **Open camera**
-and allow browser access. After permission is granted, the Camera list also
-shows connected webcams by name. A disconnected camera or unsupported video
-constraints fall back to the default webcam. Front/back choices remain available
-for phones. If access is blocked, check site camera permissions and the operating
-system's camera privacy settings. Capture stops the live stream; Retake opens it
-again. HTTP links using a LAN IP address cannot access cameras; use HTTPS or
-`http://localhost:5000` on the computer running the app.
+Every photo-page action has a short visible description. **Cancel submission**
+opens Yes, cancel / Back; Back keeps the current selection. Cancellation removes
+only that visitor's unfinished registration, requires CSRF, and consumes no number.
+The review page's **Change photo** link returns to both camera/upload options.
+
+Available cameras are enumerated automatically, including device changes. Actual
+camera access starts only after Open camera. Phone/iPad detection removes the
+desktop-webcam option and keeps front/back and detected cameras. Permission denial,
+a missing camera or an insecure camera origin does not prevent choosing a file.
+Camera access requires HTTPS or localhost; the upload option needs no camera
+permission. Unplugged devices/unsupported camera constraints retain fallback logic.
+
+Photo standard:
+
+- JPG, PNG or WebP originals up to 40 MiB are accepted by the browser, with an
+  80-megapixel processing limit. This includes ordinary 4K photos and large PNGs.
+- The browser preserves orientation and aspect ratio, reduces the longest edge to
+  at most 1400 pixels without enlarging small images, and encodes JPEG at 90%
+  quality. Transparent input is placed on a white background.
+- The server still accepts at most 12 MiB per photo in a request under 13 MiB,
+  checks the real image format/dimensions, corrects EXIF orientation, limits the
+  longest edge to 1400 pixels, and stores a normalized RGB PNG without EXIF data.
+- Camera captures use the same 1400-pixel limit and JPEG quality. Earlier camera
+  clients sending camera_capture=1 remain compatible. The photo_source field is
+  not proof of origin; actual image validation, CSRF and draft ownership enforce
+  the request boundary.
+
+Photo submission, ID review and registration confirmation do not initiate Google
+uploads. An administrator starts cloud backup through the existing Backup Data
+workflow. No offline companion files are changed by this online-only feature.
+
 Pastors and area overseers receive one `Ptr.` prefix in the saved name, printed
 ID and Google export. Matching Accounts names are recognized within their area
 and church; the registration checkbox also supports ministers from new churches.

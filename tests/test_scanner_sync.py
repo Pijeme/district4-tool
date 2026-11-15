@@ -516,6 +516,162 @@ class ScannerSyncTests(unittest.TestCase):
                         finally:context.close()
             finally:browser.close()
 
+    def photo_draft(self):
+        for replacement in (
+            patch.object(appmod,'_log_visit_if_needed',return_value=None),
+            patch.object(appmod,'EVENT_REGISTRATION_OPENS_AT',datetime(2000,1,1,tzinfo=timezone.utc)),
+            patch.dict(os.environ,{'DATA_DIR':self.temp.name}),
+        ):
+            replacement.start();self.addCleanup(replacement.stop)
+        self.execute("UPDATE event_attendees SET complete=0,number=NULL,photo='',paid=0,printed=0,physical_printed=0,released=0,revision=1 WHERE key=?",(OTHER,))
+        self.execute('UPDATE registration_events SET next_number=3 WHERE id=1')
+        with self.client.session_transaction() as state:
+            state['event_csrf']='photo-test-csrf';state['event_registration_key']=OTHER
+        return '/event-registration/photo/'+OTHER
+
+    def test_uploaded_photo_is_normalized_and_still_requires_review_confirmation(self):
+        from PIL import Image
+        import io
+        url=self.photo_draft()
+        image=Image.new('RGB',(4096,2160),'#977459');exif=Image.Exif();exif[274]=6;exif[271]='Private camera metadata'
+        buffer=io.BytesIO();image.save(buffer,'JPEG',exif=exif)
+        response=self.client.post(url,data={'csrf_token':'photo-test-csrf','photo_source':'upload','photo':(io.BytesIO(buffer.getvalue()),'portrait.jpg')})
+        self.assertEqual(response.status_code,200,response.data)
+        self.assertEqual(response.json['redirect'],'/event-registration/review/'+OTHER)
+        with closing(sqlite3.connect(self.database)) as db:
+            photo,complete,number,revision=db.execute('SELECT photo,complete,number,revision FROM event_attendees WHERE key=?',(OTHER,)).fetchone()
+            self.assertEqual((complete,number),(0,None))
+            self.assertEqual(db.execute('SELECT next_number FROM registration_events WHERE id=1').fetchone()[0],3)
+        with Image.open(Path(self.temp.name)/'event_assets'/photo) as stored:
+            self.assertEqual(stored.format,'PNG');self.assertEqual(stored.mode,'RGB')
+            self.assertLessEqual(max(stored.size),1400);self.assertGreater(stored.height,stored.width)
+            self.assertFalse(stored.getexif())
+        review=self.client.get(response.json['redirect'])
+        self.assertEqual(review.status_code,200)
+        self.assertIn('Not registered yet',review.text)
+        confirmed=self.client.post(response.json['redirect'],data={'csrf_token':'photo-test-csrf','revision':revision})
+        self.assertEqual(confirmed.status_code,200,confirmed.data)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute('SELECT complete,number FROM event_attendees WHERE key=?',(OTHER,)).fetchone(),(1,3))
+
+    def test_photo_upload_rejects_invalid_missing_oversized_and_unowned_images(self):
+        import io
+        from PIL import Image
+        url=self.photo_draft()
+        for fields in [
+            {'photo_source':'upload'},
+            {'photo_source':'invalid','photo':(io.BytesIO(b'not an image'),'bad.jpg')},
+            {'photo_source':'upload','photo':(io.BytesIO(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'),'bad.png')},
+            {'photo_source':'upload','photo':(io.BytesIO(b'x'*(12*1024*1024+1)),'too-large.jpg')},
+        ]:
+            result=self.client.post(url,data={'csrf_token':'photo-test-csrf',**fields})
+            self.assertEqual(result.status_code,400,result.data)
+        image=io.BytesIO();Image.new('RGB',(300,400),'#956f59').save(image,'PNG')
+        stranger=appmod.app.test_client()
+        with stranger.session_transaction() as state:state['event_csrf']='photo-test-csrf'
+        result=stranger.post(url,data={'csrf_token':'photo-test-csrf','photo_source':'upload','photo':(io.BytesIO(image.getvalue()),'photo.png')})
+        self.assertEqual(result.status_code,403)
+        self.assertEqual(self.client.post(url,data={'photo_source':'upload','photo':(io.BytesIO(image.getvalue()),'photo.png')}).status_code,400)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute('SELECT photo,complete,number FROM event_attendees WHERE key=?',(OTHER,)).fetchone(),('',0,None))
+
+    def test_existing_camera_capture_clients_remain_supported(self):
+        import io
+        from PIL import Image
+        url=self.photo_draft();buffer=io.BytesIO();Image.new('RGB',(640,640),'#956f59').save(buffer,'PNG')
+        result=self.client.post(url,data={'csrf_token':'photo-test-csrf','camera_capture':'1','photo':(io.BytesIO(buffer.getvalue()),'camera.png')})
+        self.assertEqual(result.status_code,200,result.data)
+        self.assertEqual(result.json['redirect'],'/event-registration/review/'+OTHER)
+
+    def test_photo_options_browser_resize_mobile_camera_detection_and_review(self):
+        from playwright.sync_api import sync_playwright
+        from urllib.parse import urlsplit
+        from email.parser import BytesParser
+        from email.policy import default
+        from PIL import Image
+        import io,json,mimetypes
+        root=Path(__file__).resolve().parents[1]
+        original=io.BytesIO();Image.frombytes('RGB',(3840,2160),os.urandom(3840*2160*3)).save(original,'PNG')
+        self.assertGreater(len(original.getvalue()),12*1024*1024)
+        mobile_image=io.BytesIO();image=Image.new('RGB',(1600,900),'#977459');exif=Image.Exif();exif[274]=6;image.save(mobile_image,'JPEG',exif=exif)
+        with sync_playwright() as playwright:
+            browser=playwright.chromium.launch(channel='msedge',headless=True,args=['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream'])
+            try:
+                for mobile in (False,True):
+                    with self.subTest(mobile=mobile):
+                        url=self.photo_draft();submitted=[];errors=[]
+                        options=dict(viewport={'width':393 if mobile else 1280,'height':852 if mobile else 900},permissions=['camera'])
+                        if mobile:options.update(is_mobile=True,has_touch=True,user_agent='Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36')
+                        context=browser.new_context(**options);page=context.new_page()
+                        page.on('pageerror',lambda error:errors.append(str(error)))
+                        page.add_init_script("""window.cameraRequests=0;const getCamera=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=async constraints=>{window.cameraRequests++;if(/Android/.test(navigator.userAgent))throw new DOMException('Blocked for test','NotAllowedError');return getCamera(constraints);};""")
+                        def route_request(route):
+                            request=route.request;parsed=urlsplit(request.url);path=parsed.path
+                            if path.startswith('/static/'):
+                                asset=(root/path.lstrip('/')).resolve()
+                                if asset.is_file() and asset.is_relative_to(root/'static'):
+                                    route.fulfill(content_type=mimetypes.guess_type(asset.name)[0] or 'application/octet-stream',body=asset.read_bytes())
+                                else:route.fulfill(status=404,body='')
+                            elif path.startswith('/event-registration/'):
+                                data=None
+                                if request.method=='POST':
+                                    ct=request.headers.get('content-type','')
+                                    body=b'Content-Type: '+ct.encode()+b'\r\nMIME-Version: 1.0\r\n\r\n'+request.post_data_buffer
+                                    data={}
+                                    for part in BytesParser(policy=default).parsebytes(body).iter_parts():
+                                        name=part.get_param('name',header='content-disposition')
+                                        if part.get_filename():
+                                            raw=part.get_payload(decode=True)
+                                            with Image.open(io.BytesIO(raw)) as image:submitted.append(dict(source=None,size=image.size,format=image.format,bytes=len(raw)))
+                                            data[name]=(io.BytesIO(raw),part.get_filename())
+                                        else:data[name]=part.get_content().strip()
+                                    if submitted:submitted[-1]['source']=data.get('photo_source')
+                                response=self.client.open(path+('?' + parsed.query if parsed.query else ''),method=request.method,data=data,headers={'X-CSRF-Token':request.headers.get('x-csrf-token','')})
+                                route.fulfill(status=response.status_code,content_type=response.content_type,body=response.data)
+                            else:route.fulfill(status=404,body='')
+                        page.route('**/*',route_request)
+                        try:
+                            page.goto('https://registration.test'+url)
+                            page.wait_for_function('document.querySelector("#eventCameraFacing optgroup")!==null')
+                            self.assertEqual(page.evaluate('window.cameraRequests'),0)
+                            self.assertEqual(page.locator('#eventCameraFacing option[value=default]').count(),0 if mobile else 1)
+                            self.assertTrue(page.get_by_role('button',name='Submit',exact=True).is_disabled())
+                            self.assertTrue(page.locator('#eventPhotoUpload small').inner_text())
+                            page.locator('#eventCameraOpen').click()
+                            if mobile:
+                                page.wait_for_function('!document.getElementById("eventCameraError").hidden')
+                                self.assertNotIn('Windows',page.locator('#eventCameraError').inner_text())
+                            else:
+                                page.wait_for_function('document.getElementById("eventCamera").videoWidth>0&&!document.getElementById("eventCameraCapture").disabled')
+                                page.locator('#eventPhotoFile').set_input_files({'name':'broken.jpg','mimeType':'image/jpeg','buffer':b'not an image'})
+                                page.wait_for_function('!document.getElementById("eventCameraError").hidden&&!document.getElementById("eventCameraOpen").hidden&&!document.getElementById("eventCameraOpen").disabled')
+                                page.locator('#eventCameraOpen').click()
+                                page.wait_for_function('document.getElementById("eventCamera").videoWidth>0&&!document.getElementById("eventCameraCapture").disabled')
+                                page.locator('#eventCameraCapture').click()
+                                page.wait_for_function('!document.getElementById("eventPhotoSave").disabled')
+                            payload=mobile_image.getvalue() if mobile else original.getvalue()
+                            with page.expect_file_chooser() as chooser:page.locator('#eventPhotoUpload').click()
+                            chooser.value.set_files({'name':'portrait.jpg' if mobile else '4k.png','mimeType':'image/jpeg' if mobile else 'image/png','buffer':payload})
+                            page.wait_for_function('!document.getElementById("eventPhotoSave").disabled && document.getElementById("eventPhotoStatus").textContent.includes("Photo ready")')
+                            page.get_by_role('button',name='Submit',exact=True).click()
+                            page.wait_for_url('**/event-registration/review/'+OTHER)
+                            self.assertEqual(submitted[-1]['source'],'upload')
+                            self.assertEqual(submitted[-1]['format'],'JPEG')
+                            self.assertLessEqual(max(submitted[-1]['size']),1400)
+                            self.assertLess(submitted[-1]['bytes'],12*1024*1024)
+                            if mobile:self.assertGreater(submitted[-1]['size'][1],submitted[-1]['size'][0])
+                            self.assertIn('Not registered yet',page.content())
+                            with closing(sqlite3.connect(self.database)) as db:self.assertEqual(db.execute('SELECT complete,number FROM event_attendees WHERE key=?',(OTHER,)).fetchone(),(0,None))
+                            if not mobile:
+                                page.locator('#eventReviewRetake').click();page.locator('#eventCameraOpen').click()
+                                page.wait_for_function('document.getElementById("eventCamera").videoWidth>0&&!document.getElementById("eventCameraCapture").disabled')
+                                page.locator('#eventCameraCapture').click();page.wait_for_function('!document.getElementById("eventPhotoSave").disabled')
+                                page.get_by_role('button',name='Submit',exact=True).click();page.wait_for_url('**/event-registration/review/'+OTHER)
+                                self.assertEqual(submitted[-1]['source'],'camera')
+                            self.assertEqual(errors,[])
+                        finally:context.close()
+            finally:browser.close()
+
 
 if __name__ == '__main__':
     import sys
