@@ -167,9 +167,11 @@
   const cameraForm = $('eventPhotoForm');
   if (cameraForm) {
     const video=$('eventCamera'),facing=$('eventCameraFacing'),preview=$('eventCapturedPhoto'),fileInput=$('eventPhotoFile');
+    const photoFrame=$('eventPhotoFrame'),zoom=$('eventPhotoZoom');
     const mobile=!!navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
     const maxPhotoEdge=1400,photoQuality=.9,maxOriginalBytes=40*1024*1024;
     let stream=null,generation=0,captured=null,capturedURL=null,photoSource='camera',busy=false,opening=false,processing=false;
+    let photoImage=null,cropZoom=1,cropX=0,cropY=0,drag=null;
     if(mobile)facing.querySelector('option[value="default"]')?.remove();
     let remembered='';try{remembered=localStorage.getItem('eventCameraFacing');}catch{}
     facing.value=remembered==='environment'?'environment':mobile?'user':'default';
@@ -179,6 +181,12 @@
       $('eventCameraOpen').disabled=$('eventCameraRetake').disabled=facing.disabled=busy||opening||processing;
       $('eventCameraCapture').disabled=busy||opening||processing;
       $('eventPhotoUpload').disabled=fileInput.disabled=busy||processing;
+      const selected=!!photoImage&&!stream,editable=canAdjust();
+      $('eventPhotoCropHelp').hidden=$('eventPhotoCropControls').hidden=!selected;
+      photoFrame.classList.toggle('crop-ready',selected);photoFrame.classList.toggle('crop-disabled',!editable);
+      photoFrame.tabIndex=editable?0:-1;photoFrame.setAttribute('aria-disabled',String(!editable));
+      zoom.disabled=$('eventPhotoReset').disabled=!editable;
+      if(!editable)endDrag();
     }
     function stop(){
       generation++;stream?.getTracks().forEach(track=>track.stop());stream=null;
@@ -186,12 +194,69 @@
     }
     function clearPhoto(){
       captured=null;if(capturedURL)URL.revokeObjectURL(capturedURL);capturedURL=null;
+      photoImage=null;endDrag();preview.removeAttribute('src');preview.removeAttribute('style');
     }
-    function selectPhoto(blob,source){
-      clearPhoto();captured=blob;photoSource=source;capturedURL=URL.createObjectURL(blob);
+    async function selectPhoto(blob,source,current){
+      const image=new Image(),url=URL.createObjectURL(blob);
+      try{
+        await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(Error('The photo preview could not load. Choose another photo.'));image.src=url;});
+        if(current!==generation){URL.revokeObjectURL(url);return;}
+      }catch(failure){URL.revokeObjectURL(url);throw failure;}
+      clearPhoto();captured=blob;photoSource=source;capturedURL=url;photoImage=image;
       preview.src=capturedURL;preview.hidden=false;$('eventCameraPlaceholder').hidden=true;
       $('eventCameraOpen').hidden=source==='camera';$('eventCameraRetake').hidden=source!=='camera';
+      resetCrop();
       $('eventPhotoStatus').textContent='Photo ready. Submit to review your ID.';controls();
+    }
+    function canAdjust(){return !!photoImage&&!stream&&!busy&&!opening&&!processing;}
+    function cropSize(){return Math.min(photoImage.naturalWidth,photoImage.naturalHeight)/cropZoom;}
+    function renderCrop(){
+      if(!photoImage)return;
+      const size=cropSize(),half=size/2;
+      cropX=Math.max(half,Math.min(photoImage.naturalWidth-half,cropX));
+      cropY=Math.max(half,Math.min(photoImage.naturalHeight-half,cropY));
+      preview.style.width=(photoImage.naturalWidth/size*100)+'%';preview.style.height=(photoImage.naturalHeight/size*100)+'%';
+      preview.style.left=(.5-cropX/size)*100+'%';preview.style.top=(.5-cropY/size)*100+'%';
+      zoom.value=String(cropZoom);$('eventPhotoZoomValue').textContent=cropZoom.toFixed(1)+'×';
+    }
+    function resetCrop(){
+      if(!photoImage)return;
+      endDrag();
+      cropZoom=1;cropX=photoImage.naturalWidth/2;cropY=photoImage.naturalHeight/2;renderCrop();
+    }
+    function endDrag(){
+      const previous=drag;drag=null;photoFrame.classList.remove('crop-dragging');
+      if(previous&&photoFrame.hasPointerCapture(previous.id))photoFrame.releasePointerCapture(previous.id);
+    }
+    photoFrame.addEventListener('pointerdown',event=>{
+      if(!canAdjust()||!event.isPrimary||event.button!==0)return;
+      event.preventDefault();photoFrame.focus({preventScroll:true});
+      drag={id:event.pointerId,x:event.clientX,y:event.clientY,cropX,cropY,size:cropSize()};
+      photoFrame.setPointerCapture(event.pointerId);photoFrame.classList.add('crop-dragging');
+    });
+    photoFrame.addEventListener('pointermove',event=>{
+      if(!drag||event.pointerId!==drag.id||!canAdjust())return;
+      cropX=drag.cropX-(event.clientX-drag.x)/photoFrame.clientWidth*drag.size;
+      cropY=drag.cropY-(event.clientY-drag.y)/photoFrame.clientHeight*drag.size;renderCrop();
+    });
+    ['pointerup','pointercancel','lostpointercapture'].forEach(type=>photoFrame.addEventListener(type,event=>{if(drag?.id===event.pointerId)endDrag();}));
+    photoFrame.addEventListener('keydown',event=>{
+      if(!canAdjust()||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
+      event.preventDefault();const step=cropSize()*(event.shiftKey ? .1 : .02);
+      if(event.key==='ArrowLeft')cropX+=step;if(event.key==='ArrowRight')cropX-=step;
+      if(event.key==='ArrowUp')cropY+=step;if(event.key==='ArrowDown')cropY-=step;renderCrop();
+    });
+    zoom.addEventListener('input',()=>{if(canAdjust()){cropZoom=Math.max(1,Math.min(3,Number(zoom.value)||1));renderCrop();}});
+    $('eventPhotoReset').addEventListener('click',()=>{if(canAdjust())resetCrop();});
+    async function croppedPhoto(){
+      const size=cropSize(),canvas=$('eventCameraCanvas');
+      canvas.width=canvas.height=Math.max(1,Math.min(maxPhotoEdge,Math.round(size)));
+      const context=canvas.getContext('2d');context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
+      context.imageSmoothingEnabled=true;context.imageSmoothingQuality='high';
+      context.drawImage(photoImage,cropX-size/2,cropY-size/2,size,size,0,0,canvas.width,canvas.height);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',photoQuality));
+      if(!blob)throw Error('The adjusted photo could not be saved. Please try again.');
+      return blob;
     }
     async function listCameras(current){
       if(!navigator.mediaDevices?.enumerateDevices)return;
@@ -251,17 +316,19 @@
       try{localStorage.setItem('eventCameraFacing',facing.value==='environment'?'environment':mobile?'user':'default');}catch{}
       if(stream||opening)start();
     });
-    $('eventCameraCapture').addEventListener('click',()=>{
+    $('eventCameraCapture').addEventListener('click',async()=>{
       if(!video.videoWidth||!video.videoHeight||busy||processing)return;
-      const canvas=$('eventCameraCanvas'),size=Math.min(video.videoWidth,video.videoHeight);
-      canvas.width=canvas.height=Math.min(maxPhotoEdge,size);
-      canvas.getContext('2d').drawImage(video,(video.videoWidth-size)/2,(video.videoHeight-size)/2,size,size,0,0,canvas.width,canvas.height);
-      const current=generation;
-      canvas.toBlob(blob=>{
+      const canvas=$('eventCameraCanvas'),scale=Math.min(1,maxPhotoEdge/Math.max(video.videoWidth,video.videoHeight)),current=generation;
+      processing=true;controls();error('eventCameraError','');
+      try{
+        canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+        canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',photoQuality));
         if(current!==generation)return;
-        if(!blob){error('eventCameraError','The picture could not be captured. Please try again.');return;}
-        stop();selectPhoto(blob,'camera');
-      },'image/jpeg',photoQuality);
+        if(!blob)throw Error('The picture could not be captured. Please try again.');
+        stop();await selectPhoto(blob,'camera',generation);
+      }catch(failure){error('eventCameraError',failure.message);if(!stream)$('eventCameraOpen').hidden=false;}
+      finally{processing=false;controls();}
     });
     $('eventPhotoUpload').addEventListener('click',()=>{if(!busy&&!processing){fileInput.value='';fileInput.click();}});
     fileInput.addEventListener('change',async()=>{
@@ -286,17 +353,21 @@
         const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',photoQuality));
         if(current!==generation)return;
         if(!blob)throw Error('The picture could not be prepared. Choose another image.');
-        selectPhoto(blob,'upload');
+        await selectPhoto(blob,'upload',current);
       }catch(failure){if(current===generation){error('eventCameraError',failure.message);$('eventPhotoStatus').textContent=captured?'Your previous photo is still selected.':'';}}
       finally{URL.revokeObjectURL(url);processing=false;fileInput.value='';controls();}
     });
     cameraForm.addEventListener('submit',async event=>{
       event.preventDefault();if(busy||opening||processing||!captured)return;
       busy=true;controls();error('eventCameraError','');
-      const data=new FormData(cameraForm);data.set('photo_source',photoSource);
-      if(photoSource==='camera')data.set('camera_capture','1');
-      data.set('photo',captured,photoSource==='camera'?'camera-photo.jpg':'uploaded-photo.jpg');
-      try{const result=await post(cameraForm.action,data);window.location.assign(result.redirect);}
+      const current=generation;
+      try{
+        const blob=await croppedPhoto();if(current!==generation)return;
+        const data=new FormData(cameraForm);data.set('photo_source',photoSource);
+        if(photoSource==='camera')data.set('camera_capture','1');
+        data.set('photo',blob,photoSource==='camera'?'camera-photo.jpg':'uploaded-photo.jpg');
+        const result=await post(cameraForm.action,data);window.location.assign(result.redirect);
+      }
       catch(failure){error('eventCameraError',failure.message);}
       finally{busy=false;controls();}
     });

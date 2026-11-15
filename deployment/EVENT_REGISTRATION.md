@@ -55,6 +55,16 @@ opens Yes, cancel / Back; Back keeps the current selection. Cancellation removes
 only that visitor's unfinished registration, requires CSRF, and consumes no number.
 The review page's **Change photo** link returns to both camera/upload options.
 
+After choosing or taking a photo, the square preview becomes a crop editor with
+the instruction **Move and zoom the photo to center your face.** Mouse and touch
+dragging reposition the image; the Zoom slider ranges from 1× to 3×. Reset position
+returns to the centered view at 1×. A focused preview also accepts arrow keys
+(Shift for larger movements). Position and zoom are clamped to keep the preview
+filled, including after zooming out or resizing the screen. Failed replacement
+uploads preserve the previous image and crop. Adjustments stay in the browser;
+Submit exports the selected square crop and then opens the existing ID review.
+The final review shows its placement within the event's ID template.
+
 Available cameras are enumerated automatically, including device changes. Actual
 camera access starts only after Open camera. Phone/iPad detection removes the
 desktop-webcam option and keeps front/back and detected cameras. Permission denial,
@@ -68,11 +78,15 @@ Photo standard:
   80-megapixel processing limit. This includes ordinary 4K photos and large PNGs.
 - The browser preserves orientation and aspect ratio, reduces the longest edge to
   at most 1400 pixels without enlarging small images, and encodes JPEG at 90%
-  quality. Transparent input is placed on a white background.
+  quality. Transparent input is placed on a white background. The full normalized
+  image is retained for repositioning; Submit sends only the square crop, without
+  upscaling it. Zooming in reduces the output dimensions rather than inventing
+  extra resolution.
 - The server still accepts at most 12 MiB per photo in a request under 13 MiB,
   checks the real image format/dimensions, corrects EXIF orientation, limits the
   longest edge to 1400 pixels, and stores a normalized RGB PNG without EXIF data.
-- Camera captures use the same 1400-pixel limit and JPEG quality. Earlier camera
+- Camera captures retain the full frame for the same crop controls and use the
+  same 1400-pixel limit and JPEG quality. Earlier camera
   clients sending camera_capture=1 remain compatible. The photo_source field is
   not proof of origin; actual image validation, CSRF and draft ownership enforce
   the request boundary.

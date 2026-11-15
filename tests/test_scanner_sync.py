@@ -588,12 +588,15 @@ class ScannerSyncTests(unittest.TestCase):
         from urllib.parse import urlsplit
         from email.parser import BytesParser
         from email.policy import default
-        from PIL import Image
+        from PIL import Image,ImageDraw
         import io,json,mimetypes
         root=Path(__file__).resolve().parents[1]
         original=io.BytesIO();Image.frombytes('RGB',(3840,2160),os.urandom(3840*2160*3)).save(original,'PNG')
         self.assertGreater(len(original.getvalue()),12*1024*1024)
         mobile_image=io.BytesIO();image=Image.new('RGB',(1600,900),'#977459');exif=Image.Exif();exif[274]=6;image.save(mobile_image,'JPEG',exif=exif)
+        crop_image=Image.new('RGB',(1800,900),(30,170,60));draw=ImageDraw.Draw(crop_image)
+        draw.rectangle((0,0,599,899),fill=(220,30,40));draw.rectangle((1200,0,1799,899),fill=(30,50,210))
+        crop_file=io.BytesIO();crop_image.save(crop_file,'PNG')
         with sync_playwright() as playwright:
             browser=playwright.chromium.launch(channel='msedge',headless=True,args=['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream'])
             try:
@@ -622,7 +625,7 @@ class ScannerSyncTests(unittest.TestCase):
                                         name=part.get_param('name',header='content-disposition')
                                         if part.get_filename():
                                             raw=part.get_payload(decode=True)
-                                            with Image.open(io.BytesIO(raw)) as image:submitted.append(dict(source=None,size=image.size,format=image.format,bytes=len(raw)))
+                                            with Image.open(io.BytesIO(raw)) as image:submitted.append(dict(source=None,size=image.size,format=image.format,bytes=len(raw),center=image.convert('RGB').getpixel((image.width//2,image.height//2))))
                                             data[name]=(io.BytesIO(raw),part.get_filename())
                                         else:data[name]=part.get_content().strip()
                                     if submitted:submitted[-1]['source']=data.get('photo_source')
@@ -635,6 +638,7 @@ class ScannerSyncTests(unittest.TestCase):
                             page.wait_for_function('document.querySelector("#eventCameraFacing optgroup")!==null')
                             self.assertEqual(page.evaluate('window.cameraRequests'),0)
                             self.assertEqual(page.locator('#eventCameraFacing option[value=default]').count(),0 if mobile else 1)
+                            self.assertTrue(page.locator('#eventPhotoCropControls').is_hidden())
                             self.assertTrue(page.get_by_role('button',name='Submit',exact=True).is_disabled())
                             self.assertTrue(page.locator('#eventPhotoUpload small').inner_text())
                             page.locator('#eventCameraOpen').click()
@@ -653,19 +657,67 @@ class ScannerSyncTests(unittest.TestCase):
                             with page.expect_file_chooser() as chooser:page.locator('#eventPhotoUpload').click()
                             chooser.value.set_files({'name':'portrait.jpg' if mobile else '4k.png','mimeType':'image/jpeg' if mobile else 'image/png','buffer':payload})
                             page.wait_for_function('!document.getElementById("eventPhotoSave").disabled && document.getElementById("eventPhotoStatus").textContent.includes("Photo ready")')
+                            self.assertTrue(page.locator('#eventPhotoCropControls').is_visible())
+                            self.assertEqual(page.locator('#eventPhotoCropHelp').inner_text(),'Move and zoom the photo to center your face.')
+                            if mobile:self.assertTrue(page.locator('#eventCapturedPhoto').evaluate('(image)=>image.naturalHeight>image.naturalWidth'))
                             page.get_by_role('button',name='Submit',exact=True).click()
                             page.wait_for_url('**/event-registration/review/'+OTHER)
                             self.assertEqual(submitted[-1]['source'],'upload')
                             self.assertEqual(submitted[-1]['format'],'JPEG')
                             self.assertLessEqual(max(submitted[-1]['size']),1400)
                             self.assertLess(submitted[-1]['bytes'],12*1024*1024)
-                            if mobile:self.assertGreater(submitted[-1]['size'][1],submitted[-1]['size'][0])
+                            self.assertEqual(submitted[-1]['size'][0],submitted[-1]['size'][1])
                             self.assertIn('Not registered yet',page.content())
                             with closing(sqlite3.connect(self.database)) as db:self.assertEqual(db.execute('SELECT complete,number FROM event_attendees WHERE key=?',(OTHER,)).fetchone(),(0,None))
+                            # Verify the saved pixels match an actual mouse/touch adjustment,
+                            # rather than just testing that the preview's styles changed.
+                            page.locator('#eventReviewRetake').click()
+                            page.locator('#eventPhotoFile').set_input_files({'name':'position.png','mimeType':'image/png','buffer':crop_file.getvalue()})
+                            page.wait_for_function('!document.getElementById("eventPhotoSave").disabled')
+                            frame=page.locator('#eventPhotoFrame');zoom=page.locator('#eventPhotoZoom')
+                            centered=page.locator('#eventCapturedPhoto').get_attribute('style')
+                            zoom.fill('2');zoom.dispatch_event('input')
+                            page.locator('#eventPhotoReset').click()
+                            self.assertEqual(zoom.input_value(),'1')
+                            self.assertEqual(page.locator('#eventCapturedPhoto').get_attribute('style'),centered)
+                            zoom.fill('2');zoom.dispatch_event('input')
+                            frame.scroll_into_view_if_needed();box=frame.bounding_box();y=box['y']+box['height']/2
+                            left=box['x']+10;right=box['x']+box['width']-10
+                            if mobile:
+                                session=context.new_cdp_session(page)
+                                session.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':left,'y':y}]})
+                                session.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':right,'y':y}]})
+                                session.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+                                session.detach()
+                            else:
+                                page.mouse.move(left,y);page.mouse.down();page.mouse.move(right,y,steps=5);page.mouse.up()
+                            adjusted=page.locator('#eventCapturedPhoto').get_attribute('style')
+                            self.assertNotEqual(adjusted,centered)
+                            # Arrow keys also move the picture, and remain inside its bounds.
+                            frame.focus();frame.press('ArrowRight')
+                            self.assertNotEqual(page.locator('#eventCapturedPhoto').get_attribute('style'),adjusted)
+                            adjusted=page.locator('#eventCapturedPhoto').get_attribute('style')
+                            bounds=frame.evaluate('(frame)=>{const image=frame.querySelector("img").getBoundingClientRect(),box=frame.getBoundingClientRect();return image.left<=box.left+1&&image.top<=box.top+1&&image.right>=box.right-1&&image.bottom>=box.bottom-1;}')
+                            self.assertTrue(bounds)
+                            # A bad replacement keeps the selected picture and its adjustment.
+                            page.locator('#eventPhotoFile').set_input_files({'name':'broken.jpg','mimeType':'image/jpeg','buffer':b'not an image'})
+                            page.wait_for_function('!document.getElementById("eventCameraError").hidden&&!document.getElementById("eventPhotoSave").disabled')
+                            self.assertEqual(zoom.input_value(),'2')
+                            self.assertEqual(page.locator('#eventCapturedPhoto').get_attribute('style'),adjusted)
+                            page.get_by_role('button',name='Submit',exact=True).click()
+                            page.wait_for_url('**/event-registration/review/'+OTHER)
+                            self.assertEqual(submitted[-1]['size'],(350,350))
+                            red,green,blue=submitted[-1]['center'];self.assertGreater(red,180);self.assertLess(green,70);self.assertLess(blue,80)
+                            with closing(sqlite3.connect(self.database)) as db:
+                                photo,complete=db.execute('SELECT photo,complete FROM event_attendees WHERE key=?',(OTHER,)).fetchone()
+                            self.assertEqual(complete,0)
+                            with Image.open(Path(self.temp.name)/'event_assets'/photo) as saved:
+                                self.assertEqual(saved.size,(350,350));self.assertEqual(saved.getpixel((175,175)),submitted[-1]['center'])
                             if not mobile:
                                 page.locator('#eventReviewRetake').click();page.locator('#eventCameraOpen').click()
                                 page.wait_for_function('document.getElementById("eventCamera").videoWidth>0&&!document.getElementById("eventCameraCapture").disabled')
                                 page.locator('#eventCameraCapture').click();page.wait_for_function('!document.getElementById("eventPhotoSave").disabled')
+                                self.assertTrue(page.locator('#eventPhotoCropControls').is_visible())
                                 page.get_by_role('button',name='Submit',exact=True).click();page.wait_for_url('**/event-registration/review/'+OTHER)
                                 self.assertEqual(submitted[-1]['source'],'camera')
                             self.assertEqual(errors,[])

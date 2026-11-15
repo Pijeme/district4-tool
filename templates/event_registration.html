@@ -2,7 +2,7 @@
 {% from 'ui_icons.html' import icon %}
 {% block title %}Event Registration · District 4{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='16') }}">
+<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='17') }}">
 <div class="event-shell" data-csrf="{{ csrf }}" data-view="{{ view }}" data-mode="all"
      data-admin="{{ '1' if tab=='admin' and admin else '0' }}" data-event-id="{{ event.id if event else '' }}" data-print-prepare-url="{{ url_for('event_print_prepare') if admin else '' }}"
      data-live-url="{{ url_for('event_progress',event=event.id,admin=1 if tab=='admin' and admin else 0,list=1 if tab in ('attendees','admin') else 0) if event and view in ('main','release') and (tab!='admin' or admin) else '' }}">
@@ -178,7 +178,13 @@
       <p>{{ attendee.name }}, your details are saved. Take a new photo or upload a saved picture with your face and shoulders clearly visible.</p>
       <label>Camera<select id="eventCameraFacing"><option value="default">Default camera / desktop webcam</option><option value="user">Front camera</option><option value="environment">Back camera</option></select></label>
       <p id="eventCameraHelp" class="event-help">Available cameras are detected automatically. Choose a camera, then allow access when you open it.</p>
-      <div class="event-camera-frame"><video id="eventCamera" autoplay muted playsinline hidden></video><img id="eventCapturedPhoto" alt="Selected ID photo preview" hidden><span id="eventCameraPlaceholder">Your photo preview will appear here</span></div>
+      <p id="eventPhotoCropHelp" class="event-help event-photo-crop-help" hidden>Move and zoom the photo to center your face.</p>
+      <div id="eventPhotoFrame" class="event-camera-frame" role="group" aria-label="ID photo position" aria-describedby="eventPhotoCropHelp" tabindex="-1"><video id="eventCamera" autoplay muted playsinline hidden></video><img id="eventCapturedPhoto" alt="Selected ID photo preview" draggable="false" hidden><span id="eventCameraPlaceholder">Your photo preview will appear here</span></div>
+      <div id="eventPhotoCropControls" class="event-photo-crop-controls" hidden>
+        <label for="eventPhotoZoom">Zoom <output id="eventPhotoZoomValue" for="eventPhotoZoom">1.0×</output></label>
+        <input id="eventPhotoZoom" type="range" min="1" max="3" step="0.01" value="1">
+        <button id="eventPhotoReset" class="event-btn secondary" type="button">Reset position</button>
+      </div>
       <canvas id="eventCameraCanvas" hidden></canvas><p id="eventCameraError" class="event-notice error" role="alert" hidden></p>
       <form id="eventPhotoForm" class="event-photo-controls" method="post" action="{{ url_for('event_photo_save',key=attendee.key) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -235,5 +241,5 @@
   {% endif %}
   <dialog id="eventConfirmDialog" class="event-dialog event-confirm-dialog"><h2>Change status?</h2><p id="eventConfirmMessage"></p><label id="eventConfirmPasswordLabel" hidden>Event admin password<input id="eventConfirmPassword" type="password" autocomplete="off" maxlength="256"></label><div class="event-actions"><button class="event-btn" id="eventConfirmYes">Yes, change status</button><button class="event-btn secondary" id="eventConfirmCancel">Cancel</button></div></dialog>
 </div>
-<script src="{{ url_for('static',filename='event_registration.js',v='23') }}" defer></script>
+<script src="{{ url_for('static',filename='event_registration.js',v='24') }}" defer></script>
 {% endblock %}
