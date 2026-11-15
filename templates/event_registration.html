@@ -2,7 +2,7 @@
 {% from 'ui_icons.html' import icon %}
 {% block title %}Event Registration · District 4{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='15') }}">
+<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='16') }}">
 <div class="event-shell" data-csrf="{{ csrf }}" data-view="{{ view }}" data-mode="all"
      data-admin="{{ '1' if tab=='admin' and admin else '0' }}" data-event-id="{{ event.id if event else '' }}" data-print-prepare-url="{{ url_for('event_print_prepare') if admin else '' }}"
      data-live-url="{{ url_for('event_progress',event=event.id,admin=1 if tab=='admin' and admin else 0,list=1 if tab in ('attendees','admin') else 0) if event and view in ('main','release') and (tab!='admin' or admin) else '' }}">
@@ -180,22 +180,22 @@
       <p id="eventCameraHelp" class="event-help">Available cameras are detected automatically. Choose a camera, then allow access when you open it.</p>
       <div class="event-camera-frame"><video id="eventCamera" autoplay muted playsinline hidden></video><img id="eventCapturedPhoto" alt="Selected ID photo preview" hidden><span id="eventCameraPlaceholder">Your photo preview will appear here</span></div>
       <canvas id="eventCameraCanvas" hidden></canvas><p id="eventCameraError" class="event-notice error" role="alert" hidden></p>
-      <div class="event-actions event-photo-actions">
-        <button type="button" class="event-btn event-photo-action" id="eventCameraOpen" aria-label="Open camera" aria-describedby="eventCameraOpenHelp"><span>Open camera</span><small id="eventCameraOpenHelp">Start the selected camera.</small></button>
-        <button type="button" class="event-btn event-photo-action" id="eventCameraCapture" aria-label="Take photo" aria-describedby="eventCameraCaptureHelp" hidden><span>Take photo</span><small id="eventCameraCaptureHelp">Capture the image shown above.</small></button>
-        <button type="button" class="event-btn secondary event-photo-action" id="eventCameraRetake" aria-label="Retake photo" aria-describedby="eventCameraRetakeHelp" hidden><span>Retake photo</span><small id="eventCameraRetakeHelp">Replace this photo with a new shot.</small></button>
-      </div>
-      <div class="event-photo-upload">
-        <button type="button" class="event-btn secondary event-photo-action" id="eventPhotoUpload" aria-label="Upload picture" aria-describedby="eventPhotoUploadHelp"><span>Upload picture</span><small id="eventPhotoUploadHelp">Choose a saved photo from your device.</small></button>
-        <input id="eventPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-      </div>
-      <p id="eventPhotoStatus" class="event-help" role="status" aria-live="polite"></p>
-      <form id="eventPhotoForm" method="post" action="{{ url_for('event_photo_save',key=attendee.key) }}">
+      <form id="eventPhotoForm" class="event-photo-controls" method="post" action="{{ url_for('event_photo_save',key=attendee.key) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="event-actions event-photo-actions">
+          <button type="button" class="event-btn event-photo-action" id="eventCameraOpen" aria-label="Open camera" aria-describedby="eventCameraOpenHelp"><span>Open camera</span><small id="eventCameraOpenHelp">Start the selected camera.</small></button>
+          <button type="button" class="event-btn event-photo-action" id="eventCameraCapture" aria-label="Take photo" aria-describedby="eventCameraCaptureHelp" hidden><span>Take photo</span><small id="eventCameraCaptureHelp">Capture the image shown above.</small></button>
+          <button type="button" class="event-btn secondary event-photo-action" id="eventCameraRetake" aria-label="Retake photo" aria-describedby="eventCameraRetakeHelp" hidden><span>Retake photo</span><small id="eventCameraRetakeHelp">Replace this photo with a new shot.</small></button>
+        </div>
+        <div class="event-photo-upload">
+          <button type="button" class="event-btn secondary event-photo-action" id="eventPhotoUpload" aria-label="Upload picture" aria-describedby="eventPhotoUploadHelp"><span>Upload picture</span><small id="eventPhotoUploadHelp">Choose a saved photo from your device.</small></button>
+          <input id="eventPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+        </div>
+        <p id="eventPhotoStatus" class="event-help" role="status" aria-live="polite"></p>
         <button class="event-btn event-photo-action" id="eventPhotoSave" type="submit" aria-label="Submit" aria-describedby="eventPhotoSubmitHelp" disabled><span>Submit</span><small id="eventPhotoSubmitHelp">Save your photo and open ID review.</small></button>
         <button type="button" class="event-btn secondary event-photo-action event-cancel-registration" id="eventPhotoCancel" data-url="{{ url_for('event_cancel_registration',key=attendee.key) }}" aria-label="Cancel submission" aria-describedby="eventPhotoCancelHelp"><span>Cancel submission</span><small id="eventPhotoCancelHelp">Discard this unfinished registration.</small></button>
+        <a class="event-btn secondary event-photo-action" href="{{ url_for('event_registration') }}" aria-label="Correct my details" aria-describedby="eventCorrectDetailsHelp"><span>Correct my details</span><small id="eventCorrectDetailsHelp">Return to edit your registration details.</small></a>
       </form>
-      <a class="event-text-link" href="{{ url_for('event_registration') }}" aria-describedby="eventCorrectDetailsHelp">Correct my details</a><small id="eventCorrectDetailsHelp" class="event-photo-link-help">Return to edit your registration details.</small>
       <p class="event-help">You will review your ID before confirming your registration.</p>
     </section>
 
