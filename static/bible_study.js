@@ -1872,9 +1872,10 @@
     element("Bible").addEventListener("scroll",()=>{if(notesActionsOpen)notesCloseActions();},{passive:true});
     window.addEventListener("resize",notesPositionActions);window.visualViewport?.addEventListener("resize",notesPositionActions);
     const notesTools=element("NotesTools");
+    const notesModeSwitch=element("NotesModeSwitch"),notesFormatMode=element("NotesFormatMode"),notesKeyboardMode=element("NotesKeyboardMode");
     let notesMenuOpen=false,notesToolbarPointerUntil=0,notesSelecting=false,notesFormatting=false;
     let notesToolPointer=null,notesToolPositionTimer=null;
-    let notesEditGesture=null,notesTapCandidate=null;
+    let notesModePointer=null,notesModePositionTimer=null;
     let notesTypingViewport=null,notesKeyboardClosing=null;
     let notesTyping=false,notesUndoStack=[],notesRedoStack=[],notesEditingScroll=0,notesReadingScroll=0;
     root.dataset.notesMenu="selection";
@@ -1914,7 +1915,41 @@
             notesRange=current.cloneRange();notesRestoreNativeSelection();
         }else if(focus){const range=document.createRange();range.selectNodeContents(notesEditor);range.collapse(false);selection.removeAllRanges();selection.addRange(range);notesRange=range;}
         notesPaintFormattingSelection();
+        notesUpdateModeSwitch();
     }
+    function notesUpdateModeSwitch(){
+        const visible=readerTab==="notes"&&!element("NotesPanel").hidden&&!element("NotesWorkspace").hidden;
+        notesModeSwitch.hidden=!visible;
+        notesFormatMode.setAttribute("aria-pressed",String(!notesTyping));notesKeyboardMode.setAttribute("aria-pressed",String(notesTyping));
+        notesKeyboardMode.disabled=notesReadMode;
+        notesKeyboardMode.title=notesReadMode?"Return to editing to use the keyboard":"Type in your notes";
+        root.style.setProperty("--bs-notes-mode-space",visible?"60px":"0px");
+        notesPositionModeSwitch();
+    }
+    function notesPositionModeSwitch(){
+        if(notesModeSwitch.hidden||notesModePointer!==null)return;
+        const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
+        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight;
+        notesModeSwitch.style.left=(left+width/2)+"px";
+        notesModeSwitch.style.top=Math.max(top+6,top+height-notesModeSwitch.getBoundingClientRect().height-8)+"px";
+    }
+    notesModeSwitch.addEventListener("pointerdown",event=>{
+        if(!event.target.closest("button:not([disabled])"))return;
+        clearTimeout(notesModePositionTimer);notesModePointer=event.pointerId;
+        const selection=window.getSelection();
+        if(selection?.rangeCount&&notesEditor.contains(selection.anchorNode)&&notesEditor.contains(selection.focusNode))notesRange=selection.getRangeAt(0).cloneRange();
+    });
+    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,event=>{
+        if(event.pointerId!==notesModePointer)return;
+        clearTimeout(notesModePositionTimer);
+        notesModePositionTimer=setTimeout(()=>{notesModePointer=null;notesPositionModeSwitch();},250);
+    },true);
+    notesModeSwitch.addEventListener("click",event=>{
+        const button=event.target.closest("button:not([disabled])");if(!button)return;
+        const typing=button===notesKeyboardMode;notesSetTyping(typing,{focus:typing});
+        if(!typing)notesShowSelectionTools();
+        clearTimeout(notesModePositionTimer);notesModePointer=null;requestAnimationFrame(()=>{notesPositionModeSwitch();notesPositionTools();});
+    });
     function notesRestoreNativeSelection(){
         if(!notesRange||!notesEditor.contains(notesRange.commonAncestorContainer))return;
         const selection=window.getSelection(),current=selection?.rangeCount?selection.getRangeAt(0):null;
@@ -1939,17 +1974,20 @@
         if(wasClosing)notesRestoreNativeSelection();
         notesPaintFormattingSelection();notesTools.hidden=false;
         const viewport=window.visualViewport,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
-        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight;
+        const width=viewport?.width||innerWidth,height=viewport?.height||innerHeight,modeSpace=notesModeSwitch.hidden?0:60;
         notesTools.style.width=Math.max(1,Math.min(640,width-12))+"px";
-        notesTools.style.maxHeight=Math.max(1,height-16)+"px";
+        notesTools.style.maxHeight=Math.max(1,height-16-modeSpace)+"px";
         const bounds=notesTools.getBoundingClientRect();
         root.style.setProperty("--bs-notes-tools-clearance",notesReadMode?Math.ceil(bounds.height+8)+"px":"0px");
         notesTools.style.left=(left+Math.max(6,(width-bounds.width)/2))+"px";
-        notesTools.style.top=Math.max(top+8,top+height-bounds.height-8)+"px";
+        notesTools.style.top=Math.max(top+8,top+height-bounds.height-8-modeSpace)+"px";
     }
     window.addEventListener("resize",notesPositionTools);
     window.visualViewport?.addEventListener("resize",notesPositionTools);
     window.visualViewport?.addEventListener("scroll",notesPositionTools);
+    window.addEventListener("resize",notesPositionModeSwitch);
+    window.visualViewport?.addEventListener("resize",notesPositionModeSwitch);
+    window.visualViewport?.addEventListener("scroll",notesPositionModeSwitch);
     function notesParkFormattingFocus(preferred){
         if(!notesMenuOpen)return;
         notesFormattingKeyboard(true);
@@ -1976,11 +2014,10 @@
         notesFormattingKeyboard(false);notesPaintFormattingSelection();
     }
     function notesShowSelectionTools(){
-        if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)return notesCloseMenu();
+        if(notesTyping||element("NotesPanel").hidden||element("NotesWorkspace").hidden)return notesCloseMenu();
         const selection=window.getSelection();
         if(!selection?.rangeCount||selection.isCollapsed||!selection.toString().trim()||!notesEditor.contains(selection.anchorNode)||!notesEditor.contains(selection.focusNode))return;
         notesRange=selection.getRangeAt(0).cloneRange();notesCloseActions();
-        if(notesTyping)notesSetTyping(false,{close:false});
         if(!notesMenuOpen){
             notesMenuOpen=true;notesTools.dataset.open="true";
         }
@@ -2029,52 +2066,23 @@
         notesFormat("delete");
     });
     notesEditor.addEventListener("pointerdown",event=>{
-        notesTapCandidate=null;
-        if(!event.isPrimary||event.button!==0){notesEditGesture=null;return;}
-        notesEditGesture={id:event.pointerId,x:event.clientX,y:event.clientY,time:performance.now(),touch:event.pointerType!=="mouse",moved:false};
+        if(!event.isPrimary||event.button!==0)return;
         notesSelecting=true;notesFormattingKeyboard(false);notesPaintFormattingSelection();
     },true);
-    document.addEventListener("pointermove",event=>{
-        if(notesEditGesture?.id===event.pointerId&&Math.hypot(event.clientX-notesEditGesture.x,event.clientY-notesEditGesture.y)>8)notesEditGesture.moved=true;
-    },{capture:true,passive:true});
-    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,event=>{
-        if(notesEditGesture?.id===event.pointerId){
-            const gesture=notesEditGesture;notesEditGesture=null;
-            notesTapCandidate=type==="pointerup"&&!gesture.moved&&Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y)<=8&&performance.now()-gesture.time<(gesture.touch?350:500)?{time:performance.now()}:null;
-        }
+    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,()=>{
         if(!notesSelecting)return;notesSelecting=false;notesShowSelectionTools();
     },true);
     notesEditor.addEventListener("contextmenu",()=>{
-        notesEditGesture=null;notesTapCandidate=null;notesSelecting=false;notesShowSelectionTools();
-    });
-    function notesCaretAtPoint(x,y){
-        let range=null;
-        const position=document.caretPositionFromPoint?.(x,y);
-        if(position){range=document.createRange();range.setStart(position.offsetNode,position.offset);range.collapse(true);}
-        if(!range)range=document.caretRangeFromPoint?.(x,y);
-        if(range&&notesEditor.contains(range.commonAncestorContainer))return range;
-        const selection=window.getSelection();
-        if(selection?.rangeCount&&selection.isCollapsed&&notesEditor.contains(selection.anchorNode))return selection.getRangeAt(0).cloneRange();
-        range=document.createRange();range.selectNodeContents(notesEditor);range.collapse(false);return range;
-    }
-    notesEditor.addEventListener("click",event=>{
-        const tap=notesTapCandidate;notesTapCandidate=null;
-        if(!tap||performance.now()-tap.time>500||notesReadMode||notesComposing||event.detail!==1||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;
-        if(window.getSelection()?.toString()||notesReferenceAt(event.clientX,event.clientY))return;
-        // Focus synchronously from an intentional tap, retaining its exact caret.
-        // Selection events alone never activate typing (including handle drags).
-        notesRange=notesCaretAtPoint(event.clientX,event.clientY);
-        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);
-        notesSetTyping(true,{focus:true});
+        notesSelecting=false;notesShowSelectionTools();
     });
     document.addEventListener("pointerdown",event=>{
-        if(!notesEditor.contains(event.target)){notesEditGesture=null;notesTapCandidate=null;}
-        if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
+        if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesModeSwitch.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
     document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesDismissSelection();}},true);
     const notesMenuVisibility=new MutationObserver(()=>{
         if(element("NotesPanel").hidden||element("NotesWorkspace").hidden)notesCloseMenu();
         if(element("NotesPanel").hidden)notesCloseActions();
+        notesUpdateModeSwitch();
         positionWorkspaceTools();
         if(!element("NotesLibrary").hidden)element("NotesAll").setAttribute("aria-current","page");
         else element("NotesAll").removeAttribute("aria-current");
@@ -2507,7 +2515,6 @@
     notesEditor.addEventListener("keydown",event=>{
         clearTimeout(notesReferenceTimer);
         if((event.ctrlKey||event.metaKey)&&["z","y"].includes(event.key.toLowerCase())){event.preventDefault();if(event.shiftKey||event.key.toLowerCase()==="y")notesRedo();else notesUndo();return;}
-        if(!notesReadMode&&!notesTyping&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&event.key==="Enter"){event.preventDefault();notesSetTyping(true,{focus:true});return;}
         if(event.key!=="Enter"||!event.altKey||event.isComposing)return;
         const selection=window.getSelection();if(!selection?.isCollapsed||!selection.anchorNode)return;
         const item=notesInlineReferences.find(item=>item.range.isPointInRange(selection.anchorNode,selection.anchorOffset));
@@ -2525,7 +2532,7 @@
         // ranges and Undo history survive entering/leaving focused reading.
         if(read){if(notesEditor.parentElement!==preview)preview.append(notesEditor);}
         else if(notesEditor.parentElement===preview)preview.before(notesEditor);
-        element("NotesModeHelp").textContent=read?"Select words to highlight or format.":"Tap to type. Select words to highlight or format.";
+        element("NotesModeHelp").textContent=read?"Select words to highlight or format.":"Choose Format to select words, or Keyboard to type.";
         if(changed)window.getSelection()?.removeAllRanges();
         notesRenderReferences();
         notesUpdateReadingView();
@@ -2534,6 +2541,7 @@
     function notesUpdateReadingView(){
         const focused=notesReadMode&&readerTab==="notes"&&touchNavigation()&&!element("NotesWorkspace").hidden;
         document.body.classList.toggle("bs-notes-reading",focused);element("NotesBack").hidden=!focused;
+        notesUpdateModeSwitch();
         positionWorkspaceTools();sizeWorkspace();
     }
     window.addEventListener("resize",notesUpdateReadingView);
@@ -2551,7 +2559,7 @@
             if(parent){const css=getComputedStyle(parent),family=css.fontFamily.split(",")[0].replace(/^["']|["']$/g,"");
                 if(notesFonts.includes(family))element("NotesFont").value=family;
                 notesDisplaySize(Math.round(parseFloat(css.fontSize)*.75*10)/10);}
-            if(!selection.isCollapsed){if(notesTyping)notesSetTyping(false,{close:false});if(!notesSelecting)notesShowSelectionTools();}
+            if(!selection.isCollapsed){if(!notesSelecting)notesShowSelectionTools();}
             else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
         }else if(performance.now()>=notesToolbarPointerUntil&&!notesTools.contains(document.activeElement))notesCloseMenu();
     });
@@ -2581,7 +2589,7 @@
     notesEditor.addEventListener("paste",event=>{event.preventDefault();if(!notesTyping)return;notesRememberUndo();document.execCommand("insertText",false,event.clipboardData?.getData("text/plain")||"");notesMarkChanged();});
     element("NotesFormat").addEventListener("mousedown",event=>{if(event.target.closest("button"))event.preventDefault();});
     function notesFormat(command,value){
-        if(!notesActive||(notesReadMode&&["delete","case"].includes(command)))return;
+        if(!notesActive||notesTyping||(notesReadMode&&["delete","case"].includes(command)))return;
         const focus=document.activeElement;notesSetTyping(false,{close:false});
         if(command==="undo")notesUndo();else notesTransformSelection(command,value);
         notesParkFormattingFocus(focus);

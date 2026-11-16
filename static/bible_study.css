@@ -507,14 +507,20 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 ::highlight(sermon-format-selection){background:#3d6fbd;color:white}
 .bs-root #bsNotesTools #bsNotesFontSize{appearance:none;padding-right:13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='m1 1 3 3 3-3' fill='none' stroke='%23263b50' stroke-width='1.4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center}
 .bs-root .bs-notes-mode-help{margin:8px 0 12px;padding:0 8px;font:12px/1.6 Arial,sans-serif;color:var(--bs-muted)}
+.bs-root .bs-notes-mode-switch{position:fixed;left:50%;bottom:8px;top:auto;transform:translateX(-50%);z-index:40030;display:grid;grid-template-columns:1fr 1fr;gap:2px;width:184px;height:44px;padding:4px;border:1px solid #8ba4b34d;border-radius:24px;background:#eef5fbb3;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);box-shadow:0 2px 10px #142c4514}
+.bs-root .bs-notes-mode-switch button{min-width:0;min-height:34px;height:34px;padding:5px 8px;border:0;border-radius:18px;background:transparent;color:#17364e;font:600 12px/1.2 Arial,sans-serif;opacity:.48;white-space:nowrap;transition:opacity .15s,background-color .15s}
+.bs-root .bs-notes-mode-switch button[aria-pressed=true]{background:#143e5bed;color:#fff;opacity:1}
+.bs-root .bs-notes-mode-switch button:hover:not(:disabled),.bs-root .bs-notes-mode-switch button:focus-visible{opacity:1}
+.bs-root .bs-notes-mode-switch button:disabled{opacity:.3;cursor:default}
+.bs-root:not([data-notes-read=true]) #bsNotesEditor:after{content:"";display:block;height:calc(var(--bs-notes-mode-space,0px) + var(--bs-notes-tools-clearance,0px) + 12px);pointer-events:none}
 .bs-root .bs-notes-back{position:fixed;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));z-index:40025;min-height:46px;padding:11px 16px;border:1px solid #8da6ba;border-radius:24px;background:#153d5b;color:white;box-shadow:0 3px 14px #10263e35;font:600 13px/1.4 Arial,sans-serif}
 body.bs-notes-reading>.app-header,body.bs-notes-reading .pij-launcher,body.bs-notes-reading .pij-panel,body.bs-notes-reading #sideDrawer,body.bs-notes-reading .drawer-backdrop{display:none!important}
 body.bs-notes-reading #bibleStudyRoot>.bs-header,body.bs-notes-reading #bibleStudyRoot>.bs-preview,body.bs-notes-reading #bsWideTabs,body.bs-notes-reading #bsFixedTools,body.bs-notes-reading #bsStudy,body.bs-notes-reading #bsDivider,body.bs-notes-reading .bs-notes-dock,body.bs-notes-reading #bsNotesStatus,body.bs-notes-reading #bsNotesJob,body.bs-notes-reading .bs-notes-heading,body.bs-notes-reading #bsNotesConflict,body.bs-notes-reading #bsNotesModeHelp,body.bs-notes-reading #bsNotesReferences,body.bs-notes-reading #bsNotesOrigin,body.bs-notes-reading .bs-save-status{display:none!important}
 body.bs-notes-reading #bsLayout{display:block;flex:1;min-height:0;border:0}
 body.bs-notes-reading #bsBible{width:100%;height:100%;padding:0;overflow:auto;background:#fff}
-body.bs-notes-reading #bsNotesPreview{min-height:100%;padding:max(20px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) calc(90px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));user-select:text;-webkit-user-select:text}
+body.bs-notes-reading #bsNotesPreview{min-height:100%;padding:max(20px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) calc(90px + var(--bs-notes-mode-space,0px) + var(--bs-notes-tools-clearance,0px) + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));user-select:text;-webkit-user-select:text}
 body.bs-notes-reading #bsNotesEditor{min-height:0;padding:0}
-body.bs-notes-reading #bsNotesBack{bottom:calc(var(--bs-notes-tools-clearance,0px) + max(14px,env(safe-area-inset-bottom)))}
+body.bs-notes-reading #bsNotesBack{bottom:calc(var(--bs-notes-tools-clearance,0px) + var(--bs-notes-mode-space,0px) + max(14px,env(safe-area-inset-bottom)))}
 .bs-root[data-notes-read=true] #bsNotesCase,.bs-root[data-notes-read=true] label[for=bsNotesCase],.bs-root[data-notes-read=true] #bsNotesErase{display:none!important}
 @media(min-width:701px) and (max-width:1100px){
  .bs-fixed-reader-tools .bs-notes-actions,.bs-fixed-reader-tools .bs-notes-meta-actions{flex-wrap:nowrap;gap:3px}
