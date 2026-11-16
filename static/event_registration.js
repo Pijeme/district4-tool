@@ -480,7 +480,7 @@
         const printCell=document.createElement('div');printCell.className='event-print-cell';
         const choose=document.createElement('input');choose.type='checkbox';choose.className='event-print-select';choose.value=person.key;choose.checked=printSelection.has(person.key);choose.setAttribute('aria-label','Select ID for '+person.name);
         const print = document.createElement('a');print.className='event-btn event-print-link'+(person.physical_printed?' printed':'');print.href=person.print_url;print.textContent=person.physical_printed?'\u2713 Printed':'Print';printCell.append(choose,print);cell('','','print').append(printCell);
-        const release = document.createElement('a');release.className='event-status event-release-link'+(person.released?' on':'');release.href=person.release_url;release.target='_blank';release.rel='noopener';release.textContent=person.released?'\u2713 Released':'Release / Share';cell('','','release').append(release);
+        const release = document.createElement('a');release.className='event-status event-release-link'+(person.released?' on':'');release.href=person.release_url;release.textContent=person.released?'\u2713 Released':'Release / Share';cell('','','release').append(release);
         const details=document.createElement('button');details.type='button';details.className='event-btn secondary event-delegate-details';details.dataset.url=person.details_url;details.textContent='View details';cell('','','extra').append(details);
         const remove=document.createElement('button');remove.type='button';remove.className='event-btn danger event-delete-attendee';remove.textContent='Delete';cell('','','extra').append(remove);
       }
@@ -558,6 +558,13 @@
           const response=await fetch(button.dataset.url,{credentials:'same-origin',cache:'no-store'});
           if(!response.ok || !(response.headers.get('Content-Type')||'').includes('application/json')) throw new Error('Unlock Admin again to view delegate details.');
           const data=await response.json();if(current!==detailGeneration) return;content.replaceChildren();
+        if(data.delegate.id_image_url) {
+          const figure=document.createElement('figure'),image=document.createElement('img'),caption=document.createElement('figcaption');
+          figure.className='event-delegate-id';image.alt='Complete event ID for '+data.delegate.name+', including QR code';
+          caption.textContent='Complete delegate ID · Admin preview';
+          image.addEventListener('error',()=>{image.hidden=true;caption.textContent='The ID picture could not load. Close and reopen View details to retry.';});
+          image.src=data.delegate.id_image_url;figure.append(image,caption);content.append(figure);
+        }
         const dl = document.createElement('dl'); dl.className='event-details-grid';
         const labels={number:'Attendee number',name:'Full name',birthday:'Birthday',contact:'Contact number',area:'Area',church:'Church',address:'Church address',pastor:'Pastor',created_at:'Registration created',paid:'Paid',physical_printed:'Physical ID printed',released:'Released'};
         Object.entries(labels).forEach(([key,label])=>{

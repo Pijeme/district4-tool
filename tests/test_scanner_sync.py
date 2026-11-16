@@ -244,6 +244,31 @@ class ScannerSyncTests(unittest.TestCase):
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute('SELECT released FROM event_attendees WHERE key=?', (PAID,)).fetchone()[0], 0)
 
+    def test_delegate_details_includes_full_admin_id_and_rejects_public_access(self):
+        visits=patch.object(appmod,'_log_visit_if_needed',return_value=None)
+        visits.start();self.addCleanup(visits.stop)
+        url='/event-registration/admin/delegate/'+PAID
+        self.assertEqual(self.client.get(url).status_code,403)
+        with self.client.session_transaction() as session:
+            session['event_registration_key']=PAID
+        self.assertEqual(self.client.get('/event-registration/image/'+PAID+'/id.png').status_code,403)
+        self.unlock_event_admin()
+        from PIL import Image
+        import io
+        photo=io.BytesIO();Image.new('RGB',(60,80),'white').save(photo,'PNG')
+        with appmod.app.app_context():filename=appmod.event_asset_write(photo.getvalue())
+        self.execute('UPDATE event_attendees SET photo=? WHERE key=?',(filename,PAID))
+        response=self.client.get(url)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        delegate=response.get_json()['delegate']
+        self.assertEqual(delegate['id_image_url'],'/event-registration/image/'+PAID+'/id.png?v=1')
+        # Use the real renderer: the admin receives the full portrait ID, with
+        # its QR layout, rather than the watermarked attendee review picture.
+        with self.client.get(delegate['id_image_url']) as picture:
+            self.assertEqual(picture.status_code,200)
+            with Image.open(io.BytesIO(picture.data)) as image:self.assertEqual(image.size,(1000,1500))
+
     def test_local_deletion_updates_counts_and_scanner_and_retries_cloud_cleanup(self):
         self.unlock_event_admin()
         public = self.client.get('/event-registration/progress?list=1').get_json()
@@ -515,6 +540,60 @@ class ScannerSyncTests(unittest.TestCase):
                             self.assertEqual(errors,[])
                         finally:context.close()
             finally:browser.close()
+
+    def test_admin_details_preview_and_release_stay_in_current_tab(self):
+        from playwright.sync_api import sync_playwright
+        from urllib.parse import urlsplit
+        import io,mimetypes
+        from PIL import Image
+        self.unlock_event_admin()
+        photo=io.BytesIO();Image.new('RGB',(60,80),'white').save(photo,'PNG')
+        with appmod.app.app_context():filename=appmod.event_asset_write(photo.getvalue())
+        self.execute('UPDATE event_attendees SET photo=?',(filename,))
+        root=Path(__file__).resolve().parents[1]
+        with patch.object(appmod,'event_directory',return_value=([],[])),patch.object(appmod,'is_cache_developer',return_value=False),sync_playwright() as playwright:
+            for engine,width,height in [('chromium',393,852),('webkit',820,1180)]:
+                with self.subTest(engine=engine):
+                    browser=getattr(playwright,engine).launch(headless=True)
+                    try:
+                        context=browser.new_context(viewport=dict(width=width,height=height),has_touch=True,is_mobile=True)
+                        page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+                        def route_request(route):
+                            parsed=urlsplit(route.request.url);path=parsed.path
+                            if path.startswith('/event-registration'):
+                                response=self.client.get(path+'?'+parsed.query)
+                                route.fulfill(status=response.status_code,content_type=response.content_type,body=response.data)
+                            elif path.startswith('/static/'):
+                                asset=(root/path.lstrip('/')).resolve()
+                                if asset.is_file() and asset.is_relative_to(root/'static'):
+                                    route.fulfill(content_type=mimetypes.guess_type(asset.name)[0] or 'application/octet-stream',body=asset.read_bytes())
+                                else:route.fulfill(status=404,body='')
+                            else:route.fulfill(status=404,body='')
+                        page.route('**/*',route_request)
+                        page.goto('https://registration.test/event-registration?tab=admin')
+                        row=page.locator('[data-key="'+PAID+'"]')
+                        self.assertIsNone(row.locator('.event-release-link').get_attribute('target'))
+                        row.locator('.event-delegate-details').click()
+                        image=page.locator('#eventDelegateContent .event-delegate-id img')
+                        image.wait_for(state='visible')
+                        page.wait_for_function('document.querySelector(".event-delegate-id img")?.naturalWidth===1000')
+                        self.assertIn('/'+PAID+'/id.png',image.get_attribute('src'))
+                        self.assertIn('Test attendee',page.locator('#eventDelegateContent').inner_text())
+                        box=image.bounding_box();self.assertLessEqual(box['width'],width)
+                        page.locator('#eventDelegateDialog [data-close-dialog]').click()
+                        # Force creation through the live-update renderer as well
+                        # as the initial server-rendered link checked above.
+                        row.evaluate('row=>row.remove()')
+                        self.execute('UPDATE event_attendees SET revision=revision+1 WHERE key=?',(PAID,))
+                        page.locator('#eventRefresh').click();row.wait_for(state='visible')
+                        self.assertIsNone(row.locator('.event-release-link').get_attribute('target'))
+                        row.locator('.event-release-link').click()
+                        page.wait_for_url('**/event-registration/release/'+PAID)
+                        self.assertEqual(len(context.pages),1)
+                        self.assertTrue(page.locator('#eventReleasePanel').is_visible())
+                        self.assertFalse(errors,errors)
+                        context.close()
+                    finally:browser.close()
 
     def photo_draft(self):
         for replacement in (

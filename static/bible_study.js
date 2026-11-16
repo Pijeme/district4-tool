@@ -1918,7 +1918,7 @@
         notesUpdateModeSwitch();
     }
     function notesUpdateModeSwitch(){
-        const visible=readerTab==="notes"&&!element("NotesPanel").hidden&&!element("NotesWorkspace").hidden;
+        const visible=!notesReadMode&&readerTab==="notes"&&!element("NotesPanel").hidden&&!element("NotesWorkspace").hidden;
         notesModeSwitch.hidden=!visible;
         notesFormatMode.setAttribute("aria-pressed",String(!notesTyping));notesKeyboardMode.setAttribute("aria-pressed",String(notesTyping));
         notesKeyboardMode.disabled=notesReadMode;

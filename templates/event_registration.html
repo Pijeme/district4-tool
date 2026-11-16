@@ -2,7 +2,7 @@
 {% from 'ui_icons.html' import icon %}
 {% block title %}Event Registration · District 4{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='17') }}">
+<link rel="stylesheet" href="{{ url_for('static',filename='event_registration.css',v='18') }}">
 <div class="event-shell" data-csrf="{{ csrf }}" data-view="{{ view }}" data-mode="all"
      data-admin="{{ '1' if tab=='admin' and admin else '0' }}" data-event-id="{{ event.id if event else '' }}" data-print-prepare-url="{{ url_for('event_print_prepare') if admin else '' }}"
      data-live-url="{{ url_for('event_progress',event=event.id,admin=1 if tab=='admin' and admin else 0,list=1 if tab in ('attendees','admin') else 0) if event and view in ('main','release') and (tab!='admin' or admin) else '' }}">
@@ -137,7 +137,7 @@
             <td class="event-area" data-label="Area">{{ person.area }}</td><td class="event-church" data-label="Church">{{ person.church }}</td><td data-feature="extra" data-label="Address">{{ person.address }}</td>
             <td data-feature="payment"><button class="event-status {{ 'on' if person.paid }}" data-field="paid" data-value="{{ person.paid }}" aria-pressed="{{ 'true' if person.paid else 'false' }}">{{ '✓ Paid' if person.paid else 'Payment' }}</button></td>
             <td data-feature="print"><div class="event-print-cell"><input class="event-print-select" type="checkbox" value="{{ person.key }}" aria-label="Select ID for {{ person.name }}" {% if person.physical_printed %}disabled title="Already physically printed. Use the Print button to reprint this ID."{% endif %}><a class="event-btn event-print-link{{ ' printed' if person.physical_printed else '' }}" href="{{ url_for('event_print',key=person.key) }}">{{ '✓ Printed' if person.physical_printed else 'Print' }}</a></div></td>
-            <td data-feature="release"><a class="event-status event-release-link {{ 'on' if person.released }}" href="{{ url_for('event_release',key=person.key) }}" target="_blank" rel="noopener">{{ '✓ Released' if person.released else 'Release / Share' }}</a></td>
+            <td data-feature="release"><a class="event-status event-release-link {{ 'on' if person.released }}" href="{{ url_for('event_release',key=person.key) }}">{{ '✓ Released' if person.released else 'Release / Share' }}</a></td>
             <td data-feature="extra"><button class="event-btn secondary event-delegate-details" data-url="{{ url_for('event_delegate_details',key=person.key) }}" type="button">View details</button></td>
             <td data-feature="extra"><button class="event-btn danger event-delete-attendee" type="button">Delete</button></td>
           </tr>
@@ -241,5 +241,5 @@
   {% endif %}
   <dialog id="eventConfirmDialog" class="event-dialog event-confirm-dialog"><h2>Change status?</h2><p id="eventConfirmMessage"></p><label id="eventConfirmPasswordLabel" hidden>Event admin password<input id="eventConfirmPassword" type="password" autocomplete="off" maxlength="256"></label><div class="event-actions"><button class="event-btn" id="eventConfirmYes">Yes, change status</button><button class="event-btn secondary" id="eventConfirmCancel">Cancel</button></div></dialog>
 </div>
-<script src="{{ url_for('static',filename='event_registration.js',v='24') }}" defer></script>
+<script src="{{ url_for('static',filename='event_registration.js',v='25') }}" defer></script>
 {% endblock %}

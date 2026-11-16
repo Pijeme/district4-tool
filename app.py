@@ -7881,7 +7881,11 @@ def event_delegate_details(key):
     audits = [dict(row) for row in get_db().execute('''SELECT a.key AS audit_id,a.claim_key AS claim_id,a.action,a.reason,a.occurred_at
         FROM event_meal_audit a JOIN event_meal_claims c ON c.key=a.claim_key
         WHERE a.event_id=? AND c.ticket_key=? ORDER BY a.received_at DESC''',(person['event_id'],key))]
-    return jsonify(ok=True,delegate={field:person[field] for field in fields},meals=meals,audit=audits)
+    delegate = {field:person[field] for field in fields}
+    delegate['id_image_url'] = url_for('event_image',key=key,side='id',v=person['revision'])
+    response = jsonify(ok=True,delegate=delegate,meals=meals,audit=audits)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @app.post('/event-registration/admin/meals/backup')

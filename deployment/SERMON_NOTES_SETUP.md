@@ -82,8 +82,8 @@ field, so Chrome/Safari do not need to open a keyboard just to apply a color, fo
 or text emphasis. The same owner-scoped save queue and recovery drafts persist
 the result. Native context menus release the pointer-selection guard so iPad
 selection tools can still appear. Verse references keep their existing popups.
-Read Notes keeps Format selected and Keyboard disabled; Back to editing makes
-Keyboard available again.
+Read Notes hides the mode choice and keeps formatting available without typing;
+Back to editing restores the Format / Keyboard choice.
 
 When Format is chosen after Keyboard, the editor is blurred while it is still
 editable, then made non-editable. Touch devices park focus on the notes panel;
