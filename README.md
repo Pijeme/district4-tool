@@ -1,5 +1,14 @@
 # District 4 Tool
 
+**Who Wants to Be Heaven’s Millionaire?** is available at `/bible-games`.
+It uses a separate persistent game database, compressed local player portraits,
+the supplied music, a 3,382-question bank with character studies and two quiz books,
+random questions across all topics within each level with different categories
+on consecutive questions, and responsive phone/iPad layouts.
+Each full game draws six questions from the added quiz books and nine from the
+previous bank. Player question history persists across games and recovery.
+See [game setup, rules, storage and validation](deployment/HEAVENS_MILLIONAIRE.md).
+
 A Flask application served by Gunicorn, with Google Sheets mirrors, Google Drive
 libraries, Gemini assistance, and SQLite storage. No separate database server is
 needed. Run one container: background jobs and their progress use process-local

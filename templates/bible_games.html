@@ -1,19 +1,7 @@
-{% extends "base.html" %}
-{% from "ui_icons.html" import icon %}
-{% block title %}Bible Games · District 4 Tool{% endblock %}
-{% block content %}
-<style>
-  .bible-games{max-width:760px;margin:32px auto;padding:clamp(24px,5vw,48px);border:1px solid #dce3ec;border-radius:20px;background:#fff;color:#172b45;text-align:center;box-shadow:0 8px 30px #102d4808}
-  .bible-games-emblem{display:grid;place-items:center;width:76px;height:76px;margin:0 auto 20px;border-radius:22px;background:#edf3fb;color:#173c68}
-  .bible-games-emblem .ui-icon{width:42px;height:42px}
-  .bible-games h1{margin:0 0 16px;font-size:clamp(30px,5vw,44px);line-height:1.15;color:#09234e}
-  .bible-games-label{display:inline-block;padding:6px 14px;border-radius:20px;background:#fff3d4;color:#795b1d;font-size:13px;font-weight:600}
-  .bible-games p{margin:20px 0 0;line-height:1.7;color:#65738a}
-</style>
-<section class="bible-games" aria-labelledby="bibleGamesTitle">
-  <div class="bible-games-emblem">{{ icon('game') }}</div>
-  <h1 id="bibleGamesTitle">Bible Games</h1>
-  <span class="bible-games-label">Coming soon</span>
-  <p>A new space for Bible games and activities.<br>Games will appear here when they are ready.</p>
-</section>
-{% endblock %}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#061530"><meta name="description" content="Fifteen questions. Four lifelines. One heavenly challenge. Play with your church community."><title>Who Wants to Be Heaven’s Millionaire?</title><link rel="stylesheet" href="{{ url_for('static', filename='heavens_millionaire/game.css', v='1') }}"><script defer src="{{ url_for('static', filename='heavens_millionaire/game.js', v='5') }}"></script></head>
+<body><div id="globalLoadingOverlay" hidden></div><div class="ambient"></div>
+<header class="game-header"><a href="/bible-games" class="wordmark" aria-label="Who Wants to Be Heaven’s Millionaire?"><span class="brand-crown" aria-hidden="true">♛</span><span><span class="brand-question">WHO WANTS TO BE</span>HEAVEN’S<span class="brand-small">MILLIONAIRE?</span></span></a><nav aria-label="Game navigation"><button type="button" data-nav="menu">Home</button><button type="button" data-nav="leaderboard">Scoreboard</button><button type="button" id="sound" aria-pressed="false">♫ <span>Music off</span></button><button type="button" id="account-nav" data-nav="profile" hidden>My profile</button></nav></header>
+<main id="app" tabindex="-1"><div class="initial-load"><span class="spinner"></span><p>Opening the studio?</p></div></main>
+<div id="notice" role="status" aria-live="polite" hidden></div><dialog id="modal"><div id="modal-content"></div><button type="button" class="quiet modal-close" id="close-modal">Close</button></dialog>
+<footer class="site-footer"><span>IOWO DISTRICT 4</span><span>Bible knowledge. Community. Friendly competition.</span><a href="/">District website ↗</a></footer></body></html>

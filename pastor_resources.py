@@ -18560,7 +18560,7 @@ def register_pastor_resources_routes(app):
 
     @app.before_request
     def pastor_resources_database_maintenance_guard():
-        if request.endpoint == "healthz":
+        if request.endpoint == "healthz" or request.path == '/bible-games' or request.path.startswith(('/bible-games/', '/static/heavens_millionaire/')):
             return None
         if not _database_maintenance_active():
             return None

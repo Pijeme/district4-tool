@@ -2740,6 +2740,7 @@ def generate_pastor_credentials(full_name: str, age: int):
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this-secret-key-123")
 app.config.update(
+    SESSION_COOKIE_SECURE=os.getenv('SESSION_COOKIE_SECURE', '').strip().lower() in {'1', 'true', 'yes'},
     DATABASE=DATABASE,
     AI_DATABASE=AI_DATABASE,
     BIBLE_STUDY_LIBRARY_DATABASE=DATABASE,
@@ -2909,6 +2910,7 @@ def website_activity_context():
 @app.after_request
 def collect_website_activity(response):
     if (response.direct_passthrough or request.path.startswith("/ai/")
+            or request.path == '/bible-games' or request.path.startswith(('/bible-games/', '/static/heavens_millionaire/'))
             or request.endpoint in {'healthz','event_progress','event_thumbnail','event_opening_status'} or request.blueprint == 'bible_mobile'):
         return response
     actor = website_actor()
@@ -3254,6 +3256,9 @@ def restrict_member_staff_tools():
 def before_request():
     if request.endpoint == "healthz":
         return
+    if request.path == '/bible-games' or request.path.startswith(('/bible-games/', '/static/heavens_millionaire/')):
+        # Game requests use their own database and read the local directory only.
+        return
     if request.path == '/event-registration/api/offline/v1' or request.path.startswith('/event-registration/api/offline/v1/'):
         # The offline companion authenticates in its own API. Manual exchange
         # must never trigger Google reads, browser sessions, or visit logging.
@@ -3564,9 +3569,8 @@ def do_tool():
 
 @app.get('/bible-games')
 def bible_games():
-    if not any_user_logged_in():
-        return redirect(url_for('splash'))
-    return render_template('bible_games.html')
+    from heavens_millionaire import game_page
+    return game_page()
 
 
 @app.route("/logout")
@@ -9302,6 +9306,9 @@ register_registration_sync(
 
 # Gunicorn imports app:app and never enters __main__. Complete the additive
 # application schema setup here, before accepting any requests, on both servers.
+from heavens_millionaire import register_heavens_millionaire
+register_heavens_millionaire(app, get_db)
+
 with app.app_context():
     init_db()
     event_tables()

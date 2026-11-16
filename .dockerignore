@@ -26,6 +26,7 @@ env*
 generated_reports/
 ccm_assets/
 event_assets/
+heavens_millionaire_photos/
 event-photo-*
 event-record-backup-*
 event-google-backup*
