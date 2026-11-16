@@ -1874,6 +1874,7 @@
     const notesTools=element("NotesTools");
     let notesMenuOpen=false,notesToolbarPointerUntil=0,notesSelecting=false,notesFormatting=false;
     let notesToolPointer=null,notesToolPositionTimer=null;
+    let notesEditGesture=null,notesTapCandidate=null;
     let notesTyping=false,notesUndoStack=[],notesRedoStack=[],notesEditingScroll=0,notesReadingScroll=0;
     root.dataset.notesMenu="selection";
     // Keep selection tools outside the scrolling document, like the Bible tools.
@@ -1892,9 +1893,6 @@
         if(typing&&current&&!current.collapsed)current.collapse(false);
         notesTyping=!!typing&&!notesReadMode;notesEditor.contentEditable=String(notesTyping);
         notesEditor.setAttribute("aria-readonly",String(!notesTyping));
-        element("NotesTyping").textContent=notesTyping?"Select & format":"Start typing";
-        element("NotesTyping").setAttribute("aria-pressed",String(notesTyping));
-        element("NotesModeHelp").textContent=notesTyping?"Typing mode. Choose Select & format to highlight without the keyboard.":"Select words to highlight or format. Choose Start typing to write.";
         if(close)notesCloseMenu();else notesFormattingKeyboard(false);
         if(!notesTyping)notesEditor.blur();
         if(focus||wasFocused)notesEditor.focus({preventScroll:true});
@@ -1999,13 +1997,47 @@
         if(!notesActive||notesReadMode||!notesRange||notesRange.collapsed||!notesEditor.contains(notesRange.commonAncestorContainer))return;
         notesFormat("delete");
     });
-    notesEditor.addEventListener("pointerdown",()=>{
+    notesEditor.addEventListener("pointerdown",event=>{
+        notesTapCandidate=null;
+        if(!event.isPrimary||event.button!==0){notesEditGesture=null;return;}
+        notesEditGesture={id:event.pointerId,x:event.clientX,y:event.clientY,time:performance.now(),touch:event.pointerType!=="mouse",moved:false};
         notesSelecting=true;notesFormattingKeyboard(false);notesPaintFormattingSelection();
     },true);
-    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,()=>{
+    document.addEventListener("pointermove",event=>{
+        if(notesEditGesture?.id===event.pointerId&&Math.hypot(event.clientX-notesEditGesture.x,event.clientY-notesEditGesture.y)>8)notesEditGesture.moved=true;
+    },{capture:true,passive:true});
+    for(const type of ["pointerup","pointercancel"])document.addEventListener(type,event=>{
+        if(notesEditGesture?.id===event.pointerId){
+            const gesture=notesEditGesture;notesEditGesture=null;
+            notesTapCandidate=type==="pointerup"&&!gesture.moved&&Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y)<=8&&performance.now()-gesture.time<(gesture.touch?350:500)?{time:performance.now()}:null;
+        }
         if(!notesSelecting)return;notesSelecting=false;notesShowSelectionTools();
     },true);
+    notesEditor.addEventListener("contextmenu",()=>{
+        notesEditGesture=null;notesTapCandidate=null;notesSelecting=false;notesShowSelectionTools();
+    });
+    function notesCaretAtPoint(x,y){
+        let range=null;
+        const position=document.caretPositionFromPoint?.(x,y);
+        if(position){range=document.createRange();range.setStart(position.offsetNode,position.offset);range.collapse(true);}
+        if(!range)range=document.caretRangeFromPoint?.(x,y);
+        if(range&&notesEditor.contains(range.commonAncestorContainer))return range;
+        const selection=window.getSelection();
+        if(selection?.rangeCount&&selection.isCollapsed&&notesEditor.contains(selection.anchorNode))return selection.getRangeAt(0).cloneRange();
+        range=document.createRange();range.selectNodeContents(notesEditor);range.collapse(false);return range;
+    }
+    notesEditor.addEventListener("click",event=>{
+        const tap=notesTapCandidate;notesTapCandidate=null;
+        if(!tap||performance.now()-tap.time>500||notesReadMode||notesComposing||event.detail!==1||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;
+        if(window.getSelection()?.toString()||notesReferenceAt(event.clientX,event.clientY))return;
+        // Focus synchronously from an intentional tap, retaining its exact caret.
+        // Selection events alone never activate typing (including handle drags).
+        notesRange=notesCaretAtPoint(event.clientX,event.clientY);
+        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(notesRange);
+        notesSetTyping(true,{focus:true});
+    });
     document.addEventListener("pointerdown",event=>{
+        if(!notesEditor.contains(event.target)){notesEditGesture=null;notesTapCandidate=null;}
         if(notesMenuOpen&&!notesTools.contains(event.target)&&!notesEditor.contains(event.target))notesCloseMenu();
     },true);
     document.addEventListener("keydown",event=>{if(event.key==="Escape"&&notesMenuOpen){event.preventDefault();event.stopPropagation();notesDismissSelection();}},true);
@@ -2444,6 +2476,7 @@
     notesEditor.addEventListener("keydown",event=>{
         clearTimeout(notesReferenceTimer);
         if((event.ctrlKey||event.metaKey)&&["z","y"].includes(event.key.toLowerCase())){event.preventDefault();if(event.shiftKey||event.key.toLowerCase()==="y")notesRedo();else notesUndo();return;}
+        if(!notesReadMode&&!notesTyping&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&event.key==="Enter"){event.preventDefault();notesSetTyping(true,{focus:true});return;}
         if(event.key!=="Enter"||!event.altKey||event.isComposing)return;
         const selection=window.getSelection();if(!selection?.isCollapsed||!selection.anchorNode)return;
         const item=notesInlineReferences.find(item=>item.range.isPointInRange(selection.anchorNode,selection.anchorOffset));
@@ -2461,7 +2494,7 @@
         // ranges and Undo history survive entering/leaving focused reading.
         if(read){if(notesEditor.parentElement!==preview)preview.append(notesEditor);}
         else if(notesEditor.parentElement===preview)preview.before(notesEditor);
-        element("NotesTyping").hidden=read;
+        element("NotesModeHelp").textContent=read?"Select words to highlight or format.":"Tap to type. Select words to highlight or format.";
         if(changed)window.getSelection()?.removeAllRanges();
         notesRenderReferences();
         notesUpdateReadingView();
@@ -2474,7 +2507,6 @@
     }
     window.addEventListener("resize",notesUpdateReadingView);
     element("NotesBack").addEventListener("click",()=>{notesSetReadMode(false);element("NotesRead").focus({preventScroll:true});});
-    element("NotesTyping").addEventListener("click",()=>notesSetTyping(!notesTyping,{focus:!notesTyping}));
     document.addEventListener("keydown",event=>{
         if(event.key==="Escape"&&document.body.classList.contains("bs-notes-reading")&&!root.querySelector("dialog[open]")){event.preventDefault();notesSetReadMode(false);element("NotesRead").focus({preventScroll:true});}
     });

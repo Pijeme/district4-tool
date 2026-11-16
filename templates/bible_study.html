@@ -3,7 +3,7 @@
 {% block title %}Bible Study — IOWO D4{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='notes-typing-reading-31') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='bible_study.css', v='notes-auto-typing-32') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='bible_study_theme.css', v='tablet-fixed-30') }}">
 
 <section id="bibleStudyRoot" class="bs-root" data-mode="split" aria-label="Bible Study">
@@ -170,8 +170,8 @@
         <section id="bsNotesWorkspace" hidden>
           <div class="bs-notes-heading"><button type="button" class="bs-notes-edit-heading" data-notes-edit-meta="theme" aria-label="Edit sermon theme"><span id="bsNotesTheme"></span><span class="bs-notes-pencil" aria-hidden="true">{{ icon('edit') }}</span></button><button type="button" class="bs-notes-edit-heading" data-notes-edit-meta="text" aria-label="Edit sermon Bible reference"><span id="bsNotesText"></span><span class="bs-notes-pencil" aria-hidden="true">{{ icon('edit') }}</span></button></div>
           <div id="bsNotesConflict" class="bs-notes-conflict" role="status" hidden>This sermon also changed in Drive. Keep both copies, or use the Drive version.<button type="button" id="bsNotesKeepBoth">Keep both copies</button><button type="button" id="bsNotesUseRemote">Use Drive version</button></div>
-          <div class="bs-notes-entry-mode"><button type="button" id="bsNotesTyping" aria-pressed="false">Start typing</button><p id="bsNotesModeHelp" class="bs-notes-mode-help">Select words to highlight or format. Choose Start typing to write.</p></div>
-          <div id="bsNotesEditor" class="bs-notes-editor" contenteditable="false" inputmode="none" tabindex="0" role="textbox" aria-readonly="true" aria-label="Sermon notes editor" aria-multiline="true" spellcheck="true"></div>
+          <p id="bsNotesModeHelp" class="bs-notes-mode-help">Tap to type. Select words to highlight or format.</p>
+          <div id="bsNotesEditor" class="bs-notes-editor" contenteditable="false" inputmode="none" tabindex="0" role="textbox" aria-readonly="true" aria-label="Sermon notes editor" aria-describedby="bsNotesModeHelp" aria-keyshortcuts="Enter" aria-multiline="true" spellcheck="true"></div>
           <article id="bsNotesPreview" class="bs-notes-preview bs-source-content" hidden></article>
           <div id="bsNotesReferences" class="bs-notes-references" aria-label="Recognized Bible references"></div>
           <p id="bsNotesOrigin" class="bs-attribution"></p>
@@ -349,5 +349,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'startupPreload': bible_startup_preload|default(false), 'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='notes-typing-reading-33') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='notes-auto-typing-34') }}" defer></script>
 {% endblock %}

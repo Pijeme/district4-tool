@@ -2518,7 +2518,9 @@ class SermonNotesEditorTests(unittest.TestCase):
                             self.assertTrue(page.evaluate('Boolean(getSelection().toString())'))
                             self.assertFalse(page.locator('#bsVerseDialog').evaluate('e=>e.open'),'Dragging a reference opened a verse')
                         # Editing a verse number refreshes the clickable range immediately.
-                        page.locator('#bsNotesTyping').click()
+                        typing_point=page.evaluate(point,'with care.')
+                        page.mouse.click(typing_point['x'],typing_point['y'])
+                        self.assertEqual(editor.get_attribute('contenteditable'),'true')
                         page.evaluate(r'''()=>{
                             const editor=document.getElementById('bsNotesEditor'),node=editor.lastElementChild.lastChild.firstChild;
                             editor.focus();const range=document.createRange();range.setStart(node,node.textContent.indexOf('3:16')+4);range.collapse(true);
@@ -2761,6 +2763,15 @@ class SermonNotesEditorTests(unittest.TestCase):
                         page.locator('#bsNotesTab').click();page.locator('#bsNotesList button').click()
                         editor=page.locator('#bsNotesEditor');editor.wait_for(state='visible')
                         tools=page.locator('#bsNotesTools');before=editor.bounding_box()
+                        # Scroll-like gestures, cancellation and long presses must
+                        # not become tap-to-type when a compatibility click arrives.
+                        for gesture in ('scroll','jump','cancel','hold'):
+                            editor.dispatch_event('pointerdown',dict(pointerType='touch',pointerId=17,isPrimary=True,button=0,clientX=30,clientY=300))
+                            if gesture=='scroll':editor.dispatch_event('pointermove',dict(pointerType='touch',pointerId=17,isPrimary=True,clientX=30,clientY=340))
+                            if gesture=='hold':page.wait_for_timeout(380)
+                            editor.dispatch_event('pointercancel' if gesture=='cancel' else 'pointerup',dict(pointerType='touch',pointerId=17,isPrimary=True,button=0,clientX=30,clientY=340 if gesture=='jump' else 300))
+                            editor.dispatch_event('click',dict(detail=1,button=0,clientX=30,clientY=300))
+                            self.assertEqual(editor.get_attribute('contenteditable'),'false',gesture)
                         editor.dispatch_event('pointerdown',dict(pointerType='touch' if touch else 'mouse',isPrimary=True,button=0))
                         page.evaluate('selectNoteWords(6,11)')
                         self.assertTrue(tools.is_hidden(),'Tools opened while the initial selection gesture was still active')
@@ -2780,6 +2791,18 @@ class SermonNotesEditorTests(unittest.TestCase):
                         self.assertEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
                         self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
                         self.assertEqual(page.evaluate('editableFocuses'),[])
+                        # A handle adjustment can briefly collapse the native range.
+                        # It remains a selection gesture rather than a typing tap.
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch',pointerId=19,isPrimary=True,button=0,clientX=30,clientY=300))
+                        page.evaluate("getSelection().collapseToEnd();document.dispatchEvent(new Event('selectionchange'));")
+                        editor.dispatch_event('pointermove',dict(pointerType='touch',pointerId=19,isPrimary=True,clientX=55,clientY=300))
+                        editor.dispatch_event('pointerup',dict(pointerType='touch',pointerId=19,isPrimary=True,button=0,clientX=55,clientY=300))
+                        editor.dispatch_event('click',dict(detail=1,button=0,clientX=55,clientY=300))
+                        self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch',pointerId=20,isPrimary=True,button=0))
+                        page.evaluate('selectNoteWords(6,26)')
+                        editor.dispatch_event('contextmenu',{})
+                        self.assertTrue(tools.is_visible(),'Native context menu left selection tools blocked on iPad')
                         if not touch:
                             points=page.evaluate("""()=>{const r=getSelection().getRangeAt(0),rects=[...r.getClientRects()];return {x:rects[0].left+1,y:rects[0].top+rects[0].height/2,end:rects.at(-1).right-1};}""")
                             page.mouse.move(points['x'],points['y']);page.mouse.down();page.mouse.move(points['end'],points['y'],steps=8);page.mouse.up()
@@ -2813,10 +2836,18 @@ class SermonNotesEditorTests(unittest.TestCase):
                         page.keyboard.press('Escape');self.assertTrue(tools.is_hidden())
                         self.assertAlmostEqual(editor.bounding_box()['y'],before['y'],delta=1)
                         self.assertEqual(page.evaluate('editableFocuses'),[],'Formatting focused a typing field')
+                        page.evaluate('selectNoteWords(6,26)');tools.wait_for(state='visible')
+                        caret=editor.evaluate("""e=>{const walker=document.createTreeWalker(e.lastElementChild,NodeFilter.SHOW_TEXT);let text,offset=38;while(text=walker.nextNode()){if(offset<=text.length){const r=document.createRange();r.setStart(text,offset);r.collapse(true);const b=r.getBoundingClientRect();return {x:b.x+.2,y:b.y+b.height/2};}offset-=text.length;}}""")
+                        if touch:page.touchscreen.tap(caret['x'],caret['y'])
+                        else:page.mouse.click(caret['x'],caret['y'])
+                        self.assertEqual(editor.get_attribute('contenteditable'),'true','Tapping outside a selection did not return to typing')
+                        self.assertTrue(tools.is_hidden())
+                        page.keyboard.insert_text('!')
+                        self.assertIn('patient! trust.',editor.inner_text())
                         self.assertFalse(errors,errors);context.close()
                     finally:browser.close()
 
-    def test_typing_is_explicit_and_read_notes_fills_phone_and_ipad_with_formatting(self):
+    def test_tap_to_type_and_selection_to_format_with_focused_reading(self):
         from playwright.sync_api import sync_playwright
         setup=BibleStudyBrowserTests.setup_api(self,True)+r"""
             const previousFetch=window.fetch;
@@ -2850,9 +2881,18 @@ class SermonNotesEditorTests(unittest.TestCase):
                         page.route('**/*',route);page.goto('https://district.test/');page.locator('#bsNotesTab').click();page.locator('#bsNotesList button').click()
                         editor=page.locator('#bsNotesEditor');editor.wait_for(state='visible');original=editor.inner_html()
                         self.assertEqual(editor.get_attribute('contenteditable'),'false')
-                        page.locator('#bsNotesTyping').click();self.assertEqual(editor.get_attribute('contenteditable'),'true')
+                        self.assertEqual(page.locator('#bsNotesTyping').count(),0)
+                        def tap_caret():
+                            caret=editor.evaluate("""e=>{const text=document.createTreeWalker(e.children[2],NodeFilter.SHOW_TEXT).nextNode(),r=document.createRange();r.setStart(text,5);r.collapse(true);const b=r.getBoundingClientRect();return {x:b.x+.2,y:b.y+b.height/2};}""")
+                            if touch:page.touchscreen.tap(caret['x'],caret['y'])
+                            else:page.mouse.click(caret['x'],caret['y'])
+                        tap_caret();self.assertEqual(editor.get_attribute('contenteditable'),'true')
+                        self.assertEqual(page.evaluate("(()=>{const e=document.getElementById('bsNotesEditor'),s=getSelection(),r=document.createRange();r.selectNodeContents(e.children[2]);r.setEnd(s.focusNode,s.focusOffset);return r.toString();})()"),'Faith')
                         page.keyboard.insert_text(' Added by typing.');self.assertIn('Added by typing.',editor.inner_text())
-                        page.locator('#bsNotesTyping').click();self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        page.evaluate("const e=document.getElementById('bsNotesEditor'),text=document.createTreeWalker(e.children[2],NodeFilter.SHOW_TEXT).nextNode(),r=document.createRange();r.setStart(text,6);r.setEnd(text,11);getSelection().removeAllRanges();getSelection().addRange(r);document.dispatchEvent(new Event('selectionchange'));")
+                        self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        page.locator('#bsNotesTools').wait_for(state='visible')
+                        page.keyboard.press('Escape')
                         editor.focus();page.keyboard.press('Control+z');self.assertEqual(editor.inner_html(),original)
                         page.keyboard.press('Control+Shift+z');self.assertIn('Added by typing.',editor.inner_text())
                         page.keyboard.press('Control+z');self.assertEqual(editor.inner_html(),original)
@@ -2866,6 +2906,9 @@ class SermonNotesEditorTests(unittest.TestCase):
                             bounds=pane.bounding_box();self.assertAlmostEqual(bounds['y'],0,delta=1);self.assertAlmostEqual(bounds['height'],height,delta=1);self.assertAlmostEqual(bounds['width'],width,delta=1)
                             self.assertTrue(page.locator('#bsNotesBack').is_visible())
                         self.assertEqual(editor.inner_html(),original)
+                        tap_caret();self.assertEqual(editor.get_attribute('contenteditable'),'false','Read Notes activated typing after a tap')
+                        page.keyboard.press('Enter');self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        page.keyboard.insert_text('MUST NOT TYPE');self.assertEqual(editor.inner_html(),original)
                         page.evaluate("editableFocuses=[];const e=document.getElementById('bsNotesEditor'),text=document.createTreeWalker(e.children[2],NodeFilter.SHOW_TEXT).nextNode(),r=document.createRange();r.setStart(text,6);r.setEnd(text,11);e.focus({preventScroll:true});getSelection().removeAllRanges();getSelection().addRange(r);document.dispatchEvent(new Event('selectionchange'));")
                         tools=page.locator('#bsNotesTools');tools.wait_for(state='visible')
                         if touch:
@@ -2903,6 +2946,12 @@ class SermonNotesEditorTests(unittest.TestCase):
                             self.assertTrue(page.locator('#bsNotesBack').is_visible());self.assertTrue(page.locator('#bsWideTabs').is_hidden())
                             self.assertAlmostEqual(pane.bounding_box()['height'],width,delta=1)
                             page.keyboard.press('Escape');self.assertTrue(page.locator('.app-header').is_visible())
+                            page.set_viewport_size(dict(width=width,height=height));page.wait_for_timeout(30)
+                            pane.evaluate('pane=>pane.scrollTop=0');tap_caret()
+                            self.assertEqual(editor.get_attribute('contenteditable'),'true','Back to editing did not restore tap-to-type')
+                        else:
+                            page.locator('#bsNotesRead').click();editor.focus();page.keyboard.press('Enter')
+                            self.assertEqual(editor.get_attribute('contenteditable'),'true','Keyboard users cannot enter typing mode')
                         self.assertFalse(errors,errors);context.close()
                     finally:browser.close()
 

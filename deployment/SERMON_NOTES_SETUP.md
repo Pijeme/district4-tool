@@ -68,13 +68,24 @@ selection keeps the toolbar available and leaves native text focus and selection
 handles alone. The toolbar follows the visible viewport when browser controls,
 zoom or a keyboard change its size or position.
 
-Notes open in selection/formatting mode with a non-editable, natively selectable
-document. **Start typing** explicitly enables the keyboard and text input;
-**Select & format** returns to selection mode. A completed text selection also
-leaves typing mode before showing the toolbar. Formatting changes the existing
+Notes open with a non-editable, natively selectable document. A short, deliberate
+tap/click on ordinary text places the caret at that exact point and enables typing
+synchronously within the gesture. Selecting words switches back to formatting
+with the keyboard hidden. The manual Start typing / Select & format control is
+removed. Keyboard users can press Enter in the focused editor to begin typing.
+Formatting changes the existing
 run model directly, without focusing a contenteditable field, so Chrome/Safari
 do not need to open a keyboard just to apply a color, font, or text emphasis.
 The same owner-scoped save queue and recovery drafts persist the result.
+
+Only a completed primary tap with no drag, cancellation, long press, modifiers
+or existing text selection can enable typing. Temporary collapsed ranges during
+handle adjustments and keyboard/menu-driven selection events never enable it.
+Native context menus release the pointer-selection guard so iPad selection tools
+can still appear. Verse-reference taps keep their existing popup behavior. Caret
+placement uses caretPositionFromPoint with the Safari caretRangeFromPoint fallback.
+Read Notes stays non-editable even after taps or Enter; Back to editing restores
+automatic tap-to-type behavior.
 
 Typing, case changes, formatting and source insertions share an in-memory Undo
 history limited to 50 snapshots per opened note. The Undo button and Ctrl/Cmd+Z
