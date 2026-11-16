@@ -3156,6 +3156,7 @@ def _page_label_from_path(path: str):
         ("/schedules", "Schedules"),
         ("/bulletin", "Bulletin Board"),
         ("/event-registration", "Event Registration"),
+        ("/bible-games", "Bible Games"),
         ("/pastor-login", "Pastor Login"),
         ("/ao-login", "AO Login"),
     ]
@@ -3559,6 +3560,13 @@ def church_progress_redirect():
 @app.route('/do-tool')
 def do_tool():
     return pending_page("DO Tool")
+
+
+@app.get('/bible-games')
+def bible_games():
+    if not any_user_logged_in():
+        return redirect(url_for('splash'))
+    return render_template('bible_games.html')
 
 
 @app.route("/logout")
