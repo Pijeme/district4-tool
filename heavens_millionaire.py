@@ -370,8 +370,44 @@ def source_citation(payload):
     return ' · '.join(parts)
 
 
+def reference_question(payload):
+    """Recognize reference answers without depending on one question's wording."""
+    pattern = r'(?:[1-3]\s*)?[A-Za-z]+(?:\s+[A-Za-z]+){0,2}\s+\d+:\d+(?:\s*[-–]\s*\d+)?'
+    return (payload.get('category') == 'Identify the Bible Verse'
+            or all(re.fullmatch(pattern, str(option).strip()) for option in payload['options']))
+
+
+def scripture_context(payload):
+    """Read complete local verse text with adjacent context, without reference labels."""
+    database = current_app.config.get('BIBLE_STUDY_DATABASE')
+    if not database:
+        return None
+    reference = source_reference(payload)
+    match = re.fullmatch(r'(.+?)\s+(\d+):(\d+)(?:\s*[-–]\s*(\d+))?', reference.strip())
+    if not match:
+        return None
+    from bible_study import get_indexed_niv_passage
+    book, chapter, first = match[1], int(match[2]), int(match[3])
+    last = int(match[4]) if match[4] else first
+    # At chapter boundaries the complete target verse still takes priority.
+    ranges = dict.fromkeys(((max(1, first - 1), last + 1), (max(1, first - 1), last), (first, last)))
+    for start, end in ranges:
+        passage = get_indexed_niv_passage(f'{book} {chapter}:{start}-{end}', database,
+            static_folder=current_app.static_folder,
+            protected_paths=(current_app.config.get('DATABASE'), current_app.config.get('AI_DATABASE'),
+                             current_app.config['HEAVENS_MILLIONAIRE_DATABASE']))
+        if passage:
+            return passage
+    return None
+
+
 def source_hint(payload):
-    """Scripture references remain valid hints; resource-book titles wait until resolution."""
+    """Reference-identification hints give passage text, keeping the answer hidden."""
+    if reference_question(payload):
+        passage = scripture_context(payload)
+        if not passage:
+            raise GameError('The full passage is temporarily unavailable. Your Bible Hint has not been used. Please choose another lifeline or answer the question.', 409)
+        return 'Read the passage in context:\n\n' + passage
     reference = source_reference(payload)
     kind = payload.get('source_type') or (payload.get('source_detail') or {}).get('type')
     if kind == 'scripture':
@@ -773,7 +809,17 @@ def action():
             return jsonify(state=state(attempt))
         elif kind == 'answer':
             selected = data.get('choice')
-            if type(selected) is not int or selected not in range(4) or selected in json.loads(question['removed_json']):
+            if type(selected) is not int or selected not in range(4):
+                raise GameError('Please select an available answer.')
+            if 'choice_text' in data:
+                # Grade the visible choice against this round's frozen options. A
+                # re-render/lifeline must never turn a selected answer into another.
+                options = json.loads(question['choices_json'])
+                text = data['choice_text']
+                if not isinstance(text, str) or text not in options:
+                    raise GameError('The answer choices have changed. Please select your answer again.', 409)
+                selected = options.index(text)
+            if selected in json.loads(question['removed_json']):
                 raise GameError('Please select an available answer.')
             correct = selected == question['correct_choice']
             conn.execute('UPDATE game_answers SET answer_choice=?,outcome=?,resolved_at=? WHERE id=?',
@@ -888,19 +934,21 @@ def result_filters():
 
 def result_records(conditions, params, top=False, page=1, limit=20):
     where = ' AND '.join(conditions)
-    columns = 's.*,p.name,p.player_code,p.photo'
+    duration = 'CASE WHEN s.finished_at>=s.created_at THEN CAST(ROUND((s.finished_at-s.created_at)*1000) AS INTEGER) END'
+    columns = f's.*,p.name,p.player_code,p.photo,{duration} AS elapsed_ms'
+    score_order = 'final_points DESC,(elapsed_ms IS NULL) ASC,elapsed_ms ASC'
     query = f'SELECT {columns} FROM game_sessions s JOIN game_players p ON p.id=s.player_id WHERE {where}'
     if top:
-        query = f'''SELECT * FROM (SELECT ranked.*,RANK() OVER(ORDER BY final_points DESC) AS rank FROM
-            (SELECT source.*,ROW_NUMBER() OVER(PARTITION BY player_id ORDER BY final_points DESC,finished_at ASC,id ASC) AS best FROM ({query}) source) ranked
+        query = f'''SELECT * FROM (SELECT ranked.*,RANK() OVER(ORDER BY {score_order}) AS rank FROM
+            (SELECT source.*,ROW_NUMBER() OVER(PARTITION BY player_id ORDER BY {score_order},finished_at ASC,id ASC) AS best FROM ({query}) source) ranked
             WHERE best=1)'''
     total = db().execute('SELECT count(*) FROM (' + query + ')', params).fetchone()[0]
-    order = 'final_points DESC,finished_at ASC,id ASC' if top or request.args.get('sort') == 'score' else 'finished_at DESC,id DESC'
+    order = score_order + ',finished_at ASC,id ASC' if top or request.args.get('sort') == 'score' else 'finished_at DESC,id DESC'
     records = db().execute(query + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', params + [limit, (page - 1) * limit]).fetchall()
     result = []
     for row in records:
         result.append(dict(id=row['id'], player_id=row['player_id'], name=row['name'], area=row['area'], church=row['church'],
-                           points=row['final_points'], position=row['position'], date=row['finished_at'], result=row['status'],
+                           points=row['final_points'], position=row['position'], date=row['finished_at'], result=row['status'], elapsed_ms=row['elapsed_ms'],
                            eligible=row['status'] != 'disqualified', rank=row['rank'] if top else None,
                            photo_url=f"/bible-games/photo/{row['player_id']}?v={row['photo']}" if row['photo'] else ''))
     return dict(records=result, total=total, page=page, pages=max(1, math.ceil(total / limit)))
