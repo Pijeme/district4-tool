@@ -16,6 +16,7 @@
   let musicEnabled = stored('hm_music', 'on') !== 'off', audio = null, track = 0, timeoutBusy = false, warningShown = 0;
   let ranking = {view:'top',area:'',church:'',period:'all',sort:'score',page:1}, profilePage = 1, adminQuestionPage = 1;
   let loadingInterval, noticeTimeout, hiddenEvent = null, hiddenTimer, lastInterruption = 0;
+  let lifelineModalToken=null,lifelineModalKind=null,resumeBusy=false,pendingLifelineRemaining=null;
   const letters = ['A','B','C','D'];
   const lifelines = [['fifty','50:50','fifty'],['audience','Audience','audience'],['hint','Bible Hint','bible'],['change','Change question','refresh']];
   const messages = [
@@ -24,8 +25,40 @@
     'Proverbs 10:9 · Original paraphrase: An honest walk is a confident walk.',
     'Proverbs 11:1 · Original paraphrase: God values fairness in what we do.',
     'Colossians 3:23 · Original paraphrase: Give your best with a wholehearted spirit.',
-    'Leaving an active question triggers an interruption warning. A second interruption disqualifies the attempt. The clock keeps running.'
+    'Leaving an active question triggers an interruption warning. A second interruption disqualifies the attempt. Outside a lifeline pause, the clock keeps running.'
   ];
+
+  const imageCache = new Map();
+  function cacheImage(url) {
+    if(imageCache.has(url)) {
+      const entry=imageCache.get(url);imageCache.delete(url);imageCache.set(url,entry);return entry.promise;
+    }
+    const entry={image:new Image(),promise:null};
+    entry.promise=new Promise(resolve=>{
+      let settled=false;
+      const finish=ok=>{if(settled)return;settled=true;clearTimeout(timer);entry.image.onload=entry.image.onerror=null;if(!ok&&imageCache.get(url)===entry)imageCache.delete(url);resolve(ok);};
+      const timer=setTimeout(()=>finish(false),10000);
+      entry.image.onload=()=>{if(entry.image.decode)entry.image.decode().then(()=>finish(true),()=>finish(true));else finish(true);};
+      entry.image.onerror=()=>finish(false);entry.image.src=url;
+    });
+    imageCache.set(url,entry);
+    // Retain decoded upcoming artwork, with a bound for phones with less memory.
+    while(imageCache.size>24)imageCache.delete(imageCache.keys().next().value);
+    return entry.promise;
+  }
+  const cacheImages=urls=>Promise.all([...new Set(urls)].map(cacheImage));
+  const stageArt=stage=>ASSETS+`Batch_02/03_backgrounds/stages/bg_${stage.toLowerCase()}.webp`;
+  function winningArt(position) {
+    return position===15?ASSETS+'Batch_03/02_results/screen_grand_victory.webp':
+      [5,10].includes(position)?ASSETS+`Batch_03/02_results/screen_milestone_question_${position}.webp`:
+      ASSETS+'Batch_02/02_host/expressions/host_victory.webp';
+  }
+  function warmUpcoming(s) {
+    const next=Math.min(boot.points.length,s.position+1),nextStage=boot.stages?.[next-1]||s.stage;
+    void cacheImages([ROOT+'host_full_clean.webp',ASSETS+'Batch_02/02_host/expressions/host_presenting.webp',
+      stageArt(s.stage),stageArt(nextStage),winningArt(s.position),winningArt(next),
+      ASSETS+'Batch_02/02_host/expressions/host_thinking.webp']);
+  }
 
   function toast(message, duration = 6500) {
     clearTimeout(noticeTimeout); $('#notice').textContent = message; $('#notice').hidden = false;
@@ -52,12 +85,18 @@
     window.scrollTo({top:0, behavior:'instant'}); $('#account-nav').hidden = !me;
   }
   function showModal(html, closeable = true) {
-    modalContent.innerHTML = html; $('#close-modal').hidden = !closeable;
+    modalContent.innerHTML = html; $('#close-modal').hidden = !closeable;$('#close-modal').textContent='Close';$('#close-modal').disabled=false;
     if (!modal.open) modal.showModal();
   }
-  function closeModal() { if (modal.open) modal.close(); }
+  function closeModal() {
+    if(lifelineModalToken&&current?.paused&&current.token===lifelineModalToken){void resumeLifeline();return;}
+    if(modal.open)modal.close();
+  }
   $('#close-modal').onclick = closeModal;
-  modal.addEventListener('cancel', e => { if ($('#close-modal').hidden) e.preventDefault(); });
+  modal.addEventListener('cancel', e => {
+    if($('#close-modal').hidden)e.preventDefault();
+    else if(lifelineModalToken&&current?.paused){e.preventDefault();void resumeLifeline();}
+  });
   function syncSound() {
     $('#sound').setAttribute('aria-pressed', String(musicEnabled));
     $('#sound span').textContent = musicEnabled ? 'Music on' : 'Music off';
@@ -174,7 +213,7 @@
     const files=['Batch_02/03_backgrounds/base/bg_studio_clean.webp','Batch_02/03_backgrounds/stages/bg_beginner.webp','Batch_02/02_host/expressions/host_presenting.webp',...lifelines.map(l=>`Batch_04/05_lifelines/icons/lifeline_${l[2]}.webp`)];
     let done=0,failed=0;const total=files.length+1;
     const progress=()=>{done++;if(view!=='loading')return;const percent=Math.round(done/total*100);$('.progress-fill').style.width=percent+'%';$('.progress-track').setAttribute('aria-valuenow',String(percent));$('#load-percent').textContent=percent+'%';$('#file-count').textContent=`${done} of ${total} files prepared`;};
-    await Promise.all(files.map(src=>new Promise(resolve=>{const image=new Image();let completed=false;const finish=ok=>{if(completed)return;completed=true;clearTimeout(timer);if(!ok)failed++;progress();resolve();};const timer=setTimeout(()=>finish(false),10000);image.onload=()=>finish(true);image.onerror=()=>finish(false);image.src=ASSETS+src;})).concat([new Promise(resolve=>{
+    await Promise.all(files.map(src=>cacheImage(ASSETS+src).then(ok=>{if(!ok)failed++;progress();})).concat([new Promise(resolve=>{
       const preload=new Audio(ROOT+'music-1.mp3');preload.preload='auto';let completed=false;const finish=()=>{if(completed)return;completed=true;clearTimeout(timer);progress();resolve();};const timer=setTimeout(finish,8000);preload.addEventListener('canplay',finish,{once:true});preload.addEventListener('error',finish,{once:true});preload.load();
     })]));
     if(view!=='loading')return;clearInterval(loadingInterval);$('#load-complete').innerHTML=`${failed?'<p class="form-note">Some artwork could not load. You can retry, or continue with the functional game controls.</p><button class="quiet" id="retry-load">Retry files</button>':''}<button class="primary" id="enter-studio">Enter the studio →</button>`;
@@ -187,20 +226,48 @@
     $('#game-logout').onclick=async()=>{try{await api('logout',{});me=null;current=null;audio?.pause();welcome();}catch(error){toast(error.message);}};
   }
   function instructions() {
-    setView('instructions',`<section class="panel narrow"><div class="eyebrow">Before you take your seat</div><h2>A little knowledge.<br>A little courage.</h2><ol class="rules-list"><li>Answer 15 questions across five levels, from Beginner to Master. Each level mixes questions randomly across all topics. Consecutive questions have different categories. Questions you have already seen stay excluded from future games. Questions 1–5 allow 30 seconds; 6–10 allow 45; 11–15 allow 60.</li><li>One wrong answer or an expired timer ends the game. Correctly reach Question 5 to guarantee 1,000 points, or Question 10 to guarantee 32,000. Question 15 earns 1,000,000.</li><li>Use each lifeline once: <strong>50:50</strong> removes two wrong choices; <strong>Audience</strong> shows a simulated poll that may be wrong; <strong>Bible Hint</strong> gives a source clue; verse-identification questions show the full passage context without its reference; <strong>Change Question</strong> replaces the question without resetting your remaining time.</li><li>Lifeline animations have a fixed two-second pause. Reading a result does not stop the clock indefinitely.</li><li>Walk away before committing an answer to keep your earned points. A configured sweetened offer may add a bonus. Offer dialogs keep the question clock running.</li><li>Stay on the active game screen. The first interruption gives a warning; a second disqualifies the attempt from official rankings. Calls, app switching and tab changes may trigger this rule. The timer continues while hidden and after refresh.</li><li>All attempts are saved, including zero-point results. Play honestly, enjoy learning, and remember: these are game points with no cash value.</li></ol><button class="primary" data-nav="menu">I’m ready →</button></section>`);
+    setView('instructions',`<section class="panel narrow"><div class="eyebrow">Before you take your seat</div><h2>A little knowledge.<br>A little courage.</h2><ol class="rules-list"><li>Answer 15 questions across five levels, from Beginner to Master. Each level mixes questions randomly across all topics. Consecutive questions have different categories. Questions you have already seen stay excluded from future games. Questions 1–5 allow 30 seconds; 6–10 allow 45; 11–15 allow 60.</li><li>One wrong answer or an expired timer ends the game. Correctly reach Question 5 to guarantee 1,000 points, or Question 10 to guarantee 32,000. Question 15 earns 1,000,000.</li><li>Use each lifeline once: <strong>50:50</strong> removes two wrong choices; <strong>Audience</strong> shows a simulated poll that may be wrong; <strong>Bible Hint</strong> gives a source clue; verse-identification questions show the full passage context without its reference; <strong>Change Question</strong> replaces the question without resetting your remaining time.</li><li>Your question timer stops while a lifeline is in use. Bible Hint and Audience stay paused until you choose Continue game; 50:50 and Change Question resume after their animation.</li><li>Walk away before committing an answer to keep your earned points. A configured sweetened offer may add a bonus. Offer dialogs keep the question clock running.</li><li>Stay on the active game screen. The first interruption gives a warning; a second disqualifies the attempt from official rankings. Calls, app switching and tab changes may trigger this rule. A running question timer continues while hidden or after refresh; an active lifeline pause is restored.</li><li>All attempts are saved, including zero-point results. Play honestly, enjoy learning, and remember: these are game points with no cash value.</li></ol><button class="primary" data-nav="menu">I’m ready →</button></section>`);
   }
   function serverNow(){return clockBase+(performance.now()-perfBase)/1000;}
   function applyState(value) {
     if(current?.id===value.id&&value.server_time<current.server_time)return;
+    const previous=current;
     current=value;clockBase=value.server_time;perfBase=performance.now();offset=value.server_time-Date.now()/1000;
-    if(value.status==='active'&&value.outcome===null)questionScreen();else resultScreen();
-    if(value.interruptions>warningShown&&value.status==='active'){warningShown=value.interruptions;toast('Game interrupted: this is your first warning. Another interruption disqualifies this attempt. The timer has continued.',12000);}
-    if(value.status!=='active'){closeModal();store('hm_pending_interruption','');}
+    if(value.status==='active'&&value.outcome===null){warmUpcoming(value);questionScreen();}
+    else if(view!=='result'||!previous||[value.token,value.status,value.outcome,value.final_points,value.earned].join('|')!==[previous.token,previous.status,previous.outcome,previous.final_points,previous.earned].join('|'))resultScreen();
+    if(lifelineModalToken&&(!value.paused||value.status!=='active'||value.token!==lifelineModalToken||value.paused_lifeline!==lifelineModalKind)){lifelineModalToken=lifelineModalKind=null;closeModal();}
+    if(value.paused&&!busy&&!resumeBusy&&!lifelineModalToken)void presentLifeline(value.paused_lifeline);
+    if(value.interruptions>warningShown&&value.status==='active'){warningShown=value.interruptions;toast('Game interrupted: this is your first warning. Another interruption disqualifies this attempt.',12000);}
+    if(value.status!=='active'){lifelineModalToken=lifelineModalKind=null;closeModal();store('hm_pending_interruption','');}
+  }
+  function updateQuestion() {
+    const s=current,stage=$('.stage-pill'),round=$('.round-count strong'),text=$('.question-text'),studio=$('.studio');
+    if(stage.textContent!==s.stage+' stage')stage.textContent=s.stage+' stage';
+    if(round.textContent!==String(s.position))round.textContent=String(s.position);
+    if(text.textContent!==s.question)text.textContent=s.question;
+    if(studio.dataset.stage!==s.stage){studio.style.backgroundImage=`url('${stageArt(s.stage)}')`;studio.dataset.stage=s.stage;}
+    document.querySelectorAll('.answer[data-choice]').forEach((button,i)=>{
+      button.dataset.choice=String(i);const label=$('span',button);
+      if(label.textContent!==s.options[i])label.textContent=s.options[i];
+      button.disabled=s.removed.includes(i);button.classList.toggle('eliminated',button.disabled);
+    });
+    for(const [kind] of lifelines){const button=$(`[data-action="${kind}"]`);if(button)button.disabled=s.lifelines.includes(kind);}
+    $('[data-walk]').textContent='Walk away · '+number(s.earned);
+    const actions=$('.round-actions'),offer=$('[data-offer]',actions),available=s.offer_available&&(!s.offer||s.offer.status==='pending');
+    if(offer&&!available)offer.remove();
+    if(!offer&&available){const button=document.createElement('button');button.className='quiet gold';button.dataset.offer='';button.textContent='✦ Sweetened offer';actions.insertBefore(button,$('#show-ladder'));}
+    const ladder=$('.ladder-list');
+    if(ladder.dataset.position!==String(s.position)){
+      ladder.innerHTML=boot.points.map((p,i)=>`<li class="${[4,9,14].includes(i)?'milestone ':''}${i+1<s.position?'passed ':''}${i+1===s.position?'current':''}"><span>${i+1}</span><strong>${number(p)}</strong></li>`).join('');
+      ladder.dataset.position=String(s.position);
+    }
+    tick();
   }
   function questionScreen() {
     const s=current, bg=s.stage.toLowerCase();
+    if(view==='question'&&$('.play-layout')){updateQuestion();return;}
     playMusic(s.position);
-    setView('question',`<section class="play-layout"><div class="play-main"><div class="round-top"><span class="stage-pill">${esc(s.stage)} stage</span><span class="round-count">QUESTION <strong>${s.position}</strong> / 15</span></div><div class="studio" style="background-image:url('${ASSETS}Batch_02/03_backgrounds/stages/bg_${bg}.webp')"><div class="studio-brand"><small>WHO WANTS TO BE</small>HEAVEN’S<br>MILLIONAIRE?</div><picture class="host-wrap"><source media="(min-width:980px) and (orientation:landscape)" srcset="${ROOT}host_full_clean.webp"><img class="host" src="${ASSETS}Batch_02/02_host/expressions/host_presenting.webp" alt="Your host presenting the question"></picture><div class="timer" role="timer" aria-label="Seconds remaining">${s.total_seconds}</div></div><div class="question-area"><h2 class="question-text">${esc(s.question)}</h2><div class="answers">${s.options.map((option,i)=>`<button class="answer ${s.removed.includes(i)?'eliminated':''}" data-choice="${i}" ${s.removed.includes(i)?'disabled':''}><strong>${letters[i]}</strong><span>${esc(option)}</span></button>`).join('')}</div></div><div class="lifelines">${lifelines.map(([kind,label,icon])=>`<button class="lifeline" data-action="${kind}" ${s.lifelines.includes(kind)?'disabled':''}><img src="${ASSETS}Batch_04/05_lifelines/icons/lifeline_${icon}.webp" alt="">${label}</button>`).join('')}</div><div class="round-actions"><button class="quiet" data-walk>Walk away · ${number(s.earned)}</button>${s.offer_available&&(!s.offer||s.offer.status==='pending')?'<button class="quiet gold" data-offer>✦ Sweetened offer</button>':''}<button class="quiet ladder-toggle" id="show-ladder">Prize ladder</button></div></div><aside class="prize-ladder"><h3>THE PATH TO A MILLION</h3><ol class="ladder-list">${boot.points.map((p,i)=>`<li class="${[4,9,14].includes(i)?'milestone ':''}${i+1<s.position?'passed ':''}${i+1===s.position?'current':''}"><span>${i+1}</span><strong>${number(p)}</strong></li>`).join('')}</ol><p class="guarantee">Guaranteed so far<strong>${number(s.guaranteed)}</strong></p></aside></section>`);
+    setView('question',`<section class="play-layout"><div class="play-main"><div class="round-top"><span class="stage-pill">${esc(s.stage)} stage</span><span class="round-count">QUESTION <strong>${s.position}</strong> / 15</span></div><div class="studio" data-stage="${s.stage}" style="background-image:url('${ASSETS}Batch_02/03_backgrounds/stages/bg_${bg}.webp')"><div class="studio-brand"><small>WHO WANTS TO BE</small>HEAVEN’S<br>MILLIONAIRE?</div><picture class="host-wrap"><source media="(min-width:980px) and (orientation:landscape)" srcset="${ROOT}host_full_clean.webp"><img class="host" src="${ASSETS}Batch_02/02_host/expressions/host_presenting.webp" alt="Your host presenting the question"></picture><div class="timer" role="timer" aria-label="Seconds remaining">${s.total_seconds}</div></div><div class="question-area"><h2 class="question-text">${esc(s.question)}</h2><div class="answers">${s.options.map((option,i)=>`<button class="answer ${s.removed.includes(i)?'eliminated':''}" data-choice="${i}" ${s.removed.includes(i)?'disabled':''}><strong>${letters[i]}</strong><span>${esc(option)}</span></button>`).join('')}</div></div><div class="lifelines">${lifelines.map(([kind,label,icon])=>`<button class="lifeline" data-action="${kind}" ${s.lifelines.includes(kind)?'disabled':''}><img src="${ASSETS}Batch_04/05_lifelines/icons/lifeline_${icon}.webp" alt="">${label}</button>`).join('')}</div><div class="round-actions"><button class="quiet" data-walk>Walk away · ${number(s.earned)}</button>${s.offer_available&&(!s.offer||s.offer.status==='pending')?'<button class="quiet gold" data-offer>✦ Sweetened offer</button>':''}<button class="quiet ladder-toggle" id="show-ladder">Prize ladder</button></div></div><aside class="prize-ladder"><h3>THE PATH TO A MILLION</h3><ol class="ladder-list">${boot.points.map((p,i)=>`<li class="${[4,9,14].includes(i)?'milestone ':''}${i+1<s.position?'passed ':''}${i+1===s.position?'current':''}"><span>${i+1}</span><strong>${number(p)}</strong></li>`).join('')}</ol><p class="guarantee">Guaranteed so far<strong>${number(s.guaranteed)}</strong></p></aside></section>`);
     if($('#show-ladder'))$('#show-ladder').onclick=()=>$('.prize-ladder').classList.toggle('open');
     tick();
   }
@@ -211,36 +278,69 @@
       ({won:'You’re Heaven’s Millionaire!',wrong:'A good try. A little wiser.',timeout:'Time’s up. Keep learning.',walkaway:'You knew when to walk away.',sweetened:'A sweet ending to your game.',disqualified:'Attempt disqualified under competition rules.'}[s.status]||'Your game is saved.');
     let art=correct?'host_victory':'host_thinking';
     const host=s.status==='won'?ASSETS+'Batch_03/02_results/screen_grand_victory.webp':milestone?ASSETS+`Batch_03/02_results/screen_milestone_question_${s.position}.webp`:ASSETS+'Batch_02/02_host/expressions/'+art+'.webp';
-    setView('result',`<section class="panel result-panel"><img class="result-art" src="${host}" alt="Your host’s reaction"><div class="eyebrow">${ongoing?`Question ${s.position} complete`:esc(TITLE)}</div><h2>${esc(title)}</h2><div class="result-points">${number(ongoing?s.earned:s.final_points)}</div><p class="muted">${ongoing?'points earned':s.status==='disqualified'?'Saved in your history · excluded from official rankings':'final points · your attempt has been saved'}</p>${milestone?`<p class="gold">${number(s.guaranteed)} points are now guaranteed.</p>`:''}<div class="explanation"><strong>${esc(s.question)}</strong>${s.correct_choice!==undefined?`<p>Correct answer: <span class="gold">${letters[s.correct_choice]}. ${esc(s.options[s.correct_choice])}</span></p>`:''}<div>${esc(s.explanation)}</div><div class="source">${esc(s.source)}</div></div><div class="result-actions">${ongoing?'<button class="primary" data-action="next">Next question →</button>':'<button class="primary" data-nav="menu">Back to the studio →</button><button class="secondary" data-nav="profile">My game history</button>'}</div></section>`);
+    setView('result',`<section class="panel result-panel"><div class="result-actions result-actions-top" aria-label="Result navigation">${ongoing?'<button class="primary" data-action="next">Next question →</button>':'<button class="primary" data-nav="menu">Back to the studio →</button><button class="secondary" data-nav="profile">My game history</button>'}</div><img class="result-art" src="${host}" alt="Your host’s reaction"><div class="eyebrow">${ongoing?`Question ${s.position} complete`:esc(TITLE)}</div><h2>${esc(title)}</h2><div class="result-points">${number(ongoing?s.earned:s.final_points)}</div><p class="muted">${ongoing?'points earned':s.status==='disqualified'?'Saved in your history · excluded from official rankings':'final points · your attempt has been saved'}</p>${milestone?`<p class="gold">${number(s.guaranteed)} points are now guaranteed.</p>`:''}<div class="explanation"><strong>${esc(s.question)}</strong>${s.correct_choice!==undefined?`<p>Correct answer: <span class="gold">${letters[s.correct_choice]}. ${esc(s.options[s.correct_choice])}</span></p>`:''}<div>${esc(s.explanation)}</div><div class="source">${esc(s.source)}</div></div></section>`);
   }
   async function refresh(){if(!current)return;const result=await api('state/'+current.id);applyState(result.state);}
+  function lifelineContent(kind) {
+    const info=current.lifeline_results[kind]||{},note='<p class="form-note">Your question timer is paused. Choose Continue game when you are ready.</p>';
+    if(kind==='audience')return `<div class="eyebrow">A little help from the crowd</div><h2>Ask the Audience</h2><p class="muted">A simulated poll, not live voting. The audience can be wrong.</p>${(info.percentages||[]).map((v,i)=>`<div class="poll-row"><strong>${letters[i]}</strong><div class="poll-track"><span style="width:${Number(v)}%"></span></div><span>${v}%</span></div>`).join('')}${note}`;
+    if(kind==='hint')return `<div class="eyebrow">A little light on the question</div><h2>Bible Hint</h2><p class="bible-hint-context">${esc(info.hint)}</p>${note}`;
+    return `<h2>${kind==='change'?'A fresh question is ready.':'Two incorrect choices removed.'}</h2>${note}`;
+  }
+  async function resumeLifeline() {
+    if(resumeBusy||!current?.paused)return;
+    resumeBusy=true;const id=current.id,token=current.token,kind=lifelineModalKind||current.paused_lifeline;
+    $('#close-modal').disabled=true;$('#close-modal').textContent='Resuming…';
+    try {
+      const result=await api('action',{session_id:id,token,action:'resume',lifeline:kind});
+      if(current?.id===id&&current.token===token)applyState(result.state);
+    } catch(error) {
+      if(current?.id===id&&current.token===token&&current.paused){
+        lifelineModalToken=token;lifelineModalKind=current.paused_lifeline;
+        showModal(lifelineContent(current.paused_lifeline)+`<p role="status">${esc(error.message)} Your timer stays paused until you reconnect and continue.</p>`);
+        $('#close-modal').textContent='Continue game';
+      }
+    } finally {resumeBusy=false;tick();if(current?.paused&&!lifelineModalToken&&!busy)void presentLifeline(current.paused_lifeline);}
+  }
+  async function presentLifeline(kind) {
+    if(!current?.paused||lifelineModalToken===current.token||!lifelines.some(item=>item[0]===kind))return;
+    const token=current.token,wasBusy=busy;busy=true;lifelineModalToken=token;lifelineModalKind=kind;
+    try {
+      showModal('<div class="initial-load" style="margin:20px"><span class="spinner"></span><p>Your lifeline is on its way…</p></div>',false);
+      const wait=Math.max(0,Math.min(2000,(current.pause_until-serverNow())*1000));
+      if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+      if(current.token!==token||current.status!=='active'||!current.paused)return;
+      if(kind==='hint'||kind==='audience'){
+        showModal(lifelineContent(kind));$('#close-modal').textContent='Continue game';
+      } else {
+        await resumeLifeline();
+        if(!current.paused)toast(kind==='change'?'A fresh question. Your remaining time is preserved.':'Two incorrect choices have been removed.');
+      }
+    } finally {busy=wasBusy;}
+  }
+  // Continue and Escape explicitly resume; delayed close events from an older
+  // dialog must not resume a newly opened lifeline.
   async function act(kind,choice,choiceText) {
-    if(busy||!current)return;busy=true;
+    if(busy||resumeBusy||!current)return;busy=true;
+    const isLifeline=lifelines.some(item=>item[0]===kind);
+    if(isLifeline){pendingLifelineRemaining=Math.max(0,current.deadline-serverNow());tick();}
     try {
       const result=await api('action',{session_id:current.id,token:current.token,action:kind,...(choice===undefined?{}:{choice}),...(choiceText===undefined?{}:{choice_text:choiceText})});
-      applyState(result.state);
-      if(lifelines.some(l=>l[0]===kind)&&current.status==='active'){
-        showModal('<div class="initial-load" style="margin:20px"><span class="spinner"></span><p>Your lifeline is on its way…</p></div>',false);
-        const pause=Math.max(0,(current.pause_until-serverNow())*1000);await new Promise(resolve=>setTimeout(resolve,Math.min(2000,pause)));
-        if(current.status!=='active'){closeModal();return;}
-        const info=current.lifeline_results[kind]||{};
-        if(kind==='audience')showModal(`<div class="eyebrow">A little help from the crowd</div><h2>Ask the Audience</h2><p class="muted">A simulated poll, not live voting. The audience can be wrong.</p>${(info.percentages||[]).map((v,i)=>`<div class="poll-row"><strong>${letters[i]}</strong><div class="poll-track"><span style="width:${Number(v)}%"></span></div><span>${v}%</span></div>`).join('')}`);
-        else if(kind==='hint')showModal(`<div class="eyebrow">A little light on the question</div><h2>Bible Hint</h2><p class="bible-hint-context">${esc(info.hint)}</p><p class="form-note">The clock resumes after the fixed animation pause.</p>`);
-        else {closeModal();toast(kind==='change'?'A fresh question. Your remaining time is preserved.':'Two incorrect choices have been removed.');}
-      }
+      pendingLifelineRemaining=null;applyState(result.state);
+      if(isLifeline&&current.status==='active')await presentLifeline(kind);
       if(kind==='offer'&&current.status==='active'&&current.offer?.status==='pending')offerDialog();
     }catch(error){toast(error.message);}
-    finally{busy=false;}
+    finally{pendingLifelineRemaining=null;busy=false;tick();}
   }
   function offerDialog(){showModal(`<div class="eyebrow">A little extra to take home</div><h2>A sweetened offer.</h2><img class="loading-host" style="height:160px;display:block;margin:auto" src="${ASSETS}Batch_02/02_host/expressions/host_deal_invitation.webp" alt="Your host offering a deal"><div class="result-points">${number(current.offer.total)}</div><p class="muted">Accept to finish with these points, or carry on toward a million. Your question clock keeps running.</p><div class="form-actions"><button class="primary" data-action="accept_offer">Accept & finish</button><button class="secondary" data-action="reject_offer">Keep playing</button></div>`);}
   function tick(){
     if(view!=='question'||!current||current.status!=='active')return;
-    const remaining=Math.max(0,Math.ceil(current.deadline-serverNow())),paused=current.pause_until>serverNow();const timer=$('.timer');
-    if(timer){timer.textContent=paused?'Pause':remaining;timer.classList.toggle('urgent',remaining<=10&&!paused);timer.classList.toggle('paused',paused);}
-    if(!remaining&&!timeoutBusy){timeoutBusy=true;refresh().catch(error=>toast(error.message)).finally(()=>setTimeout(()=>{timeoutBusy=false;},2000));}
+    const paused=current.paused||pendingLifelineRemaining!==null,remaining=Math.max(0,Math.ceil(paused?(current.paused?current.paused_remaining:pendingLifelineRemaining):current.deadline-serverNow()));const timer=$('.timer');
+    if(timer){const label=paused?'Pause':String(remaining);if(timer.textContent!==label)timer.textContent=label;timer.title=paused?`Paused · ${remaining} seconds remaining`:'';timer.setAttribute('aria-label',paused?`Timer paused, ${remaining} seconds remaining`:'Seconds remaining');timer.classList.toggle('urgent',remaining<=10&&!paused);timer.classList.toggle('paused',paused);}
+    if(!paused&&!remaining&&!timeoutBusy){timeoutBusy=true;refresh().catch(error=>toast(error.message)).finally(()=>setTimeout(()=>{timeoutBusy=false;},2000));}
   }
   setInterval(tick,150);
-  setInterval(()=>{if(current?.status==='active'&&view==='question'&&!busy&&!document.hidden)refresh().catch(()=>{});},10000);
+  setInterval(()=>{if(current?.status==='active'&&view==='question'&&!busy&&!resumeBusy&&!document.hidden)refresh().catch(()=>{});},10000);
 
   function filters() {return `<div class="filters"><div><label for="filter-area">Area</label><select id="filter-area"><option value="">All Areas</option>${areas().map(a=>`<option value="${esc(a)}" ${ranking.area===a?'selected':''}>Area ${esc(a)}</option>`).join('')}</select></div><div><label for="filter-church">Church</label><select id="filter-church"><option value="">All churches</option>${[...new Set(boot.directory.filter(c=>!ranking.area||c.area===ranking.area).map(c=>c.church))].map(c=>`<option ${ranking.church===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div><div><label for="filter-period">Time period</label><select id="filter-period">${[['all','All time'],['today','Today'],['week','This week'],['month','This month']].map(([v,t])=>`<option value="${v}" ${ranking.period===v?'selected':''}>${t}</option>`).join('')}</select></div><div><label for="filter-sort">Order</label><select id="filter-sort"><option value="score" ${ranking.sort==='score'?'selected':''}>Highest scores</option><option value="newest" ${ranking.sort==='newest'?'selected':''}>Newest attempts</option></select></div></div>`;}
   const resultLabel = value=>({won:'Millionaire',wrong:'Wrong answer',timeout:'Time expired',walkaway:'Walked away',sweetened:'Sweetened offer',disqualified:'Disqualified',active:'In progress'}[value]||value);
@@ -307,7 +407,7 @@
       else if(el.dataset.auth){auth(el.dataset.auth);}
       else if(el.hasAttribute('data-site-login'))await siteLogin();
       else if(el.dataset.choice!==undefined){
-        if(busy)return;const choice=Number(el.dataset.choice),choiceText=$('span',el).textContent,choiceLabel=$('strong',el).textContent;showModal(`<div class="eyebrow">Your final answer?</div><h2>${esc(choiceLabel)}. ${esc(choiceText)}</h2><p class="form-note">The clock keeps running until your answer reaches the server.</p><button class="primary" id="confirm-answer">Lock in my answer →</button>`);
+        if(busy||resumeBusy)return;const choice=Number(el.dataset.choice),choiceText=$('span',el).textContent,choiceLabel=$('strong',el).textContent;showModal(`<div class="eyebrow">Your final answer?</div><h2>${esc(choiceLabel)}. ${esc(choiceText)}</h2><p class="form-note">The clock keeps running until your answer reaches the server.</p><button class="primary" id="confirm-answer">Lock in my answer →</button>`);
         const questionToken=current.token;$('#confirm-answer').onclick=()=>{closeModal();if(current.token!==questionToken){toast('The question has changed. Please select an answer again.');return;}act('answer',choice,choiceText);};
       }else if(el.dataset.action){closeModal();await act(el.dataset.action);}
       else if(el.hasAttribute('data-walk'))showModal(`<h2>Leave with ${number(current.earned)} points?</h2><p class="muted">You’ll keep your earned points and this attempt will be saved. The clock keeps running while you decide.</p><button class="primary" data-action="walk">Walk away</button>`);
@@ -326,5 +426,6 @@
       else if(me){if(me.photo)menu();else photoGate();}else welcome();
     }catch(error){setView('error',`<section class="panel narrow"><h2>The studio is taking a moment.</h2><p>${esc(error.message)}</p><button class="primary" id="retry-bootstrap">Try again</button></section>`);$('#retry-bootstrap').onclick=initialize;}
   }
+  void cacheImages([ROOT+'host_full_clean.webp',ASSETS+'Batch_02/03_backgrounds/base/bg_studio_clean.webp',ASSETS+'Batch_02/02_host/expressions/host_presenting.webp']);
   initialize();
 })();

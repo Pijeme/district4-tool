@@ -16,3 +16,5 @@
 .bible-hint-context{white-space:pre-line;line-height:1.8;text-align:left}.completion-time{white-space:nowrap;font-variant-numeric:tabular-nums}
 
 .mobile-completion{display:none}@media(max-width:640px){.mobile-completion{display:block}.completion-time,.completion-time-heading{display:none}}
+
+.result-actions-top{margin:0 0 22px;justify-content:center}.result-actions-top .primary{min-height:48px}

@@ -188,7 +188,7 @@ class MillionaireTests(unittest.TestCase):
     def test_lifelines_once_only_pauses_and_question_replacement(self):
         self.register();self.start();correct=self.correct_index();deadline=self.state['deadline'];old_token=self.state['token']
         self.action('fifty');self.assertEqual(len(self.state['removed']),2);self.assertNotIn(correct,self.state['removed'])
-        self.assertEqual(self.state['deadline'],deadline+2)
+        self.assertEqual(self.state['deadline'],deadline)
         self.clock+=3
         self.assertEqual(self.action('fifty').status_code,409)
         self.action('audience');self.assertEqual(sum(self.state['lifeline_results']['audience']['percentages']),100)
@@ -197,13 +197,16 @@ class MillionaireTests(unittest.TestCase):
             self.action('hint')
         self.assertTrue(self.state['lifeline_results']['hint']['hint'])
         self.clock+=3;self.action('change');self.assertNotEqual(old_token,self.state['token'])
-        self.assertEqual(self.state['deadline'],deadline+8)
+        self.assertEqual(self.state['deadline'],deadline+9)
+        self.assertTrue(self.state['paused'])
+        self.assertEqual(self.state['paused_remaining'],30)
         with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn:
             seen=json.loads(conn.execute('SELECT seen_json FROM game_sessions').fetchone()[0]);self.assertEqual(len(seen),16)
         self.assertEqual(self.post('action',dict(session_id=self.state['id'],token=old_token,action='answer',choice=correct)).status_code,409)
 
-    def reference_round(self, correct=2, seed_bible=True):
+    def reference_round(self, correct=2, seed_bible=True, position=1):
         self.register();self.start()
+        if position>1:self.advance(position-1)
         questions=json.loads((ROOT/'heavens_millionaire_questions.json').read_text())['questions']
         payload=next(q for q in questions if q['id']=='B-343')
         options=[option for option in payload['options'] if option!=payload['answer']]
@@ -247,7 +250,7 @@ class MillionaireTests(unittest.TestCase):
                 for reference in options:self.assertNotIn(reference,hint)
                 self.assertEqual(self.state['options'],options)
                 self.assertEqual(self.state['token'],token)
-                self.assertEqual(self.state['deadline'],deadline+2)
+                self.assertEqual(self.state['deadline'],deadline)
                 self.assertNotIn('correct_choice',self.state)
                 self.clock+=3
                 self.state=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
@@ -331,6 +334,92 @@ class MillionaireTests(unittest.TestCase):
         history=self.client.get('/bible-games/api/leaderboard?view=all&sort=score').get_json()['records']
         self.assertEqual([row['id'] for row in history[:3]],['fast-win','tied-win','new-best'])
         self.assertEqual(len(history),8)
+
+    def test_lifeline_freezes_remaining_time_through_refresh_restart_and_sweeps(self):
+        self.reference_round()
+        self.clock+=7;self.action('hint')
+        self.assertTrue(self.state['paused']);self.assertEqual(self.state['paused_remaining'],23)
+        self.assertEqual(self.state['paused_lifeline'],'hint')
+        self.clock+=120
+        state=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
+        self.assertEqual(state['status'],'active');self.assertEqual(state['paused_remaining'],23)
+        self.assertEqual(self.client.get('/bible-games/api/leaderboard').get_json()['total'],0)
+        hm.initialize(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'],ROOT/'heavens_millionaire_questions.json')
+        state=self.client.get('/bible-games/api/bootstrap').get_json()['active']
+        self.assertTrue(state['paused']);self.assertEqual(state['paused_remaining'],23)
+        self.action('resume');deadline=self.state['deadline']
+        self.assertFalse(self.state['paused']);self.assertEqual(deadline-self.clock,23)
+        self.clock+=1
+        self.action('resume',paused_remaining=99999)
+        self.assertEqual(self.state['deadline'],deadline)
+        self.clock=deadline-1
+        self.action('answer',choice=self.correct_index())
+        self.assertEqual(self.state['outcome'],'correct')
+
+    def test_every_lifeline_pauses_and_an_answer_can_resume_without_changing_selection(self):
+        for kind in ('fifty','audience','hint','change'):
+            with self.subTest(kind=kind):
+                self.register();self.start();self.clock+=5
+                with patch.object(hm,'scripture_context',return_value='Full passage context.'):
+                    self.assertEqual(self.action(kind).status_code,200)
+                self.assertTrue(self.state['paused']);self.assertEqual(self.state['paused_remaining'],25)
+                correct=self.correct_index();text=self.state['options'][correct]
+                self.clock+=60
+                self.action('answer',choice=correct,choice_text=text)
+                self.assertEqual(self.state['outcome'],'correct')
+                self.assertFalse(self.state['paused'])
+
+    def test_duplicate_lifeline_and_resume_cannot_reset_or_extend_the_remaining_time(self):
+        self.register();self.start();self.clock+=10;self.action('fifty')
+        self.clock+=15
+        self.assertEqual(self.action('fifty').status_code,409)
+        state=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
+        self.assertTrue(state['paused']);self.assertEqual(state['paused_remaining'],20)
+        self.action('resume');deadline=self.state['deadline']
+        self.assertEqual(deadline-self.clock,20)
+        self.clock=deadline+.1
+        self.action('resume')
+        self.assertEqual(self.state['status'],'timeout')
+        self.assertEqual(self.state['deadline'],deadline)
+        self.assertEqual(self.state['final_points'],0)
+
+    def test_old_resume_retry_does_not_close_a_newer_lifeline_pause(self):
+        self.reference_round();self.action('hint');self.clock+=3
+        self.action('resume',lifeline='hint');self.clock+=2
+        self.action('audience');deadline=self.state['deadline'];remaining=self.state['paused_remaining']
+        self.action('resume',lifeline='hint')
+        self.assertTrue(self.state['paused']);self.assertEqual(self.state['paused_lifeline'],'audience')
+        self.assertEqual(self.state['deadline'],deadline)
+        self.clock+=50;self.action('resume',lifeline='audience')
+        self.assertFalse(self.state['paused']);self.assertEqual(self.state['deadline']-self.clock,remaining)
+
+    def test_expired_question_cannot_be_saved_by_requesting_a_lifeline(self):
+        self.register();self.start();self.clock=self.state['deadline']+.1
+        self.action('fifty')
+        self.assertEqual(self.state['status'],'timeout')
+        self.assertFalse(self.state['paused']);self.assertNotIn('fifty',self.state['lifelines'])
+
+    def test_interruption_policy_still_applies_while_lifeline_is_paused(self):
+        self.register();self.start();self.action('audience')
+        for ident in ('first-pause-interruption','second-pause-interruption'):
+            self.clock+=10
+            response=self.post('interruption',dict(session_id=self.state['id'],event_id=ident,kind='visibility'))
+            self.assertEqual(response.status_code,200)
+            self.state=response.get_json()['state']
+        self.assertEqual(self.state['status'],'disqualified');self.assertFalse(self.state['paused'])
+
+    def test_pause_schema_upgrade_preserves_existing_saved_question_and_deadline(self):
+        self.register();self.start();token=self.state['token'];deadline=self.state['deadline']
+        path=self.app.config['HEAVENS_MILLIONAIRE_DATABASE']
+        with sqlite3.connect(path) as conn:
+            before=conn.execute('SELECT question_json,choices_json,correct_choice,deadline FROM game_answers WHERE token=?',(token,)).fetchone()
+            conn.execute('ALTER TABLE game_answers DROP COLUMN pause_started_at')
+        hm.initialize(path,ROOT/'heavens_millionaire_questions.json')
+        with sqlite3.connect(path) as conn:
+            self.assertEqual(conn.execute('SELECT question_json,choices_json,correct_choice,deadline FROM game_answers WHERE token=?',(token,)).fetchone(),before)
+            self.assertIsNone(conn.execute('SELECT pause_started_at FROM game_answers WHERE token=?',(token,)).fetchone()[0])
+        current=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
+        self.assertFalse(current['paused']);self.assertEqual(current['deadline'],deadline)
 
     def test_standard_and_sweetened_walkaway_recorded(self):
         self.register();self.start();self.advance(1);self.action('walk');self.assertEqual(self.state['final_points'],100)
@@ -764,7 +853,7 @@ class GameBrowserTests(unittest.TestCase):
                         self.assertIn('Synthetic surrounding context',hint.inner_text())
                         for option in fixture.state['options']:self.assertNotIn(option,hint.inner_text())
                         page.screenshot(path=str(folder/f'hint-context-{width}.png'),full_page=True)
-                        page.locator('#close-modal').click()
+                        page.locator('#close-modal').click();page.locator('#modal').wait_for(state='hidden')
                         if width==1200:
                             page.reload();page.locator('.question-text').wait_for()
                         choice=page.locator('.answer').filter(has_text=payload['answer'])
@@ -798,6 +887,107 @@ class GameBrowserTests(unittest.TestCase):
                         self.assertIn('fastest completion time',page.locator('#app .form-note').last.inner_text())
                         self.assertFalse(page.evaluate('document.documentElement.scrollWidth>innerWidth'))
                         page.screenshot(path=str(folder/f'completion-time-{width}.png'),full_page=True)
+                        self.assertEqual(errors,[])
+                        context.close();browser.close()
+                finally:
+                    server.shutdown();thread.join(timeout=5);server.server_close();fixture.doCleanups()
+
+    def test_lifeline_pause_stable_artwork_preloading_and_result_buttons(self):
+        import threading
+        from werkzeug.serving import make_server
+        from playwright.sync_api import sync_playwright
+        for width,position in ((390,1),(1024,5)):
+            with self.subTest(width=width,position=position):
+                fixture=MillionaireTests();fixture.setUp()
+                fixture.reference_round(position=position);fixture.clock+=5
+                fixture.app.config['SEND_FILE_MAX_AGE_DEFAULT']=864000
+                image_requests=[]
+                original_wsgi=fixture.app.wsgi_app
+                def record_asset_requests(environ,start_response):
+                    path=environ.get('PATH_INFO','')
+                    if path.endswith('.webp'):image_requests.append(path)
+                    return original_wsgi(environ,start_response)
+                fixture.app.wsgi_app=record_asset_requests
+                server=make_server('127.0.0.1',0,fixture.app,threaded=True)
+                thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+                base=f'http://127.0.0.1:{server.server_port}'
+                folder=ROOT/'.cache_optimization_work/heavens_millionaire';folder.mkdir(parents=True,exist_ok=True)
+                try:
+                    with sync_playwright() as browsers:
+                        browser=browsers.chromium.launch(headless=True,
+                            executable_path=os.getenv('HEAVENS_CHROMIUM_PATH') or None,
+                            args=['--no-sandbox'] if os.name!='nt' else [])
+                        context=browser.new_context(viewport=dict(width=width,height=800),has_touch=True,is_mobile=width<600)
+                        context.add_cookies([dict(name='session',value=fixture.client.get_cookie('session').value,url=base)])
+                        page=context.new_page();errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                        page.goto(base+'/bible-games');page.locator('.question-text').wait_for()
+                        page.evaluate("window.savedGameHost=document.querySelector('.host');window.savedGameStudio=document.querySelector('.studio')")
+                        with page.expect_response(lambda response:'/api/state/' in response.url):
+                            page.evaluate("window.dispatchEvent(new Event('focus'))")
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')&&savedGameStudio===document.querySelector('.studio')"))
+                        page.locator('[data-action=hint]').click();page.locator('.bible-hint-context').wait_for()
+                        resumes=[]
+                        def track_resume(request):
+                            if request.url.endswith('/api/action') and request.method=='POST' and request.post_data_json.get('action')=='resume':
+                                resumes.append(request)
+                        page.on('request',track_resume)
+                        page.evaluate("document.querySelector('#modal').dispatchEvent(new Event('close'))")
+                        page.wait_for_timeout(150)
+                        self.assertEqual(resumes,[],'An old close event resumed the current lifeline')
+                        self.assertEqual(page.locator('.timer').inner_text(),'Pause')
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')"))
+                        fixture.clock+=80
+                        with page.expect_response(lambda response:'/api/state/' in response.url):
+                            page.evaluate("window.dispatchEvent(new Event('focus'))")
+                        self.assertEqual(page.locator('.timer').inner_text(),'Pause')
+                        self.assertIn('25 seconds remaining',page.locator('.timer').get_attribute('title'))
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')"))
+                        page.reload();page.locator('.bible-hint-context').wait_for()
+                        self.assertEqual(page.locator('.timer').inner_text(),'Pause')
+                        self.assertIn('25 seconds remaining',page.locator('.timer').get_attribute('title'))
+                        page.screenshot(path=str(folder/f'paused-hint-{width}.png'),full_page=True)
+                        page.locator('#close-modal').click();page.locator('#modal').wait_for(state='hidden')
+                        self.assertNotEqual(page.locator('.timer').inner_text(),'Pause')
+                        page.evaluate("window.savedGameHost=document.querySelector('.host');window.savedGameStudio=document.querySelector('.studio')")
+                        page.locator('[data-action=fifty]').click();page.locator('#modal').wait_for(state='visible');page.locator('#modal').wait_for(state='hidden')
+                        self.assertEqual(page.locator('.answer.eliminated').count(),2)
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')"))
+                        page.locator('[data-action=audience]').click();page.get_by_role('heading',name='Ask the Audience').wait_for()
+                        fixture.clock+=15;page.keyboard.press('Escape');page.locator('#modal').wait_for(state='hidden')
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')"))
+                        page.locator('[data-action=change]').click();page.locator('#modal').wait_for(state='visible');page.locator('#modal').wait_for(state='hidden')
+                        self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')&&savedGameStudio===document.querySelector('.studio')"))
+                        state=fixture.client.get('/bible-games/api/state/'+fixture.state['id']).get_json()['state']
+                        fixture.state=state
+                        self.assertFalse(state['paused']);self.assertEqual(state['deadline']-fixture.clock,25)
+                        win='screen_milestone_question_5.webp' if position==5 else 'host_victory.webp'
+                        self.assertTrue(any(path.endswith(win) for path in image_requests),'Result artwork was not preloaded')
+                        next_stage='Intermediate' if position==5 else 'Beginner'
+                        next_art='/static/heavens_millionaire/images/Batch_02/03_backgrounds/stages/bg_'+next_stage.lower()+'.webp'
+                        self.assertIn(next_art,image_requests,'Upcoming stage artwork was not preloaded')
+                        before_next_count=image_requests.count(next_art)
+                        with sqlite3.connect(fixture.app.config['HEAVENS_MILLIONAIRE_DATABASE']) as conn:
+                            self.assertIsNone(conn.execute('SELECT started_at FROM game_answers WHERE session_id=? AND position=?',
+                                                          (state['id'],position+1)).fetchone()[0])
+                        page.locator(f'.answer[data-choice="{fixture.correct_index()}"]').click();page.locator('#confirm-answer').click()
+                        next_button=page.locator('.result-actions-top [data-action=next]');next_button.wait_for()
+                        self.assertLess(next_button.bounding_box()['y'],page.locator('.result-art').bounding_box()['y'])
+                        self.assertLess(next_button.bounding_box()['y'],800)
+                        page.screenshot(path=str(folder/f'top-result-navigation-{width}.png'),full_page=True)
+                        next_button.click();page.locator('.round-count strong').filter(has_text=str(position+1)).wait_for()
+                        self.assertEqual(page.locator('.stage-pill').inner_text(),next_stage+' stage')
+                        self.assertEqual(image_requests.count(next_art),before_next_count,'Stage artwork was downloaded again')
+                        fixture.state=fixture.client.get('/bible-games/api/state/'+state['id']).get_json()['state']
+                        fixture.advance(15-fixture.state['position'])
+                        page.reload();page.locator('.round-count strong').filter(has_text='15').wait_for()
+                        page.locator(f'.answer[data-choice="{fixture.correct_index()}"]').click();page.locator('#confirm-answer').click()
+                        page.get_by_role('heading',name='You’re Heaven’s Millionaire!').wait_for()
+                        studio=page.locator('.result-actions-top [data-nav=menu]')
+                        self.assertLess(studio.bounding_box()['y'],page.locator('.result-art').bounding_box()['y'])
+                        self.assertLess(studio.bounding_box()['y'],800)
+                        self.assertFalse(page.evaluate('document.documentElement.scrollWidth>innerWidth'))
+                        page.screenshot(path=str(folder/f'victory-top-navigation-{width}.png'),full_page=True)
+                        studio.click();page.locator('#start-game').wait_for()
                         self.assertEqual(errors,[])
                         context.close();browser.close()
                 finally:

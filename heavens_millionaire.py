@@ -273,10 +273,19 @@ def finish(attempt, outcome, points):
                  (outcome, points, now(), attempt['id']))
 
 
+def resume_question(question):
+    """Resume once from the server's saved remaining time, including after reload."""
+    started = question['pause_started_at']
+    if started is not None:
+        db().execute('''UPDATE game_answers SET deadline=deadline+?,pause_started_at=NULL,pause_until=NULL
+            WHERE id=? AND pause_started_at IS NOT NULL''', (max(0.0, now() - started), question['id']))
+
+
 def expire(attempt):
     if attempt and attempt['status'] == 'active':
         question = round_row(attempt)
-        if question['outcome'] is None and question['deadline'] is not None and now() >= question['deadline']:
+        if (question['outcome'] is None and question['pause_started_at'] is None
+                and question['deadline'] is not None and now() >= question['deadline']):
             db().execute("UPDATE game_answers SET outcome='timeout',resolved_at=? WHERE id=?", (now(), question['id']))
             finish(attempt, 'timeout', attempt['guaranteed'])
             return db().execute('SELECT * FROM game_sessions WHERE id=?', (attempt['id'],)).fetchone()
@@ -286,7 +295,7 @@ def expire(attempt):
 def sweep():
     rows = db().execute("""SELECT s.* FROM game_sessions s JOIN game_answers a
         ON a.session_id=s.id AND a.position=s.position WHERE s.status='active'
-        AND a.outcome IS NULL AND a.deadline<=?""", (now(),)).fetchall()
+        AND a.outcome IS NULL AND a.pause_started_at IS NULL AND a.deadline<=?""", (now(),)).fetchall()
     for row in rows:
         expire(row)
 
@@ -304,20 +313,23 @@ def attempt_for(owner, attempt_id=None):
 def state(attempt):
     question = round_row(attempt)
     payload = json.loads(question['question_json'])
+    paused = attempt['status'] == 'active' and question['outcome'] is None and question['pause_started_at'] is not None
     result = dict(id=attempt['id'], status=attempt['status'], position=attempt['position'], earned=attempt['earned'],
                   guaranteed=attempt['guaranteed'], final_points=attempt['final_points'], interruptions=attempt['interruptions'],
                   server_time=now(), stage=STAGES[attempt['position'] - 1], total_seconds=SECONDS[attempt['position'] - 1],
                   token=question['token'], question=question_prompt(payload), options=json.loads(question['choices_json']),
                   deadline=question['deadline'], pause_until=question['pause_until'], outcome=question['outcome'],
+                  paused=paused, paused_remaining=max(0.0, question['deadline']-question['pause_started_at']) if paused else None,
                   removed=json.loads(question['removed_json']),
                   lifelines=[r[0] for r in db().execute('SELECT kind FROM game_lifeline_usage WHERE session_id=?', (attempt['id'],))],
                   results=[dict(r) for r in db().execute('SELECT position,outcome FROM game_answers WHERE session_id=? AND outcome IS NOT NULL ORDER BY position', (attempt['id'],))])
     if question['outcome'] is not None or attempt['status'] != 'active':
         result.update(correct_choice=question['correct_choice'], explanation=payload.get('explanation', ''),
                       source=source_citation(payload), selected=question['answer_choice'])
-    usage = db().execute('SELECT kind,result_json FROM game_lifeline_usage WHERE session_id=? AND position=?',
+    usage = db().execute('SELECT kind,result_json FROM game_lifeline_usage WHERE session_id=? AND position=? ORDER BY id',
                          (attempt['id'], attempt['position'])).fetchall()
     result['lifeline_results'] = {r['kind']: json.loads(r['result_json']) for r in usage}
+    result['paused_lifeline'] = usage[-1]['kind'] if paused and usage else None
     offer = db().execute('SELECT id,total,status FROM game_offers WHERE session_id=? AND position=?',
                          (attempt['id'], attempt['position'])).fetchone()
     rules = json.loads(attempt['policy_json'])
@@ -579,7 +591,7 @@ def bootstrap():
         sweep()
     active = db().execute("SELECT * FROM game_sessions WHERE player_id=? AND status='active'", (owner['id'],)).fetchone() if owner else None
     return jsonify(csrf=csrf(), player=public_player(owner), site_user=dict(name=identity['name']) if identity else None,
-                   admin=bool(administrator()), directory=directory(), points=POINTS,
+                   admin=bool(administrator()), directory=directory(), points=POINTS, stages=STAGES,
                    active=state(active) if active else None)
 
 
@@ -797,6 +809,22 @@ def action():
                 return jsonify(state=state(attempt))
             raise GameError('This question has changed. Please refresh the game state.', 409)
         kind = data.get('action')
+        if kind in ('fifty', 'audience', 'hint', 'change') and question['pause_until'] and now() < question['pause_until']:
+            raise GameError('Please let the current lifeline animation finish.', 409)
+        if kind == 'resume':
+            latest = conn.execute('''SELECT kind FROM game_lifeline_usage
+                WHERE session_id=? AND position=? ORDER BY id DESC LIMIT 1''',
+                (attempt['id'], attempt['position'])).fetchone()
+            # A retry from an earlier dialog cannot resume a newer lifeline.
+            if data.get('lifeline') and (not latest or data['lifeline'] != latest['kind']):
+                return jsonify(state=state(attempt))
+            resume_question(question)
+            return jsonify(state=state(attempt))
+        if kind in ('answer', 'walk', 'offer', 'accept_offer', 'reject_offer', 'fifty', 'audience', 'hint', 'change'):
+            # Acting on the question also resumes older clients that have not
+            # explicitly closed their lifeline. Invalid actions roll this back.
+            resume_question(question)
+            question = round_row(attempt)
         if kind == 'next':
             if question['outcome'] != 'correct':
                 raise GameError('Resolve this question first.', 409)
@@ -850,10 +878,9 @@ def action():
                 if kind == 'accept_offer':
                     finish(attempt, 'sweetened', offer['total'])
         elif kind in ('fifty', 'audience', 'hint', 'change'):
-            if question['pause_until'] and now() < question['pause_until']:
-                raise GameError('Please let the current lifeline animation finish.', 409)
             if conn.execute('SELECT 1 FROM game_lifeline_usage WHERE session_id=? AND kind=?', (attempt['id'], kind)).fetchone():
                 raise GameError('That lifeline has already been used.', 409)
+            pause_started = now()
             result = {}
             if kind == 'fifty':
                 result['removed'] = RNG.sample([i for i in range(4) if i != question['correct_choice']], 2)
@@ -883,8 +910,9 @@ def action():
                              (qid, secrets.token_hex(20), json.dumps(payload), json.dumps(options), correct, question['id']))
                 conn.execute('UPDATE game_sessions SET seen_json=? WHERE id=?', (json.dumps(seen), attempt['id']))
                 remember_question(conn, owner['id'], payload, now())
-            # Fixed server-authorized animation window; repeated calls cannot extend it.
-            conn.execute('UPDATE game_answers SET deadline=deadline+2,pause_until=? WHERE id=?', (now() + 2, question['id']))
+            # Freeze the exact remaining time until the lifeline is closed.
+            conn.execute('UPDATE game_answers SET pause_started_at=?,pause_until=? WHERE id=?',
+                         (pause_started, now() + 2, question['id']))
             conn.execute('INSERT INTO game_lifeline_usage(session_id,position,kind,used_at,result_json) VALUES(?,?,?,?,?)',
                          (attempt['id'], attempt['position'], kind, now(), json.dumps(result)))
         else:
@@ -1170,7 +1198,7 @@ def initialize(path, question_path):
         CREATE INDEX IF NOT EXISTS game_player_history ON game_sessions(player_id,finished_at DESC);
         CREATE TABLE IF NOT EXISTS game_answers(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES game_sessions(id),position INTEGER NOT NULL,
             question_id TEXT NOT NULL,token TEXT UNIQUE NOT NULL,question_json TEXT NOT NULL,choices_json TEXT NOT NULL,correct_choice INTEGER NOT NULL,
-            answer_choice INTEGER,outcome TEXT,started_at REAL,deadline REAL,pause_until REAL,resolved_at REAL,removed_json TEXT NOT NULL DEFAULT '[]',UNIQUE(session_id,position));
+            answer_choice INTEGER,outcome TEXT,started_at REAL,deadline REAL,pause_until REAL,pause_started_at REAL,resolved_at REAL,removed_json TEXT NOT NULL DEFAULT '[]',UNIQUE(session_id,position));
         CREATE INDEX IF NOT EXISTS game_answer_deadline ON game_answers(deadline,outcome);
         CREATE TABLE IF NOT EXISTS game_lifeline_usage(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES game_sessions(id),position INTEGER NOT NULL,
             kind TEXT NOT NULL,used_at REAL NOT NULL,result_json TEXT NOT NULL,UNIQUE(session_id,kind));
@@ -1183,6 +1211,8 @@ def initialize(path, question_path):
         CREATE TABLE IF NOT EXISTS game_recovery_requests(id INTEGER PRIMARY KEY,player_id TEXT NOT NULL REFERENCES game_players(id),created_at REAL NOT NULL,
             status TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',token_hash TEXT,expires_at REAL);
         ''')
+        if 'pause_started_at' not in {row[1] for row in conn.execute('PRAGMA table_info(game_answers)')}:
+            conn.execute('ALTER TABLE game_answers ADD COLUMN pause_started_at REAL')
         digest = hashlib.sha256(raw).hexdigest()
         old = conn.execute("SELECT value FROM game_settings WHERE key='bank_hash'").fetchone()
         changed = not old or old[0] != digest
