@@ -68,27 +68,46 @@ selection keeps the toolbar available and leaves native text focus and selection
 handles alone. The toolbar follows the visible viewport when browser controls,
 zoom or a keyboard change its size or position.
 
-Keyboard suppression and the saved-selection overlay start only when a formatting
-control is used. Returning to the editor restores normal keyboard input. Existing
-range-based formatting, autosave, Undo and Copy retain their behavior. An outside
-tap, Escape, dismissing the toolbar, or leaving the document closes it.
-On touch devices, touching a formatting control parks focus outside the editor
-immediately, after saving its range. The toolbar keeps its position through that
-tap while the keyboard closes, then moves to the resized viewport. Dismiss and
-Escape collapse the native range so a delayed Safari selection event cannot
-reopen the dismissed tools.
+Notes open in selection/formatting mode with a non-editable, natively selectable
+document. **Start typing** explicitly enables the keyboard and text input;
+**Select & format** returns to selection mode. A completed text selection also
+leaves typing mode before showing the toolbar. Formatting changes the existing
+run model directly, without focusing a contenteditable field, so Chrome/Safari
+do not need to open a keyboard just to apply a color, font, or text emphasis.
+The same owner-scoped save queue and recovery drafts persist the result.
 
-In split view at tablet widths from 701 to 1100 CSS pixels, study tabs occupy a
-second row with five equal columns. Their complete labels remain inside the
-buttons. The notes controls and active study banner above the panes use the same
-column split as the content and stretch to equal height, including after moving
-the divider. Phone tab placement remains separate from this tablet row.
+Typing, case changes, formatting and source insertions share an in-memory Undo
+history limited to 50 snapshots per opened note. The Undo button and Ctrl/Cmd+Z
+restore document text, formatting and selection; Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y
+redo. New changes clear redo history. Reloading/opening another note resets this
+session history, while saved notes and recovery drafts keep their existing rules.
+Read Notes can undo its formatting actions without undoing earlier typing.
+
+On touch devices, touching a formatting control saves its range and parks focus
+outside the document. The toolbar keeps its position through that tap while the
+keyboard closes, then moves to the resized viewport. Dismiss and Escape collapse
+the native range so delayed Safari selection events cannot reopen dismissed tools.
+
+In split view at tablet widths from 701 to 1100 CSS pixels, study tabs stay fixed
+on the right half of the top row. Compact font sizes keep complete labels inside
+their five equal buttons. The notes and study banners occupy fixed halves with
+a 4-pixel middle gap, matching heights, and no movement when the divider moves.
+Phone tab placement remains separate from this tablet layout.
 Delete first names the target sermon in a confirmation with **Cancel** and
 **Delete sermon**. Cancel has default focus; closing or dismissing that dialog
 does not send a delete request.
 
-**Read Notes** keeps formatting and makes detected references clickable. Verse
-references are also offered below the live editor. The popup's insert button
+**Read Notes** reuses the same non-editable document and keeps detected references
+clickable. Selecting words offers highlighting, fonts, sizes and emphasis without
+typing. Case-changing and Erase controls remain hidden in this view. On phones
+and touch tablets (including iPads), it fills the available browser page, hiding
+the site header/menu, tabs, notes controls, split pane and AI assistant. A floating
+**Back to editing** button or Escape returns to the normal layout. Separate editing
+and reading scroll positions survive returning and reopening; rotation keeps the
+focused view active. Desktop reading retains the normal navigation. No browser
+fullscreen permission, database migration or online sync is needed for the view.
+
+Verse references are also offered below the live editor. The popup's insert button
 adds the passage body without its translation/attribution label. **Current
 notes** sends selected material or a whole source to the currently open sermon;
 otherwise a chooser offers new or existing notes. An insertion uses the remembered

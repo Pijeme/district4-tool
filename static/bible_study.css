@@ -292,11 +292,12 @@ body.bible-study-page{position:fixed;inset:0;margin:0;min-height:0;height:var(--
 }
 .bs-root[data-mode=bible] .bs-wide-tabs>[aria-label="Study tools"],.bs-root[data-mode=study] .bs-wide-tabs>.bs-reader-tabs{display:none}
 @media(min-width:701px) and (max-width:1100px){
- .bs-root[data-mode=split] .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,1fr) 128px;grid-template-rows:44px 44px;height:88px;min-height:88px;flex-basis:88px;overflow:hidden}
+ .bs-root[data-mode=split] .bs-wide-tabs{display:grid;grid-template-columns:minmax(0,calc(50% - 100px)) 100px minmax(0,50%);grid-template-rows:44px;height:44px;min-height:44px;flex-basis:44px;overflow:hidden}
  .bs-root[data-mode=split] .bs-wide-tabs>.bs-reader-tabs{grid-column:1;grid-row:1;justify-self:start;min-width:0;overflow:visible}
  .bs-root[data-mode=split] .bs-wide-tabs>.bs-layout-control{grid-column:2;grid-row:1}
- .bs-root[data-mode=split] .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));justify-self:stretch;width:100%;max-width:none;min-width:0;gap:2px;overflow:visible}
+ .bs-root[data-mode=split] .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs){grid-column:3;grid-row:1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));justify-self:stretch;width:100%;max-width:none;min-width:0;gap:2px;overflow:visible}
  .bs-root[data-mode=split] .bs-wide-tabs>.bs-study-tabs:not(.bs-reader-tabs) button{width:100%;min-width:0;max-width:none;white-space:normal}
+ .bs-root[data-mode=split] .bs-wide-tabs>.bs-reader-tabs button{flex:0 0 80px;width:80px;min-width:80px;max-width:80px;padding:3px 2px}
 }
 .bs-root[data-compact-reader=true] .bs-scripture{padding-left:14px;padding-right:14px}
 .bs-root[data-compact-reader=true] .bs-verse-row{grid-template-columns:minmax(0,50%) 44px 30px 30px minmax(0,1fr);gap:4px}
@@ -494,9 +495,9 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 
 @media(max-width:700px){.bs-root .bs-notes-editor,.bs-root .bs-notes-preview{min-height:620px;font-size:16px}}
 /* These headers stay in a separate row while only the content panes resize. */
-.bs-fixed-workspace-tools{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,calc((100% - 12px)*var(--bs-split)/100)) 12px minmax(0,1fr);align-items:stretch;gap:0;padding:3px 0 6px;background:var(--bs-paper);border-bottom:1px solid var(--bs-line)}
+.bs-fixed-workspace-tools{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:stretch;gap:4px;padding:3px 4px 6px;background:var(--bs-paper);border-bottom:1px solid var(--bs-line)}
 .bs-root[data-mode=bible] .bs-fixed-workspace-tools{grid-template-columns:minmax(0,1fr)}
-.bs-fixed-reader-tools,.bs-fixed-study-heading{min-width:0;display:flex;padding:0 7px}.bs-fixed-reader-tools{grid-column:1}.bs-fixed-study-heading{grid-column:3}
+.bs-fixed-reader-tools,.bs-fixed-study-heading{min-width:0;display:flex;padding:0}.bs-fixed-reader-tools{grid-column:1}.bs-fixed-study-heading{grid-column:2}
 .bs-root .bs-fixed-reader-tools .bs-notes-dock{position:static;top:auto;margin:0;width:100%}
 .bs-root .bs-fixed-reader-tools[data-has-document=true] .bs-notes-meta-actions{display:flex}
 .bs-root .bs-fixed-reader-tools[data-has-document=false] .bs-notes-meta-actions{display:none}
@@ -505,3 +506,21 @@ body.bible-study-page.bs-ios-keyboard{top:var(--bs-viewport-offset-top,0px);bott
 
 ::highlight(sermon-format-selection){background:#3d6fbd;color:white}
 .bs-root #bsNotesTools #bsNotesFontSize{appearance:none;padding-right:13px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='m1 1 3 3 3-3' fill='none' stroke='%23263b50' stroke-width='1.4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center}
+.bs-root .bs-notes-mode-help{margin:8px 0 12px;padding:0 8px;font:12px/1.6 Arial,sans-serif;color:var(--bs-muted)}
+.bs-notes-entry-mode{display:flex;align-items:center;gap:8px;margin:8px}.bs-notes-entry-mode .bs-notes-mode-help{margin:0;padding:0}.bs-notes-entry-mode button{flex-shrink:0}
+.bs-root #bsNotesTyping[aria-pressed=true]{background:#d9eee5;border-color:#71a28d;color:#174f36}
+.bs-root .bs-notes-back{position:fixed;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));z-index:40025;min-height:46px;padding:11px 16px;border:1px solid #8da6ba;border-radius:24px;background:#153d5b;color:white;box-shadow:0 3px 14px #10263e35;font:600 13px/1.4 Arial,sans-serif}
+body.bs-notes-reading>.app-header,body.bs-notes-reading .pij-launcher,body.bs-notes-reading .pij-panel,body.bs-notes-reading #sideDrawer,body.bs-notes-reading .drawer-backdrop{display:none!important}
+body.bs-notes-reading #bibleStudyRoot>.bs-header,body.bs-notes-reading #bibleStudyRoot>.bs-preview,body.bs-notes-reading #bsWideTabs,body.bs-notes-reading #bsFixedTools,body.bs-notes-reading #bsStudy,body.bs-notes-reading #bsDivider,body.bs-notes-reading .bs-notes-dock,body.bs-notes-reading #bsNotesStatus,body.bs-notes-reading #bsNotesJob,body.bs-notes-reading .bs-notes-heading,body.bs-notes-reading #bsNotesConflict,body.bs-notes-reading #bsNotesModeHelp,body.bs-notes-reading #bsNotesReferences,body.bs-notes-reading #bsNotesOrigin,body.bs-notes-reading .bs-save-status{display:none!important}
+body.bs-notes-reading #bsLayout{display:block;flex:1;min-height:0;border:0}
+body.bs-notes-reading #bsBible{width:100%;height:100%;padding:0;overflow:auto;background:#fff}
+body.bs-notes-reading #bsNotesPreview{min-height:100%;padding:max(20px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) calc(90px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));user-select:text;-webkit-user-select:text}
+body.bs-notes-reading #bsNotesEditor{min-height:0;padding:0}
+.bs-root[data-notes-read=true] .bs-notes-entry-mode{display:none}
+body.bs-notes-reading #bsNotesBack{bottom:calc(var(--bs-notes-tools-clearance,0px) + max(14px,env(safe-area-inset-bottom)))}
+.bs-root[data-notes-read=true] #bsNotesCase,.bs-root[data-notes-read=true] label[for=bsNotesCase],.bs-root[data-notes-read=true] #bsNotesErase{display:none!important}
+@media(min-width:701px) and (max-width:1100px){
+ .bs-fixed-reader-tools .bs-notes-actions,.bs-fixed-reader-tools .bs-notes-meta-actions{flex-wrap:nowrap;gap:3px}
+ .bs-root .bs-fixed-reader-tools .bs-notes-actions button{min-height:32px;padding:4px 5px;font-size:10.5px;line-height:1.2}
+ .bs-root .bs-fixed-reader-tools #bsNotesActionsToggle{width:30px;min-height:32px;padding:5px}
+}
