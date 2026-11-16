@@ -2469,7 +2469,10 @@ class SermonNotesEditorTests(unittest.TestCase):
         html=re.sub(r'<script src="[^"]*bible_study\.js[^"]*"[^>]*></script>',
                     lambda _: '<script>'+source.replace('</script',r'<\/script')+'</script>',self.render_preview())
         html=re.sub(r'@import url\([^;]+;','',html)
-        point=r'''text=>{
+        point=r'''async text=>{
+            // Undo and focus can queue a Safari scroll adjustment. Measure the
+            // reference after layout, as a user would see it before tapping.
+            await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
             const editor=document.getElementById('bsNotesEditor'),walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT);
             let node;while(node=walker.nextNode())if(node.textContent.includes(text)){
                 const range=document.createRange(),offset=node.textContent.indexOf(text);range.setStart(node,offset);range.setEnd(node,offset+text.length);
@@ -2710,6 +2713,88 @@ class SermonNotesEditorTests(unittest.TestCase):
         for size in ((1100,850),(820,1000),(420,900)):
             with self.subTest(size=size):
                 self.run_browser(self.render_preview(),verify,setup,window_size=size)
+
+    def test_touch_selection_dismisses_keyboard_before_showing_formatting(self):
+        from playwright.sync_api import sync_playwright
+        setup=BibleStudyBrowserTests.setup_api(self,True)+r"""
+            const previousFetch=window.fetch;
+            const sample={id:'2'.repeat(32),version:1,dirty:false,note:{schema_version:1,theme:'Keyboard handoff',text:'John 3:16',content:{blocks:[{type:'paragraph',runs:[{text:'Faith grows through prayer and patient trust.'}]}]}}};
+            window.notePatches=[];window.keyboardShown=false;window.dismissRequests=0;window.releaseKeyboard=null;
+            window.keyboardViewport=Object.assign(new EventTarget(),{width:WIDTH,height:HEIGHT,offsetTop:0,offsetLeft:0,scale:1});
+            Object.defineProperty(window,'visualViewport',{value:keyboardViewport});
+            Object.defineProperty(navigator,'virtualKeyboard',{value:undefined});
+            function keyboardForTyping(){
+                const editor=document.getElementById('bsNotesEditor');
+                if(!editor?.isContentEditable||document.activeElement!==editor||editor.getAttribute('inputmode')==='none'||keyboardShown)return;
+                keyboardShown=true;keyboardViewport.height=HEIGHT-320;keyboardViewport.dispatchEvent(new Event('resize'));
+            }
+            document.addEventListener('DOMContentLoaded',()=>new MutationObserver(keyboardForTyping).observe(document.getElementById('bsNotesEditor'),{attributes:true,attributeFilter:['contenteditable','inputmode']}));
+            // Model Safari retaining its keyboard if the field is disabled
+            // before blur or is immediately refocused, plus asynchronous closing.
+            document.addEventListener('focusin',event=>{
+                if(event.target.id!=='bsNotesEditor')return;
+                if(event.target.isContentEditable)keyboardForTyping();
+                else if(keyboardShown)releaseKeyboard=null;
+            });
+            document.addEventListener('focusout',event=>{
+                if(event.target.id!=='bsNotesEditor'||!event.target.isContentEditable||!keyboardShown)return;
+                dismissRequests++;
+                releaseKeyboard=()=>{keyboardShown=false;keyboardViewport.height=HEIGHT;keyboardViewport.dispatchEvent(new Event('resize'));};
+            });
+            const response=value=>new Response(JSON.stringify({ok:true,...value}),{headers:{'Content-Type':'application/json'}});
+            window.fetch=async(url,options={})=>{
+                const path=String(url).split('?')[0];if(!path.includes('/api/notes'))return previousFetch(url,options);
+                if(path.endsWith('/notes'))return response({notes:[{id:sample.id,theme:sample.note.theme,text:sample.note.text}],drive_configured:true});
+                if(options.method==='PATCH'){sample.version++;sample.note=JSON.parse(options.body).note;notePatches.push(sample.note);}
+                return response({item:sample});
+            };
+        """
+        html=self.render_preview()
+        with sync_playwright() as playwright:
+            for engine,width,height in [('chromium',393,852),('webkit',393,852),('webkit',820,1180)]:
+                with self.subTest(engine=engine,width=width):
+                    browser=getattr(playwright,engine).launch(headless=True)
+                    try:
+                        context=browser.new_context(viewport=dict(width=width,height=height),is_mobile=True,has_touch=True)
+                        page=context.new_page();page.add_init_script(setup.replace('WIDTH',str(width)).replace('HEIGHT',str(height)))
+                        errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                        def route(request):
+                            path=request.request.url.split('?',1)[0]
+                            if path=='https://district.test/':request.fulfill(body=html,content_type='text/html; charset=utf-8')
+                            elif path.startswith('https://district.test/static/'):
+                                file=ROOT/path.removeprefix('https://district.test/')
+                                if file.is_file():request.fulfill(path=str(file))
+                                else:request.abort()
+                            else:request.abort()
+                        page.route('**/*',route);page.goto('https://district.test/');page.locator('#bsNotesTab').tap();page.locator('#bsNotesList button').tap()
+                        editor=page.locator('#bsNotesEditor');editor.wait_for(state='visible');tools=page.locator('#bsNotesTools')
+                        caret=editor.evaluate("""e=>{const text=document.createTreeWalker(e.lastElementChild,NodeFilter.SHOW_TEXT).nextNode(),range=document.createRange();range.setStart(text,5);range.collapse(true);const r=range.getBoundingClientRect();return {x:r.x+.2,y:r.y+r.height/2};}""")
+                        page.touchscreen.tap(caret['x'],caret['y'])
+                        page.wait_for_function('keyboardShown')
+                        self.assertTrue(page.evaluate('keyboardShown'));self.assertTrue(tools.is_hidden())
+                        self.assertEqual(editor.get_attribute('contenteditable'),'true')
+                        editor.dispatch_event('pointerdown',dict(pointerType='touch',pointerId=9,isPrimary=True,button=0))
+                        page.evaluate("const e=document.getElementById('bsNotesEditor'),text=document.createTreeWalker(e.lastElementChild,NodeFilter.SHOW_TEXT).nextNode(),range=document.createRange();range.setStart(text,6);range.setEnd(text,11);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));")
+                        # Dismissal starts while the selection gesture is active.
+                        self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        self.assertGreater(page.evaluate('dismissRequests'),0)
+                        self.assertNotEqual(page.evaluate('document.activeElement.id'),'bsNotesEditor')
+                        self.assertTrue(page.evaluate('keyboardShown'));self.assertTrue(tools.is_hidden())
+                        editor.dispatch_event('pointerup',dict(pointerType='touch',pointerId=9,isPrimary=True,button=0))
+                        self.assertTrue(tools.is_hidden(),'Toolbar appeared over the keyboard while it was still closing')
+                        self.assertTrue(page.evaluate("typeof releaseKeyboard==='function'"),'Disabling/refocusing the field prevented Safari keyboard dismissal')
+                        # A native selection loss during the closing animation must
+                        # not lose the saved words or reopen the keyboard.
+                        page.evaluate("getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));")
+                        self.assertTrue(tools.is_hidden())
+                        page.evaluate('releaseKeyboard()');tools.wait_for(state='visible')
+                        self.assertFalse(page.evaluate('keyboardShown'))
+                        self.assertEqual(page.evaluate('getSelection().toString()'),'grows')
+                        tools.locator('[data-notes-selection-command="hiliteColor"][data-color="#ffdef3"]').tap()
+                        page.wait_for_function('notePatches.some(note=>note.content.blocks.some(block=>block.runs.some(run=>run.text==="grows"&&run.highlight==="#ffdef3")))')
+                        self.assertFalse(page.evaluate('keyboardShown'));self.assertEqual(editor.get_attribute('contenteditable'),'false')
+                        self.assertFalse(errors,errors);context.close()
+                    finally:browser.close()
 
     def test_native_notes_selection_stays_still_until_formatting_on_mouse_and_touch(self):
         from playwright.sync_api import sync_playwright

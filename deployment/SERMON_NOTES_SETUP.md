@@ -87,6 +87,17 @@ placement uses caretPositionFromPoint with the Safari caretRangeFromPoint fallba
 Read Notes stays non-editable even after taps or Enter; Back to editing restores
 automatic tap-to-type behavior.
 
+When a nonempty selection is first detected during typing, the editor is blurred
+while it is still editable, then made non-editable. Touch devices park focus on
+the notes panel; they never immediately refocus the document. Unchanged native
+ranges are left intact. A saved-range overlay protects the words if Safari clears
+its native selection during the keyboard animation. If the typing viewport was
+reduced by a docked keyboard, formatting stays hidden until its height recovers;
+viewport resize/scroll events then restore a lost range and reveal the tools.
+This handoff works without the optional VirtualKeyboard API. A regression models
+Safari rejecting blur after disabling and cancelling dismissal on immediate
+refocus, and verifies that the old implementation fails those device cases.
+
 Typing, case changes, formatting and source insertions share an in-memory Undo
 history limited to 50 snapshots per opened note. The Undo button and Ctrl/Cmd+Z
 restore document text, formatting and selection; Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y

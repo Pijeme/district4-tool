@@ -103,7 +103,7 @@
         <header class="bs-study-header bs-banner"><h2 class="bs-handwritten">Book Study</h2></header>
         <div class="bs-study-content bs-book-study"><h3 id="bsBookStudyTitle">Genesis</h3><div id="bsBookStudyResults" aria-live="polite"></div></div>
       </section>
-      <section id="bsNotesPanel" role="tabpanel" aria-labelledby="bsNotesTab" class="bs-notes-panel" hidden>
+      <section id="bsNotesPanel" role="tabpanel" aria-labelledby="bsNotesTab" class="bs-notes-panel" tabindex="-1" hidden>
         <div class="bs-notes-dock">
         <nav class="bs-notes-actions" aria-label="Sermon notes controls">
           <button type="button" id="bsNotesCreate">Create Notes</button>
@@ -349,5 +349,5 @@
   <dialog class="bs-verse-dialog bs-source-dialog" id="bsDictionaryDialog" data-study-kind="word" aria-labelledby="bsDictionaryTitle"><div class="bs-dialog-head"><button type="button" id="bsDictionaryBack" aria-label="Back to previous dictionary article" hidden>&larr; Back</button><strong id="bsDictionaryTitle">Dictionary article</strong><button type="button" id="bsCloseDictionary" aria-label="Close dictionary article">&times;</button></div><div id="bsDictionaryContent" class="bs-source-content"></div></dialog>
 </section>
 <script id="bsConfig" type="application/json">{{ {'startupPreload': bible_startup_preload|default(false), 'preferenceKey': bible_preference_key|default('preview'), 'csrfToken': csrf_token, 'referenceBooks': bible_reference_books|default({}), 'statusUrl': url_for('bible_study.status_api'), 'stateUrl': url_for('bible_study.state_get'), 'chapterUrl': url_for('bible_study.chapter_api'), 'verseUrl': url_for('bible_study.verse_api'), 'syncUrl': url_for('bible_study.sync_status') if bible_study_admin else none}|tojson }}</script>
-<script src="{{ url_for('static', filename='bible_study.js', v='notes-auto-typing-34') }}" defer></script>
+<script src="{{ url_for('static', filename='bible_study.js', v='notes-keyboard-handoff-35') }}" defer></script>
 {% endblock %}
