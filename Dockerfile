@@ -23,7 +23,7 @@ RUN groupadd --gid 10001 district4 \
 
 # Copy only runtime code/assets. Local secrets and databases never enter layers.
 COPY *.py ./
-COPY heavens_millionaire_questions.json ./
+COPY heavens_millionaire_questions.json heavens_millionaire_niv_replacements.json ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 
