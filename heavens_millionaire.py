@@ -256,12 +256,19 @@ def delete_portrait(name):
         (Path(current_app.config['HEAVENS_MILLIONAIRE_PHOTOS']) / name).unlink(missing_ok=True)
 
 
+def normalize_username(value):
+    username = str(value or '').strip().lower()
+    if not re.fullmatch(r'[a-z0-9_]{3,32}', username):
+        raise GameError('Choose a username of 3–32 letters, numbers or underscores.')
+    return username
+
+
 def public_player(row):
     if row is None:
         return None
     return dict(id=row['id'], player_code=row['player_code'], name=row['name'], area=row['area'], church=row['church'],
                 pastor=row['pastor'], photo=bool(row['photo']), photo_url=f"/bible-games/photo/{row['id']}?v={row['photo']}",
-                created_at=row['created_at'], linked=bool(row['site_key']))
+                created_at=row['created_at'], linked=bool(row['site_key']), username=row['username'])
 
 
 def round_row(attempt):
@@ -643,15 +650,19 @@ def register_player():
         raise GameError('Please select an Area and its church from the directory.')
     if body().get('consent') not in ('true', 'on', True):
         raise GameError('Please confirm the portrait and scoreboard notice.')
+    username = normalize_username(body().get('username')) if body().get('username') else None
     filename = portrait(request.files.get('photo'))
     ident, code, recovery = secrets.token_hex(16), 'HM-' + secrets.token_hex(5).upper(), secrets.token_urlsafe(24)
     try:
         with transaction() as conn:
-            conn.execute('''INSERT INTO game_players(id,player_code,name,area,church_id,church,pastor,photo,consented_at,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?)''', (ident, code, name, church['area'], church['id'], church['church'], church['pastor'], filename, now(), now()))
+            conn.execute('''INSERT INTO game_players(id,player_code,name,area,church_id,church,pastor,photo,consented_at,created_at,username)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (ident, code, name, church['area'], church['id'], church['church'], church['pastor'], filename, now(), now(), username))
             conn.execute('INSERT INTO game_player_credentials(player_id,password_hash,recovery_hash) VALUES(?,?,?)',
                          (ident, generate_password_hash(password), generate_password_hash(recovery)))
             audit('register', ident)
+    except sqlite3.IntegrityError:
+        delete_portrait(filename)
+        raise GameError('That username is already taken. Choose another.', 409)
     except Exception:
         delete_portrait(filename)
         raise
@@ -686,20 +697,37 @@ def site_login():
 
 @game.post('/api/login')
 def login():
-    code = str(body().get('player_code', '')).strip().upper()
+    code = str(body().get('username') or body().get('player_code', '')).strip().upper()
     password = str(body().get('password', ''))[:129]
     rate_limit('login', 30, identity=code)
     rate_limit('login-ip', 100)
     row = db().execute('''SELECT p.*,c.password_hash FROM game_players p JOIN game_player_credentials c ON c.player_id=p.id
-        WHERE p.player_code=? AND p.site_key IS NULL''', (code,)).fetchone()
+        WHERE (p.player_code=? OR p.username=lower(?)) AND p.site_key IS NULL''', (code, code)).fetchone()
     # Dummy hash work avoids a quick response for nonexistent player IDs.
     encoded = row['password_hash'] if row else current_app.extensions['heavens_millionaire']['dummy_hash']
     if not check_password_hash(encoded or current_app.extensions['heavens_millionaire']['dummy_hash'], password):
-        raise GameError('The Player ID or password is incorrect.', 401)
+        raise GameError('The username, Player ID or password is incorrect.', 401)
     if not row:
-        raise GameError('The Player ID or password is incorrect.', 401)
+        raise GameError('The username, Player ID or password is incorrect.', 401)
     sign_in(row)
     return jsonify(player=public_player(row), csrf=csrf())
+
+
+@game.post('/api/username')
+def set_username():
+    owner = player()
+    if owner['site_key']:
+        raise GameError('Your account uses the District website login.')
+    username = normalize_username(body().get('username'))
+    try:
+        with transaction() as conn:
+            conn.execute('UPDATE game_players SET username=? WHERE id=? AND username IS NULL', (username, owner['id']))
+            updated = conn.execute('SELECT * FROM game_players WHERE id=?', (owner['id'],)).fetchone()
+            if updated['username'] != username:
+                raise GameError('Your username has already been set.')
+    except sqlite3.IntegrityError:
+        raise GameError('That username is already taken.', 409)
+    return jsonify(player=public_player(updated))
 
 
 @game.post('/api/logout')
@@ -711,7 +739,7 @@ def logout():
 
 @game.post('/api/recover')
 def recover():
-    code = str(body().get('player_code', '')).strip().upper()
+    code = str(body().get('username') or body().get('player_code', '')).strip().upper()
     rate_limit('recovery', 5, identity=code)
     rate_limit('recovery-ip', 20)
     password = str(body().get('password', ''))
@@ -721,7 +749,7 @@ def recover():
     replacement = secrets.token_urlsafe(24)
     with transaction() as conn:
         row = conn.execute('''SELECT p.id,c.recovery_hash FROM game_players p JOIN game_player_credentials c
-            ON c.player_id=p.id WHERE player_code=? AND site_key IS NULL''', (code,)).fetchone()
+            ON c.player_id=p.id WHERE (p.player_code=? OR p.username=lower(?)) AND p.site_key IS NULL''', (code, code)).fetchone()
         valid = bool(row and row['recovery_hash'] and check_password_hash(row['recovery_hash'], supplied))
         temporary = None
         if row and not valid:
@@ -729,7 +757,7 @@ def recover():
             temporary = next((r for r in requests if check_password_hash(r['token_hash'], supplied)), None)
             valid = temporary is not None
         if not valid:
-            raise GameError('The Player ID or recovery code is incorrect or expired.', 401)
+            raise GameError('The username, Player ID or recovery code is incorrect or expired.', 401)
         conn.execute('UPDATE game_player_credentials SET password_hash=?,recovery_hash=?,auth_version=auth_version+1 WHERE player_id=?',
                      (generate_password_hash(password), generate_password_hash(replacement), row['id']))
         conn.execute("UPDATE game_recovery_requests SET status='used',token_hash=NULL WHERE player_id=? AND status IN ('approved','pending')", (row['id'],))
@@ -742,13 +770,13 @@ def recover():
 @game.post('/api/recovery-help')
 def recovery_help():
     rate_limit('recovery-help', 5, 3600)
-    code = str(body().get('player_code', '')).strip().upper()
+    code = str(body().get('username') or body().get('player_code', '')).strip().upper()
     with transaction() as conn:
-        row = conn.execute('SELECT id FROM game_players WHERE player_code=? AND site_key IS NULL', (code,)).fetchone()
+        row = conn.execute('SELECT id FROM game_players WHERE (player_code=? OR username=lower(?)) AND site_key IS NULL', (code, code)).fetchone()
         if row and not conn.execute("SELECT 1 FROM game_recovery_requests WHERE player_id=? AND status='pending'", (row['id'],)).fetchone():
             conn.execute("INSERT INTO game_recovery_requests(player_id,created_at,status,note) VALUES(?,?,'pending',?)",
                          (row['id'], now(), str(body().get('note', ''))[:300]))
-    return jsonify(ok=True, message='If that Player ID exists, a recovery request is available to the game administrator. Ask your pastor or administrator to verify you in person.')
+    return jsonify(ok=True, message='If that account exists, a recovery request is available to the game administrator. Ask your pastor or administrator to verify you in person.')
 
 
 @game.post('/api/photo')
@@ -1071,7 +1099,11 @@ def admin_data():
     with transaction():
         sweep()
     search = '%' + str(request.args.get('search', ''))[:80] + '%'
-    players = [public_player(r) for r in db().execute('SELECT * FROM game_players WHERE name LIKE ? OR player_code LIKE ? ORDER BY created_at DESC LIMIT 50', (search, search))]
+    page = max(1, request.args.get('page', 1, type=int))
+    player_total = db().execute('SELECT count(*) FROM game_players WHERE name LIKE ? OR player_code LIKE ? OR username LIKE ?', (search, search, search)).fetchone()[0]
+    player_pages = max(1, (player_total + 49) // 50)
+    page = min(page, player_pages)
+    players = [public_player(r) for r in db().execute('SELECT * FROM game_players WHERE name LIKE ? OR player_code LIKE ? OR username LIKE ? ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?', (search, search, search, (page - 1) * 50))]
     stats = dict(db().execute('''SELECT count(*) AS attempts,sum(status='active') AS active,
         sum(status='won') AS wins,sum(status='disqualified') AS disqualified FROM game_sessions''').fetchone())
     stats['players'] = db().execute('SELECT count(*) FROM game_players').fetchone()[0]
@@ -1079,7 +1111,7 @@ def admin_data():
     by_church = [dict(r) for r in db().execute("SELECT area,church,count(*) AS games,max(final_points) AS highest FROM game_sessions WHERE status NOT IN ('active','disqualified') GROUP BY area,church ORDER BY highest DESC LIMIT 100")]
     pending = [dict(r) for r in db().execute("""SELECT r.id,r.created_at,r.status,r.note,p.name,p.player_code,p.area,p.church FROM game_recovery_requests r
         JOIN game_players p ON p.id=r.player_id WHERE r.status IN ('pending','approved') ORDER BY r.id DESC LIMIT 50""")]
-    return jsonify(stats=stats, policy=policy(), players=players, by_date=by_date, by_church=by_church, recovery_requests=pending,
+    return jsonify(stats=stats, policy=policy(), players=players, player_page=page, player_pages=player_pages, player_total=player_total, by_date=by_date, by_church=by_church, recovery_requests=pending,
                    audit=[dict(r) for r in db().execute('SELECT created_at,actor,action,details FROM game_audit_logs ORDER BY id DESC LIMIT 50')],
                    question_counts=[dict(r) for r in db().execute('SELECT stage,count(*) AS count FROM game_questions WHERE enabled=1 GROUP BY stage')])
 
@@ -1149,6 +1181,27 @@ def admin_recovery():
         conn.execute("UPDATE game_recovery_requests SET status='approved',token_hash=?,expires_at=? WHERE id=?",
                      (generate_password_hash(code), now() + 900, row['id']))
         audit('recovery_verified', admin['key'], dict(request_id=row['id'], verification_note=note[:500]))
+    return jsonify(reset_code=code, expires_in=900)
+
+
+@game.post('/api/admin/player-reset')
+def admin_player_reset():
+    admin = administrator()
+    if not admin:
+        raise GameError('District administrator access is required.', 403)
+    rate_limit('admin-player-reset', 30, 3600)
+    ident = str(body().get('player_id', ''))
+    note = str(body().get('verification_note', '')).strip()
+    if len(note) < 10:
+        raise GameError('Record how you verified the player (at least 10 characters).')
+    code = secrets.token_urlsafe(24)
+    with transaction() as conn:
+        owner = conn.execute('SELECT * FROM game_players WHERE id=? AND site_key IS NULL', (ident,)).fetchone()
+        if not owner:
+            raise GameError('Game-only account not found.', 404)
+        conn.execute("UPDATE game_recovery_requests SET status='used',token_hash=NULL WHERE player_id=? AND status='approved'", (ident,))
+        conn.execute("INSERT INTO game_recovery_requests(player_id,created_at,status,note,token_hash,expires_at) VALUES(?,?,'approved',?,?,?)", (ident, now(), note[:300], generate_password_hash(code), now()+900))
+        audit('admin_reset_issued', admin['key'], dict(player_id=ident, verification_note=note[:300]))
     return jsonify(reset_code=code, expires_in=900)
 
 
@@ -1250,6 +1303,9 @@ def initialize(path, question_path):
         CREATE TABLE IF NOT EXISTS game_recovery_requests(id INTEGER PRIMARY KEY,player_id TEXT NOT NULL REFERENCES game_players(id),created_at REAL NOT NULL,
             status TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',token_hash TEXT,expires_at REAL);
         ''')
+        if 'username' not in {row[1] for row in conn.execute('PRAGMA table_info(game_players)')}:
+            conn.execute('ALTER TABLE game_players ADD COLUMN username TEXT COLLATE NOCASE')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS game_player_username ON game_players(username COLLATE NOCASE)')
         if 'pause_started_at' not in {row[1] for row in conn.execute('PRAGMA table_info(game_answers)')}:
             conn.execute('ALTER TABLE game_answers ADD COLUMN pause_started_at REAL')
         digest = hashlib.sha256(raw).hexdigest()
