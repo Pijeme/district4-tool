@@ -1227,11 +1227,51 @@ def export():
     return Response('\ufeff' + output.getvalue(), mimetype='text/csv', headers={'Content-Disposition': 'attachment; filename=heavens-millionaire-results.csv'})
 
 
-def initialize(path, question_path):
-    """Idempotent schema/import. Editorial flags do not determine eligibility."""
+def read_question_bank(question_path):
+    """Load the base bank and apply the separately versioned full-verse replacements."""
     question_file = Path(question_path)
     raw = question_file.read_bytes()
     bank = json.loads(raw.decode('utf-8-sig'))
+    digest = hashlib.sha256(raw).hexdigest()
+    # Only the production bank has a sibling overlay. Explicit alternate banks
+    # (including test fixtures and administrator imports) remain independent.
+    overlay_path = question_file.with_name('heavens_millionaire_niv_replacements.json')
+    if question_file.name != 'heavens_millionaire_questions.json' or not overlay_path.exists():
+        return bank, digest
+    overlay_raw = overlay_path.read_bytes()
+    overlay = json.loads(overlay_raw.decode('utf-8-sig'))
+    replacements = overlay['replacements']
+    targets = {q['id']: q for q in bank['questions']
+               if q['question'].startswith('Identify the NIV Bible reference that begins')}
+    if (overlay.get('format') != 1 or not isinstance(replacements, dict)
+            or set(targets) != set(replacements)
+            or Counter(q['stage'] for q in targets.values())
+            != {'Beginner': 60, 'Intermediate': 60, 'Advanced': 10}):
+        raise ValueError('The NIV overlay must replace exactly the original 130 fragment questions.')
+    fields = {'question', 'options', 'correct_index', 'answer', 'explanation',
+              'source', 'verification_status', 'review'}
+    references = {q['source'] for q in replacements.values()}
+    if len(references) != 130:
+        raise ValueError('Duplicate NIV verse reference in replacement data.')
+    for ident, replacement in replacements.items():
+        if (set(replacement) != fields
+                or not replacement['question'].startswith('Where in the Bible is this verse found?\n\n')
+                or not replacement['question'].split('\n\n', 1)[1].strip()
+                or replacement['answer'] != replacement['source']
+                or not set(replacement['options']).issubset(references)
+                or targets[ident]['category'] != 'Identify the Bible Verse'):
+            raise ValueError('Invalid NIV verse replacement: ' + ident)
+        targets[ident].update(replacement)
+        bank.setdefault('repeat_keys_by_id', {})[ident] = [
+            'id:' + ident, 'verse-location:' + replacement['source'].casefold()]
+    # Changes to either file must trigger the normal transactional SQLite re-import.
+    digest = hashlib.sha256(raw + b'\0' + overlay_raw).hexdigest()
+    return bank, digest
+
+
+def initialize(path, question_path):
+    """Idempotent schema/import. Editorial flags do not determine eligibility."""
+    bank, digest = read_question_bank(question_path)
     questions = bank['questions']
     seen = set()
     for q in questions:
@@ -1308,7 +1348,6 @@ def initialize(path, question_path):
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS game_player_username ON game_players(username COLLATE NOCASE)')
         if 'pause_started_at' not in {row[1] for row in conn.execute('PRAGMA table_info(game_answers)')}:
             conn.execute('ALTER TABLE game_answers ADD COLUMN pause_started_at REAL')
-        digest = hashlib.sha256(raw).hexdigest()
         old = conn.execute("SELECT value FROM game_settings WHERE key='bank_hash'").fetchone()
         changed = not old or old[0] != digest
         if changed:
