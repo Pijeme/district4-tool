@@ -1071,7 +1071,11 @@ def admin_data():
     with transaction():
         sweep()
     search = '%' + str(request.args.get('search', ''))[:80] + '%'
-    players = [public_player(r) for r in db().execute('SELECT * FROM game_players WHERE name LIKE ? OR player_code LIKE ? ORDER BY created_at DESC LIMIT 50', (search, search))]
+    page = max(1, request.args.get('page', 1, type=int))
+    player_total = db().execute('SELECT count(*) FROM game_players WHERE name LIKE ? OR player_code LIKE ?', (search, search)).fetchone()[0]
+    player_pages = max(1, (player_total + 49) // 50)
+    page = min(page, player_pages)
+    players = [public_player(r) for r in db().execute('SELECT * FROM game_players WHERE name LIKE ? OR player_code LIKE ? ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?', (search, search, (page - 1) * 50))]
     stats = dict(db().execute('''SELECT count(*) AS attempts,sum(status='active') AS active,
         sum(status='won') AS wins,sum(status='disqualified') AS disqualified FROM game_sessions''').fetchone())
     stats['players'] = db().execute('SELECT count(*) FROM game_players').fetchone()[0]
@@ -1079,7 +1083,7 @@ def admin_data():
     by_church = [dict(r) for r in db().execute("SELECT area,church,count(*) AS games,max(final_points) AS highest FROM game_sessions WHERE status NOT IN ('active','disqualified') GROUP BY area,church ORDER BY highest DESC LIMIT 100")]
     pending = [dict(r) for r in db().execute("""SELECT r.id,r.created_at,r.status,r.note,p.name,p.player_code,p.area,p.church FROM game_recovery_requests r
         JOIN game_players p ON p.id=r.player_id WHERE r.status IN ('pending','approved') ORDER BY r.id DESC LIMIT 50""")]
-    return jsonify(stats=stats, policy=policy(), players=players, by_date=by_date, by_church=by_church, recovery_requests=pending,
+    return jsonify(stats=stats, policy=policy(), players=players, player_page=page, player_pages=player_pages, player_total=player_total, by_date=by_date, by_church=by_church, recovery_requests=pending,
                    audit=[dict(r) for r in db().execute('SELECT created_at,actor,action,details FROM game_audit_logs ORDER BY id DESC LIMIT 50')],
                    question_counts=[dict(r) for r in db().execute('SELECT stage,count(*) AS count FROM game_questions WHERE enabled=1 GROUP BY stage')])
 
