@@ -71,3 +71,15 @@ body[data-game-view=question] .studio{height:clamp(90px,16dvh,145px);border-radi
 .site-footer{padding-bottom:calc(20px + env(safe-area-inset-bottom,0px))}
 }
 @media(max-width:360px){.ladder-list li{font-size:10px}.lifeline{font-size:8px}.answer{font-size:13px}.question-text{font-size:15px}}
+
+/* Custom art: dynamic text remains HTML; gradients provide a contrast layer. */
+.question-text{padding:14px 12px;background:linear-gradient(#07163370,#07163370),url('images/Batch_04/04_ui/question_panel.webp') center/100% 100% no-repeat;border:1px solid #cba65b80;border-radius:12px}
+.answer{background:linear-gradient(#07163345,#07163345),url('images/Batch_04/04_ui/answer_default.webp') center/100% 100% no-repeat;border-color:#cba65b80;text-shadow:0 1px 3px #000}
+.answer.selected{background:linear-gradient(#62471055,#62471055),url('images/Batch_04/04_ui/answer_selected.webp') center/100% 100% no-repeat}
+.answer.correct{background:linear-gradient(#103b2855,#103b2855),url('images/Batch_04/04_ui/answer_correct.webp') center/100% 100% no-repeat}
+.answer.wrong{background:linear-gradient(#521d2855,#521d2855),url('images/Batch_04/04_ui/answer_wrong.webp') center/100% 100% no-repeat}
+.answer:disabled:not(.correct):not(.wrong):not(.selected):not(.eliminated){background:linear-gradient(#08142780,#08142780),url('images/Batch_04/04_ui/answer_locked.webp') center/100% 100% no-repeat}
+.timer{background:#0b2047df url('images/Batch_04/04_ui/timer_ring.webp') center/100% 100% no-repeat;text-shadow:0 1px 5px #000}
+.menu-main{background:linear-gradient(90deg,#081a36f0,#0a1b3680),url('images/Batch_02/03_backgrounds/base/bg_studio_clean.webp') center/cover}
+.result-panel{background:linear-gradient(#081a36e8,#081a36ed),url('images/Batch_02/03_backgrounds/special/bg_gameover.webp') center/cover}
+@media(max-width:767px){.question-text{padding:10px 6px}.ladder-list li strong span{opacity:1}.play-main .studio{order:1}.play-main .round-top{order:0}.menu-main img{max-width:53%}.result-panel h2{margin-bottom:8px}}
