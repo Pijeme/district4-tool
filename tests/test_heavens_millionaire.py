@@ -207,11 +207,11 @@ class MillionaireTests(unittest.TestCase):
     def reference_round(self, correct=2, seed_bible=True, position=1):
         self.register();self.start()
         if position>1:self.advance(position-1)
-        questions=json.loads((ROOT/'heavens_millionaire_questions.json').read_text())['questions']
+        questions=json.loads((ROOT/'heavens_millionaire_questions.json').read_text(encoding='utf-8'))['questions']
         payload=next(q for q in questions if q['id']=='B-343')
         options=[option for option in payload['options'] if option!=payload['answer']]
         options.insert(correct,payload['answer'])
-        with sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE']) as conn:
+        with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn, conn:
             conn.execute('''UPDATE game_answers SET question_id=?,question_json=?,choices_json=?,correct_choice=? WHERE token=?''',
                          (payload['id'],json.dumps(payload),json.dumps(options),correct,self.state['token']))
         if seed_bible:
@@ -222,7 +222,7 @@ class MillionaireTests(unittest.TestCase):
     def seed_hint_bible(self):
         import bible_study as bible
         path=self.directory/'hint-bible.db'
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript(f'''PRAGMA application_id={bible.APPLICATION_ID}; PRAGMA user_version={bible.SCHEMA_VERSION};
                 CREATE TABLE bible_import_runs(id INTEGER,status TEXT);
                 CREATE TABLE bible_editions(id INTEGER,import_run_id INTEGER,translation TEXT,is_active INTEGER,status TEXT);
@@ -234,7 +234,7 @@ class MillionaireTests(unittest.TestCase):
         self.app.config['BIBLE_STUDY_DATABASE']=str(path)
         return path
 
-    def test_hint_preserves_correct_answers_for_every_shuffled_position_and_refresh(self):
+    def test_pastor_preserves_correct_answers_for_every_shuffled_position_and_refresh(self):
         path=None
         for correct in range(4):
             with self.subTest(correct=correct):
@@ -243,11 +243,12 @@ class MillionaireTests(unittest.TestCase):
                 payload=self.reference_round(correct)
                 path=Path(self.app.config['BIBLE_STUDY_DATABASE']);before=path.read_bytes()
                 options=list(self.state['options']);token=self.state['token'];deadline=self.state['deadline']
-                self.assertEqual(self.action('hint').status_code,200)
-                hint=self.state['lifeline_results']['hint']['hint']
-                self.assertIn('Synthetic complete verse',hint)
-                self.assertIn('Synthetic surrounding context',hint)
-                for reference in options:self.assertNotIn(reference,hint)
+                with patch.object(hm.RNG,'random',side_effect=[.1,.1]):
+                    self.assertEqual(self.action('hint').status_code,200)
+                call=self.state['lifeline_results']['hint']['pastor']
+                self.assertEqual(call['suggested_choice'],correct)
+                self.assertEqual(call['suggested_answer'],options[correct])
+                self.assertEqual(call['name'],'Pastor Pijeme')
                 self.assertEqual(self.state['options'],options)
                 self.assertEqual(self.state['token'],token)
                 self.assertEqual(self.state['deadline'],deadline)
@@ -255,6 +256,7 @@ class MillionaireTests(unittest.TestCase):
                 self.clock+=3
                 self.state=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
                 self.assertEqual(self.state['options'],options)
+                self.assertEqual(self.state['lifeline_results']['hint']['pastor'],call)
                 self.assertEqual(self.action('answer',choice=correct,choice_text=payload['answer']).status_code,200)
                 self.assertEqual(self.state['outcome'],'correct')
                 self.assertEqual(self.state['earned'],100)
@@ -274,28 +276,78 @@ class MillionaireTests(unittest.TestCase):
         self.assertEqual(self.state['outcome'],'correct')
         self.assertEqual(self.state['selected'],2)
 
-    def test_hint_does_not_make_a_wrong_visible_answer_correct(self):
+    def test_pastor_does_not_make_a_wrong_visible_answer_correct(self):
         self.reference_round(2)
         self.action('hint');self.clock+=3
         self.action('answer',choice=2,choice_text=self.state['options'][0])
         self.assertEqual(self.state['outcome'],'wrong')
         self.assertEqual(self.state['selected'],0)
 
-    def test_unavailable_context_does_not_spend_hint_or_add_pause_or_reveal_reference(self):
-        payload=self.reference_round(seed_bible=False)
+    def test_pastor_needs_no_bible_context_and_uses_the_original_lifeline_slot(self):
+        self.reference_round(seed_bible=False)
         deadline=self.state['deadline']
-        response=self.action('hint')
-        self.assertEqual(response.status_code,409)
-        self.assertNotIn(payload['answer'],response.get_data(as_text=True))
+        with patch.object(hm,'scripture_context',side_effect=AssertionError('Pastor accessed Bible storage')):
+            response=self.action('hint')
+        self.assertEqual(response.status_code,200)
         state=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
-        self.assertNotIn('hint',state['lifelines'])
+        self.assertIn('hint',state['lifelines'])
+        self.assertEqual(state['lifeline_results']['hint']['pastor']['name'],'Pastor Pijeme')
         self.assertEqual(state['deadline'],deadline)
-        self.assertFalse(state['pause_until'])
+        self.assertTrue(state['paused'])
+        self.clock+=3
+        self.assertEqual(self.action('hint').status_code,409)
+
+    def test_pastor_has_exact_seventy_five_percent_threshold_and_both_confidence_tones(self):
+        question=dict(choices_json=json.dumps(['First','Second','Third','Fourth']),correct_choice=2,
+                      removed_json='[]',question_json=json.dumps(dict(question='Which answer fits?')))
+        correct=0
+        for index in range(100):
+            with patch.object(hm.RNG,'random',side_effect=[index/100,.2]):
+                result=hm.pastor_advice(question)
+            correct+=result['suggested_choice']==2
+            self.assertEqual(result['suggested_answer'],json.loads(question['choices_json'])[result['suggested_choice']])
+            self.assertNotIn('correct',result);self.assertNotIn('correct_choice',result)
+            self.assertEqual({line['speaker'] for line in result['dialogue']},{'Host','Pastor Pijeme'})
+        self.assertEqual(correct,75)
+        for roll,is_right in ((.74,True),(.75,False)):
+            for confidence_roll,tone in ((0.,'confident'),(.99,'unsure')):
+                with patch.object(hm.RNG,'random',side_effect=[roll,confidence_roll]):result=hm.pastor_advice(question)
+                self.assertEqual(result['suggested_choice']==2,is_right)
+                self.assertEqual(result['confidence'],tone)
+                if tone=='unsure':self.assertRegex(result['dialogue'][3]['text'],r'not completely sure|best guess')
+
+    def test_pastor_avoids_eliminated_options_and_advice_survives_resume_restart(self):
+        self.register();self.start();self.action('fifty');self.clock+=3
+        remaining=[i for i in range(4) if i not in self.state['removed']]
+        with patch.object(hm.RNG,'random',side_effect=[.99,.99]):self.action('hint')
+        call=self.state['lifeline_results']['hint']['pastor']
+        self.assertIn(call['suggested_choice'],remaining)
+        self.assertNotEqual(call['suggested_choice'],self.correct_index())
+        self.assertEqual(call['confidence'],'unsure')
+        self.clock+=30
+        hm.initialize(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'],ROOT/'heavens_millionaire_questions.json')
+        saved=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
+        self.assertEqual(saved['lifeline_results']['hint']['pastor'],call);self.assertTrue(saved['paused'])
+        self.action('resume',lifeline='hint')
+        self.assertEqual(self.action('hint').status_code,409)
+        self.assertEqual(self.state['lifeline_results']['hint']['pastor'],call)
+
+    def test_saved_legacy_hint_remains_used_and_can_resume_after_upgrade(self):
+        self.register();self.start();self.action('hint')
+        with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn, conn:
+            conn.execute("UPDATE game_lifeline_usage SET result_json=? WHERE session_id=? AND kind='hint'",
+                         (json.dumps(dict(hint='Previously saved Bible context.')),self.state['id']))
+        self.clock+=10
+        saved=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
+        self.assertTrue(saved['paused']);self.assertEqual(saved['paused_lifeline'],'hint')
+        self.assertEqual(saved['lifeline_results']['hint']['hint'],'Previously saved Bible context.')
+        self.assertEqual(self.action('resume',lifeline='hint').status_code,200)
+        self.assertEqual(self.action('hint').status_code,409)
 
     def test_context_falls_back_to_complete_target_at_chapter_end_and_never_creates_storage(self):
         payload=self.reference_round()
         path=Path(self.app.config['BIBLE_STUDY_DATABASE'])
-        with sqlite3.connect(path) as conn:conn.execute('DELETE FROM bible_verses WHERE verse=2')
+        with closing(sqlite3.connect(path)) as conn, conn:conn.execute('DELETE FROM bible_verses WHERE verse=2')
         with self.app.app_context():
             self.assertEqual(hm.scripture_context(payload),'Synthetic complete verse about a crowd gathering and needing food.')
             missing=self.directory/'missing-bible.db'
@@ -305,7 +357,7 @@ class MillionaireTests(unittest.TestCase):
 
     def test_equal_scores_rank_by_fastest_completion_and_choose_fastest_personal_best(self):
         self.register();owner=self.account['player']['id']
-        with sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE']) as conn:
+        with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn, conn:
             for player in ('slow','fast','tie','lower','unknown','negative'):
                 conn.execute('''INSERT INTO game_players(id,player_code,name,area,church_id,church,pastor,created_at)
                     VALUES(?,?,?,'1','test-church','Test Church','Test Pastor',?)''',(player,'HM-'+player,player,self.clock))
@@ -411,11 +463,11 @@ class MillionaireTests(unittest.TestCase):
     def test_pause_schema_upgrade_preserves_existing_saved_question_and_deadline(self):
         self.register();self.start();token=self.state['token'];deadline=self.state['deadline']
         path=self.app.config['HEAVENS_MILLIONAIRE_DATABASE']
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             before=conn.execute('SELECT question_json,choices_json,correct_choice,deadline FROM game_answers WHERE token=?',(token,)).fetchone()
             conn.execute('ALTER TABLE game_answers DROP COLUMN pause_started_at')
         hm.initialize(path,ROOT/'heavens_millionaire_questions.json')
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             self.assertEqual(conn.execute('SELECT question_json,choices_json,correct_choice,deadline FROM game_answers WHERE token=?',(token,)).fetchone(),before)
             self.assertIsNone(conn.execute('SELECT pause_started_at FROM game_answers WHERE token=?',(token,)).fetchone()[0])
         current=self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']
@@ -825,7 +877,7 @@ print('INTEGRATION_READY')
 
 @unittest.skipUnless(os.getenv('HEAVENS_BROWSER_TESTS') == '1', 'Set HEAVENS_BROWSER_TESTS=1 for Chromium and Safari/WebKit checks')
 class GameBrowserTests(unittest.TestCase):
-    def test_hint_context_correct_answer_and_completion_time_on_phone_and_desktop(self):
+    def test_pastor_call_correct_answer_and_completion_time_on_phone_and_desktop(self):
         import threading
         from werkzeug.serving import make_server
         from playwright.sync_api import sync_playwright
@@ -844,16 +896,51 @@ class GameBrowserTests(unittest.TestCase):
                             args=['--no-sandbox'] if os.name!='nt' else [])
                         context=browser.new_context(viewport=dict(width=width,height=900),
                             has_touch=width<600,is_mobile=width<600)
+                        context.add_init_script('''
+                            window.narrationTest={spoken:[],cancelled:0};
+                            const OriginalAudio=window.Audio;
+                            window.Audio=function(...args){const audio=new OriginalAudio(...args);window.gameMusic=audio;return audio;};
+                            Object.defineProperty(window,'SpeechSynthesisUtterance',{configurable:true,value:class {
+                                constructor(text){this.text=text;}
+                            }});
+                            Object.defineProperty(window,'speechSynthesis',{configurable:true,value:{
+                                getVoices:()=>[{lang:'en-US',name:'Test device narrator'}],
+                                speak:utterance=>{window.narrationTest.spoken.push(utterance);utterance.onstart?.();},
+                                cancel:()=>{window.narrationTest.cancelled++;}
+                            }});
+                        ''')
                         context.add_cookies([dict(name='session',value=fixture.client.get_cookie('session').value,url=base)])
                         page=context.new_page();errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
                         page.goto(base+'/bible-games');page.locator('.question-text').wait_for()
-                        page.locator('[data-action=hint]').click()
-                        hint=page.locator('.bible-hint-context');hint.wait_for()
-                        self.assertIn('Synthetic complete verse',hint.inner_text())
-                        self.assertIn('Synthetic surrounding context',hint.inner_text())
-                        for option in fixture.state['options']:self.assertNotIn(option,hint.inner_text())
-                        page.screenshot(path=str(folder/f'hint-context-{width}.png'),full_page=True)
+                        self.assertEqual(page.get_by_role('button',name='Phone a Pastor',exact=True).count(),1)
+                        self.assertEqual(page.get_by_role('button',name='Bible Hint',exact=True).count(),0)
+                        rolls=[.99,.99] if width==390 else [.1,.1]
+                        with patch.object(hm.RNG,'random',side_effect=rolls):
+                            with page.expect_response(lambda response:response.url.endswith('/api/action')) as called:
+                                page.get_by_role('button',name='Phone a Pastor',exact=True).click()
+                            advice=called.value.json()['state']['lifeline_results']['hint']['pastor']
+                        call=page.locator('.pastor-call');call.wait_for()
+                        self.assertIn('Pastor Pijeme',call.inner_text())
+                        self.assertEqual(page.locator('.call-turn').count(),6)
+                        self.assertTrue(page.locator('.pastor-portrait').evaluate('image=>image.complete&&image.naturalWidth===480'))
+                        self.assertEqual(advice['confidence'],'unsure' if width==390 else 'confident')
+                        self.assertIn(advice['suggested_answer'],page.locator('.pastor-pick').inner_text())
+                        self.assertEqual(page.locator('.timer').inner_text(),'Pause')
+                        continue_button=page.locator('#close-modal').bounding_box()
+                        self.assertGreaterEqual(continue_button['height'],44)
+                        self.assertLessEqual(continue_button['y']+continue_button['height'],900)
+                        page.locator('#listen-pastor').click()
+                        self.assertEqual(page.evaluate('narrationTest.spoken.length'),6)
+                        self.assertEqual(page.evaluate('narrationTest.spoken[3].rate'),.82 if width==390 else .98)
+                        self.assertAlmostEqual(page.evaluate('gameMusic.volume'),.04)
+                        page.locator('#listen-pastor').click()
+                        self.assertEqual(page.evaluate('narrationTest.cancelled'),1)
+                        self.assertAlmostEqual(page.evaluate('gameMusic.volume'),.22)
+                        page.locator('#listen-pastor').click()
+                        page.screenshot(path=str(folder/f'pastor-call-{width}.png'),full_page=True)
                         page.locator('#close-modal').click();page.locator('#modal').wait_for(state='hidden')
+                        self.assertEqual(page.evaluate('narrationTest.cancelled'),2)
+                        self.assertAlmostEqual(page.evaluate('gameMusic.volume'),.22)
                         if width==1200:
                             page.reload();page.locator('.question-text').wait_for()
                         choice=page.locator('.answer').filter(has_text=payload['answer'])
@@ -925,7 +1012,7 @@ class GameBrowserTests(unittest.TestCase):
                         with page.expect_response(lambda response:'/api/state/' in response.url):
                             page.evaluate("window.dispatchEvent(new Event('focus'))")
                         self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')&&savedGameStudio===document.querySelector('.studio')"))
-                        page.locator('[data-action=hint]').click();page.locator('.bible-hint-context').wait_for()
+                        page.locator('[data-action=hint]').click();page.locator('.pastor-call').wait_for()
                         resumes=[]
                         def track_resume(request):
                             if request.url.endswith('/api/action') and request.method=='POST' and request.post_data_json.get('action')=='resume':
@@ -942,10 +1029,10 @@ class GameBrowserTests(unittest.TestCase):
                         self.assertEqual(page.locator('.timer').inner_text(),'Pause')
                         self.assertIn('25 seconds remaining',page.locator('.timer').get_attribute('title'))
                         self.assertTrue(page.evaluate("savedGameHost===document.querySelector('.host')"))
-                        page.reload();page.locator('.bible-hint-context').wait_for()
+                        page.reload();page.locator('.pastor-call').wait_for()
                         self.assertEqual(page.locator('.timer').inner_text(),'Pause')
                         self.assertIn('25 seconds remaining',page.locator('.timer').get_attribute('title'))
-                        page.screenshot(path=str(folder/f'paused-hint-{width}.png'),full_page=True)
+                        page.screenshot(path=str(folder/f'paused-pastor-{width}.png'),full_page=True)
                         page.locator('#close-modal').click();page.locator('#modal').wait_for(state='hidden')
                         self.assertNotEqual(page.locator('.timer').inner_text(),'Pause')
                         page.evaluate("window.savedGameHost=document.querySelector('.host');window.savedGameStudio=document.querySelector('.studio')")
@@ -966,7 +1053,7 @@ class GameBrowserTests(unittest.TestCase):
                         next_art='/static/heavens_millionaire/images/Batch_02/03_backgrounds/stages/bg_'+next_stage.lower()+'.webp'
                         self.assertIn(next_art,image_requests,'Upcoming stage artwork was not preloaded')
                         before_next_count=image_requests.count(next_art)
-                        with sqlite3.connect(fixture.app.config['HEAVENS_MILLIONAIRE_DATABASE']) as conn:
+                        with closing(sqlite3.connect(fixture.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn, conn:
                             self.assertIsNone(conn.execute('SELECT started_at FROM game_answers WHERE session_id=? AND position=?',
                                                           (state['id'],position+1)).fetchone()[0])
                         page.locator(f'.answer[data-choice="{fixture.correct_index()}"]').click();page.locator('#confirm-answer').click()

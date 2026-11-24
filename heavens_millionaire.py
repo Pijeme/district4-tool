@@ -436,6 +436,43 @@ def source_hint(payload):
     return 'Consider the context: ' + str(payload.get('category', 'Bible knowledge')) + '.'
 
 
+def pastor_advice(question):
+    """One saved simulated call. Confidence is a clue, never a correctness flag."""
+    options = json.loads(question['choices_json'])
+    removed = set(json.loads(question['removed_json']))
+    right = RNG.random() < .75
+    suggested = question['correct_choice'] if right else RNG.choice(
+        [i for i in range(4) if i != question['correct_choice'] and i not in removed])
+    # Confident advice may be wrong; hesitant advice may still be right.
+    confident = RNG.random() < (.8 if right else .4)
+    letter = 'ABCD'[suggested]
+    pick = f'{letter}: {options[suggested]}'
+    if confident:
+        reply = RNG.choice([
+            f'I remember this one. I would choose {pick}. I am quite confident about that.',
+            f'Yes, this sounds familiar. My answer is {pick}. That is the choice I would go with.',
+        ])
+        farewell = 'You are welcome! All the best with the rest of the game.'
+    else:
+        reply = RNG.choice([
+            f'Hmm... I am not completely sure. I think it could be {pick}, but I might be mistaken.',
+            f'Let me think... I am leaning toward {pick}. Please treat that as my best guess.',
+        ])
+        farewell = 'You are welcome. I wish I could be more certain. Take a moment and trust your judgment.'
+    payload = json.loads(question['question_json'])
+    return dict(name='Pastor Pijeme', portrait_url='/static/heavens_millionaire/pastor_pijeme.webp',
+        simulated=True, confidence='confident' if confident else 'unsure',
+        suggested_choice=suggested, suggested_answer=options[suggested],
+        dialogue=[
+            dict(speaker='Host', text='Hello, Pastor Pijeme! Could you help our player with a Bible question?'),
+            dict(speaker='Pastor Pijeme', text='Hello! Of course. Let me hear the question.'),
+            dict(speaker='Host', text=question_prompt(payload)),
+            dict(speaker='Pastor Pijeme', text=reply),
+            dict(speaker='Host', text='Thank you, Pastor! The final choice is with our player.'),
+            dict(speaker='Pastor Pijeme', text=farewell),
+        ])
+
+
 def question_pool(payload):
     return payload.get('question_pool', 'previous')
 
@@ -886,7 +923,9 @@ def action():
                 result['removed'] = RNG.sample([i for i in range(4) if i != question['correct_choice']], 2)
                 conn.execute('UPDATE game_answers SET removed_json=? WHERE id=?', (json.dumps(result['removed']), question['id']))
             elif kind == 'hint':
-                result['hint'] = source_hint(json.loads(question['question_json']))
+                call = pastor_advice(question)
+                # Retain the original slot/key for saved games and older clients.
+                result.update(pastor=call, hint=call['dialogue'][3]['text'])
             elif kind == 'audience':
                 available = [i for i in range(4) if i not in json.loads(question['removed_json'])]
                 accuracy = {'Beginner': .90, 'Intermediate': .75, 'Advanced': .60, 'Expert': .48, 'Master': .35}[STAGES[attempt['position'] - 1]]

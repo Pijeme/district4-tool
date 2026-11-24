@@ -4,6 +4,8 @@
   const TITLE = 'Who Wants to Be Heaven’s Millionaire?';
   const ROOT = '/static/heavens_millionaire/';
   const ASSETS = ROOT + 'images/';
+  const PASTOR_PHOTO = ROOT + 'pastor_pijeme.webp';
+  const phoneIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2c0 8.8 7.2 16 16 16a2 2 0 0 0 2-2v-3l-5-2-2 2a13 13 0 0 1-6-6l2-2-2-5Z"/><path d="M15 3a6 6 0 0 1 6 6M15 7a2 2 0 0 1 2 2"/></svg>';
   const $ = (selector, root = document) => root.querySelector(selector);
   const app = $('#app'), modal = $('#modal'), modalContent = $('#modal-content');
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -17,8 +19,10 @@
   let ranking = {view:'top',area:'',church:'',period:'all',sort:'score',page:1}, profilePage = 1, adminQuestionPage = 1;
   let loadingInterval, noticeTimeout, hiddenEvent = null, hiddenTimer, lastInterruption = 0;
   let lifelineModalToken=null,lifelineModalKind=null,resumeBusy=false,pendingLifelineRemaining=null;
+  let pastorSpeech=null,speechGeneration=0;
   const letters = ['A','B','C','D'];
-  const lifelines = [['fifty','50:50','fifty'],['audience','Audience','audience'],['hint','Bible Hint','bible'],['change','Change question','refresh']];
+  const lifelines = [['fifty','50:50','fifty'],['audience','Audience','audience'],['hint','Phone a Pastor','phone'],['change','Change question','refresh']];
+  const lifelineIcon=(kind,icon)=>kind==='hint'?phoneIcon:`<img src="${ASSETS}Batch_04/05_lifelines/icons/lifeline_${icon}.webp" alt="">`;
   const messages = [
     'This is for fun, learning, and friendly competition. The points have no cash value.',
     'Play honestly and enjoy the challenge. Your knowledge grows with every question.',
@@ -85,10 +89,12 @@
     window.scrollTo({top:0, behavior:'instant'}); $('#account-nav').hidden = !me;
   }
   function showModal(html, closeable = true) {
+    stopPastorSpeech();
     modalContent.innerHTML = html; $('#close-modal').hidden = !closeable;$('#close-modal').textContent='Close';$('#close-modal').disabled=false;
     if (!modal.open) modal.showModal();
   }
   function closeModal() {
+    stopPastorSpeech();
     if(lifelineModalToken&&current?.paused&&current.token===lifelineModalToken){void resumeLifeline();return;}
     if(modal.open)modal.close();
   }
@@ -114,6 +120,49 @@
   }
   $('#sound').onclick = () => { musicEnabled = !musicEnabled; store('hm_music', musicEnabled ? 'on' : 'off'); playMusic(current?.position || 1, true); };
   syncSound();
+
+  function stopPastorSpeech() {
+    speechGeneration++;
+    if(pastorSpeech){pastorSpeech=null;window.speechSynthesis?.cancel();}
+    if(audio)audio.volume=.22;
+    const button=$('#listen-pastor');
+    if(button){button.textContent='Listen to conversation';button.setAttribute('aria-pressed','false');}
+    document.querySelectorAll('.call-turn.speaking').forEach(node=>node.classList.remove('speaking'));
+  }
+  function speakPastorConversation() {
+    if(pastorSpeech){stopPastorSpeech();return;}
+    const call=current?.lifeline_results?.hint?.pastor;
+    if(!call||!current.paused||!canNarrate())return;
+    stopPastorSpeech();const generation=++speechGeneration;
+    const session={utterances:[]};pastorSpeech=session;if(audio)audio.volume=.04;
+    $('#listen-pastor').textContent='Stop narration';$('#listen-pastor').setAttribute('aria-pressed','true');
+    $('#call-audio-status').textContent='Narrating with your device’s voice.';
+    try {
+      const voices=window.speechSynthesis.getVoices().filter(voice=>/^en(?:-|$)/i.test(voice.lang));
+      const voice=voices.find(voice=>voice.lang.toLowerCase()==='en-ph')||voices.find(voice=>voice.lang.toLowerCase()==='en-us')||voices[0];
+      call.dialogue.forEach((turn,index)=>{
+        if(generation!==speechGeneration)return;
+        const utterance=new SpeechSynthesisUtterance(turn.text),pastor=turn.speaker==='Pastor Pijeme';
+        utterance.lang=voice?.lang||'en-US';if(voice)utterance.voice=voice;
+        utterance.rate=pastor?(call.confidence==='unsure'?.82:.98):1.04;
+        utterance.pitch=pastor?.92:1.08;
+        utterance.onstart=()=>{if(generation!==speechGeneration)return;document.querySelectorAll('.call-turn.speaking').forEach(node=>node.classList.remove('speaking'));$(`[data-call-turn="${index}"]`)?.classList.add('speaking');};
+        utterance.onend=()=>{if(generation===speechGeneration&&index===call.dialogue.length-1){stopPastorSpeech();if($('#call-audio-status'))$('#call-audio-status').textContent='Conversation finished. You can listen again.';}};
+        utterance.onerror=()=>{if(generation!==speechGeneration)return;stopPastorSpeech();if($('#call-audio-status'))$('#call-audio-status').textContent='Narration is unavailable. The full conversation is written below.';};
+        session.utterances.push(utterance);window.speechSynthesis.speak(utterance);
+      });
+    } catch {stopPastorSpeech();if($('#call-audio-status'))$('#call-audio-status').textContent='Narration is unavailable. You can read the conversation below.';}
+  }
+
+  function canNarrate(){return Boolean(window.speechSynthesis&&typeof window.speechSynthesis.speak==='function'&&typeof window.SpeechSynthesisUtterance==='function');}
+
+  function pastorContent(info,note) {
+    const call=info.pastor;
+    // Previously saved Bible Hint results keep their content and consumed slot.
+    if(!call)return `<div class="eyebrow">Your saved lifeline</div><h2>Previous lifeline</h2><p>${esc(info.hint||'This lifeline was used before Phone a Pastor was introduced.')}</p>${note}`;
+    const narration=canNarrate();
+    return `<section class="pastor-call" aria-label="Simulated conversation with Pastor Pijeme"><div class="eyebrow">Phone a Pastor · Simulated call</div><div class="pastor-profile"><img class="pastor-portrait" src="${PASTOR_PHOTO}" alt="Pastor Pijeme"><div><h2>Pastor Pijeme</h2><p class="call-connected"><span aria-hidden="true"></span>Call connected</p><span class="call-confidence ${call.confidence==='unsure'?'unsure':''}">${call.confidence==='unsure'?'Thinking it through':'Sounds confident'}</span></div></div><div class="pastor-pick"><small>Pastor’s suggestion</small><strong>${letters[call.suggested_choice]}. ${esc(call.suggested_answer)}</strong></div>${narration?'<button class="quiet" id="listen-pastor" type="button" aria-pressed="false">Listen to conversation</button>':''}<p class="form-note" id="call-audio-status">${narration?'Optional narration uses your device’s voice.':'Read the conversation below.'}</p><ol class="call-transcript">${call.dialogue.map((turn,index)=>`<li class="call-turn ${turn.speaker==='Pastor Pijeme'?'pastor-turn':'host-turn'}" data-call-turn="${index}"><small>${esc(turn.speaker)}</small><p>${esc(turn.text)}</p></li>`).join('')}</ol><p class="form-note">A simulated conversation with a 75% chance of a correct suggestion. Pastor Pijeme can be wrong, even when he sounds confident.</p>${note}</section>`;
+  }
 
   function welcome() {
     setView('welcome', `<section class="hero"><div class="hero-copy"><div class="eyebrow">The District 4 Bible challenge</div>
@@ -210,10 +259,10 @@
     if (!me?.photo) return photoGate();
     setView('loading',`<section class="loading-stage"><img class="loading-host" src="${ASSETS}Batch_02/02_host/expressions/host_encouraging.webp" alt="Your host getting ready"><div class="eyebrow">${esc(TITLE)}</div><h2>Preparing your place<br>in the studio.</h2><p class="muted">A few things to get ready. A million points to aim for.</p><div class="progress-track" role="progressbar" aria-label="Game files prepared" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill"></div></div><div class="loading-percent"><span id="file-count">Preparing game files…</span><strong id="load-percent">0%</strong></div><p class="loading-message">${esc(messages[0])}</p><div id="load-complete"></div></section>`);
     let message=0;loadingInterval=setInterval(()=>{if($('.loading-message'))$('.loading-message').textContent=messages[++message%messages.length];},2200);
-    const files=['Batch_02/03_backgrounds/base/bg_studio_clean.webp','Batch_02/03_backgrounds/stages/bg_beginner.webp','Batch_02/02_host/expressions/host_presenting.webp',...lifelines.map(l=>`Batch_04/05_lifelines/icons/lifeline_${l[2]}.webp`)];
-    let done=0,failed=0;const total=files.length+1;
+    const files=['Batch_02/03_backgrounds/base/bg_studio_clean.webp','Batch_02/03_backgrounds/stages/bg_beginner.webp','Batch_02/02_host/expressions/host_presenting.webp',...lifelines.filter(l=>l[0]!=='hint').map(l=>`Batch_04/05_lifelines/icons/lifeline_${l[2]}.webp`)];
+    let done=0,failed=0;const total=files.length+2;
     const progress=()=>{done++;if(view!=='loading')return;const percent=Math.round(done/total*100);$('.progress-fill').style.width=percent+'%';$('.progress-track').setAttribute('aria-valuenow',String(percent));$('#load-percent').textContent=percent+'%';$('#file-count').textContent=`${done} of ${total} files prepared`;};
-    await Promise.all(files.map(src=>cacheImage(ASSETS+src).then(ok=>{if(!ok)failed++;progress();})).concat([new Promise(resolve=>{
+    await Promise.all(files.map(src=>cacheImage(ASSETS+src).then(ok=>{if(!ok)failed++;progress();})).concat([cacheImage(PASTOR_PHOTO).then(ok=>{if(!ok)failed++;progress();}),new Promise(resolve=>{
       const preload=new Audio(ROOT+'music-1.mp3');preload.preload='auto';let completed=false;const finish=()=>{if(completed)return;completed=true;clearTimeout(timer);progress();resolve();};const timer=setTimeout(finish,8000);preload.addEventListener('canplay',finish,{once:true});preload.addEventListener('error',finish,{once:true});preload.load();
     })]));
     if(view!=='loading')return;clearInterval(loadingInterval);$('#load-complete').innerHTML=`${failed?'<p class="form-note">Some artwork could not load. You can retry, or continue with the functional game controls.</p><button class="quiet" id="retry-load">Retry files</button>':''}<button class="primary" id="enter-studio">Enter the studio →</button>`;
@@ -226,7 +275,7 @@
     $('#game-logout').onclick=async()=>{try{await api('logout',{});me=null;current=null;audio?.pause();welcome();}catch(error){toast(error.message);}};
   }
   function instructions() {
-    setView('instructions',`<section class="panel narrow"><div class="eyebrow">Before you take your seat</div><h2>A little knowledge.<br>A little courage.</h2><ol class="rules-list"><li>Answer 15 questions across five levels, from Beginner to Master. Each level mixes questions randomly across all topics. Consecutive questions have different categories. Questions you have already seen stay excluded from future games. Questions 1–5 allow 30 seconds; 6–10 allow 45; 11–15 allow 60.</li><li>One wrong answer or an expired timer ends the game. Correctly reach Question 5 to guarantee 1,000 points, or Question 10 to guarantee 32,000. Question 15 earns 1,000,000.</li><li>Use each lifeline once: <strong>50:50</strong> removes two wrong choices; <strong>Audience</strong> shows a simulated poll that may be wrong; <strong>Bible Hint</strong> gives a source clue; verse-identification questions show the full passage context without its reference; <strong>Change Question</strong> replaces the question without resetting your remaining time.</li><li>Your question timer stops while a lifeline is in use. Bible Hint and Audience stay paused until you choose Continue game; 50:50 and Change Question resume after their animation.</li><li>Walk away before committing an answer to keep your earned points. A configured sweetened offer may add a bonus. Offer dialogs keep the question clock running.</li><li>Stay on the active game screen. The first interruption gives a warning; a second disqualifies the attempt from official rankings. Calls, app switching and tab changes may trigger this rule. A running question timer continues while hidden or after refresh; an active lifeline pause is restored.</li><li>All attempts are saved, including zero-point results. Play honestly, enjoy learning, and remember: these are game points with no cash value.</li></ol><button class="primary" data-nav="menu">I’m ready →</button></section>`);
+    setView('instructions',`<section class="panel narrow"><div class="eyebrow">Before you take your seat</div><h2>A little knowledge.<br>A little courage.</h2><ol class="rules-list"><li>Answer 15 questions across five levels, from Beginner to Master. Each level mixes questions randomly across all topics. Consecutive questions have different categories. Questions you have already seen stay excluded from future games. Questions 1–5 allow 30 seconds; 6–10 allow 45; 11–15 allow 60.</li><li>One wrong answer or an expired timer ends the game. Correctly reach Question 5 to guarantee 1,000 points, or Question 10 to guarantee 32,000. Question 15 earns 1,000,000.</li><li>Use each lifeline once: <strong>50:50</strong> removes two wrong choices; <strong>Audience</strong> shows a simulated poll that may be wrong; <strong>Phone a Pastor</strong> connects you to a simulated conversation with Pastor Pijeme, who has a 75% chance of suggesting the correct answer; <strong>Change Question</strong> replaces the question without resetting your remaining time.</li><li>Your question timer stops while a lifeline is in use. Phone a Pastor and Audience stay paused until you choose Continue game; 50:50 and Change Question resume after their animation.</li><li>Walk away before committing an answer to keep your earned points. A configured sweetened offer may add a bonus. Offer dialogs keep the question clock running.</li><li>Stay on the active game screen. The first interruption gives a warning; a second disqualifies the attempt from official rankings. Calls, app switching and tab changes may trigger this rule. A running question timer continues while hidden or after refresh; an active lifeline pause is restored.</li><li>All attempts are saved, including zero-point results. Play honestly, enjoy learning, and remember: these are game points with no cash value.</li></ol><button class="primary" data-nav="menu">I’m ready →</button></section>`);
   }
   function serverNow(){return clockBase+(performance.now()-perfBase)/1000;}
   function applyState(value) {
@@ -267,7 +316,7 @@
     const s=current, bg=s.stage.toLowerCase();
     if(view==='question'&&$('.play-layout')){updateQuestion();return;}
     playMusic(s.position);
-    setView('question',`<section class="play-layout"><div class="play-main"><div class="round-top"><span class="stage-pill">${esc(s.stage)} stage</span><span class="round-count">QUESTION <strong>${s.position}</strong> / 15</span></div><div class="studio" data-stage="${s.stage}" style="background-image:url('${ASSETS}Batch_02/03_backgrounds/stages/bg_${bg}.webp')"><div class="studio-brand"><small>WHO WANTS TO BE</small>HEAVEN’S<br>MILLIONAIRE?</div><picture class="host-wrap"><source media="(min-width:980px) and (orientation:landscape)" srcset="${ROOT}host_full_clean.webp"><img class="host" src="${ASSETS}Batch_02/02_host/expressions/host_presenting.webp" alt="Your host presenting the question"></picture><div class="timer" role="timer" aria-label="Seconds remaining">${s.total_seconds}</div></div><div class="question-area"><h2 class="question-text">${esc(s.question)}</h2><div class="answers">${s.options.map((option,i)=>`<button class="answer ${s.removed.includes(i)?'eliminated':''}" data-choice="${i}" ${s.removed.includes(i)?'disabled':''}><strong>${letters[i]}</strong><span>${esc(option)}</span></button>`).join('')}</div></div><div class="lifelines">${lifelines.map(([kind,label,icon])=>`<button class="lifeline" data-action="${kind}" ${s.lifelines.includes(kind)?'disabled':''}><img src="${ASSETS}Batch_04/05_lifelines/icons/lifeline_${icon}.webp" alt="">${label}</button>`).join('')}</div><div class="round-actions"><button class="quiet" data-walk>Walk away · ${number(s.earned)}</button>${s.offer_available&&(!s.offer||s.offer.status==='pending')?'<button class="quiet gold" data-offer>✦ Sweetened offer</button>':''}<button class="quiet ladder-toggle" id="show-ladder">Prize ladder</button></div></div><aside class="prize-ladder"><h3>THE PATH TO A MILLION</h3><ol class="ladder-list">${boot.points.map((p,i)=>`<li class="${[4,9,14].includes(i)?'milestone ':''}${i+1<s.position?'passed ':''}${i+1===s.position?'current':''}"><span>${i+1}</span><strong>${number(p)}</strong></li>`).join('')}</ol><p class="guarantee">Guaranteed so far<strong>${number(s.guaranteed)}</strong></p></aside></section>`);
+    setView('question',`<section class="play-layout"><div class="play-main"><div class="round-top"><span class="stage-pill">${esc(s.stage)} stage</span><span class="round-count">QUESTION <strong>${s.position}</strong> / 15</span></div><div class="studio" data-stage="${s.stage}" style="background-image:url('${ASSETS}Batch_02/03_backgrounds/stages/bg_${bg}.webp')"><div class="studio-brand"><small>WHO WANTS TO BE</small>HEAVEN’S<br>MILLIONAIRE?</div><picture class="host-wrap"><source media="(min-width:980px) and (orientation:landscape)" srcset="${ROOT}host_full_clean.webp"><img class="host" src="${ASSETS}Batch_02/02_host/expressions/host_presenting.webp" alt="Your host presenting the question"></picture><div class="timer" role="timer" aria-label="Seconds remaining">${s.total_seconds}</div></div><div class="question-area"><h2 class="question-text">${esc(s.question)}</h2><div class="answers">${s.options.map((option,i)=>`<button class="answer ${s.removed.includes(i)?'eliminated':''}" data-choice="${i}" ${s.removed.includes(i)?'disabled':''}><strong>${letters[i]}</strong><span>${esc(option)}</span></button>`).join('')}</div></div><div class="lifelines">${lifelines.map(([kind,label,icon])=>`<button class="lifeline" data-action="${kind}" ${s.lifelines.includes(kind)?'disabled':''}>${lifelineIcon(kind,icon)}${label}</button>`).join('')}</div><div class="round-actions"><button class="quiet" data-walk>Walk away · ${number(s.earned)}</button>${s.offer_available&&(!s.offer||s.offer.status==='pending')?'<button class="quiet gold" data-offer>✦ Sweetened offer</button>':''}<button class="quiet ladder-toggle" id="show-ladder">Prize ladder</button></div></div><aside class="prize-ladder"><h3>THE PATH TO A MILLION</h3><ol class="ladder-list">${boot.points.map((p,i)=>`<li class="${[4,9,14].includes(i)?'milestone ':''}${i+1<s.position?'passed ':''}${i+1===s.position?'current':''}"><span>${i+1}</span><strong>${number(p)}</strong></li>`).join('')}</ol><p class="guarantee">Guaranteed so far<strong>${number(s.guaranteed)}</strong></p></aside></section>`);
     if($('#show-ladder'))$('#show-ladder').onclick=()=>$('.prize-ladder').classList.toggle('open');
     tick();
   }
@@ -284,11 +333,12 @@
   function lifelineContent(kind) {
     const info=current.lifeline_results[kind]||{},note='<p class="form-note">Your question timer is paused. Choose Continue game when you are ready.</p>';
     if(kind==='audience')return `<div class="eyebrow">A little help from the crowd</div><h2>Ask the Audience</h2><p class="muted">A simulated poll, not live voting. The audience can be wrong.</p>${(info.percentages||[]).map((v,i)=>`<div class="poll-row"><strong>${letters[i]}</strong><div class="poll-track"><span style="width:${Number(v)}%"></span></div><span>${v}%</span></div>`).join('')}${note}`;
-    if(kind==='hint')return `<div class="eyebrow">A little light on the question</div><h2>Bible Hint</h2><p class="bible-hint-context">${esc(info.hint)}</p>${note}`;
+    if(kind==='hint')return pastorContent(info,note);
     return `<h2>${kind==='change'?'A fresh question is ready.':'Two incorrect choices removed.'}</h2>${note}`;
   }
   async function resumeLifeline() {
     if(resumeBusy||!current?.paused)return;
+    stopPastorSpeech();
     resumeBusy=true;const id=current.id,token=current.token,kind=lifelineModalKind||current.paused_lifeline;
     $('#close-modal').disabled=true;$('#close-modal').textContent='Resuming…';
     try {
@@ -306,7 +356,7 @@
     if(!current?.paused||lifelineModalToken===current.token||!lifelines.some(item=>item[0]===kind))return;
     const token=current.token,wasBusy=busy;busy=true;lifelineModalToken=token;lifelineModalKind=kind;
     try {
-      showModal('<div class="initial-load" style="margin:20px"><span class="spinner"></span><p>Your lifeline is on its way…</p></div>',false);
+      showModal(kind==='hint'?`<div class="pastor-connecting"><img class="pastor-portrait" src="${PASTOR_PHOTO}" alt="Pastor Pijeme"><div class="eyebrow">Phone a Pastor</div><h2>Calling Pastor Pijeme…</h2><span class="spinner"></span><p class="form-note">Connecting your simulated call. Your timer is paused.</p></div>`:'<div class="initial-load" style="margin:20px"><span class="spinner"></span><p>Your lifeline is on its way…</p></div>',false);
       const wait=Math.max(0,Math.min(2000,(current.pause_until-serverNow())*1000));
       if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
       if(current.token!==token||current.status!=='active'||!current.paused)return;
@@ -387,7 +437,8 @@
     clearTimeout(hiddenTimer);if(hiddenEvent){const event=hiddenEvent;hiddenEvent=null;if(!event.reported){if(Date.now()-event.started>=800){lastInterruption=Date.now();reportInterruption(event);}else store('hm_pending_interruption','');}}
     if(current?.status==='active'&&view==='question')refresh().catch(()=>{});
   }
-  document.addEventListener('visibilitychange',()=>document.hidden?left('visibility'):returned());
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){stopPastorSpeech();left('visibility');}else returned();});
+  window.addEventListener('pagehide',stopPastorSpeech);
   window.addEventListener('blur',()=>{if(Date.now()-lastInterruption>2000)left('focus');});
   window.addEventListener('focus',()=>{if(!document.hidden)returned();});
   window.addEventListener('online',async()=>{try{const pending=JSON.parse(stored('hm_pending_interruption','null'));if(pending)await reportInterruption(pending);if(current?.status==='active')await refresh();}catch{}});
@@ -409,7 +460,8 @@
       else if(el.dataset.choice!==undefined){
         if(busy||resumeBusy)return;const choice=Number(el.dataset.choice),choiceText=$('span',el).textContent,choiceLabel=$('strong',el).textContent;showModal(`<div class="eyebrow">Your final answer?</div><h2>${esc(choiceLabel)}. ${esc(choiceText)}</h2><p class="form-note">The clock keeps running until your answer reaches the server.</p><button class="primary" id="confirm-answer">Lock in my answer →</button>`);
         const questionToken=current.token;$('#confirm-answer').onclick=()=>{closeModal();if(current.token!==questionToken){toast('The question has changed. Please select an answer again.');return;}act('answer',choice,choiceText);};
-      }else if(el.dataset.action){closeModal();await act(el.dataset.action);}
+      }else if(el.id==='listen-pastor')speakPastorConversation();
+      else if(el.dataset.action){closeModal();await act(el.dataset.action);}
       else if(el.hasAttribute('data-walk'))showModal(`<h2>Leave with ${number(current.earned)} points?</h2><p class="muted">You’ll keep your earned points and this attempt will be saved. The clock keeps running while you decide.</p><button class="primary" data-action="walk">Walk away</button>`);
       else if(el.hasAttribute('data-offer'))await act('offer');
       else if(el.dataset.ranking){ranking.view=el.dataset.ranking;ranking.page=1;await scoreboard();}
@@ -426,6 +478,6 @@
       else if(me){if(me.photo)menu();else photoGate();}else welcome();
     }catch(error){setView('error',`<section class="panel narrow"><h2>The studio is taking a moment.</h2><p>${esc(error.message)}</p><button class="primary" id="retry-bootstrap">Try again</button></section>`);$('#retry-bootstrap').onclick=initialize;}
   }
-  void cacheImages([ROOT+'host_full_clean.webp',ASSETS+'Batch_02/03_backgrounds/base/bg_studio_clean.webp',ASSETS+'Batch_02/02_host/expressions/host_presenting.webp']);
+  void cacheImages([ROOT+'host_full_clean.webp',PASTOR_PHOTO,ASSETS+'Batch_02/03_backgrounds/base/bg_studio_clean.webp',ASSETS+'Batch_02/02_host/expressions/host_presenting.webp']);
   initialize();
 })();
