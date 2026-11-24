@@ -116,3 +116,6 @@ dialog:has(.walk-art) .primary,dialog:has(.walk-art) .secondary{min-height:44px;
 .result-panel.celebration .result-points{margin:6px 0}
 .result-panel.celebration .result-actions{margin:10px 0}
 @media(max-width:767px){.result-panel.celebration{padding:10px 12px}.result-panel.celebration .result-art{max-height:min(40dvh,280px)}.result-panel.celebration .eyebrow{margin-bottom:5px}.result-panel.celebration .result-actions .primary{width:100%}}
+
+/* Full verse questions include a paragraph break; existing single-line questions are unchanged. */
+.question-text,.explanation>strong{white-space:pre-line;overflow-wrap:anywhere}
