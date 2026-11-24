@@ -83,3 +83,30 @@ body[data-game-view=question] .studio{height:clamp(90px,16dvh,145px);border-radi
 .menu-main{background:linear-gradient(90deg,#081a36f0,#0a1b3680),url('images/Batch_02/03_backgrounds/base/bg_studio_clean.webp') center/cover}
 .result-panel{background:linear-gradient(#081a36e8,#081a36ed),url('images/Batch_02/03_backgrounds/special/bg_gameover.webp') center/cover}
 @media(max-width:767px){.question-text{padding:10px 6px}.ladder-list li strong span{opacity:1}.play-main .studio{order:1}.play-main .round-top{order:0}.menu-main img{max-width:53%}.result-panel h2{margin-bottom:8px}}
+
+/* Mobile feedback: artwork must never compete with readable content or actions. */
+.walk-art{display:block;width:auto;max-width:100%;height:auto;max-height:min(150px,22dvh);object-fit:contain;margin:0 auto 10px}
+.result-art{width:auto;max-width:100%;height:auto;max-height:160px;object-fit:contain;display:block;margin:0 auto 10px}
+@media(max-width:767px){
+.play-layout{grid-template-columns:minmax(0,1fr) clamp(60px,18vw,76px);gap:5px}
+body[data-game-view=question] .studio{height:clamp(76px,12dvh,115px)}
+.question-area{padding:4px 2px;background:transparent;border:0}
+.question-text{font-size:clamp(18px,5.2vw,22px);line-height:1.35;font-weight:600;text-align:left;padding:12px 10px;margin:0 0 8px;background:linear-gradient(145deg,#102d63,#091c3d);border:1px solid #d5ad59;border-radius:10px;overflow-wrap:anywhere;text-shadow:none}
+.answers{gap:6px}
+.answer{font-size:16px;min-height:48px;padding:10px 12px;border:1px solid #cba65b;border-radius:10px;background:linear-gradient(145deg,#174181,#0b2354);text-shadow:none}
+.answer.selected{background:#8c682d;color:#fff}.answer.correct{background:#174a39}.answer.wrong{background:#582b3b}
+.answer:disabled:not(.correct):not(.wrong):not(.selected):not(.eliminated){background:#172744}
+.ladder-list li{padding:3px 2px;font-size:10px}
+.lifeline{font-size:9px;min-height:44px}
+dialog[open]:has(.walk-art){display:grid;grid-template-rows:minmax(0,1fr) auto;gap:8px;max-height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 32px);padding:16px;overflow:hidden}
+dialog[open]:has(.walk-art) #modal-content{min-height:0;overflow-y:auto}
+dialog[open]:has(.walk-art) #close-modal{margin:0;width:100%}
+dialog:has(.walk-art) h2{font-size:22px;line-height:1.2;margin:0 0 8px}
+dialog:has(.walk-art) p{font-size:14px;line-height:1.4;margin:8px 0}
+dialog:has(.walk-art) .form-actions{margin:10px 0;gap:8px}
+dialog:has(.walk-art) .primary,dialog:has(.walk-art) .secondary{min-height:44px;padding:10px 14px}
+.result-panel{padding:14px}.result-panel h2{font-size:24px;line-height:1.2}.result-art{max-height:100px}
+.result-panel .eyebrow{margin-bottom:8px}.result-points{font-size:44px;margin:8px 0}.result-panel>p{margin:8px 0;font-size:14px}
+.result-actions-top{margin:12px 0;gap:8px}.result-actions-top button{min-height:44px;padding:10px 12px;font-size:14px}
+.explanation{margin:12px 0;padding:12px}
+}
