@@ -113,6 +113,40 @@ class MillionaireTests(unittest.TestCase):
             self.assertEqual(json.loads(conn.execute('SELECT payload FROM game_questions WHERE id=?',(before[0][0],)).fetchone()[0])['question'],updated['question'])
         self.assertEqual(self.client.get('/bible-games/api/state/'+self.state['id']).get_json()['state']['question'],self.state['question'])
 
+    def test_full_niv_verse_replacements_preserve_all_other_questions(self):
+        from collections import Counter
+        path = ROOT / 'heavens_millionaire_questions.json'
+        original = json.loads(path.read_text(encoding='utf-8'))
+        updated, digest = hm.read_question_bank(path)
+        self.assertEqual(len(updated['questions']), 3382)
+        self.assertNotEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
+        changed = []
+        for old, new in zip(original['questions'], updated['questions']):
+            self.assertEqual(old['id'], new['id'])
+            if not old['question'].startswith('Identify the NIV Bible reference that begins'):
+                self.assertEqual(old, new)
+                self.assertEqual(original['repeat_keys_by_id'][old['id']],
+                                 updated['repeat_keys_by_id'][new['id']])
+                continue
+            changed.append(new)
+            self.assertEqual(old['stage'], new['stage'])
+            self.assertEqual(old['category'], new['category'])
+            self.assertEqual(old['game_questions'], new['game_questions'])
+            self.assertTrue(new['question'].startswith('Where in the Bible is this verse found?\n\n'))
+            self.assertEqual(len(set(new['options'])), 4)
+            self.assertEqual(new['options'][new['correct_index']], new['source'])
+            self.assertEqual(new['answer'], new['source'])
+        self.assertEqual(Counter(q['stage'] for q in changed),
+                         {'Beginner': 60, 'Intermediate': 60, 'Advanced': 10})
+        self.assertEqual(len({q['source'] for q in changed}), 130)
+        with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn:
+            for q in changed:
+                saved = conn.execute('SELECT payload FROM game_questions WHERE id=? AND enabled=1',
+                                     (q['id'],)).fetchone()
+                self.assertIsNotNone(saved)
+                self.assertEqual(json.loads(saved[0]), q)
+            self.assertEqual(conn.execute('SELECT count(*) FROM game_questions WHERE enabled=1').fetchone()[0], 3382)
+
     def test_registration_photo_compression_metadata_privacy_and_directory(self):
         result=self.register()
         self.assertEqual(result['player']['pastor'],'Test Pastor')
