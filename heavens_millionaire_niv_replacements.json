@@ -1,0 +1,2346 @@
+{
+  "format": 1,
+  "source": "User-supplied NIV Thompson Chain-Reference Bible EPUB",
+  "replacements": {
+    "B-341": {
+      "question": "Where in the Bible is this verse found?\n\nFor God so loved the world that he gave his one and only Son, that whoever believes in him shall not perish but have eternal life.",
+      "options": [
+        "Matthew 22:39",
+        "Galatians 6:9",
+        "John 3:16",
+        "1 Corinthians 10:13"
+      ],
+      "correct_index": 2,
+      "answer": "John 3:16",
+      "explanation": "John 3:16 (NIV) is the correct reference. This verse focuses on God's saving love and eternal life.",
+      "source": "John 3:16",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-342": {
+      "question": "Where in the Bible is this verse found?\n\nAnd we know that in all things God works for the good of those who love him, who have been called according to his purpose.",
+      "options": [
+        "Colossians 3:23",
+        "Matthew 22:39",
+        "John 3:16",
+        "Romans 8:28"
+      ],
+      "correct_index": 3,
+      "answer": "Romans 8:28",
+      "explanation": "Romans 8:28 (NIV) is the correct reference. This verse focuses on God's purposes for those who love him.",
+      "source": "Romans 8:28",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-343": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD is my shepherd, I lack nothing.",
+      "options": [
+        "Joshua 1:8",
+        "Ecclesiastes 4:12",
+        "Hosea 4:6",
+        "Psalm 23:1"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 23:1",
+      "explanation": "Psalm 23:1 (NIV) is the correct reference. This verse focuses on the Lord as shepherd.",
+      "source": "Psalm 23:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-344": {
+      "question": "Where in the Bible is this verse found?\n\nFor I know the plans I have for you,” declares the LORD, “plans to prosper you and not to harm you, plans to give you hope and a future.",
+      "options": [
+        "Psalm 37:4",
+        "Isaiah 53:5",
+        "Joshua 1:9",
+        "Jeremiah 29:11"
+      ],
+      "correct_index": 3,
+      "answer": "Jeremiah 29:11",
+      "explanation": "Jeremiah 29:11 (NIV) is the correct reference. This verse focuses on God's plans for his people in exile.",
+      "source": "Jeremiah 29:11",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-345": {
+      "question": "Where in the Bible is this verse found?\n\nI can do all this through him who gives me strength.",
+      "options": [
+        "James 4:7",
+        "Matthew 9:37",
+        "Philippians 4:13",
+        "John 14:27"
+      ],
+      "correct_index": 2,
+      "answer": "Philippians 4:13",
+      "explanation": "Philippians 4:13 (NIV) is the correct reference. This verse focuses on strength through Christ.",
+      "source": "Philippians 4:13",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-346": {
+      "question": "Where in the Bible is this verse found?\n\nIn the beginning God created the heavens and the earth.",
+      "options": [
+        "Isaiah 54:17",
+        "Psalm 27:1",
+        "Genesis 1:1",
+        "Jeremiah 29:11"
+      ],
+      "correct_index": 2,
+      "answer": "Genesis 1:1",
+      "explanation": "Genesis 1:1 (NIV) is the correct reference. This verse focuses on the creation of the world.",
+      "source": "Genesis 1:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-347": {
+      "question": "Where in the Bible is this verse found?\n\nBut seek first his kingdom and his righteousness, and all these things will be given to you as well.",
+      "options": [
+        "Matthew 6:33",
+        "John 11:35",
+        "Colossians 3:23",
+        "Romans 10:9"
+      ],
+      "correct_index": 0,
+      "answer": "Matthew 6:33",
+      "explanation": "Matthew 6:33 (NIV) is the correct reference. This verse focuses on seeking God's kingdom first.",
+      "source": "Matthew 6:33",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-348": {
+      "question": "Where in the Bible is this verse found?\n\nJesus answered, “I am the way and the truth and the life. No one comes to the Father except through me.",
+      "options": [
+        "Revelation 3:20",
+        "1 Corinthians 10:13",
+        "John 14:6",
+        "Ephesians 2:8"
+      ],
+      "correct_index": 2,
+      "answer": "John 14:6",
+      "explanation": "John 14:6 (NIV) is the correct reference. This verse focuses on Jesus as the way to the Father.",
+      "source": "John 14:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-349": {
+      "question": "Where in the Bible is this verse found?\n\nfor all have sinned and fall short of the glory of God,",
+      "options": [
+        "Acts 20:35",
+        "1 Thessalonians 5:17",
+        "Hebrews 10:25",
+        "Romans 3:23"
+      ],
+      "correct_index": 3,
+      "answer": "Romans 3:23",
+      "explanation": "Romans 3:23 (NIV) is the correct reference. This verse focuses on the universality of sin.",
+      "source": "Romans 3:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-350": {
+      "question": "Where in the Bible is this verse found?\n\nFor the wages of sin is death, but the gift of God is eternal life in Christ Jesus our Lord.",
+      "options": [
+        "Matthew 28:19",
+        "Romans 6:23",
+        "2 Timothy 2:15",
+        "Luke 9:23"
+      ],
+      "correct_index": 1,
+      "answer": "Romans 6:23",
+      "explanation": "Romans 6:23 (NIV) is the correct reference. This verse focuses on sin's wages and God's gift of eternal life.",
+      "source": "Romans 6:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-351": {
+      "question": "Where in the Bible is this verse found?\n\nHave I not commanded you? Be strong and courageous. Do not be afraid; do not be discouraged, for the LORD your God will be with you wherever you go.”",
+      "options": [
+        "Isaiah 9:6",
+        "Joshua 1:9",
+        "Deuteronomy 8:3",
+        "Psalm 34:8"
+      ],
+      "correct_index": 1,
+      "answer": "Joshua 1:9",
+      "explanation": "Joshua 1:9 (NIV) is the correct reference. This verse focuses on courage because God is present.",
+      "source": "Joshua 1:9",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-352": {
+      "question": "Where in the Bible is this verse found?\n\nTrust in the LORD with all your heart and lean not on your own understanding;",
+      "options": [
+        "Psalm 46:10",
+        "Proverbs 3:5",
+        "Isaiah 54:17",
+        "Lamentations 3:23"
+      ],
+      "correct_index": 1,
+      "answer": "Proverbs 3:5",
+      "explanation": "Proverbs 3:5 (NIV) is the correct reference. This verse focuses on trusting God rather than human understanding.",
+      "source": "Proverbs 3:5",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-353": {
+      "question": "Where in the Bible is this verse found?\n\nYour word is a lamp for my feet, a light on my path.",
+      "options": [
+        "Genesis 1:1",
+        "Isaiah 40:31",
+        "Ecclesiastes 4:12",
+        "Psalm 119:105"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 119:105",
+      "explanation": "Psalm 119:105 (NIV) is the correct reference. This verse focuses on God's word as guidance.",
+      "source": "Psalm 119:105",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-354": {
+      "question": "Where in the Bible is this verse found?\n\nNow faith is confidence in what we hope for and assurance about what we do not see.",
+      "options": [
+        "Hebrews 11:1",
+        "Romans 10:9",
+        "John 15:13",
+        "1 Corinthians 13:4"
+      ],
+      "correct_index": 0,
+      "answer": "Hebrews 11:1",
+      "explanation": "Hebrews 11:1 (NIV) is the correct reference. This verse focuses on the nature of faith.",
+      "source": "Hebrews 11:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-355": {
+      "question": "Where in the Bible is this verse found?\n\nTherefore go and make disciples of all nations, baptizing them in the name of the Father and of the Son and of the Holy Spirit,",
+      "options": [
+        "Acts 20:35",
+        "Romans 3:23",
+        "Matthew 28:19",
+        "1 Thessalonians 5:17"
+      ],
+      "correct_index": 2,
+      "answer": "Matthew 28:19",
+      "explanation": "Matthew 28:19 (NIV) is the correct reference. This verse focuses on the Great Commission.",
+      "source": "Matthew 28:19",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-356": {
+      "question": "Where in the Bible is this verse found?\n\nBut you will receive power when the Holy Spirit comes on you; and you will be my witnesses in Jerusalem, and in all Judea and Samaria, and to the ends of the earth.”",
+      "options": [
+        "Jude 1:24",
+        "Luke 1:37",
+        "Acts 1:8",
+        "Romans 12:1"
+      ],
+      "correct_index": 2,
+      "answer": "Acts 1:8",
+      "explanation": "Acts 1:8 (NIV) is the correct reference. This verse focuses on the Holy Spirit's power for witness.",
+      "source": "Acts 1:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-357": {
+      "question": "Where in the Bible is this verse found?\n\nIn the beginning was the Word, and the Word was with God, and the Word was God.",
+      "options": [
+        "Matthew 5:13",
+        "John 1:1",
+        "Galatians 5:22",
+        "Jude 1:24"
+      ],
+      "correct_index": 1,
+      "answer": "John 1:1",
+      "explanation": "John 1:1 (NIV) is the correct reference. This verse focuses on the Word's eternal existence.",
+      "source": "John 1:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-358": {
+      "question": "Where in the Bible is this verse found?\n\nWhoever does not love does not know God, because God is love.",
+      "options": [
+        "John 8:32",
+        "Matthew 6:33",
+        "Acts 4:12",
+        "1 John 4:8"
+      ],
+      "correct_index": 3,
+      "answer": "1 John 4:8",
+      "explanation": "1 John 4:8 (NIV) is the correct reference. This verse focuses on love as evidence of knowing God.",
+      "source": "1 John 4:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-359": {
+      "question": "Where in the Bible is this verse found?\n\nGod is our refuge and strength, an ever-present help in trouble.",
+      "options": [
+        "Proverbs 4:23",
+        "Psalm 46:1",
+        "Exodus 20:12",
+        "Deuteronomy 8:3"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 46:1",
+      "explanation": "Psalm 46:1 (NIV) is the correct reference. This verse focuses on God as refuge and strength.",
+      "source": "Psalm 46:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-360": {
+      "question": "Where in the Bible is this verse found?\n\n“Honor your father and your mother, so that you may live long in the land the LORD your God is giving you.",
+      "options": [
+        "Amos 3:3",
+        "Psalm 150:6",
+        "Exodus 20:12",
+        "Haggai 1:5"
+      ],
+      "correct_index": 2,
+      "answer": "Exodus 20:12",
+      "explanation": "Exodus 20:12 (NIV) is the correct reference. This verse focuses on honoring parents.",
+      "source": "Exodus 20:12",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-361": {
+      "question": "Where in the Bible is this verse found?\n\n“You are the light of the world. A town built on a hill cannot be hidden.",
+      "options": [
+        "Romans 5:8",
+        "1 Thessalonians 5:18",
+        "Matthew 5:14",
+        "Jude 1:24"
+      ],
+      "correct_index": 2,
+      "answer": "Matthew 5:14",
+      "explanation": "Matthew 5:14 (NIV) is the correct reference. This verse focuses on disciples as light.",
+      "source": "Matthew 5:14",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-362": {
+      "question": "Where in the Bible is this verse found?\n\n“You are the salt of the earth. But if the salt loses its saltiness, how can it be made salty again? It is no longer good for anything, except to be thrown out and trampled underfoot.",
+      "options": [
+        "John 14:6",
+        "2 Timothy 2:15",
+        "Matthew 5:13",
+        "Revelation 3:20"
+      ],
+      "correct_index": 2,
+      "answer": "Matthew 5:13",
+      "explanation": "Matthew 5:13 (NIV) is the correct reference. This verse focuses on disciples as salt.",
+      "source": "Matthew 5:13",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-363": {
+      "question": "Where in the Bible is this verse found?\n\nJesus wept.",
+      "options": [
+        "2 Corinthians 12:9",
+        "Matthew 7:7",
+        "2 Timothy 2:15",
+        "John 11:35"
+      ],
+      "correct_index": 3,
+      "answer": "John 11:35",
+      "explanation": "John 11:35 (NIV) is the correct reference. This verse focuses on Jesus' grief at Lazarus's tomb.",
+      "source": "John 11:35",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-364": {
+      "question": "Where in the Bible is this verse found?\n\npray continually,",
+      "options": [
+        "1 Thessalonians 5:17",
+        "Revelation 3:20",
+        "Romans 12:1",
+        "Matthew 6:33"
+      ],
+      "correct_index": 0,
+      "answer": "1 Thessalonians 5:17",
+      "explanation": "1 Thessalonians 5:17 (NIV) is the correct reference. This verse focuses on continual prayer.",
+      "source": "1 Thessalonians 5:17",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-365": {
+      "question": "Where in the Bible is this verse found?\n\ngive thanks in all circumstances; for this is God’s will for you in Christ Jesus.",
+      "options": [
+        "Matthew 5:13",
+        "1 Thessalonians 5:18",
+        "1 Corinthians 13:4",
+        "Colossians 3:23"
+      ],
+      "correct_index": 1,
+      "answer": "1 Thessalonians 5:18",
+      "explanation": "1 Thessalonians 5:18 (NIV) is the correct reference. This verse focuses on thanksgiving in every circumstance.",
+      "source": "1 Thessalonians 5:18",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-366": {
+      "question": "Where in the Bible is this verse found?\n\nSubmit yourselves, then, to God. Resist the devil, and he will flee from you.",
+      "options": [
+        "Galatians 5:22",
+        "Hebrews 13:8",
+        "John 10:10",
+        "James 4:7"
+      ],
+      "correct_index": 3,
+      "answer": "James 4:7",
+      "explanation": "James 4:7 (NIV) is the correct reference. This verse focuses on submission to God and resistance to the devil.",
+      "source": "James 4:7",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-367": {
+      "question": "Where in the Bible is this verse found?\n\nCast all your anxiety on him because he cares for you.",
+      "options": [
+        "1 Corinthians 10:13",
+        "Matthew 22:39",
+        "1 Peter 5:7",
+        "Romans 8:28"
+      ],
+      "correct_index": 2,
+      "answer": "1 Peter 5:7",
+      "explanation": "1 Peter 5:7 (NIV) is the correct reference. This verse focuses on entrusting anxiety to God.",
+      "source": "1 Peter 5:7",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-368": {
+      "question": "Where in the Bible is this verse found?\n\nbut those who hope in the LORD will renew their strength. They will soar on wings like eagles; they will run and not grow weary, they will walk and not be faint.",
+      "options": [
+        "Psalm 1:1",
+        "2 Chronicles 7:14",
+        "Isaiah 40:31",
+        "1 Samuel 16:7"
+      ],
+      "correct_index": 2,
+      "answer": "Isaiah 40:31",
+      "explanation": "Isaiah 40:31 (NIV) is the correct reference. This verse focuses on renewed strength through hope in God.",
+      "source": "Isaiah 40:31",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-369": {
+      "question": "Where in the Bible is this verse found?\n\nSo do not fear, for I am with you; do not be dismayed, for I am your God. I will strengthen you and help you; I will uphold you with my righteous right hand.",
+      "options": [
+        "Isaiah 41:10",
+        "Psalm 34:18",
+        "Zephaniah 3:17",
+        "Genesis 1:1"
+      ],
+      "correct_index": 0,
+      "answer": "Isaiah 41:10",
+      "explanation": "Isaiah 41:10 (NIV) is the correct reference. This verse focuses on God's presence and help.",
+      "source": "Isaiah 41:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-370": {
+      "question": "Where in the Bible is this verse found?\n\n“Come to me, all you who are weary and burdened, and I will give you rest.",
+      "options": [
+        "1 Thessalonians 5:17",
+        "Ephesians 2:8",
+        "Hebrews 11:1",
+        "Matthew 11:28"
+      ],
+      "correct_index": 3,
+      "answer": "Matthew 11:28",
+      "explanation": "Matthew 11:28 (NIV) is the correct reference. This verse focuses on Jesus' invitation to the weary.",
+      "source": "Matthew 11:28",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-371": {
+      "question": "Where in the Bible is this verse found?\n\nThe thief comes only to steal and kill and destroy; I have come that they may have life, and have it to the full.",
+      "options": [
+        "1 John 4:8",
+        "Ephesians 2:8",
+        "John 10:10",
+        "Matthew 18:20"
+      ],
+      "correct_index": 2,
+      "answer": "John 10:10",
+      "explanation": "John 10:10 (NIV) is the correct reference. This verse focuses on the abundant life Jesus gives.",
+      "source": "John 10:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-372": {
+      "question": "Where in the Bible is this verse found?\n\nHere I am! I stand at the door and knock. If anyone hears my voice and opens the door, I will come in and eat with that person, and they with me.",
+      "options": [
+        "Revelation 3:20",
+        "1 Peter 5:7",
+        "Philippians 4:6",
+        "Acts 1:8"
+      ],
+      "correct_index": 0,
+      "answer": "Revelation 3:20",
+      "explanation": "Revelation 3:20 (NIV) is the correct reference. This verse focuses on Christ's invitation to fellowship.",
+      "source": "Revelation 3:20",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-373": {
+      "question": "Where in the Bible is this verse found?\n\nFor it is by grace you have been saved, through faith—and this is not from yourselves, it is the gift of God—",
+      "options": [
+        "1 Thessalonians 5:17",
+        "Ephesians 2:8",
+        "1 Corinthians 13:13",
+        "Matthew 6:33"
+      ],
+      "correct_index": 1,
+      "answer": "Ephesians 2:8",
+      "explanation": "Ephesians 2:8 (NIV) is the correct reference. This verse focuses on salvation by grace through faith.",
+      "source": "Ephesians 2:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-374": {
+      "question": "Where in the Bible is this verse found?\n\nBut God demonstrates his own love for us in this: While we were still sinners, Christ died for us.",
+      "options": [
+        "Matthew 22:37",
+        "Galatians 6:9",
+        "John 14:6",
+        "Romans 5:8"
+      ],
+      "correct_index": 3,
+      "answer": "Romans 5:8",
+      "explanation": "Romans 5:8 (NIV) is the correct reference. This verse focuses on Christ's death for sinners.",
+      "source": "Romans 5:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-375": {
+      "question": "Where in the Bible is this verse found?\n\nTherefore, if anyone is in Christ, the new creation has come: The old has gone, the new is here!",
+      "options": [
+        "Matthew 5:13",
+        "2 Corinthians 5:17",
+        "2 Timothy 3:16",
+        "Acts 1:8"
+      ],
+      "correct_index": 1,
+      "answer": "2 Corinthians 5:17",
+      "explanation": "2 Corinthians 5:17 (NIV) is the correct reference. This verse focuses on new life in Christ.",
+      "source": "2 Corinthians 5:17",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-376": {
+      "question": "Where in the Bible is this verse found?\n\nI have been crucified with Christ and I no longer live, but Christ lives in me. The life I now live in the body, I live by faith in the Son of God, who loved me and gave himself for me.",
+      "options": [
+        "Galatians 2:20",
+        "Hebrews 13:8",
+        "2 Corinthians 4:18",
+        "Matthew 6:33"
+      ],
+      "correct_index": 0,
+      "answer": "Galatians 2:20",
+      "explanation": "Galatians 2:20 (NIV) is the correct reference. This verse focuses on living by faith in Christ.",
+      "source": "Galatians 2:20",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-377": {
+      "question": "Where in the Bible is this verse found?\n\nLove is patient, love is kind. It does not envy, it does not boast, it is not proud.",
+      "options": [
+        "Galatians 5:22",
+        "Matthew 7:7",
+        "1 Corinthians 13:4",
+        "Acts 20:35"
+      ],
+      "correct_index": 2,
+      "answer": "1 Corinthians 13:4",
+      "explanation": "1 Corinthians 13:4 (NIV) is the correct reference. This verse focuses on the character of love.",
+      "source": "1 Corinthians 13:4",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-378": {
+      "question": "Where in the Bible is this verse found?\n\nAnd now these three remain: faith, hope and love. But the greatest of these is love.",
+      "options": [
+        "Hebrews 13:8",
+        "1 Corinthians 13:13",
+        "Luke 9:23",
+        "James 1:22"
+      ],
+      "correct_index": 1,
+      "answer": "1 Corinthians 13:13",
+      "explanation": "1 Corinthians 13:13 (NIV) is the correct reference. This verse focuses on the greatness of love.",
+      "source": "1 Corinthians 13:13",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-379": {
+      "question": "Where in the Bible is this verse found?\n\nBut the fruit of the Spirit is love, joy, peace, forbearance, kindness, goodness, faithfulness,",
+      "options": [
+        "Titus 2:11",
+        "Galatians 5:22",
+        "2 Timothy 3:16",
+        "Matthew 18:20"
+      ],
+      "correct_index": 1,
+      "answer": "Galatians 5:22",
+      "explanation": "Galatians 5:22 (NIV) is the correct reference. This verse focuses on the fruit of the Spirit.",
+      "source": "Galatians 5:22",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-380": {
+      "question": "Where in the Bible is this verse found?\n\nTake delight in the LORD, and he will give you the desires of your heart.",
+      "options": [
+        "Psalm 37:4",
+        "Malachi 3:10",
+        "Joshua 1:9",
+        "Habakkuk 2:4"
+      ],
+      "correct_index": 0,
+      "answer": "Psalm 37:4",
+      "explanation": "Psalm 37:4 (NIV) is the correct reference. This verse focuses on delighting in the Lord.",
+      "source": "Psalm 37:4",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-381": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD has done it this very day; let us rejoice today and be glad.",
+      "options": [
+        "Proverbs 27:17",
+        "Psalm 118:24",
+        "Habakkuk 2:4",
+        "Joshua 1:8"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 118:24",
+      "explanation": "Psalm 118:24 (NIV) is the correct reference. This verse focuses on rejoicing in the Lord's work.",
+      "source": "Psalm 118:24",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-382": {
+      "question": "Where in the Bible is this verse found?\n\nShout for joy to the LORD, all the earth.",
+      "options": [
+        "Psalm 100:1",
+        "Deuteronomy 31:6",
+        "Proverbs 22:6",
+        "Hosea 4:6"
+      ],
+      "correct_index": 0,
+      "answer": "Psalm 100:1",
+      "explanation": "Psalm 100:1 (NIV) is the correct reference. This verse focuses on joyful worship.",
+      "source": "Psalm 100:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-383": {
+      "question": "Where in the Bible is this verse found?\n\nLet everything that has breath praise the LORD. Praise the LORD.",
+      "options": [
+        "Deuteronomy 31:6",
+        "Genesis 1:1",
+        "2 Chronicles 7:14",
+        "Psalm 150:6"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 150:6",
+      "explanation": "Psalm 150:6 (NIV) is the correct reference. This verse focuses on all creation praising God.",
+      "source": "Psalm 150:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-384": {
+      "question": "Where in the Bible is this verse found?\n\n“Ask and it will be given to you; seek and you will find; knock and the door will be opened to you.",
+      "options": [
+        "John 3:16",
+        "Matthew 7:7",
+        "Galatians 5:22",
+        "Romans 5:8"
+      ],
+      "correct_index": 1,
+      "answer": "Matthew 7:7",
+      "explanation": "Matthew 7:7 (NIV) is the correct reference. This verse focuses on asking, seeking and knocking.",
+      "source": "Matthew 7:7",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-385": {
+      "question": "Where in the Bible is this verse found?\n\nJesus looked at them and said, “With man this is impossible, but with God all things are possible.”",
+      "options": [
+        "Jude 1:24",
+        "Romans 6:23",
+        "Matthew 19:26",
+        "Philippians 4:19"
+      ],
+      "correct_index": 2,
+      "answer": "Matthew 19:26",
+      "explanation": "Matthew 19:26 (NIV) is the correct reference. This verse focuses on God's power beyond human possibility.",
+      "source": "Matthew 19:26",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-386": {
+      "question": "Where in the Bible is this verse found?\n\nFor no word from God will ever fail.”",
+      "options": [
+        "Matthew 28:19",
+        "Luke 1:37",
+        "Hebrews 10:25",
+        "Romans 6:23"
+      ],
+      "correct_index": 1,
+      "answer": "Luke 1:37",
+      "explanation": "Luke 1:37 (NIV) is the correct reference. This verse focuses on the certainty of God's word.",
+      "source": "Luke 1:37",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-387": {
+      "question": "Where in the Bible is this verse found?\n\nThen you will know the truth, and the truth will set you free.”",
+      "options": [
+        "John 8:32",
+        "1 Thessalonians 5:18",
+        "Philippians 4:19",
+        "Acts 20:35"
+      ],
+      "correct_index": 0,
+      "answer": "John 8:32",
+      "explanation": "John 8:32 (NIV) is the correct reference. This verse focuses on truth and freedom.",
+      "source": "John 8:32",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-388": {
+      "question": "Where in the Bible is this verse found?\n\n“I am the vine; you are the branches. If you remain in me and I in you, you will bear much fruit; apart from me you can do nothing.",
+      "options": [
+        "Romans 3:23",
+        "John 15:5",
+        "Galatians 5:22",
+        "Philippians 4:19"
+      ],
+      "correct_index": 1,
+      "answer": "John 15:5",
+      "explanation": "John 15:5 (NIV) is the correct reference. This verse focuses on abiding in Christ.",
+      "source": "John 15:5",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-389": {
+      "question": "Where in the Bible is this verse found?\n\n“A new command I give you: Love one another. As I have loved you, so you must love one another.",
+      "options": [
+        "Colossians 3:23",
+        "James 4:7",
+        "John 13:34",
+        "2 Corinthians 12:9"
+      ],
+      "correct_index": 2,
+      "answer": "John 13:34",
+      "explanation": "John 13:34 (NIV) is the correct reference. This verse focuses on Jesus' command to love one another.",
+      "source": "John 13:34",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-390": {
+      "question": "Where in the Bible is this verse found?\n\nJesus replied: “ ‘Love the Lord your God with all your heart and with all your soul and with all your mind.’",
+      "options": [
+        "John 15:13",
+        "2 Corinthians 5:17",
+        "1 Peter 5:7",
+        "Matthew 22:37"
+      ],
+      "correct_index": 3,
+      "answer": "Matthew 22:37",
+      "explanation": "Matthew 22:37 (NIV) is the correct reference. This verse focuses on the greatest commandment.",
+      "source": "Matthew 22:37",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-391": {
+      "question": "Where in the Bible is this verse found?\n\nAnd the second is like it: ‘Love your neighbor as yourself.’",
+      "options": [
+        "Romans 12:1",
+        "Matthew 22:39",
+        "Acts 4:12",
+        "1 Peter 5:7"
+      ],
+      "correct_index": 1,
+      "answer": "Matthew 22:39",
+      "explanation": "Matthew 22:39 (NIV) is the correct reference. This verse focuses on loving one's neighbor.",
+      "source": "Matthew 22:39",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-392": {
+      "question": "Where in the Bible is this verse found?\n\nSo in everything, do to others what you would have them do to you, for this sums up the Law and the Prophets.",
+      "options": [
+        "John 1:1",
+        "Matthew 7:12",
+        "Acts 1:8",
+        "Philippians 4:6"
+      ],
+      "correct_index": 1,
+      "answer": "Matthew 7:12",
+      "explanation": "Matthew 7:12 (NIV) is the correct reference. This verse focuses on the Golden Rule.",
+      "source": "Matthew 7:12",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-393": {
+      "question": "Where in the Bible is this verse found?\n\nDo not conform to the pattern of this world, but be transformed by the renewing of your mind. Then you will be able to test and approve what God’s will is—his good, pleasing and perfect will.",
+      "options": [
+        "Matthew 22:37",
+        "Romans 12:2",
+        "2 Corinthians 4:18",
+        "Ephesians 2:8"
+      ],
+      "correct_index": 1,
+      "answer": "Romans 12:2",
+      "explanation": "Romans 12:2 (NIV) is the correct reference. This verse focuses on transformation through renewal of the mind.",
+      "source": "Romans 12:2",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-394": {
+      "question": "Where in the Bible is this verse found?\n\nDo not be anxious about anything, but in every situation, by prayer and petition, with thanksgiving, present your requests to God.",
+      "options": [
+        "Matthew 9:37",
+        "1 Corinthians 13:4",
+        "2 Timothy 3:16",
+        "Philippians 4:6"
+      ],
+      "correct_index": 3,
+      "answer": "Philippians 4:6",
+      "explanation": "Philippians 4:6 (NIV) is the correct reference. This verse focuses on prayer instead of anxiety.",
+      "source": "Philippians 4:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-395": {
+      "question": "Where in the Bible is this verse found?\n\nAnd my God will meet all your needs according to the riches of his glory in Christ Jesus.",
+      "options": [
+        "Galatians 5:22",
+        "John 1:12",
+        "Matthew 11:28",
+        "Philippians 4:19"
+      ],
+      "correct_index": 3,
+      "answer": "Philippians 4:19",
+      "explanation": "Philippians 4:19 (NIV) is the correct reference. This verse focuses on God's provision.",
+      "source": "Philippians 4:19",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-396": {
+      "question": "Where in the Bible is this verse found?\n\nAll Scripture is God-breathed and is useful for teaching, rebuking, correcting and training in righteousness,",
+      "options": [
+        "1 Corinthians 10:13",
+        "Romans 8:28",
+        "John 10:10",
+        "2 Timothy 3:16"
+      ],
+      "correct_index": 3,
+      "answer": "2 Timothy 3:16",
+      "explanation": "2 Timothy 3:16 (NIV) is the correct reference. This verse focuses on the divine inspiration and usefulness of Scripture.",
+      "source": "2 Timothy 3:16",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-397": {
+      "question": "Where in the Bible is this verse found?\n\nJesus Christ is the same yesterday and today and forever.",
+      "options": [
+        "Hebrews 13:8",
+        "2 Corinthians 4:18",
+        "Matthew 28:19",
+        "Romans 8:28"
+      ],
+      "correct_index": 0,
+      "answer": "Hebrews 13:8",
+      "explanation": "Hebrews 13:8 (NIV) is the correct reference. This verse focuses on Christ's unchanging nature.",
+      "source": "Hebrews 13:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-398": {
+      "question": "Where in the Bible is this verse found?\n\nBut if serving the LORD seems undesirable to you, then choose for yourselves this day whom you will serve, whether the gods your ancestors served beyond the Euphrates, or the gods of the Amorites, in whose land you are living. But as for me and my household, we will serve the LORD.”",
+      "options": [
+        "Joshua 24:15",
+        "Nehemiah 8:10",
+        "Genesis 50:20",
+        "Proverbs 22:6"
+      ],
+      "correct_index": 0,
+      "answer": "Joshua 24:15",
+      "explanation": "Joshua 24:15 (NIV) is the correct reference. This verse focuses on Joshua's call to choose whom to serve.",
+      "source": "Joshua 24:15",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-399": {
+      "question": "Where in the Bible is this verse found?\n\nWhatever you do, work at it with all your heart, as working for the Lord, not for human masters,",
+      "options": [
+        "Philippians 4:13",
+        "1 John 4:8",
+        "1 Thessalonians 5:17",
+        "Colossians 3:23"
+      ],
+      "correct_index": 3,
+      "answer": "Colossians 3:23",
+      "explanation": "Colossians 3:23 (NIV) is the correct reference. This verse focuses on wholehearted service to the Lord.",
+      "source": "Colossians 3:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "B-400": {
+      "question": "Where in the Bible is this verse found?\n\nHe says, “Be still, and know that I am God; I will be exalted among the nations, I will be exalted in the earth.”",
+      "options": [
+        "Lamentations 3:23",
+        "Psalm 46:10",
+        "Zechariah 4:6",
+        "Isaiah 6:8"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 46:10",
+      "explanation": "Psalm 46:10 (NIV) is the correct reference. This verse focuses on God's exaltation over the nations.",
+      "source": "Psalm 46:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-241": {
+      "question": "Where in the Bible is this verse found?\n\nYou intended to harm me, but God intended it for good to accomplish what is now being done, the saving of many lives.",
+      "options": [
+        "Genesis 1:1",
+        "Genesis 50:20",
+        "Exodus 20:12",
+        "Exodus 14:14"
+      ],
+      "correct_index": 1,
+      "answer": "Genesis 50:20",
+      "explanation": "Genesis 50:20 (NIV) is the correct reference. This verse focuses on Joseph's recognition of God's providence.",
+      "source": "Genesis 50:20",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-242": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD will fight for you; you need only to be still.”",
+      "options": [
+        "Exodus 20:12",
+        "Genesis 1:1",
+        "Joshua 24:15",
+        "Exodus 14:14"
+      ],
+      "correct_index": 3,
+      "answer": "Exodus 14:14",
+      "explanation": "Exodus 14:14 (NIV) is the correct reference. This verse focuses on God fighting for Israel at the sea.",
+      "source": "Exodus 14:14",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-243": {
+      "question": "Where in the Bible is this verse found?\n\n“ ‘ “The LORD bless you and keep you;",
+      "options": [
+        "Numbers 6:24",
+        "Deuteronomy 8:3",
+        "Genesis 1:1",
+        "Joshua 24:15"
+      ],
+      "correct_index": 0,
+      "answer": "Numbers 6:24",
+      "explanation": "Numbers 6:24 (NIV) is the correct reference. This verse focuses on the priestly blessing.",
+      "source": "Numbers 6:24",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-244": {
+      "question": "Where in the Bible is this verse found?\n\nHe humbled you, causing you to hunger and then feeding you with manna, which neither you nor your ancestors had known, to teach you that man does not live on bread alone but on every word that comes from the mouth of the LORD.",
+      "options": [
+        "Deuteronomy 31:6",
+        "Exodus 14:14",
+        "Deuteronomy 8:3",
+        "Joshua 24:15"
+      ],
+      "correct_index": 2,
+      "answer": "Deuteronomy 8:3",
+      "explanation": "Deuteronomy 8:3 (NIV) is the correct reference. This verse focuses on dependence on God's word.",
+      "source": "Deuteronomy 8:3",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-245": {
+      "question": "Where in the Bible is this verse found?\n\nBe strong and courageous. Do not be afraid or terrified because of them, for the LORD your God goes with you; he will never leave you nor forsake you.”",
+      "options": [
+        "Deuteronomy 8:3",
+        "Deuteronomy 31:6",
+        "Numbers 6:24",
+        "Joshua 24:15"
+      ],
+      "correct_index": 1,
+      "answer": "Deuteronomy 31:6",
+      "explanation": "Deuteronomy 31:6 (NIV) is the correct reference. This verse focuses on God's faithful presence.",
+      "source": "Deuteronomy 31:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-246": {
+      "question": "Where in the Bible is this verse found?\n\nKeep this Book of the Law always on your lips; meditate on it day and night, so that you may be careful to do everything written in it. Then you will be prosperous and successful.",
+      "options": [
+        "Joshua 1:8",
+        "Joshua 1:9",
+        "Joshua 24:15",
+        "Deuteronomy 31:6"
+      ],
+      "correct_index": 0,
+      "answer": "Joshua 1:8",
+      "explanation": "Joshua 1:8 (NIV) is the correct reference. This verse focuses on meditating on and obeying God's law.",
+      "source": "Joshua 1:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-247": {
+      "question": "Where in the Bible is this verse found?\n\nBut Samuel replied: “Does the LORD delight in burnt offerings and sacrifices as much as in obeying the LORD? To obey is better than sacrifice, and to heed is better than the fat of rams.",
+      "options": [
+        "1 Samuel 15:22",
+        "1 Samuel 16:7",
+        "1 Chronicles 16:11",
+        "Joshua 1:9"
+      ],
+      "correct_index": 0,
+      "answer": "1 Samuel 15:22",
+      "explanation": "1 Samuel 15:22 (NIV) is the correct reference. This verse focuses on Samuel's teaching about obedience.",
+      "source": "1 Samuel 15:22",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-248": {
+      "question": "Where in the Bible is this verse found?\n\nBut the LORD said to Samuel, “Do not consider his appearance or his height, for I have rejected him. The LORD does not look at the things people look at. People look at the outward appearance, but the LORD looks at the heart.”",
+      "options": [
+        "1 Samuel 15:22",
+        "1 Samuel 16:7",
+        "Joshua 1:9",
+        "Joshua 24:15"
+      ],
+      "correct_index": 1,
+      "answer": "1 Samuel 16:7",
+      "explanation": "1 Samuel 16:7 (NIV) is the correct reference. This verse focuses on God's concern for the heart.",
+      "source": "1 Samuel 16:7",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-249": {
+      "question": "Where in the Bible is this verse found?\n\nif my people, who are called by my name, will humble themselves and pray and seek my face and turn from their wicked ways, then I will hear from heaven, and I will forgive their sin and will heal their land.",
+      "options": [
+        "2 Chronicles 7:14",
+        "1 Chronicles 16:11",
+        "Psalm 119:105",
+        "Psalm 46:10"
+      ],
+      "correct_index": 0,
+      "answer": "2 Chronicles 7:14",
+      "explanation": "2 Chronicles 7:14 (NIV) is the correct reference. This verse focuses on humility, prayer and repentance.",
+      "source": "2 Chronicles 7:14",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-250": {
+      "question": "Where in the Bible is this verse found?\n\nNehemiah said, “Go and enjoy choice food and sweet drinks, and send some to those who have nothing prepared. This day is holy to our Lord. Do not grieve, for the joy of the LORD is your strength.”",
+      "options": [
+        "Job 19:25",
+        "Psalm 103:2",
+        "Psalm 46:10",
+        "Nehemiah 8:10"
+      ],
+      "correct_index": 3,
+      "answer": "Nehemiah 8:10",
+      "explanation": "Nehemiah 8:10 (NIV) is the correct reference. This verse focuses on the joy of the Lord.",
+      "source": "Nehemiah 8:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-251": {
+      "question": "Where in the Bible is this verse found?\n\nI know that my redeemer lives, and that in the end he will stand on the earth.",
+      "options": [
+        "Psalm 133:1",
+        "Psalm 34:8",
+        "Job 19:25",
+        "Psalm 139:14"
+      ],
+      "correct_index": 2,
+      "answer": "Job 19:25",
+      "explanation": "Job 19:25 (NIV) is the correct reference. This verse focuses on Job's hope in his redeemer.",
+      "source": "Job 19:25",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-252": {
+      "question": "Where in the Bible is this verse found?\n\nBlessed is the one who does not walk in step with the wicked or stand in the way that sinners take or sit in the company of mockers,",
+      "options": [
+        "Psalm 23:1",
+        "Psalm 51:10",
+        "Psalm 27:1",
+        "Psalm 1:1"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 1:1",
+      "explanation": "Psalm 1:1 (NIV) is the correct reference. This verse focuses on the blessed person's separation from wickedness.",
+      "source": "Psalm 1:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-253": {
+      "question": "Where in the Bible is this verse found?\n\nMay these words of my mouth and this meditation of my heart be pleasing in your sight, LORD, my Rock and my Redeemer.",
+      "options": [
+        "Psalm 133:1",
+        "Psalm 91:1",
+        "Psalm 46:10",
+        "Psalm 19:14"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 19:14",
+      "explanation": "Psalm 19:14 (NIV) is the correct reference. This verse focuses on words and meditation pleasing to God.",
+      "source": "Psalm 19:14",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-254": {
+      "question": "Where in the Bible is this verse found?\n\nEven though I walk through the darkest valley, I will fear no evil, for you are with me; your rod and your staff, they comfort me.",
+      "options": [
+        "Psalm 100:1",
+        "Psalm 103:2",
+        "Psalm 23:4",
+        "Psalm 119:105"
+      ],
+      "correct_index": 2,
+      "answer": "Psalm 23:4",
+      "explanation": "Psalm 23:4 (NIV) is the correct reference. This verse focuses on God's presence in the darkest valley.",
+      "source": "Psalm 23:4",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-255": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD is my light and my salvation—whom shall I fear? The LORD is the stronghold of my life—of whom shall I be afraid?",
+      "options": [
+        "Psalm 150:6",
+        "Psalm 19:14",
+        "Psalm 27:1",
+        "Psalm 37:4"
+      ],
+      "correct_index": 2,
+      "answer": "Psalm 27:1",
+      "explanation": "Psalm 27:1 (NIV) is the correct reference. This verse focuses on confidence in God's salvation.",
+      "source": "Psalm 27:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-256": {
+      "question": "Where in the Bible is this verse found?\n\nTaste and see that the LORD is good; blessed is the one who takes refuge in him.",
+      "options": [
+        "Psalm 46:10",
+        "Psalm 34:8",
+        "Psalm 150:6",
+        "Psalm 27:1"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 34:8",
+      "explanation": "Psalm 34:8 (NIV) is the correct reference. This verse focuses on experiencing God's goodness.",
+      "source": "Psalm 34:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-257": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD is close to the brokenhearted and saves those who are crushed in spirit.",
+      "options": [
+        "Psalm 51:10",
+        "Psalm 34:18",
+        "Psalm 23:4",
+        "Psalm 91:1"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 34:18",
+      "explanation": "Psalm 34:18 (NIV) is the correct reference. This verse focuses on God's nearness to the brokenhearted.",
+      "source": "Psalm 34:18",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-258": {
+      "question": "Where in the Bible is this verse found?\n\nCreate in me a pure heart, O God, and renew a steadfast spirit within me.",
+      "options": [
+        "Psalm 121:2",
+        "Psalm 150:6",
+        "Psalm 19:14",
+        "Psalm 51:10"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 51:10",
+      "explanation": "Psalm 51:10 (NIV) is the correct reference. This verse focuses on prayer for a pure heart.",
+      "source": "Psalm 51:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-259": {
+      "question": "Where in the Bible is this verse found?\n\nWhoever dwells in the shelter of the Most High will rest in the shadow of the Almighty.",
+      "options": [
+        "Psalm 23:1",
+        "Psalm 91:1",
+        "Psalm 23:4",
+        "Psalm 34:8"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 91:1",
+      "explanation": "Psalm 91:1 (NIV) is the correct reference. This verse focuses on shelter in the Most High.",
+      "source": "Psalm 91:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-260": {
+      "question": "Where in the Bible is this verse found?\n\nPraise the LORD, my soul, and forget not all his benefits—",
+      "options": [
+        "Psalm 103:2",
+        "Psalm 118:24",
+        "Psalm 46:1",
+        "Psalm 19:14"
+      ],
+      "correct_index": 0,
+      "answer": "Psalm 103:2",
+      "explanation": "Psalm 103:2 (NIV) is the correct reference. This verse focuses on remembering God's benefits.",
+      "source": "Psalm 103:2",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-261": {
+      "question": "Where in the Bible is this verse found?\n\nI have hidden your word in my heart that I might not sin against you.",
+      "options": [
+        "Psalm 19:14",
+        "Psalm 103:2",
+        "Psalm 139:14",
+        "Psalm 119:11"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 119:11",
+      "explanation": "Psalm 119:11 (NIV) is the correct reference. This verse focuses on treasuring God's word against sin.",
+      "source": "Psalm 119:11",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-262": {
+      "question": "Where in the Bible is this verse found?\n\nMy help comes from the LORD, the Maker of heaven and earth.",
+      "options": [
+        "Psalm 150:6",
+        "Psalm 121:2",
+        "Psalm 23:1",
+        "Psalm 103:2"
+      ],
+      "correct_index": 1,
+      "answer": "Psalm 121:2",
+      "explanation": "Psalm 121:2 (NIV) is the correct reference. This verse focuses on help from the Creator.",
+      "source": "Psalm 121:2",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-263": {
+      "question": "Where in the Bible is this verse found?\n\nHow good and pleasant it is when God’s people live together in unity!",
+      "options": [
+        "Psalm 133:1",
+        "Psalm 119:11",
+        "Psalm 119:105",
+        "Psalm 51:10"
+      ],
+      "correct_index": 0,
+      "answer": "Psalm 133:1",
+      "explanation": "Psalm 133:1 (NIV) is the correct reference. This verse focuses on unity among God's people.",
+      "source": "Psalm 133:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-264": {
+      "question": "Where in the Bible is this verse found?\n\nI praise you because I am fearfully and wonderfully made; your works are wonderful, I know that full well.",
+      "options": [
+        "Psalm 19:14",
+        "Psalm 37:4",
+        "Psalm 1:1",
+        "Psalm 139:14"
+      ],
+      "correct_index": 3,
+      "answer": "Psalm 139:14",
+      "explanation": "Psalm 139:14 (NIV) is the correct reference. This verse focuses on praise for God's creative work.",
+      "source": "Psalm 139:14",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-265": {
+      "question": "Where in the Bible is this verse found?\n\nAbove all else, guard your heart, for everything you do flows from it.",
+      "options": [
+        "Proverbs 3:5",
+        "Proverbs 22:6",
+        "Proverbs 27:17",
+        "Proverbs 4:23"
+      ],
+      "correct_index": 3,
+      "answer": "Proverbs 4:23",
+      "explanation": "Proverbs 4:23 (NIV) is the correct reference. This verse focuses on guarding the heart.",
+      "source": "Proverbs 4:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-266": {
+      "question": "Where in the Bible is this verse found?\n\nA gentle answer turns away wrath, but a harsh word stirs up anger.",
+      "options": [
+        "Proverbs 4:23",
+        "Proverbs 3:5",
+        "Proverbs 15:1",
+        "Proverbs 16:3"
+      ],
+      "correct_index": 2,
+      "answer": "Proverbs 15:1",
+      "explanation": "Proverbs 15:1 (NIV) is the correct reference. This verse focuses on the effect of gentle speech.",
+      "source": "Proverbs 15:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-267": {
+      "question": "Where in the Bible is this verse found?\n\nCommit to the LORD whatever you do, and he will establish your plans.",
+      "options": [
+        "Proverbs 22:6",
+        "Proverbs 27:17",
+        "Proverbs 16:3",
+        "Proverbs 3:5"
+      ],
+      "correct_index": 2,
+      "answer": "Proverbs 16:3",
+      "explanation": "Proverbs 16:3 (NIV) is the correct reference. This verse focuses on committing one's plans to God.",
+      "source": "Proverbs 16:3",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-268": {
+      "question": "Where in the Bible is this verse found?\n\nStart children off on the way they should go, and even when they are old they will not turn from it.",
+      "options": [
+        "Proverbs 15:1",
+        "Proverbs 4:23",
+        "Proverbs 27:17",
+        "Proverbs 22:6"
+      ],
+      "correct_index": 3,
+      "answer": "Proverbs 22:6",
+      "explanation": "Proverbs 22:6 (NIV) is the correct reference. This verse focuses on training children in the right way.",
+      "source": "Proverbs 22:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-269": {
+      "question": "Where in the Bible is this verse found?\n\nAs iron sharpens iron, so one person sharpens another.",
+      "options": [
+        "Proverbs 27:17",
+        "Proverbs 4:23",
+        "Proverbs 15:1",
+        "Proverbs 22:6"
+      ],
+      "correct_index": 0,
+      "answer": "Proverbs 27:17",
+      "explanation": "Proverbs 27:17 (NIV) is the correct reference. This verse focuses on mutual sharpening.",
+      "source": "Proverbs 27:17",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-270": {
+      "question": "Where in the Bible is this verse found?\n\nThere is a time for everything, and a season for every activity under the heavens:",
+      "options": [
+        "Ecclesiastes 4:12",
+        "Proverbs 16:3",
+        "Ecclesiastes 3:1",
+        "Psalm 118:24"
+      ],
+      "correct_index": 2,
+      "answer": "Ecclesiastes 3:1",
+      "explanation": "Ecclesiastes 3:1 (NIV) is the correct reference. This verse focuses on seasons of life.",
+      "source": "Ecclesiastes 3:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-271": {
+      "question": "Where in the Bible is this verse found?\n\nThough one may be overpowered, two can defend themselves. A cord of three strands is not quickly broken.",
+      "options": [
+        "Ecclesiastes 4:12",
+        "Ecclesiastes 3:1",
+        "Psalm 121:2",
+        "Psalm 100:1"
+      ],
+      "correct_index": 0,
+      "answer": "Ecclesiastes 4:12",
+      "explanation": "Ecclesiastes 4:12 (NIV) is the correct reference. This verse focuses on strength through companionship.",
+      "source": "Ecclesiastes 4:12",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-272": {
+      "question": "Where in the Bible is this verse found?\n\nThen I heard the voice of the Lord saying, “Whom shall I send? And who will go for us?” And I said, “Here am I. Send me!”",
+      "options": [
+        "Isaiah 26:3",
+        "Isaiah 40:31",
+        "Isaiah 9:6",
+        "Isaiah 6:8"
+      ],
+      "correct_index": 3,
+      "answer": "Isaiah 6:8",
+      "explanation": "Isaiah 6:8 (NIV) is the correct reference. This verse focuses on Isaiah's response to God's call.",
+      "source": "Isaiah 6:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-273": {
+      "question": "Where in the Bible is this verse found?\n\nFor to us a child is born, to us a son is given, and the government will be on his shoulders. And he will be called Wonderful Counselor, Mighty God, Everlasting Father, Prince of Peace.",
+      "options": [
+        "Isaiah 54:17",
+        "Isaiah 53:5",
+        "Isaiah 40:31",
+        "Isaiah 9:6"
+      ],
+      "correct_index": 3,
+      "answer": "Isaiah 9:6",
+      "explanation": "Isaiah 9:6 (NIV) is the correct reference. This verse focuses on the promised ruler's titles.",
+      "source": "Isaiah 9:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-274": {
+      "question": "Where in the Bible is this verse found?\n\nYou will keep in perfect peace those whose minds are steadfast, because they trust in you.",
+      "options": [
+        "Isaiah 41:10",
+        "Isaiah 9:6",
+        "Isaiah 26:3",
+        "Isaiah 6:8"
+      ],
+      "correct_index": 2,
+      "answer": "Isaiah 26:3",
+      "explanation": "Isaiah 26:3 (NIV) is the correct reference. This verse focuses on peace through trust in God.",
+      "source": "Isaiah 26:3",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-275": {
+      "question": "Where in the Bible is this verse found?\n\nWhen you pass through the waters, I will be with you; and when you pass through the rivers, they will not sweep over you. When you walk through the fire, you will not be burned; the flames will not set you ablaze.",
+      "options": [
+        "Isaiah 26:3",
+        "Isaiah 43:2",
+        "Isaiah 6:8",
+        "Isaiah 54:17"
+      ],
+      "correct_index": 1,
+      "answer": "Isaiah 43:2",
+      "explanation": "Isaiah 43:2 (NIV) is the correct reference. This verse focuses on God's presence through trials.",
+      "source": "Isaiah 43:2",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-276": {
+      "question": "Where in the Bible is this verse found?\n\nBut he was pierced for our transgressions, he was crushed for our iniquities; the punishment that brought us peace was on him, and by his wounds we are healed.",
+      "options": [
+        "Isaiah 53:5",
+        "Isaiah 43:2",
+        "Isaiah 54:17",
+        "Isaiah 9:6"
+      ],
+      "correct_index": 0,
+      "answer": "Isaiah 53:5",
+      "explanation": "Isaiah 53:5 (NIV) is the correct reference. This verse focuses on the suffering servant's wounds.",
+      "source": "Isaiah 53:5",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-277": {
+      "question": "Where in the Bible is this verse found?\n\nno weapon forged against you will prevail, and you will refute every tongue that accuses you. This is the heritage of the servants of the LORD, and this is their vindication from me,” declares the LORD.",
+      "options": [
+        "Isaiah 26:3",
+        "Isaiah 54:17",
+        "Isaiah 6:8",
+        "Isaiah 9:6"
+      ],
+      "correct_index": 1,
+      "answer": "Isaiah 54:17",
+      "explanation": "Isaiah 54:17 (NIV) is the correct reference. This verse focuses on God's vindication of his servants.",
+      "source": "Isaiah 54:17",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-278": {
+      "question": "Where in the Bible is this verse found?\n\n‘Call to me and I will answer you and tell you great and unsearchable things you do not know.’",
+      "options": [
+        "Jeremiah 33:3",
+        "Jeremiah 29:11",
+        "Isaiah 40:31",
+        "Isaiah 53:5"
+      ],
+      "correct_index": 0,
+      "answer": "Jeremiah 33:3",
+      "explanation": "Jeremiah 33:3 (NIV) is the correct reference. This verse focuses on God's invitation to call on him.",
+      "source": "Jeremiah 33:3",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-279": {
+      "question": "Where in the Bible is this verse found?\n\nThey are new every morning; great is your faithfulness.",
+      "options": [
+        "Jeremiah 33:3",
+        "Isaiah 9:6",
+        "Isaiah 41:10",
+        "Lamentations 3:23"
+      ],
+      "correct_index": 3,
+      "answer": "Lamentations 3:23",
+      "explanation": "Lamentations 3:23 (NIV) is the correct reference. This verse focuses on God's renewed mercies and faithfulness.",
+      "source": "Lamentations 3:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-280": {
+      "question": "Where in the Bible is this verse found?\n\nHe has shown you, O mortal, what is good. And what does the LORD require of you? To act justly and to love mercy and to walk humbly with your God.",
+      "options": [
+        "Habakkuk 2:4",
+        "Micah 6:8",
+        "Malachi 3:10",
+        "Amos 3:3"
+      ],
+      "correct_index": 1,
+      "answer": "Micah 6:8",
+      "explanation": "Micah 6:8 (NIV) is the correct reference. This verse focuses on justice, mercy and humility.",
+      "source": "Micah 6:8",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-281": {
+      "question": "Where in the Bible is this verse found?\n\nSo he said to me, “This is the word of the LORD to Zerubbabel: ‘Not by might nor by power, but by my Spirit,’ says the LORD Almighty.",
+      "options": [
+        "Zechariah 4:6",
+        "Haggai 1:5",
+        "Zephaniah 3:17",
+        "Malachi 3:10"
+      ],
+      "correct_index": 0,
+      "answer": "Zechariah 4:6",
+      "explanation": "Zechariah 4:6 (NIV) is the correct reference. This verse focuses on God's Spirit rather than human might.",
+      "source": "Zechariah 4:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-282": {
+      "question": "Where in the Bible is this verse found?\n\nBring the whole tithe into the storehouse, that there may be food in my house. Test me in this,” says the LORD Almighty, “and see if I will not throw open the floodgates of heaven and pour out so much blessing that there will not be room enough to store it.",
+      "options": [
+        "Malachi 3:10",
+        "Haggai 1:5",
+        "Habakkuk 2:4",
+        "Zephaniah 3:17"
+      ],
+      "correct_index": 0,
+      "answer": "Malachi 3:10",
+      "explanation": "Malachi 3:10 (NIV) is the correct reference. This verse focuses on bringing the tithe to the storehouse.",
+      "source": "Malachi 3:10",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-283": {
+      "question": "Where in the Bible is this verse found?\n\n“Come, follow me,” Jesus said, “and I will send you out to fish for people.”",
+      "options": [
+        "Matthew 4:19",
+        "Matthew 28:19",
+        "Matthew 22:37",
+        "Matthew 22:39"
+      ],
+      "correct_index": 0,
+      "answer": "Matthew 4:19",
+      "explanation": "Matthew 4:19 (NIV) is the correct reference. This verse focuses on Jesus' call to follow him.",
+      "source": "Matthew 4:19",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-284": {
+      "question": "Where in the Bible is this verse found?\n\nThen he said to his disciples, “The harvest is plentiful but the workers are few.",
+      "options": [
+        "Matthew 9:37",
+        "Matthew 28:19",
+        "Matthew 18:20",
+        "Matthew 7:7"
+      ],
+      "correct_index": 0,
+      "answer": "Matthew 9:37",
+      "explanation": "Matthew 9:37 (NIV) is the correct reference. This verse focuses on the plentiful harvest and few workers.",
+      "source": "Matthew 9:37",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-285": {
+      "question": "Where in the Bible is this verse found?\n\nFor where two or three gather in my name, there am I with them.”",
+      "options": [
+        "Matthew 11:28",
+        "Matthew 7:12",
+        "Matthew 18:20",
+        "Matthew 9:37"
+      ],
+      "correct_index": 2,
+      "answer": "Matthew 18:20",
+      "explanation": "Matthew 18:20 (NIV) is the correct reference. This verse focuses on Jesus' presence among gathered disciples.",
+      "source": "Matthew 18:20",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-286": {
+      "question": "Where in the Bible is this verse found?\n\nThen he said to them all: “Whoever wants to be my disciple must deny themselves and take up their cross daily and follow me.",
+      "options": [
+        "Luke 9:23",
+        "Luke 1:37",
+        "John 3:16",
+        "Matthew 11:28"
+      ],
+      "correct_index": 0,
+      "answer": "Luke 9:23",
+      "explanation": "Luke 9:23 (NIV) is the correct reference. This verse focuses on daily self-denial and discipleship.",
+      "source": "Luke 9:23",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-287": {
+      "question": "Where in the Bible is this verse found?\n\nYet to all who did receive him, to those who believed in his name, he gave the right to become children of God—",
+      "options": [
+        "John 1:1",
+        "John 15:5",
+        "John 3:16",
+        "John 1:12"
+      ],
+      "correct_index": 3,
+      "answer": "John 1:12",
+      "explanation": "John 1:12 (NIV) is the correct reference. This verse focuses on becoming children of God.",
+      "source": "John 1:12",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-288": {
+      "question": "Where in the Bible is this verse found?\n\nPeace I leave with you; my peace I give you. I do not give to you as the world gives. Do not let your hearts be troubled and do not be afraid.",
+      "options": [
+        "John 8:32",
+        "John 1:1",
+        "John 10:10",
+        "John 14:27"
+      ],
+      "correct_index": 3,
+      "answer": "John 14:27",
+      "explanation": "John 14:27 (NIV) is the correct reference. This verse focuses on Jesus' gift of peace.",
+      "source": "John 14:27",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-289": {
+      "question": "Where in the Bible is this verse found?\n\nGreater love has no one than this: to lay down one’s life for one’s friends.",
+      "options": [
+        "John 15:13",
+        "John 15:5",
+        "John 16:33",
+        "John 14:6"
+      ],
+      "correct_index": 0,
+      "answer": "John 15:13",
+      "explanation": "John 15:13 (NIV) is the correct reference. This verse focuses on sacrificial love.",
+      "source": "John 15:13",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-290": {
+      "question": "Where in the Bible is this verse found?\n\n“I have told you these things, so that in me you may have peace. In this world you will have trouble. But take heart! I have overcome the world.”",
+      "options": [
+        "John 15:5",
+        "John 16:33",
+        "John 15:13",
+        "John 8:32"
+      ],
+      "correct_index": 1,
+      "answer": "John 16:33",
+      "explanation": "John 16:33 (NIV) is the correct reference. This verse focuses on Christ's victory over the world.",
+      "source": "John 16:33",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-291": {
+      "question": "Where in the Bible is this verse found?\n\nSalvation is found in no one else, for there is no other name under heaven given to mankind by which we must be saved.”",
+      "options": [
+        "Acts 4:12",
+        "Acts 1:8",
+        "Acts 20:35",
+        "Romans 8:28"
+      ],
+      "correct_index": 0,
+      "answer": "Acts 4:12",
+      "explanation": "Acts 4:12 (NIV) is the correct reference. This verse focuses on salvation through Jesus alone.",
+      "source": "Acts 4:12",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-292": {
+      "question": "Where in the Bible is this verse found?\n\nIn everything I did, I showed you that by this kind of hard work we must help the weak, remembering the words the Lord Jesus himself said: ‘It is more blessed to give than to receive.’ ”",
+      "options": [
+        "Acts 4:12",
+        "Acts 1:8",
+        "Romans 1:16",
+        "Acts 20:35"
+      ],
+      "correct_index": 3,
+      "answer": "Acts 20:35",
+      "explanation": "Acts 20:35 (NIV) is the correct reference. This verse focuses on the blessing of giving.",
+      "source": "Acts 20:35",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-293": {
+      "question": "Where in the Bible is this verse found?\n\nFor I am not ashamed of the gospel, because it is the power of God that brings salvation to everyone who believes: first to the Jew, then to the Gentile.",
+      "options": [
+        "Romans 12:2",
+        "Romans 5:8",
+        "Romans 3:23",
+        "Romans 1:16"
+      ],
+      "correct_index": 3,
+      "answer": "Romans 1:16",
+      "explanation": "Romans 1:16 (NIV) is the correct reference. This verse focuses on the gospel's saving power.",
+      "source": "Romans 1:16",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-294": {
+      "question": "Where in the Bible is this verse found?\n\nIf you declare with your mouth, “Jesus is Lord,” and believe in your heart that God raised him from the dead, you will be saved.",
+      "options": [
+        "Romans 12:2",
+        "Romans 3:23",
+        "Romans 10:9",
+        "Romans 5:8"
+      ],
+      "correct_index": 2,
+      "answer": "Romans 10:9",
+      "explanation": "Romans 10:9 (NIV) is the correct reference. This verse focuses on confession and faith in the resurrection.",
+      "source": "Romans 10:9",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-295": {
+      "question": "Where in the Bible is this verse found?\n\nTherefore, I urge you, brothers and sisters, in view of God’s mercy, to offer your bodies as a living sacrifice, holy and pleasing to God—this is your true and proper worship.",
+      "options": [
+        "Romans 3:23",
+        "Romans 5:8",
+        "Romans 12:1",
+        "Romans 8:28"
+      ],
+      "correct_index": 2,
+      "answer": "Romans 12:1",
+      "explanation": "Romans 12:1 (NIV) is the correct reference. This verse focuses on offering oneself in worship.",
+      "source": "Romans 12:1",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-296": {
+      "question": "Where in the Bible is this verse found?\n\nNo temptation has overtaken you except what is common to mankind. And God is faithful; he will not let you be tempted beyond what you can bear. But when you are tempted, he will also provide a way out so that you can endure it.",
+      "options": [
+        "1 Corinthians 10:13",
+        "1 Corinthians 13:13",
+        "1 Corinthians 13:4",
+        "2 Corinthians 4:18"
+      ],
+      "correct_index": 0,
+      "answer": "1 Corinthians 10:13",
+      "explanation": "1 Corinthians 10:13 (NIV) is the correct reference. This verse focuses on God's faithfulness in temptation.",
+      "source": "1 Corinthians 10:13",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-297": {
+      "question": "Where in the Bible is this verse found?\n\nBut he said to me, “My grace is sufficient for you, for my power is made perfect in weakness.” Therefore I will boast all the more gladly about my weaknesses, so that Christ’s power may rest on me.",
+      "options": [
+        "2 Corinthians 12:9",
+        "2 Corinthians 4:18",
+        "2 Corinthians 5:17",
+        "1 Corinthians 10:13"
+      ],
+      "correct_index": 0,
+      "answer": "2 Corinthians 12:9",
+      "explanation": "2 Corinthians 12:9 (NIV) is the correct reference. This verse focuses on Christ's power in weakness.",
+      "source": "2 Corinthians 12:9",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-298": {
+      "question": "Where in the Bible is this verse found?\n\nLet us not become weary in doing good, for at the proper time we will reap a harvest if we do not give up.",
+      "options": [
+        "Galatians 5:22",
+        "Galatians 2:20",
+        "Ephesians 2:8",
+        "Galatians 6:9"
+      ],
+      "correct_index": 3,
+      "answer": "Galatians 6:9",
+      "explanation": "Galatians 6:9 (NIV) is the correct reference. This verse focuses on perseverance in doing good.",
+      "source": "Galatians 6:9",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-299": {
+      "question": "Where in the Bible is this verse found?\n\nDo not merely listen to the word, and so deceive yourselves. Do what it says.",
+      "options": [
+        "James 1:22",
+        "James 4:7",
+        "Hebrews 10:25",
+        "Hebrews 11:1"
+      ],
+      "correct_index": 0,
+      "answer": "James 1:22",
+      "explanation": "James 1:22 (NIV) is the correct reference. This verse focuses on putting God's word into practice.",
+      "source": "James 1:22",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "I-300": {
+      "question": "Where in the Bible is this verse found?\n\nnot giving up meeting together, as some are in the habit of doing, but encouraging one another—and all the more as you see the Day approaching.",
+      "options": [
+        "Hebrews 13:8",
+        "Hebrews 11:1",
+        "Hebrews 10:25",
+        "2 Timothy 2:15"
+      ],
+      "correct_index": 2,
+      "answer": "Hebrews 10:25",
+      "explanation": "Hebrews 10:25 (NIV) is the correct reference. This verse focuses on meeting together and encouraging one another.",
+      "source": "Hebrews 10:25",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-221": {
+      "question": "Where in the Bible is this verse found?\n\n“See, the enemy is puffed up; his desires are not upright—but the righteous person will live by his faithfulness—",
+      "options": [
+        "Habakkuk 2:4",
+        "Micah 6:8",
+        "Zephaniah 3:17",
+        "Malachi 3:10"
+      ],
+      "correct_index": 0,
+      "answer": "Habakkuk 2:4",
+      "explanation": "Habakkuk 2:4 (NIV) is the correct reference. This verse focuses on the righteous living by faithfulness.",
+      "source": "Habakkuk 2:4",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-222": {
+      "question": "Where in the Bible is this verse found?\n\nmy people are destroyed from lack of knowledge. “Because you have rejected knowledge, I also reject you as my priests; because you have ignored the law of your God, I also will ignore your children.",
+      "options": [
+        "Hosea 4:6",
+        "Amos 3:3",
+        "Isaiah 54:17",
+        "Jeremiah 29:11"
+      ],
+      "correct_index": 0,
+      "answer": "Hosea 4:6",
+      "explanation": "Hosea 4:6 (NIV) is the correct reference. This verse focuses on the consequences of rejecting knowledge.",
+      "source": "Hosea 4:6",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-223": {
+      "question": "Where in the Bible is this verse found?\n\nDo two walk together unless they have agreed to do so?",
+      "options": [
+        "Amos 3:3",
+        "Hosea 4:6",
+        "Jeremiah 29:11",
+        "Habakkuk 2:4"
+      ],
+      "correct_index": 0,
+      "answer": "Amos 3:3",
+      "explanation": "Amos 3:3 (NIV) is the correct reference. This verse focuses on the image of walking together by agreement.",
+      "source": "Amos 3:3",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-224": {
+      "question": "Where in the Bible is this verse found?\n\nThe LORD your God is with you, the Mighty Warrior who saves. He will take great delight in you; in his love he will no longer rebuke you, but will rejoice over you with singing.”",
+      "options": [
+        "Zephaniah 3:17",
+        "Habakkuk 2:4",
+        "Malachi 3:10",
+        "Micah 6:8"
+      ],
+      "correct_index": 0,
+      "answer": "Zephaniah 3:17",
+      "explanation": "Zephaniah 3:17 (NIV) is the correct reference. This verse focuses on God's delight in his people.",
+      "source": "Zephaniah 3:17",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-225": {
+      "question": "Where in the Bible is this verse found?\n\nNow this is what the LORD Almighty says: “Give careful thought to your ways.",
+      "options": [
+        "Micah 6:8",
+        "Haggai 1:5",
+        "Zechariah 4:6",
+        "Malachi 3:10"
+      ],
+      "correct_index": 1,
+      "answer": "Haggai 1:5",
+      "explanation": "Haggai 1:5 (NIV) is the correct reference. This verse focuses on examining one's ways.",
+      "source": "Haggai 1:5",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-226": {
+      "question": "Where in the Bible is this verse found?\n\nLook to the LORD and his strength; seek his face always.",
+      "options": [
+        "1 Samuel 15:22",
+        "Job 19:25",
+        "1 Chronicles 16:11",
+        "Psalm 37:4"
+      ],
+      "correct_index": 2,
+      "answer": "1 Chronicles 16:11",
+      "explanation": "1 Chronicles 16:11 (NIV) is the correct reference. This verse focuses on seeking the Lord continually.",
+      "source": "1 Chronicles 16:11",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-227": {
+      "question": "Where in the Bible is this verse found?\n\nSo we fix our eyes not on what is seen, but on what is unseen, since what is seen is temporary, but what is unseen is eternal.",
+      "options": [
+        "2 Corinthians 4:18",
+        "2 Corinthians 5:17",
+        "2 Corinthians 12:9",
+        "1 Corinthians 10:13"
+      ],
+      "correct_index": 0,
+      "answer": "2 Corinthians 4:18",
+      "explanation": "2 Corinthians 4:18 (NIV) is the correct reference. This verse focuses on the eternal rather than the temporary.",
+      "source": "2 Corinthians 4:18",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-228": {
+      "question": "Where in the Bible is this verse found?\n\nDo your best to present yourself to God as one approved, a worker who does not need to be ashamed and who correctly handles the word of truth.",
+      "options": [
+        "2 Timothy 2:15",
+        "2 Timothy 3:16",
+        "Hebrews 13:8",
+        "1 Thessalonians 5:18"
+      ],
+      "correct_index": 0,
+      "answer": "2 Timothy 2:15",
+      "explanation": "2 Timothy 2:15 (NIV) is the correct reference. This verse focuses on handling the word of truth correctly.",
+      "source": "2 Timothy 2:15",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-229": {
+      "question": "Where in the Bible is this verse found?\n\nFor the grace of God has appeared that offers salvation to all people.",
+      "options": [
+        "2 Timothy 3:16",
+        "2 Timothy 2:15",
+        "Titus 2:11",
+        "James 4:7"
+      ],
+      "correct_index": 2,
+      "answer": "Titus 2:11",
+      "explanation": "Titus 2:11 (NIV) is the correct reference. This verse focuses on God's saving grace.",
+      "source": "Titus 2:11",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    },
+    "A-230": {
+      "question": "Where in the Bible is this verse found?\n\nTo him who is able to keep you from stumbling and to present you before his glorious presence without fault and with great joy—",
+      "options": [
+        "Jude 1:24",
+        "James 1:22",
+        "Hebrews 11:1",
+        "James 4:7"
+      ],
+      "correct_index": 0,
+      "answer": "Jude 1:24",
+      "explanation": "Jude 1:24 (NIV) is the correct reference. This verse focuses on God's ability to keep believers from stumbling.",
+      "source": "Jude 1:24",
+      "verification_status": "checked_against_supplied_epub_pending_independent_editorial_review",
+      "review": {
+        "decision": "unreviewed",
+        "note": "Full verse from supplied NIV EPUB; reference and answer choices validated."
+      }
+    }
+  }
+}
