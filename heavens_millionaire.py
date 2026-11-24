@@ -749,7 +749,7 @@ def recover():
     replacement = secrets.token_urlsafe(24)
     with transaction() as conn:
         row = conn.execute('''SELECT p.id,c.recovery_hash FROM game_players p JOIN game_player_credentials c
-            ON c.player_id=p.id WHERE player_code=? AND site_key IS NULL''', (code,)).fetchone()
+            ON c.player_id=p.id WHERE (p.player_code=? OR p.username=lower(?)) AND p.site_key IS NULL''', (code, code)).fetchone()
         valid = bool(row and row['recovery_hash'] and check_password_hash(row['recovery_hash'], supplied))
         temporary = None
         if row and not valid:
