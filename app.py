@@ -1626,13 +1626,37 @@ def _dirty_key(year: int, month: int) -> str:
     return f"dirty_{year}_{month}"
 
 def mark_month_dirty(year: int, month: int):
-    session[_dirty_key(year, month)] = True
+    key = _dirty_key(year, month)
+    pastor = (session.get('pastor_username') or '').strip()
+    dirty = session.get(key)
+    # An AO can edit several churches in the same month in one session.
+    # Submitting one church must not expose another church's edits to old cache data.
+    scopes = dict(dirty) if isinstance(dirty, dict) else ({'*': True} if dirty is True else {})
+    scopes[pastor] = True
+    session[key] = scopes
 
 def clear_month_dirty(year: int, month: int):
-    session.pop(_dirty_key(year, month), None)
+    key = _dirty_key(year, month)
+    dirty = session.get(key)
+    if isinstance(dirty, dict) or dirty is True:
+        scopes = dict(dirty) if isinstance(dirty, dict) else {'*': True}
+        pastor = (session.get('pastor_username') or '').strip()
+        if scopes.get('*') is True:
+            # Old cookies did not identify which church had edits. Confirm the
+            # selected church without discarding protection for other churches.
+            scopes[pastor] = False
+        else:
+            scopes.pop(pastor, None)
+        if scopes:
+            session[key] = scopes
+            return
+    session.pop(key, None)
 
 def is_month_dirty(year: int, month: int) -> bool:
-    return session.get(_dirty_key(year, month)) is True
+    dirty = session.get(_dirty_key(year, month))
+    # Preserve cookies created before dirty flags became pastor-scoped.
+    return dirty is True or (isinstance(dirty, dict)
+        and dirty.get((session.get('pastor_username') or '').strip(), dirty.get('*')) is True)
 
 def sync_local_month_from_cache_for_pastor(year: int, month: int):
     # ✅ If user edited local data, DO NOT overwrite it with cache/sheets data
@@ -4511,6 +4535,8 @@ def _export_month_to_sheet_for_pastor(pastor_username: str, year: int, month: in
     ).fetchone()
     if not monthly_report:
         return False
+    if bool(monthly_report['approved']):
+        raise RuntimeError('This report has already been approved by AO.')
 
     monthly_report_id = monthly_report["id"]
     cp_row = ensure_church_progress(monthly_report_id)
@@ -4543,6 +4569,11 @@ def _export_month_to_sheet_for_pastor(pastor_username: str, year: int, month: in
     child_dedication = cp_row["child_dedication"] or 0
 
     church_key = church_id or church_address
+    submitted_rows = db.execute('''SELECT status FROM sheet_report_cache
+        WHERE year=? AND month=? AND (TRIM(church)=TRIM(?) OR TRIM(address)=TRIM(?))
+          AND TRIM(pastor)=TRIM(?)''', (year, month, church_key, church_key, pastor_name)).fetchall()
+    if any('approved' in str(row['status'] or '').lower() for row in submitted_rows):
+        raise RuntimeError('This report has already been approved by AO.')
     _delete_report_rows_for_month_in_sheet(year, month, church_key, pastor_name)
 
     for row in sunday_rows:
@@ -4642,18 +4673,6 @@ def _process_submit_report_job(job_id: str):
 
     try:
         refresh_sheet_cache("Report")
-        if _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
-            db.execute(
-                """
-                UPDATE submit_report_jobs
-                SET status = 'done', finished_at = ?, progress_message = ?
-                WHERE id = ?
-                """,
-                (utc_now_iso(), 'Report already found in Google Sheets.', job_id),
-            )
-            db.commit()
-            return
-
         db.execute(
             "UPDATE submit_report_jobs SET progress_message = ? WHERE id = ?",
             ('Submitting report...', job_id),
@@ -4662,6 +4681,7 @@ def _process_submit_report_job(job_id: str):
 
         if not _export_month_to_sheet_for_pastor(pastor_username, year, month, 'Pending AO approval'):
             raise RuntimeError("No complete local report or pastor account was available to submit.")
+        mark_month_dirty(year, month)
         set_month_submitted(year, month, pastor_username)
 
         db.execute(
@@ -4670,8 +4690,10 @@ def _process_submit_report_job(job_id: str):
         )
         db.commit()
 
-        refresh_after_sheet_write("Report")
-        exists_now = _report_exists_for_pastor_month_from_cache(pastor_username, year, month)
+        refreshed = refresh_after_sheet_write("Report")
+        exists_now = refreshed and _report_exists_for_pastor_month_from_cache(pastor_username, year, month)
+        if exists_now:
+            clear_month_dirty(year, month)
         final_message = 'Submission complete.' if exists_now else 'Submitted. Waiting for cache refresh.'
 
         db.execute(
@@ -4978,12 +5000,12 @@ def pastor_tool():
         if can_submit:
             try:
                 refresh_sheet_cache("Report")
-                if not _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
-                    if not _export_month_to_sheet_for_pastor(pastor_username, year, month, "Pending AO approval"):
-                        raise RuntimeError("No complete local report or pastor account was available to submit.")
-                    set_month_submitted(year, month, pastor_username)
+                if not _export_month_to_sheet_for_pastor(pastor_username, year, month, "Pending AO approval"):
+                    raise RuntimeError("No complete local report or pastor account was available to submit.")
+                mark_month_dirty(year, month)
+                set_month_submitted(year, month, pastor_username)
+                if refresh_after_sheet_write("Report") and _report_exists_for_pastor_month_from_cache(pastor_username, year, month):
                     clear_month_dirty(year, month)
-                    refresh_after_sheet_write("Report")
                     sync_local_month_from_cache_for_pastor(year, month)
             except Exception as e:
                 print("Error exporting month to sheet on submit:", e)

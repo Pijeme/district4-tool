@@ -239,6 +239,13 @@ across browsers and devices for missing monthly submissions in the current
 calendar year. Months become eligible on their last Sunday. The reminder links
 to Pastor's Tool and can be closed; reports pending approval count as submitted.
 
+Submit and Resubmit publish the current saved Sunday reports and Church Progress
+for the selected month. Resubmit replaces the existing unapproved report rather
+than skipping it. Local edits stay protected until the updated Sheets data has
+refreshed successfully; approved reports remain locked. The downloadable monthly
+report follows the last confirmed Sheets data. When an AO works with several
+churches, submitting one church does not clear another church's unfinished edits.
+
 Only the signed-in developer account `pijeme` can select a working area on the
 Bulletin Board. This selection applies to existing area viewing and editing
 checks until changed or signed out. The account's assigned area remains intact,

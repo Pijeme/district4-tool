@@ -828,6 +828,164 @@ class CacheSafetyTests(unittest.TestCase):
             self.assertEqual(appmod.get_db().execute('SELECT submitted FROM monthly_reports').fetchone()[0],0)
             self.assertEqual(appmod._get_submit_report_job(job_id)['status'],'failed')
 
+    def edited_monthly_report_source(self):
+        """An already-submitted month, edited through the real Pastor Tool forms."""
+        values=fixtures()
+        original=dict(zip(values['Report'][0],values['Report'][1]))
+        headers=['church','pastor','address','adult','youth','children','tithes','offering',
+                 'personal tithes','mission offering','received jesus','existing bible study',
+                 'new bible study','water baptized','holy spirit baptized','childrens dedication',
+                 'healed','activity_date','amount to send','status','ReportStatus']
+        other_church=dict(original,church='OtherChurch',pastor='Other Pastor',address='Other Address')
+        other_month=dict(original,activity_date='10/4/2026')
+        untouched=[[row.get(h,'') for h in headers] for row in (other_church,other_month)]
+        values['Report']=[headers,[original.get(h,'') for h in headers],*copy.deepcopy(untouched)]
+        fake=FakeSheets(values);original_worksheet=fake.worksheet
+        ws=Mock()
+        ws.get_all_values.side_effect=lambda:copy.deepcopy(fake.values['Report'])
+        ws.delete_rows.side_effect=lambda number:fake.values['Report'].pop(number-1)
+        ws.append_rows.side_effect=lambda rows,**kwargs:fake.values['Report'].extend(copy.deepcopy(rows))
+        fake.worksheet=lambda name:ws if name=='Report' else original_worksheet(name)
+        self.login(pastor=True)
+        with appmod.app.app_context():
+            self.sync(fake)
+            monthly=appmod.get_or_create_monthly_report(2026,9,'pastorone')
+            appmod.ensure_sunday_reports(monthly['id'],2026,9)
+            appmod.ensure_church_progress(monthly['id'])
+            appmod.get_db().execute('UPDATE sunday_reports SET is_complete=1,attendance_adult=12 WHERE monthly_report_id=?',(monthly['id'],))
+            appmod.get_db().execute('UPDATE monthly_reports SET submitted=1 WHERE id=?',(monthly['id'],))
+            appmod.get_db().commit()
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            response=self.client.post('/pastor-tool/2026/9/6',data=dict(
+                attendance_adult='47',attendance_youth='8',attendance_children='6',
+                tithes_church='1450',offering='350',mission='20',tithes_personal='100'))
+            self.assertEqual(response.status_code,302)
+            response=self.client.post('/pastor-tool/2026/9/progress',data=dict(
+                bible_new='9',bible_existing='12',received_christ='5',baptized_water='2',
+                baptized_holy_spirit='1',healed='3',child_dedication='1'))
+            self.assertEqual(response.status_code,302)
+        return fake,ws,untouched
+
+    def test_resubmit_updates_existing_sheet_rows_and_submitted_pdf_without_duplicates(self):
+        fake,ws,untouched=self.edited_monthly_report_source()
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            started=self.client.post('/pastor-tool/submit/start',data=dict(year='2026',month='9'))
+            self.assertTrue(started.get_json()['ok'])
+            result=self.client.get(started.get_json()['status_url'])
+            self.assertEqual(result.get_json()['status'],'done',result.get_json())
+            rows=[dict(zip(fake.values['Report'][0],r)) for r in fake.values['Report'][1:]]
+            edited=[r for r in rows if r['church']=='ChurchA' and r['activity_date']=='9/6/2026']
+            self.assertEqual(len(edited),1)
+            self.assertEqual(edited[0]['adult'],47)
+            self.assertEqual(edited[0]['amount to send'],1920)
+            self.assertEqual(edited[0]['new bible study'],9)
+            self.assertEqual(len([r for r in rows if r['church']=='ChurchA' and r['activity_date'].startswith('9/')]),4)
+            self.assertEqual(fake.values['Report'][1:3],untouched)
+            with self.client.session_transaction() as state:self.assertFalse(state.get('dirty_2026_9'))
+            with appmod.app.app_context():
+                pdf=appmod._get_pastor_monthly_report_pdf_data('pastorone',2026,9)
+                self.assertEqual(pdf['sunday_rows'][0]['attendance_adult'],47)
+                self.assertEqual(pdf['church_progress']['bible_new'],9)
+            before=ws.append_rows.call_count
+            self.client.get(started.get_json()['status_url'])
+            self.assertEqual(ws.append_rows.call_count,before)
+
+    def test_form_post_resubmit_also_replaces_existing_report(self):
+        fake,ws,untouched=self.edited_monthly_report_source()
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            response=self.client.post('/pastor-tool?year=2026&month=9')
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(ws.append_rows.call_count,4)
+        with appmod.app.app_context():
+            pdf=appmod._get_pastor_monthly_report_pdf_data('pastorone',2026,9)
+            self.assertEqual(pdf['sunday_rows'][0]['attendance_adult'],47)
+
+    def test_resubmit_keeps_local_edits_when_post_write_cache_refresh_fails(self):
+        for asynchronous in (True,False):
+            with self.subTest(asynchronous=asynchronous):
+                fake,ws,untouched=self.edited_monthly_report_source()
+                with patch.object(appmod,'get_gs_client',return_value=fake), \
+                     patch.object(appmod,'refresh_after_sheet_write',return_value=False):
+                    if asynchronous:
+                        started=self.client.post('/pastor-tool/submit/start',data=dict(year='2026',month='9')).get_json()
+                        response=self.client.get(started['status_url'])
+                        self.assertEqual(response.get_json()['status'],'done')
+                        self.assertIn('refresh',response.get_json()['message'].lower())
+                    else:
+                        response=self.client.post('/pastor-tool?year=2026&month=9')
+                        self.assertEqual(response.status_code,302)
+                self.assertEqual(ws.append_rows.call_count,4)
+                with self.client.session_transaction() as state:self.assertTrue(state.get('dirty_2026_9'))
+                with patch.object(appmod,'sync_from_sheets_if_needed'),patch.object(appmod,'get_gs_client',return_value=fake):
+                    self.assertEqual(self.client.get('/pastor-tool?year=2026&month=9').status_code,200)
+                with appmod.app.app_context():
+                    saved=appmod.get_db().execute('''SELECT attendance_adult FROM sunday_reports s JOIN monthly_reports m
+                        ON m.id=s.monthly_report_id WHERE m.pastor_username='pastorone' AND s.date='2026-09-06' ''').fetchone()
+                    self.assertEqual(saved['attendance_adult'],47)
+
+    def test_first_submit_still_creates_the_complete_month(self):
+        fake,ws,untouched=self.edited_monthly_report_source()
+        fake.values['Report']=[fake.values['Report'][0],*copy.deepcopy(untouched)]
+        with appmod.app.app_context():
+            appmod.get_db().execute("UPDATE monthly_reports SET submitted=0 WHERE pastor_username='pastorone' AND year=2026 AND month=9")
+            appmod.get_db().commit()
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            started=self.client.post('/pastor-tool/submit/start',data=dict(year='2026',month='9')).get_json()
+            result=self.client.get(started['status_url']).get_json()
+        self.assertEqual(result['status'],'done',result)
+        ws.delete_rows.assert_not_called()
+        self.assertEqual(ws.append_rows.call_count,4)
+
+    def test_resubmit_only_clears_the_selected_pastors_dirty_flag(self):
+        with appmod.app.test_request_context('/pastor-tool'):
+            appmod.session['pastor_username']='pastorone'
+            appmod.mark_month_dirty(2026,9)
+            appmod.session['pastor_username']='otherpastor'
+            self.assertFalse(appmod.is_month_dirty(2026,9))
+            appmod.mark_month_dirty(2026,9)
+            appmod.session['pastor_username']='pastorone'
+            appmod.clear_month_dirty(2026,9)
+            self.assertFalse(appmod.is_month_dirty(2026,9))
+            appmod.session['pastor_username']='otherpastor'
+            self.assertTrue(appmod.is_month_dirty(2026,9))
+            appmod.session['dirty_2026_10']=True
+            self.assertTrue(appmod.is_month_dirty(2026,10))
+            appmod.clear_month_dirty(2026,10)
+            self.assertFalse(appmod.is_month_dirty(2026,10))
+            appmod.session['pastor_username']='pastorone'
+            self.assertTrue(appmod.is_month_dirty(2026,10))
+            appmod.mark_month_dirty(2026,10)
+            appmod.clear_month_dirty(2026,10)
+            self.assertFalse(appmod.is_month_dirty(2026,10))
+            appmod.session['pastor_username']='thirdpastor'
+            self.assertTrue(appmod.is_month_dirty(2026,10))
+
+    def test_resubmit_refuses_a_report_approved_after_the_job_was_started(self):
+        fake,ws,untouched=self.edited_monthly_report_source()
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            started=self.client.post('/pastor-tool/submit/start',data=dict(year='2026',month='9')).get_json()
+            fake.values['Report'][1][fake.values['Report'][0].index('status')]='Approved'
+            before=copy.deepcopy(fake.values['Report'])
+            result=self.client.get(started['status_url']).get_json()
+        self.assertEqual(result['status'],'failed')
+        self.assertIn('approved',result['error'])
+        self.assertEqual(fake.values['Report'],before)
+        ws.delete_rows.assert_not_called();ws.append_rows.assert_not_called()
+
+    def test_resubmit_write_failure_is_reported_and_keeps_the_edited_draft(self):
+        fake,ws,untouched=self.edited_monthly_report_source()
+        ws.append_rows.side_effect=RuntimeError('Simulated source write failure')
+        with patch.object(appmod,'get_gs_client',return_value=fake):
+            started=self.client.post('/pastor-tool/submit/start',data=dict(year='2026',month='9')).get_json()
+            result=self.client.get(started['status_url']).get_json()
+        self.assertEqual(result['status'],'failed')
+        self.assertIn('Simulated source write failure',result['error'])
+        with self.client.session_transaction() as state:self.assertTrue(state.get('dirty_2026_9'))
+        with appmod.app.app_context():
+            draft=appmod.get_db().execute('''SELECT attendance_adult FROM sunday_reports s JOIN monthly_reports m
+                ON m.id=s.monthly_report_id WHERE m.pastor_username='pastorone' AND s.date='2026-09-06' ''').fetchone()
+            self.assertEqual(draft['attendance_adult'],47)
+
     def test_database_recovery_bootstraps_all_eight_sources(self):
         with appmod.app.app_context():
             db=appmod.get_db()
