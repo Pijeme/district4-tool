@@ -322,6 +322,30 @@
 
     tick();
   }
+  function linkedResultText(value, references, field) {
+    const chars=Array.from(String(value??''));let offset=0,html='';
+    for(const [index,ref] of (references||[]).entries()){
+      if(ref.start<offset||ref.end>chars.length||ref.start>=ref.end)continue;
+      html+=esc(chars.slice(offset,ref.start).join(''));
+      html+=`<button type="button" class="result-verse-link" data-result-verse="${index}" data-verse-field="${esc(field)}" aria-haspopup="dialog">${esc(chars.slice(ref.start,ref.end).join(''))}</button>`;
+      offset=ref.end;
+    }
+    return html+esc(chars.slice(offset).join(''));
+  }
+  async function previewResultVerse(button) {
+    if(view!=='result'||!current)return;
+    const {id,token}=current, field=button.dataset.verseField, index=button.dataset.resultVerse;
+    showModal(`<section class="result-verse-preview" aria-label="Bible verse preview"><div class="eyebrow">NIV Bible</div><h2>${esc(button.textContent)}</h2><p class="result-verse-text" role="status">Loading verse…</p><p class="result-verse-attribution muted"></p></section>`);
+    const preview=$('.result-verse-preview',modalContent);
+    const valid=()=>modal.open&&preview.isConnected&&view==='result'&&current?.token===token;
+    try{
+      const data=await api('result-verse/'+encodeURIComponent(id)+'?'+new URLSearchParams({token,field,index}));
+      if(!valid())return;
+      $('h2',preview).textContent=data.verse.reference;
+      $('.result-verse-text',preview).textContent=data.verse.text;
+      $('.result-verse-attribution',preview).textContent=data.verse.attribution||'NIV';
+    }catch(error){if(valid())$('.result-verse-text',preview).textContent=error.message;}
+  }
   function resultScreen() {
     const s=current, correct=s.outcome==='correct', ongoing=s.status==='active';
     const milestone=correct&&[5,10].includes(s.position);
@@ -329,7 +353,7 @@
       ({won:'You’re Heaven’s Millionaire!',wrong:'A good try. A little wiser.',timeout:'Time’s up. Keep learning.',walkaway:'You knew when to walk away.',sweetened:'A sweet ending to your game.',disqualified:'Attempt disqualified under competition rules.'}[s.status]||'Your game is saved.');
     let art=correct?'host_correct':'host_comforting';
     const host=s.status==='won'?ASSETS+'Batch_03/02_results/screen_grand_victory.webp':milestone?ASSETS+`Batch_03/02_results/screen_milestone_question_${s.position}.webp`:ASSETS+'Batch_01/02_host/'+art+'.webp';
-    setView('result',`<section class="panel result-panel ${milestone||s.status==='won'?'celebration':''}"><img class="result-art" src="${host}" alt="Your host’s reaction"><div class="eyebrow">${ongoing?`Question ${s.position} complete`:esc(TITLE)}</div><h2>${esc(milestone?'Milestone reached!':title)}</h2><div class="result-points">${number(ongoing?s.earned:s.final_points)}</div><p class="muted">${milestone?'points guaranteed':ongoing?'points earned':s.status==='disqualified'?'Saved in your history · excluded from official rankings':'final points · your attempt has been saved'}</p><div class="result-actions result-actions-top" aria-label="Result navigation">${ongoing?'<button class="primary" data-action="next">Next question →</button>':'<button class="primary" data-nav="menu">Back to Main Menu →</button><button class="secondary" data-nav="profile">My game history</button>'}</div><div class="explanation"><strong>${esc(s.question)}</strong>${s.correct_choice!==undefined?`<p>Correct answer: <span class="gold">${letters[s.correct_choice]}. ${esc(s.options[s.correct_choice])}</span></p>`:''}<div>${esc(s.explanation)}</div><div class="source">${esc(s.source)}</div></div></section>`);
+    setView('result',`<section class="panel result-panel ${milestone?'celebration milestone-celebration':s.status==='won'?'celebration':''}"><img class="result-art" src="${host}" alt="${milestone?`Question ${s.position} complete. Milestone reached! ${number(s.guaranteed)} points guaranteed.`:'Your host’s reaction'}">${milestone?'':`<div class="eyebrow">${ongoing?`Question ${s.position} complete`:esc(TITLE)}</div><h2>${esc(milestone?'Milestone reached!':title)}</h2><div class="result-points">${number(ongoing?s.earned:s.final_points)}</div><p class="muted">${milestone?'points guaranteed':ongoing?'points earned':s.status==='disqualified'?'Saved in your history · excluded from official rankings':'final points · your attempt has been saved'}</p>`}<div class="result-actions result-actions-top" aria-label="Result navigation">${ongoing?'<button class="primary" data-action="next">Next question →</button>':'<button class="primary" data-nav="menu">Back to Main Menu →</button><button class="secondary" data-nav="profile">My game history</button>'}</div><div class="explanation"><strong>${linkedResultText(s.question,s.verse_references?.question,'question')}</strong>${s.correct_choice!==undefined?`<p>Correct answer: <span class="gold">${letters[s.correct_choice]}. ${linkedResultText(s.options[s.correct_choice],s.verse_references?.answer,'answer')}</span></p>`:''}<div>${linkedResultText(s.explanation,s.verse_references?.explanation,'explanation')}</div><div class="source">${linkedResultText(s.source,s.verse_references?.source,'source')}</div>${Object.values(s.verse_references||{}).some(refs=>refs.length)?'<p class="verse-tip">Tap any underlined Bible reference to read the verse (NIV).</p>':''}</div></section>`);
   }
   async function refresh(){if(!current)return;const result=await api('state/'+current.id);applyState(result.state);}
   function lifelineContent(kind) {
@@ -459,6 +483,7 @@
     try{
       if(el.classList.contains('wordmark')){e.preventDefault();await navigate('menu');}
       else if(el.dataset.nav){e.preventDefault();await navigate(el.dataset.nav);}
+      else if(el.dataset.resultVerse!==undefined){await previewResultVerse(el);}
       else if(el.dataset.auth){auth(el.dataset.auth);}
       else if(el.hasAttribute('data-site-login'))await siteLogin();
       else if(el.dataset.choice!==undefined){
