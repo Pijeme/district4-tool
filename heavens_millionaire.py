@@ -333,6 +333,7 @@ def state(attempt):
     if question['outcome'] is not None or attempt['status'] != 'active':
         result.update(correct_choice=question['correct_choice'], explanation=payload.get('explanation', ''),
                       source=source_citation(payload), selected=question['answer_choice'])
+        result['verse_references'] = result_verse_references(payload, question)
     usage = db().execute('SELECT kind,result_json FROM game_lifeline_usage WHERE session_id=? AND position=? ORDER BY id',
                          (attempt['id'], attempt['position'])).fetchall()
     result['lifeline_results'] = {r['kind']: json.loads(r['result_json']) for r in usage}
@@ -855,6 +856,79 @@ def get_state(ident):
     with transaction():
         attempt = attempt_for(owner, ident)
         return jsonify(state=state(attempt))
+
+
+
+def result_verse_references(payload, question):
+    """Use Bible Study's reference parser on the same text shown after an answer."""
+    from bible_study import scripture_references
+    options = json.loads(question['choices_json'])
+    fields = dict(question=question_prompt(payload), explanation=payload.get('explanation', ''),
+                  source=source_citation(payload), answer=options[question['correct_choice']])
+    return {key: scripture_references(str(value or '')) for key, value in fields.items()}
+
+
+def read_result_verse(reference):
+    """Read only the cited NIV passage from the existing validated Study database."""
+    from bible_study import _database_path, APPLICATION_ID, SCHEMA_VERSION
+    database = current_app.config.get('BIBLE_STUDY_DATABASE')
+    if not database:
+        raise GameError('Bible verse preview is temporarily unavailable.', 503)
+    first_chapter, last_chapter = reference['chapter'], reference['end_chapter']
+    first, last = reference['verse'], reference['end_verse']
+    label = f"{reference['book']} {first_chapter}:{first}"
+    if (first_chapter, first) != (last_chapter, last):
+        label += '–' + (f'{last_chapter}:' if first_chapter != last_chapter else '') + str(last)
+    try:
+        path = _database_path(database, static_folder=current_app.static_folder,
+            protected_paths=(current_app.config.get('DATABASE'), current_app.config.get('AI_DATABASE'),
+                             current_app.config['HEAVENS_MILLIONAIRE_DATABASE']))
+        if not path.is_file():
+            raise GameError('Bible verse preview is temporarily unavailable.', 503)
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
+            if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID
+                    or conn.execute('PRAGMA user_version').fetchone()[0] not in range(1, SCHEMA_VERSION + 1)):
+                raise GameError('Bible verse preview is temporarily unavailable.', 503)
+            rows = conn.execute("""SELECT v.chapter,v.verse,v.text,e.attribution FROM bible_verses v
+                JOIN bible_editions e ON e.id=v.edition_id JOIN bible_import_runs r ON r.id=e.import_run_id
+                WHERE e.translation='NIV' AND e.is_active=1 AND e.status='ready' AND r.status='validated'
+                AND v.is_active=1 AND v.book_id=? AND v.chapter BETWEEN ? AND ?
+                AND (v.chapter>? OR v.verse>=?) AND (v.chapter<? OR v.verse<=?)
+                ORDER BY v.chapter,v.verse LIMIT 501""",
+                (reference['book_id'], first_chapter, last_chapter, first_chapter, first, last_chapter, last)).fetchall()
+    except (ValueError, OSError, sqlite3.DatabaseError):
+        raise GameError('Bible verse preview is temporarily unavailable.', 503)
+    if len(rows) > 500:
+        raise GameError('This passage is too long for a verse preview.', 400)
+    if (not rows or rows[0][:2] != (first_chapter, first) or rows[-1][:2] != (last_chapter, last)
+            or any(not row[2].strip() for row in rows)):
+        raise GameError('This passage is not available in the indexed NIV Bible.', 404)
+    if first_chapter == last_chapter and [row[1] for row in rows] != list(range(first, last + 1)):
+        raise GameError('This passage is not available in the indexed NIV Bible.', 404)
+    text = rows[0][2] if len(rows) == 1 else '\n\n'.join(
+        f'{chapter}:{verse} {text}' for chapter, verse, text, _ in rows)
+    return dict(reference=label, text=text, attribution=rows[0][3], edition_label='NIV')
+
+
+@game.get('/api/result-verse/<ident>')
+def result_verse(ident):
+    owner = player()
+    rate_limit('result-verse', 90, 60, owner['id'])
+    field = request.args.get('field', '')
+    index = request.args.get('index', type=int)
+    with transaction():
+        attempt = attempt_for(owner, ident)
+        question = round_row(attempt)
+        if (request.args.get('token') != question['token']
+                or (attempt['status'] == 'active' and question['outcome'] is None)):
+            raise GameError('Verse previews are available only after the question is resolved.', 409)
+        references = result_verse_references(json.loads(question['question_json']), question).get(field, [])
+        if index is None or not 0 <= index < len(references):
+            raise GameError('This verse is not cited in the current explanation.', 404)
+        reference = references[index]
+    response = jsonify(verse=read_result_verse(reference))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @game.post('/api/action')
