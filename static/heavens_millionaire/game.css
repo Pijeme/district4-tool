@@ -119,3 +119,17 @@ dialog:has(.walk-art) .primary,dialog:has(.walk-art) .secondary{min-height:44px;
 
 /* Full verse questions include a paragraph break; existing single-line questions are unchanged. */
 .question-text,.explanation>strong{white-space:pre-line;overflow-wrap:anywhere}
+
+/* Milestone art already includes the heading, question number and guaranteed points. */
+.result-panel.milestone-celebration .result-art{width:auto;height:auto;max-width:100%;max-height:min(65dvh,560px);margin:0 auto 12px;object-fit:contain}
+.result-panel.milestone-celebration .result-actions-top{margin:0 0 12px}
+.result-panel.milestone-celebration .result-actions-top .primary{width:100%}
+.result-verse-link{display:inline;background:none;border:0;padding:0;color:var(--gold);text-decoration:underline;text-underline-offset:.18em;font:inherit;line-height:inherit;overflow-wrap:anywhere}
+.verse-tip{font-size:.78rem;color:var(--muted);margin:10px 0 0;line-height:1.4}
+dialog[open]:has(.result-verse-preview){display:grid;grid-template-rows:minmax(0,1fr) auto;gap:12px;max-height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 32px);overflow:hidden}
+dialog[open]:has(.result-verse-preview) #modal-content{min-height:0;overflow-y:auto}
+dialog[open]:has(.result-verse-preview) #close-modal{width:100%;margin:0;min-height:44px}
+.result-verse-preview h2{font-size:clamp(22px,5vw,32px);margin-bottom:12px;color:var(--gold)}
+.result-verse-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:1.1rem;line-height:1.7}
+.result-verse-attribution{font-size:.75rem;overflow-wrap:anywhere}
+@media(max-width:767px){.result-panel.milestone-celebration .result-art{max-height:min(59dvh,460px)}}
