@@ -154,6 +154,8 @@ class MillionaireTests(unittest.TestCase):
         with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn:
             payload = json.loads(conn.execute('SELECT question_json FROM game_answers WHERE token=?', (state['token'],)).fetchone()[0])
             payload['source'] = 'Daniel 1:7'
+            payload['source_book'] = ''
+            payload['source_detail'] = {}
             payload['explanation'] = 'See Daniel 1:7 and John 3:16.'
             conn.execute('UPDATE game_answers SET question_json=? WHERE token=?', (json.dumps(payload), state['token']))
             conn.commit()
@@ -175,6 +177,16 @@ class MillionaireTests(unittest.TestCase):
             self.assertEqual(self.client.get(endpoint, query_string={**params, 'token':'forged'}).status_code, 409)
             self.assertEqual(read.call_count, 1)
         self.assertEqual(self.client.get(endpoint, query_string=params).status_code, 503)
+        path = self.seed_hint_bible()
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute("ALTER TABLE bible_editions ADD COLUMN attribution TEXT DEFAULT 'Synthetic attribution'")
+            conn.execute("INSERT INTO bible_verses VALUES(1,27,1,7,'Synthetic Daniel verse for testing.',1)")
+        before = path.read_bytes()
+        response = self.client.get(endpoint, query_string=params)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['verse']['text'], 'Synthetic Daniel verse for testing.')
+        self.assertEqual(response.get_json()['verse']['attribution'], 'Synthetic attribution')
+        self.assertEqual(path.read_bytes(), before)
         self.action('next')
         self.assertEqual(self.client.get(endpoint, query_string=params).status_code, 409)
 
@@ -1123,7 +1135,11 @@ class GameBrowserTests(unittest.TestCase):
                                                           (state['id'],position+1)).fetchone()[0])
                         page.locator(f'.answer[data-choice="{fixture.correct_index()}"]').click();page.locator('#confirm-answer').click()
                         next_button=page.locator('.result-actions-top [data-action=next]');next_button.wait_for()
-                        self.assertLess(next_button.bounding_box()['y'],page.locator('.result-art').bounding_box()['y'])
+                        self.assertLess(next_button.bounding_box()['y'],page.locator('.explanation').bounding_box()['y'])
+                        if position==5:
+                            self.assertEqual(page.locator('.result-panel > .result-points').count(),0)
+                            self.assertEqual(page.locator('.result-panel > h2').count(),0)
+                            self.assertLess(page.locator('.result-art').bounding_box()['y'],next_button.bounding_box()['y'])
                         self.assertLess(next_button.bounding_box()['y'],800)
                         page.screenshot(path=str(folder/f'top-result-navigation-{width}.png'),full_page=True)
                         next_button.click();page.locator('.round-count strong').filter(has_text=str(position+1)).wait_for()
@@ -1135,7 +1151,7 @@ class GameBrowserTests(unittest.TestCase):
                         page.locator(f'.answer[data-choice="{fixture.correct_index()}"]').click();page.locator('#confirm-answer').click()
                         page.get_by_role('heading',name='You’re Heaven’s Millionaire!').wait_for()
                         studio=page.locator('.result-actions-top [data-nav=menu]')
-                        self.assertLess(studio.bounding_box()['y'],page.locator('.result-art').bounding_box()['y'])
+                        self.assertLess(studio.bounding_box()['y'],page.locator('.explanation').bounding_box()['y'])
                         self.assertLess(studio.bounding_box()['y'],800)
                         self.assertFalse(page.evaluate('document.documentElement.scrollWidth>innerWidth'))
                         page.screenshot(path=str(folder/f'victory-top-navigation-{width}.png'),full_page=True)
