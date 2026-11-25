@@ -147,6 +147,37 @@ class MillionaireTests(unittest.TestCase):
                 self.assertEqual(json.loads(saved[0]), q)
             self.assertEqual(conn.execute('SELECT count(*) FROM game_questions WHERE enabled=1').fetchone()[0], 3382)
 
+
+    def test_result_verse_links_are_available_only_after_resolution(self):
+        self.register()
+        state = self.start()
+        with closing(sqlite3.connect(self.app.config['HEAVENS_MILLIONAIRE_DATABASE'])) as conn:
+            payload = json.loads(conn.execute('SELECT question_json FROM game_answers WHERE token=?', (state['token'],)).fetchone()[0])
+            payload['source'] = 'Daniel 1:7'
+            payload['explanation'] = 'See Daniel 1:7 and John 3:16.'
+            conn.execute('UPDATE game_answers SET question_json=? WHERE token=?', (json.dumps(payload), state['token']))
+            conn.commit()
+        endpoint = '/bible-games/api/result-verse/' + state['id']
+        params = dict(token=state['token'], field='source', index=0)
+        self.assertNotIn('verse_references', self.client.get('/bible-games/api/state/'+state['id']).get_json()['state'])
+        self.assertEqual(self.client.get(endpoint, query_string=params).status_code, 409)
+        self.assertEqual(self.action('answer', choice=self.correct_index()).status_code, 200)
+        refs = self.state['verse_references']
+        self.assertEqual(refs['explanation'][0]['source_text'], 'Daniel 1:7')
+        self.assertEqual(refs['explanation'][1]['source_text'], 'John 3:16')
+        preview = dict(reference='Daniel 1:7', text='Test indexed text', attribution='Test attribution', edition_label='NIV')
+        with patch.object(hm, 'read_result_verse', return_value=preview) as read:
+            response = self.client.get(endpoint, query_string=params)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()['verse'], preview)
+            self.assertEqual(read.call_args.args[0]['book'], 'Daniel')
+            self.assertEqual(self.client.get(endpoint, query_string={**params, 'index':999}).status_code, 404)
+            self.assertEqual(self.client.get(endpoint, query_string={**params, 'token':'forged'}).status_code, 409)
+            self.assertEqual(read.call_count, 1)
+        self.assertEqual(self.client.get(endpoint, query_string=params).status_code, 503)
+        self.action('next')
+        self.assertEqual(self.client.get(endpoint, query_string=params).status_code, 409)
+
     def test_registration_photo_compression_metadata_privacy_and_directory(self):
         result=self.register()
         self.assertEqual(result['player']['pastor'],'Test Pastor')
